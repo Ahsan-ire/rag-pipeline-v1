@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 1 — ingestion v2 (page-aware, cleaned)**
+**Current phase: 2 — handbook chunker**
 
 ---
 
@@ -194,5 +194,139 @@ pin the offending transitive package explicitly rather than freezing
 everything.
 
 ---
+
+## D13 — Page identity: page map carries raw + printed number; citations use printed (3 Jul 2026)
+**Decision:** `extract_pdf` returns `(clean_text, page_map)` where each
+`PageSpan` records `page_number` (raw 1-indexed pdfplumber page), `printed_page`
+(the book's own number), and the `[char_start, char_end)` slice of the page in
+`clean_text`. `printed_page` is parsed from the running header, or — for
+headerless body pages — inferred as `raw − modal_offset`; `None` for front
+matter. Phase 2 chunk `page_start`/`page_end` metadata will carry the **printed**
+page; the raw index stays in the map for QA/debugging.
+**Why:** the printed number is what a practitioner sees on the page and how the
+book's own TOC/index cite — `[Handbook, para 3.2.1, p.87]` must read as a book
+citation. Keeping the raw index too costs one field and is the corpus-agnostic
+ground truth (opens the PDF at that page). The inference is essential: ~12% of
+body pages are headerless (chapter openers), and every chapter's first chunk
+starts there — without it those chunks would carry a null page.
+**Rejected:** raw-only (not how the book is cited); printed-only (nullable,
+corpus-specific); hardcoding the −44 offset D10 measured (corpus-specific — the
+modal offset is self-calibrated from the headers, so "bring your own manual"
+survives).
+**Consequence:** the final citation display string is a Phase 4 decision that
+consumes this printed page; `page_range(page_map, start, end)` (bisect on
+`char_start`) resolves a text offset to its page(s).
+
+## D14 — Positional header stripping: shape + CHAPTER exclusion + modal-offset validation (3 Jul 2026)
+**Decision:** strip a running header only from the **first non-empty line** of a
+page, matching one of two all-caps shapes (`TITLE 87` / `88 TITLE`), with the
+page number constrained to 1–3 digits, and only when the candidate's
+`raw − printed` offset is within ±1 of the corpus's modal offset. `^CHAPTER \d+$`
+is excluded from header matching before any shape test. Bare page-number lines
+(`^\d{1,3}$`) are stripped only as the first or last non-empty line.
+**Why:** D10 proved frequency-based detection blind (the header title changes
+every chapter, so no line repeats). Three guards make positional stripping safe:
+(1) **CHAPTER exclusion** — `CHAPTER 3` matches the recto shape exactly, and
+chapter openers are the headerless pages, so a naive rule would silently delete
+all 16 chapter markers and only Phase 2 would notice (verified live: 16 markers
+survive cleaning); (2) **1–3 digit** page numbers reject 4-digit years, so an
+all-caps statute title like `SUCCESSION ACT 1965` first-on-page survives;
+(3) **modal-offset validation** (self-calibrated, ~707 votes for +44) means a
+stray all-caps-plus-small-number content line would have to arithmetically equal
+`raw − 44` to be stripped. Live result: 729/805 first-line header shapes → 5/739
+after cleaning.
+**Rejected:** frequency/repeated-line detection (D10 showed it finds nothing);
+IGNORECASE or mixed-case `Chapter` matching (the D3 case-sensitivity lesson);
+unconditional `^\d+$` stripping (D10 found 2,035 mid-text bare numbers — years,
+addresses, list items — that must survive).
+**Consequence:** cleaning now runs on all PDFs (incl. `--type legislation` via
+`load_directory`); the validated rule makes false positives on other corpora
+negligible. Known, documented residue: front-matter headers with **roman-numeral**
+page numbers (`TABLE OF STATUTES xxvii`) don't match the arabic rule and survive —
+harmless, front matter yields no cited chunks. Header-shape lines appearing as a
+page *footer* (rare, appendix forms) are not stripped by the first-line rule.
+
+## D15 — Hyphenation repair: corpus-attestation join (3 Jul 2026)
+**Decision:** rejoin a word broken by a hyphen at a line end (lowercase before
+the hyphen, next line starts lowercase), within a page and across page seams.
+Keep the hyphen when the reconstructed `a-b` is attested as a hyphenated word
+elsewhere in the corpus (`co-ownership`); otherwise fuse (`regis-`/`tration` →
+`registration`). Attestation is built once from all unbroken (intra-line) tokens.
+**Why:** a plain always-fuse policy would corrupt genuine compounds
+(`co-ownership` → `coownership`), which breaks Phase 3 BM25 exact-token retrieval
+on real conveyancing terms. Attestation decides empirically from the book's own
+usage, with no new dependency and deterministically. Live result: 2,682 raw
+hyphen-break lines → 14 residual after cleaning (the residue is where the next
+line did not start lowercase — correctly left alone).
+**Rejected:** always-fuse (corrupts compounds); a fixed prefix list (`re-` is
+wrong in both directions: `re-entry` vs `regis-tration`); dictionary lookup
+(new dependency). Untouched by design: hyphen before uppercase/digit
+(`1976-\n1977`).
+**Consequence:** a compound repaired across a page break straddles two pages, so
+`page_range` correctly returns distinct start/end pages for it.
+
+## D16 — Ingestion seam, whitespace, and page-join policy (3 Jul 2026)
+**Decision:** new public `extract_pdf(path) -> (clean_text, page_map)` is the
+cleaning contract; `load_pdf` keeps its exact `List[Document]` signature and
+metadata, now wrapping `extract_pdf` and dropping the map at that seam.
+Whitespace normalisation is minimal — rstrip lines, collapse 3+ newlines to 2,
+strip page-edge blank lines, **never unwrap line breaks into spaces**. Pages
+join with a single `\n`. Offsets are recorded in a pure final concatenation pass
+(clean per page → decide each boundary's separator/hyphen-trim → concatenate),
+so `clean_text[char_start:char_end]` is exact by construction.
+**Why:** the wrapper means today's `pipeline index` gets cleaned text with zero
+changes to `pipeline.py`/`chunker.py` (all 39 existing tests pass unmodified),
+while Phase 2 rewires the chunker to consume the map — the map must never enter
+`Document.metadata` because the chunker copies metadata into every chunk and
+Chroma rejects non-scalar values. Minimal whitespace preserves the line-start
+anchors (`^CHAPTER \d+$`, `^\d+\.\d+`) that Phase 2 and BM25 depend on. A single
+`\n` join matches typography (a page break is a line break); `\n\n` would
+fabricate a paragraph break mid-sentence at ~800 boundaries and poison the
+fallback splitter (whose first separator is `\n\n`). Recording offsets only in a
+pure pass avoids the classic bug of mutating already-offset text.
+**Rejected:** rewiring `index_documents`/`chunk_legal_document` now (Phase 2
+scope); aggressive whitespace collap/unwrapping (destroys structural anchors);
+`\n\n` page joins; repairing hyphens after concatenation (offset drift).
+**Consequence:** a page that is only furniture (header-only) becomes empty and is
+dropped; raw page numbering is preserved (gaps, not renumbering). Verified: page
+map invariant PASS on all 739 cleaned pages of the real corpus.
+
+## D17 — OCR-fidelity verdict: prose fully OCR'd; garble is layout, not characters (3 Jul 2026)
+**Finding (answers a reviewer concern that copy-pasted citations looked
+garbled):** the corpus text layer is clean at the character level — across all
+805 text pages, **0 `(cid:N)` unmapped-glyph markers, 0 U+FFFD replacement
+characters**, and of 16 distinct non-ASCII characters all are legitimate
+(curly quotes, en/em dashes, `§`, `€`, `£`, `•`, accented names — `Éireann`,
+`précis`, `Dáil`, `vis-à-vis`); zero mojibake. Body prose sampled across the 16
+chapters is pristine (well-formed sentences, correct section refs, clean
+hyphen breaks). The garble a reader sees on copy-paste has two **layout**
+sources, not OCR corruption:
+1. **Front-matter tables** (Table of Cases/Statutes, roman-numeral pages) are
+   two-column; `extract_text` linearises across the full page width, splicing
+   left-column and right-column citations together (`EBS Ltd v Kenehan [2017]
+   IEHC 604 . . . 275 Kelly & anor v Irish Bank Resolution`). Characters are
+   correct; only reading order is jumbled. These pages precede `CHAPTER 1` and
+   produce no cited body chunks.
+2. **Appendix form facsimiles** (Conditions of Sale, Certificate of Title,
+   Requisitions on Title, Conveyancing & Taxation) — ~66–80 pages whose body is
+   vector-drawn/not in the text layer; `extract_text` returns only the running
+   header. `text_layer_coverage_report` now flags these as *sparse* pages
+   (<100 chars). None carry a bitmap image with missing OCR (the un-OCR'd-image
+   count is 0), so OCRmyPDF would not recover them — the form text simply isn't
+   present as extractable content.
+**Decision:** GO on pdfplumber's existing text layer for the body (no OCR
+pivot). Phase 1 cleaning correctly **drops** the header-only appendix pages
+(D16) rather than emitting header-noise chunks. Front-matter table garble is
+accepted as a documented limitation for v1.
+**Rejected:** OCRmyPDF re-processing (the D11 ladder's first rung) — warranted
+only for missing/garbled text, and the prose has neither; column-aware
+extraction of the front-matter tables (real churn for reference material outside
+the QA scope); trying to recover the appendix forms (their content is not in the
+text layer at all).
+**Consequence:** Phase 2 should decide whether to **exclude pre-`CHAPTER 1`
+front matter** from chunking (its garbled tables would otherwise become
+low-value, section-number-less chunks). If the appendix forms' content is ever
+needed, those specific page ranges require a separate OCR pass — out of scope
+for the procedure-QA v1.
 
 <!-- Append new entries below. Format: ## Dn — Title (date) / Decision / Why / Rejected / Consequence -->
