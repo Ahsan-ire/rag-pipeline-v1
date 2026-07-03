@@ -14,7 +14,7 @@ docs/decisions.md. Current phase is stated at the top of decisions.md.
 - Run tests: `python -m pytest tests/ -q`  (must pass before any commit)
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
 - Query: `python -m src.pipeline query "..." --top-k 6`
-- Extraction QA: `python scripts/extraction_qa.py ./data/handbook.pdf`
+- Extraction QA: `python scripts/extraction_qa.py ./data/Conveyancing_Handbook.pdf`
 - Eval: `python -m src.pipeline eval`
 
 ## Hard rules
