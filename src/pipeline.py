@@ -10,10 +10,15 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
-from src.chunker import chunk_legal_document
-from src.embedder import add_documents
+from src.chunker import chunk_handbook, chunk_legal_document
+from src.embedder import add_documents, clear_store
 from src.generator import generate_with_sources
-from src.ingest import load_directory, load_html_from_url, load_pdf
+from src.ingest import (
+    load_directory,
+    load_handbook_pdf,
+    load_html_from_url,
+    load_pdf,
+)
 from src.retriever import retrieve
 
 logging.basicConfig(
@@ -23,16 +28,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def index_documents(source_path: str, document_type: str = "legislation") -> int:
+def index_documents(
+    source_path: str, document_type: str = "handbook", reset: bool = False
+) -> int:
     """Ingest, chunk, embed, and store documents from a source path or URL.
 
     Args:
         source_path: A file path, directory path, or URL.
-        document_type: Type of document (legislation, case_law, contracts).
+        document_type: Type of document (handbook, legislation, case_law,
+            contracts). ``handbook`` PDFs use the page-aware loader and the
+            handbook chunker (Phase 2); everything else keeps the original path.
+        reset: If True, clear the vector store before indexing. Interim guard
+            against the positional-ID dedup trap while re-indexing during a
+            chunker-iteration loop (content-hash IDs land in Phase 3).
 
     Returns:
         Number of chunks indexed.
     """
+    # Handbook PDFs take the page-aware route: extract_pdf's (clean_text,
+    # page_map) feeds chunk_handbook so chunks carry printed-page citations. The
+    # `handbook` type is inseparable from a single PDF — a directory or URL under
+    # this type would otherwise fall through and mis-tag legislation chunks as
+    # `handbook`, so reject that combination loudly instead.
+    if document_type == "handbook":
+        if not source_path.endswith(".pdf"):
+            raise ValueError(
+                "--type handbook expects a single PDF file, but got a directory "
+                f"or URL: {source_path}. Use --type legislation (or case_law / "
+                "contracts) for those sources."
+            )
+        clean_text, page_map, metadata = load_handbook_pdf(source_path)
+        if not clean_text.strip():
+            logger.warning("No text extracted from %s", source_path)
+            return 0
+        # chunk_handbook raises a loud ValueError on a non-handbook PDF — do this
+        # BEFORE clearing the store so a mis-routed --reset cannot destroy the
+        # existing index and then crash.
+        all_chunks = chunk_handbook(clean_text, page_map, metadata)
+        logger.info("Created %d handbook chunks from %s", len(all_chunks), source_path)
+        if reset:
+            clear_store()
+        count = add_documents(all_chunks)
+        logger.info("Indexed %d chunks in vector store", count)
+        print(f"\nIndexed {count} chunks from 1 document")
+        return count
+
     # Load documents based on source type
     if source_path.startswith(("http://", "https://")):
         documents = load_html_from_url(source_path, document_type)
@@ -55,7 +95,9 @@ def index_documents(source_path: str, document_type: str = "legislation") -> int
 
     logger.info("Created %d chunks from %d document(s)", len(all_chunks), len(documents))
 
-    # Store in vector database
+    # Store in vector database (clear only after chunks are in hand — see above)
+    if reset:
+        clear_store()
     count = add_documents(all_chunks)
     logger.info("Indexed %d chunks in vector store", count)
 
@@ -108,17 +150,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  Index the handbook (page-aware, cited):
+    python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook
+
+  Re-index from scratch (clear the store first):
+    python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook --reset
+
   Index legislation:
     python -m src.pipeline index ./data/legislation/ --type legislation
 
-  Index a specific PDF:
-    python -m src.pipeline index ./data/case_law/judgment.pdf --type case_law
-
   Index from URL:
-    python -m src.pipeline index https://www.irishstatutebook.ie/eli/1965/act/27/enacted/en/html
+    python -m src.pipeline index https://www.irishstatutebook.ie/eli/1965/act/27/enacted/en/html --type legislation
 
   Query the pipeline:
-    python -m src.pipeline query "What are the succession rights of a spouse under Irish law?"
+    python -m src.pipeline query "What are the requirements for first registration of title?"
         """,
     )
 
@@ -130,9 +175,14 @@ Examples:
     index_parser.add_argument(
         "--type",
         dest="document_type",
-        default="legislation",
-        choices=["legislation", "case_law", "contracts"],
-        help="Type of document (default: legislation)",
+        default="handbook",
+        choices=["handbook", "legislation", "case_law", "contracts"],
+        help="Type of document (default: handbook)",
+    )
+    index_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Clear the vector store before indexing (avoids the positional-ID dedup trap)",
     )
 
     # Query subcommand
@@ -148,7 +198,7 @@ Examples:
         "--type",
         dest="document_type",
         default=None,
-        choices=["legislation", "case_law", "contracts"],
+        choices=["handbook", "legislation", "case_law", "contracts"],
         help="Filter by document type",
     )
 
@@ -159,7 +209,7 @@ Examples:
         sys.exit(1)
 
     if args.command == "index":
-        index_documents(args.source_path, args.document_type)
+        index_documents(args.source_path, args.document_type, reset=args.reset)
     elif args.command == "query":
         query(args.question, args.top_k, args.document_type)
 

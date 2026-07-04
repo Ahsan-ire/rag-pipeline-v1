@@ -10,6 +10,7 @@ from src.ingest import (
     _match_header,
     extract_pdf,
     load_directory,
+    load_handbook_pdf,
     load_html_from_url,
     load_html_file,
     load_pdf,
@@ -384,3 +385,73 @@ class TestLoadPdfCleaning:
         assert docs[0].metadata["source"] == "/test/handbook.pdf"
         assert docs[0].metadata["title"] == "handbook.pdf"
         assert docs[0].metadata["document_type"] == "handbook"
+
+
+class TestInferenceBounds:
+    """Printed-page inference window for headerless body pages (D18)."""
+
+    def test_chapter_opener_before_first_header_gets_printed_page(self):
+        # Chapter 1's opener is headerless and sits one page BEFORE the first
+        # running header. The CHAPTER-marker lower bound is what rescues it from
+        # being mis-classified as front matter (the D18 bug).
+        pages = [
+            "Table of Contents\nintroductory front matter.",   # raw 1, front
+            "CHAPTER 1\nGENERAL PRINCIPLES\n1.1 Opening paragraph.",  # raw 2, opener
+            "GENERAL PRINCIPLES 2\n1.2 Second paragraph.",     # raw 3, printed 2 (offset 1)
+            "3 GENERAL PRINCIPLES\n1.3 Third paragraph.",      # raw 4, printed 3 (offset 1)
+        ]
+        _, page_map = _extract(pages)
+        by_raw = {span.page_number: span.printed_page for span in page_map}
+        assert by_raw[2] == 1   # opener inferred as printed page 1
+        assert by_raw[1] is None  # true front matter stays None
+
+    def test_headerless_page_beyond_last_header_window_is_none(self):
+        # Inference covers at most one page past the last validated header
+        # (last_body_raw + 1); further headerless pages get None.
+        pages = [
+            "SOMETITLE 1\n1.1 body one.",             # raw 1, printed 1 (offset 0)
+            "2 SOMETITLE\n1.2 body two.",             # raw 2, printed 2 (offset 0)
+            "1.3 headerless, just inside window.",     # raw 3, within last+1 -> printed 3
+            "1.4 headerless, beyond the window.",      # raw 4, beyond -> None
+        ]
+        _, page_map = _extract(pages)
+        by_raw = {span.page_number: span.printed_page for span in page_map}
+        assert by_raw[3] == 3
+        assert by_raw[4] is None
+
+    def test_inferred_printed_page_never_below_one(self):
+        # If the modal offset would make the opener printed page 0 or negative,
+        # the >= 1 guard leaves it None rather than fabricating page 0.
+        pages = [
+            "Front.\nmatter here.",                    # raw 1, front
+            "CHAPTER 1\nTITLE\n1.1 opener.",           # raw 2, opener (2 - offset 2 = 0)
+            "TITLE 1\n1.2 body.",                      # raw 3, printed 1 (offset 2)
+            "2 TITLE\n1.3 body.",                      # raw 4, printed 2 (offset 2)
+        ]
+        _, page_map = _extract(pages)
+        by_raw = {span.page_number: span.printed_page for span in page_map}
+        assert by_raw[2] is None  # 2 - 2 = 0 is rejected by the printed >= 1 guard
+
+
+class TestLoadHandbookPdf:
+    """load_handbook_pdf returns (clean_text, page_map, metadata) (D22)."""
+
+    def test_returns_text_map_and_metadata(self):
+        pages = [
+            "REGISTRATION OF TITLE 1\n3.1 First body paragraph.",
+            "CHAPTER 4\nCONVEYANCING\n4.1 Chapter four opens.",
+        ]
+        with patch("src.ingest.pdfplumber.open", return_value=_mock_pdf(pages)):
+            clean_text, page_map, metadata = load_handbook_pdf("/data/Conveyancing_Handbook.pdf")
+        assert "3.1 First body paragraph." in clean_text
+        assert len(page_map) == 2
+        assert metadata["document_type"] == "handbook"
+        assert metadata["title"] == "Conveyancing_Handbook.pdf"
+        assert metadata["source"] == "/data/Conveyancing_Handbook.pdf"
+
+    def test_missing_file_returns_empty_triple(self):
+        with patch("src.ingest.pdfplumber.open", side_effect=FileNotFoundError):
+            clean_text, page_map, metadata = load_handbook_pdf("/nonexistent.pdf")
+        assert clean_text == ""
+        assert page_map == []
+        assert metadata == {}

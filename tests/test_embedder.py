@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.documents import Document
 
-from src.embedder import add_documents, clear_store, get_vector_store
+from src.embedder import (
+    _sanitize_metadata,
+    add_documents,
+    clear_store,
+    get_vector_store,
+)
 
 
 class FakeEmbeddings:
@@ -104,6 +109,43 @@ class TestGetVectorStore:
             persist_directory=str(tmp_path / "chroma"),
         )
         assert store is not None
+
+
+class TestSanitizeMetadata:
+    """None-valued metadata keys are dropped before Chroma sees them (D22)."""
+
+    def test_drops_none_keys_and_counts(self):
+        docs = [
+            Document(page_content="x", metadata={"section_number": "1.1", "page_start": None, "page_end": None}),
+            Document(page_content="y", metadata={"section_number": "1.2", "page_start": 87, "page_end": 88}),
+        ]
+        dropped, affected = _sanitize_metadata(docs)
+        assert dropped == 2 and affected == 1
+        assert docs[0].metadata == {"section_number": "1.1"}    # None keys gone
+        assert docs[1].metadata == {"section_number": "1.2", "page_start": 87, "page_end": 88}
+
+    def test_add_documents_accepts_none_page_metadata(self, tmp_path):
+        # End-to-end: a chunk with page_start=None must index cleanly (Chroma
+        # would otherwise reject the None value).
+        store = get_vector_store(
+            embedding_function=FakeEmbeddings(),
+            persist_directory=str(tmp_path / "chroma"),
+        )
+        docs = [
+            Document(
+                page_content="[Conveyancing Handbook, Ch.1 General] intro text",
+                metadata={
+                    "source": "h.pdf",
+                    "chapter_number": 1,
+                    "section_number": "",
+                    "page_start": None,
+                    "page_end": None,
+                },
+            )
+        ]
+        count = add_documents(docs, vector_store=store)
+        assert count == 1
+        assert "page_start" not in docs[0].metadata
 
 
 class TestClearStore:
