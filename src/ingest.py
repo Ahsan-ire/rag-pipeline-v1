@@ -87,20 +87,30 @@ def _match_header(line: str) -> Optional[int]:
     return None
 
 
-def _compute_header_offset(
+def _compute_inference_bounds(
     raw_pages: List[Tuple[int, str]]
-) -> Tuple[Optional[int], Optional[int]]:
-    """Self-calibrate the raw-minus-printed page offset from header candidates.
+) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Self-calibrate the offset and the raw-page window over which to infer.
 
     Every page whose first non-empty line parses as a header votes with
     ``raw_index - printed_number``; the mode is the corpus's constant offset
     (D10 reports +44 for the handbook, but it is derived, never hardcoded, so
-    the "bring your own manual" property survives). Returns
-    ``(modal_offset, first_body_raw)`` where ``first_body_raw`` is the raw index
-    of the earliest validated header — pages before it are front matter.
-    Returns ``(None, None)`` when no headers are found (e.g. legislation PDFs).
+    the "bring your own manual" property survives).
+
+    Returns ``(modal_offset, infer_lower_raw, infer_upper_raw)`` — the inclusive
+    raw-page window in which a headerless page's printed number is inferred as
+    ``raw - modal_offset`` (D18). The lower bound is the earlier of the first
+    validated header and the first ``^CHAPTER N$`` marker page: chapter openers
+    are headerless and sit one page *before* the first running header, so
+    without the marker term Chapter 1's opener (printed page 1) would be
+    mis-classified as front matter. The upper bound is the last validated header
+    plus one, so at most one trailing headerless page is covered — insurance for
+    corpora whose body does not run headers to the final text page (a no-op on
+    this corpus). Returns ``(None, None, None)`` when no headers are found
+    (e.g. legislation PDFs), disabling inference entirely.
     """
     votes: dict = {}
+    validated_raws: List[int] = []
     for raw_no, text in raw_pages:
         first = _first_nonempty_line(text)
         if first is None:
@@ -109,19 +119,33 @@ def _compute_header_offset(
         if printed is not None:
             votes[raw_no - printed] = votes.get(raw_no - printed, 0) + 1
     if not votes:
-        return None, None
+        return None, None, None
     modal_offset = max(votes, key=votes.get)
 
-    first_body_raw = None
     for raw_no, text in raw_pages:
         first = _first_nonempty_line(text)
         if first is None:
             continue
         printed = _match_header(first)
-        if printed is not None and abs((raw_no - printed) - modal_offset) <= _HEADER_OFFSET_TOLERANCE:
-            first_body_raw = raw_no
+        if (
+            printed is not None
+            and abs((raw_no - printed) - modal_offset) <= _HEADER_OFFSET_TOLERANCE
+        ):
+            validated_raws.append(raw_no)
+
+    first_chapter_raw: Optional[int] = None
+    for raw_no, text in raw_pages:
+        first = _first_nonempty_line(text)
+        if first is not None and CHAPTER_MARKER.match(first):
+            first_chapter_raw = raw_no
             break
-    return modal_offset, first_body_raw
+
+    first_body_raw = validated_raws[0] if validated_raws else None
+    last_body_raw = validated_raws[-1] if validated_raws else None
+    lower_candidates = [r for r in (first_body_raw, first_chapter_raw) if r is not None]
+    infer_lower_raw = min(lower_candidates) if lower_candidates else None
+    infer_upper_raw = last_body_raw + 1 if last_body_raw is not None else None
+    return modal_offset, infer_lower_raw, infer_upper_raw
 
 
 def _build_attestation(raw_pages: List[Tuple[int, str]]) -> Tuple[set, set]:
@@ -182,7 +206,8 @@ def _clean_page(
     text: str,
     raw_no: int,
     modal_offset: Optional[int],
-    first_body_raw: Optional[int],
+    infer_lower_raw: Optional[int],
+    infer_upper_raw: Optional[int],
     hyphenated: set,
     plain: set,
 ) -> Tuple[str, Optional[int]]:
@@ -190,7 +215,8 @@ def _clean_page(
 
     Returns ``(cleaned_text, printed_page)``. ``printed_page`` comes from a
     validated header, or is inferred as ``raw_no - modal_offset`` for headerless
-    body pages, or is ``None`` for front matter / headerless corpora.
+    body pages within ``[infer_lower_raw, infer_upper_raw]`` (D18), or is
+    ``None`` for front matter / headerless corpora.
     """
     lines = [line.rstrip() for line in text.split("\n")]
     printed: Optional[int] = None
@@ -223,10 +249,13 @@ def _clean_page(
     if (
         printed is None
         and modal_offset is not None
-        and first_body_raw is not None
-        and raw_no >= first_body_raw
+        and infer_lower_raw is not None
+        and infer_upper_raw is not None
+        and infer_lower_raw <= raw_no <= infer_upper_raw
     ):
-        printed = raw_no - modal_offset
+        candidate = raw_no - modal_offset
+        if candidate >= 1:  # a printed page number is never zero or negative
+            printed = candidate
 
     return page, printed
 
@@ -303,13 +332,19 @@ def extract_pdf(file_path: str) -> Tuple[str, List[PageSpan]]:
     if not raw_pages:
         return "", []
 
-    modal_offset, first_body_raw = _compute_header_offset(raw_pages)
+    modal_offset, infer_lower_raw, infer_upper_raw = _compute_inference_bounds(raw_pages)
     hyphenated, plain = _build_attestation(raw_pages)
 
     cleaned: List[Tuple[int, Optional[int], str]] = []
     for raw_no, text in raw_pages:
         page, printed = _clean_page(
-            text, raw_no, modal_offset, first_body_raw, hyphenated, plain
+            text,
+            raw_no,
+            modal_offset,
+            infer_lower_raw,
+            infer_upper_raw,
+            hyphenated,
+            plain,
         )
         if page.strip():  # a page that is only furniture is dropped
             cleaned.append((raw_no, printed, page))
@@ -372,6 +407,39 @@ def load_pdf(file_path: str, document_type: str = "legislation") -> List[Documen
             },
         )
     ]
+
+
+def load_handbook_pdf(file_path: str) -> Tuple[str, List[PageSpan], dict]:
+    """Load a handbook PDF for the page-aware chunker (Phase 2).
+
+    Unlike :func:`load_pdf` — which collapses the corpus into a single
+    ``Document`` and drops the page map at that seam — this returns the cleaned
+    text, the page map, and a metadata block, so
+    :func:`src.chunker.chunk_handbook` can assign per-chunk ``page_start`` /
+    ``page_end`` citations from the map. Error semantics mirror ``load_pdf``: a
+    missing or unreadable file is logged and yields an empty result
+    ``("", [], {})`` rather than raising, so the pipeline degrades gracefully.
+    """
+    try:
+        clean_text, page_map = extract_pdf(file_path)
+    except FileNotFoundError:
+        logger.error("PDF file not found: %s", file_path)
+        return "", [], {}
+    except Exception as e:
+        logger.error("Error loading PDF %s: %s", file_path, e)
+        return "", [], {}
+
+    if not clean_text.strip():
+        logger.warning("No text extracted from PDF: %s", file_path)
+        return "", [], {}
+
+    metadata = {
+        "source": file_path,
+        "title": os.path.basename(file_path),
+        "document_type": "handbook",
+        "date": "",
+    }
+    return clean_text, page_map, metadata
 
 
 def load_html_from_url(

@@ -44,6 +44,26 @@ def get_vector_store(
     )
 
 
+def _sanitize_metadata(documents: List[Document]) -> tuple:
+    """Drop None-valued metadata keys in place; return ``(dropped, affected)``.
+
+    Chroma rejects ``None`` metadata values, but handbook chunks legitimately
+    carry ``page_start`` / ``page_end`` of None when a printed page could not be
+    recovered (front-matter residue, headerless pages outside the inference
+    window). Rather than warn per chunk, the caller reports one aggregated line.
+    """
+    dropped = 0
+    affected = 0
+    for doc in documents:
+        clean = {k: v for k, v in doc.metadata.items() if v is not None}
+        removed = len(doc.metadata) - len(clean)
+        if removed:
+            dropped += removed
+            affected += 1
+            doc.metadata = clean
+    return dropped, affected
+
+
 def add_documents(
     documents: List[Document],
     vector_store: Optional[Chroma] = None,
@@ -58,6 +78,14 @@ def add_documents(
     """
     if not documents:
         return 0
+
+    dropped, affected = _sanitize_metadata(documents)
+    if dropped:
+        logger.warning(
+            "Dropped %d None-valued metadata field(s) across %d chunk(s)",
+            dropped,
+            affected,
+        )
 
     if vector_store is None:
         vector_store = get_vector_store(persist_directory=persist_directory)

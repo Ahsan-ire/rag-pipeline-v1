@@ -76,6 +76,74 @@ class TestIndexDocuments:
 
         assert count == 0
 
+    def test_indexes_handbook_pdf_via_page_aware_route(self):
+        """A handbook PDF routes through load_handbook_pdf + chunk_handbook."""
+        handbook_triple = (
+            "CHAPTER 1\nGENERAL\n1.1 body text.",
+            [],
+            {
+                "source": "/data/Conveyancing_Handbook.pdf",
+                "title": "Conveyancing_Handbook.pdf",
+                "document_type": "handbook",
+                "date": "",
+            },
+        )
+        mock_chunks = [
+            Document(page_content="[Conveyancing Handbook, Ch.1 General, para 1.1] body",
+                     metadata={"section_number": "1.1"})
+        ]
+        with patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple) as m_load, \
+             patch("src.pipeline.chunk_handbook", return_value=mock_chunks) as m_chunk, \
+             patch("src.pipeline.load_pdf") as m_load_pdf, \
+             patch("src.pipeline.add_documents", return_value=1):
+            count = index_documents("/data/Conveyancing_Handbook.pdf", "handbook")
+
+        assert count == 1
+        m_load.assert_called_once()
+        m_chunk.assert_called_once()
+        m_load_pdf.assert_not_called()  # the legislation loader is bypassed
+
+    def test_handbook_empty_extraction_returns_zero(self):
+        """An empty extraction (missing/blank PDF) returns 0 without chunking."""
+        with patch("src.pipeline.load_handbook_pdf", return_value=("", [], {})), \
+             patch("src.pipeline.chunk_handbook") as m_chunk, \
+             patch("src.pipeline.add_documents", return_value=0):
+            count = index_documents("/data/missing.pdf", "handbook")
+
+        assert count == 0
+        m_chunk.assert_not_called()
+
+    def test_reset_clears_store_before_indexing(self):
+        """--reset clears the vector store first (positional-ID dedup guard)."""
+        handbook_triple = ("CHAPTER 1\n1.1 x", [], {"source": "h.pdf"})
+        with patch("src.pipeline.clear_store") as m_clear, \
+             patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple), \
+             patch("src.pipeline.chunk_handbook", return_value=[Document(page_content="x", metadata={})]), \
+             patch("src.pipeline.add_documents", return_value=1):
+            index_documents("/data/handbook.pdf", "handbook", reset=True)
+
+        m_clear.assert_called_once()
+
+    def test_reset_does_not_clear_when_chunking_raises(self):
+        """A mis-routed handbook PDF raises BEFORE clear_store, sparing the index."""
+        triple = ("text with no chapter markers", [], {"source": "x.pdf"})
+        with patch("src.pipeline.clear_store") as m_clear, \
+             patch("src.pipeline.load_handbook_pdf", return_value=triple), \
+             patch("src.pipeline.chunk_handbook", side_effect=ValueError("no CHAPTER markers")), \
+             patch("src.pipeline.add_documents") as m_add:
+            with pytest.raises(ValueError):
+                index_documents("/data/notahandbook.pdf", "handbook", reset=True)
+
+        m_clear.assert_not_called()   # store survives
+        m_add.assert_not_called()
+
+    def test_handbook_type_rejects_non_pdf_source(self):
+        """--type handbook requires a single PDF; a dir/URL would mis-tag chunks."""
+        with pytest.raises(ValueError, match="PDF"):
+            index_documents("/data/legislation/", "handbook")
+        with pytest.raises(ValueError, match="PDF"):
+            index_documents("https://example.com/act", "handbook")
+
 
 class TestQuery:
     def test_returns_answer(self):

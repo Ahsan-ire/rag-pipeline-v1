@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 2 — handbook chunker**
+**Current phase: 3 — retrieval**
 
 ---
 
@@ -328,5 +328,163 @@ front matter** from chunking (its garbled tables would otherwise become
 low-value, section-number-less chunks). If the appendix forms' content is ever
 needed, those specific page ranges require a separate OCR pass — out of scope
 for the procedure-QA v1.
+
+## D18 — Opener/bounds fix: printed-page inference window (4 Jul 2026)
+**Decision:** the headerless-page printed-number inference (D13) now fires only for
+raw pages inside `[infer_lower, infer_upper]` and only when the inferred number is
+`≥ 1`, where `infer_lower = min(first validated-header raw, first raw page whose
+first non-empty line is ^CHAPTER N$)` and `infer_upper = last validated-header raw
++ 1`. This replaces the single lower gate `raw ≥ first_body_raw`
+(`_compute_header_offset` → `_compute_inference_bounds`).
+**Why:** every chapter opener is headerless and sits one raw page *before* the
+chapter's first running header, so the old gate mis-classified Chapter 1's opener
+(printed page 1) as front matter — a null page on the first chunk of the book.
+Anchoring the lower bound to the `^CHAPTER N$` marker rescues it. The `+1` upper
+bound covers at most one trailing headerless page (insurance for corpora whose body
+does not run headers to the final text page — a no-op here). The `≥ 1` guard refuses
+to fabricate page 0 or a negative number when the offset would underflow. Live
+result on the real corpus: **0 of 1,470 chunks carry a null `page_start`**; all 16
+chapter openers cite their true printed page; the modal offset is still self-calibrated
+(never hardcoded), preserving "bring your own manual."
+**Rejected:** hardcoding the front-matter page count (corpus-specific); inferring for
+every page past the first marker with no upper bound (would number trailing back
+matter); dropping the `≥ 1` guard (fabricates page 0).
+**Consequence:** on this corpus validated headers reach the last text page, so
+`infer_upper` is never exercised, but the window makes the rule safe for other
+manuals. 38/38 ingest tests hold, incl. three new bounds tests.
+
+## D19 — Handbook segment grammar (4 Jul 2026)
+**Decision:** `chunk_handbook(clean_text, page_map, metadata, chunk_size=600,
+chunk_overlap=120)` segments the cleaned text at structural boundaries tracked as
+**character offsets into `clean_text`** (never string splits), so `page_range` stays
+exact. Chapters: `^CHAPTER (\d{1,2})$` (MULTILINE, case-sensitive). `chapter_title`
+= the consecutive **ALL-CAPS** non-empty lines after the marker, stopping at the
+first blank line, heading/appendix, **mixed-case line**, or a 3-line cap. Headings:
+`^(\d{1,2}(?:\.\d{1,3}){1,3})[^\S\n]+(\S.*)$` (the number and title must share one
+physical line) with four guards — (i) leading integer == current chapter, (ii) title
+opens with capital/digit/quote or `e[A-Z]`, (iii) no leading-zero number components,
+(iv) no `\.{3,}` dot-leaders. Appendices: `^APPENDIX (\d{1,2}\.\d{1,3})\b`. Body ends
+at the first `^INDEX$` after the last marker; front matter (before the first marker)
+is excluded. Zero markers → loud `ValueError` naming `--type`.
+**Why:** these are the real markers D10 measured. The guards encode the exact traps
+found probing the corpus: cross-chapter references (i), wrapped-prose false starts
+(ii, with `e[A-Z]` saving the one real casualty `14.18 eRegistration`), quoted Law
+Society numbering `3.01/3.02` (iii), and dot-leaders (iv). The ALL-CAPS title rule
+(added after an adversarial review) stops the mixed-case epigraphs that open chapters
+3 and 5 from being folded into the chapter title and polluting every chunk's citation
+prefix (they stay in the chapter body instead). The horizontal-whitespace heading
+separator keeps the number and title on one line, matching the single-line
+`_is_heading_line` matcher and refusing to scavenge a following line onto a bare
+cross-reference number. Live result: 16/16 markers, 0 sequence violations, 1,293
+headings accepted, guard rejects (i)26 (ii)5 (iii)2 (iv)0 — matching the probe; 104,550
+front-matter bytes and 117,835 index-tail bytes excluded (without the INDEX cut,
+section 16.19 would have absorbed the entire 118 KB index into ~90 poisoned chunks).
+**Rejected:** IGNORECASE / mixed-case `Chapter` (the D3 case lesson); depth-1 bare
+numbers as boundaries (D10: 2,035 noise hits); "title = single line after marker"
+(breaks the two 2-line titles); `\s+` heading separator (spans newlines); no INDEX
+boundary (poisons citations); silent fallthrough on a mis-routed `--type`.
+**Consequence:** the legislation strategy (`chunk_legal_document`) is untouched, routed
+by `document_type`. **Known limitation, deferred:** `_find_body_end` takes the *first*
+`^INDEX$` after the last chapter marker; a stray standalone `^INDEX$` inside the final
+chapter's body, or a false `^CHAPTER N$` line inside the garbled two-column index,
+would mis-bound the body. Neither occurs on this corpus (16 clean markers, a single
+INDEX line), so it is recorded for a future "bring your own manual" hardening pass
+rather than fixed in this phase.
+
+## D20 — Runt & oversize policy (4 Jul 2026)
+**Decision:** three reconciliation passes over the segments. (1) Title-only `APPENDIX`
+stubs (<50 chars) merge **backward** into the preceding same-chapter segment (their
+form facsimiles are not in the text layer — D17). (2) Runts (<600 chars) merge
+**forward**: a furniture chapter intro absorbs its first section and *adopts that
+section's identity* (the chapter title already lives in the prefix); any other runt
+merges forward only into a *descendant* (`next.startswith(id + ".")`), keeping its own
+(parent) identity; a runt followed by a sibling stays standalone; merging never crosses
+a chapter seam. (3) A runt that is the *last* segment of its chapter merges **backward**
+to a fixed point. Oversize segments (>4,000 chars) are re-split to `chunk_size` tokens
+(2,400/480 chars) with the fallback splitter; each sub-chunk's page range is recovered
+by locating it in `clean_text` (verbatim substrings) with a stride-advancing cursor,
+inheriting the parent's range on a find-miss; the prefix is prepended **after** the split.
+**Why:** aligns chunk boundaries with the author's meaning boundaries (D4) while
+refusing to sacrifice a correct citation to a size floor — sibling runts keep their own
+paragraph number rather than being glued to a neighbour. Descendant-merge keeps a short
+parent heading (e.g. `3.2`) with the content that actually lives under it (`3.2.1`). The
+stride cursor stops `str.find` from re-locking onto an earlier occurrence of repeated
+phrasing. Live result: 1,470 chunks, body chars min 40 / median 1,694 / max 3,981 (0
+remain >4,000), 207 runts deliberately kept standalone, 61 appendix-cited chunks.
+**Rejected:** merging sibling runts (loses citations); forward-merging across a chapter
+seam (wrong chapter); one split size for both the 4,000 trigger and the 2,400 target
+(would needlessly re-split 2,400–4,000-char chunks, violating D4's band); a `+1` cursor
+advance (re-locks onto duplicates in repetitive text).
+**Consequence:** ~14% of chunks are sub-600 runts by design; chunk size is a Phase 5
+tunable.
+
+## D21 — Chunk metadata & contextual prefix (4 Jul 2026)
+**Decision:** each chunk carries `chapter_number:int, chapter_title, section_number,
+heading, page_start:int, page_end:int` plus `source, title, document_type, date` — all
+scalar. The prefix prepended to `page_content`:
+`[Conveyancing Handbook, Ch.3 Ethics, para 3.2.1, p.87] ` — document title = filename
+stem (underscores→spaces); chapter title `string.capwords`-cased from ALL-CAPS (keeps
+`Vendor's`); `para` omitted for a chapter intro; an `APPENDIX 6.1` section rendered
+verbatim (no `para`); `pp.X–Y` when the chunk spans pages; the page component omitted
+when the printed page is None.
+**Why:** the printed page (via `page_range`, D13) is what a practitioner cites, and the
+prefix front-loads chapter/para/page into the embedded text so the citation survives
+MiniLM truncation (D23) and feeds BM25 (Phase 3). Live result: 95.8% of chunks carry a
+dotted depth-≥2 section number; the biased 10-chunk spot-check (merged-runt, oversize
+sub-chunk, chapter-intro, random) located a mid-chunk sentence on its cited printed
+page(s) **10/10**, mapping printed→raw through the freshly extracted page map (never
+`+44` arithmetic).
+**Rejected:** raw page numbers in the citation (not how the book is cited); `str.title()`
+(corrupts `Vendor'S`); prepending the prefix before oversize splitting (sub-chunks would
+inherit the wrong page).
+**Consequence:** the final display citation string is a Phase 4 decision; None-page keys
+are dropped before Chroma (D22).
+
+## D22 — Wiring: loader, routing, --reset, metadata sanitizer (4 Jul 2026)
+**Decision:** new `load_handbook_pdf(path) -> (clean_text, page_map, metadata)` mirrors
+`load_pdf`'s metadata block and graceful error semantics (missing file → logged,
+`("", [], {})`, no traceback). `index_documents` routes `document_type == "handbook"`
+to `load_handbook_pdf` + `chunk_handbook`, and **requires the source to be a `.pdf`**
+(a directory/URL under this type raises, so legislation is never silently tagged
+`handbook`); every other route is untouched. `"handbook"` is added to both `--type`
+choice lists; the index default flips to `"handbook"`; epilog examples updated. New
+`index --reset` flag calls `clear_store()` — but **only after** the chunks are in hand,
+so a mis-routed `--reset` that trips `chunk_handbook`'s `ValueError` cannot destroy the
+existing index and then crash. `add_documents` gains a metadata sanitizer that drops
+None-valued keys with one aggregated warning.
+**Why:** the handbook is the corpus, so it is the default; the page-aware route is the
+only one that consumes the map. `--reset` neutralises the positional-ID dedup trap
+(embedder.py) during this session's iterate loop — re-indexing after a chunker change
+would otherwise silently no-op; content-hash IDs are Phase 3. Validating and chunking
+before clearing, and requiring a PDF for `--type handbook`, close two footguns an
+adversarial review surfaced (destructive `--reset`, silent type mis-tagging). The
+sanitizer exists because Chroma rejects None values, which handbook chunks legitimately
+carry for `page_start`/`page_end` when a printed page is unknown; one aggregated warning
+avoids per-chunk noise. Live result: `index … --type handbook --reset` indexed 1,470
+chunks; 0 None-pages on this corpus so the sanitizer was a no-op here, but it is proven
+by unit test.
+**Rejected:** letting the page map enter `Document.metadata` (Chroma rejects non-scalars
+— D16); a per-chunk None warning (noise); clearing the store before validation
+(destructive); content-hash IDs now (Phase 3 scope).
+**Consequence:** `chroma_db/` (~31 MB) is CWD-relative and gitignored; re-index with
+`--reset` until Phase 3 lands content-hash IDs.
+
+## D23 — MiniLM truncation note + honest acceptance metrics (4 Jul 2026)
+**Decision:** record that `all-MiniLM-L6-v2` truncates at 256 wordpiece tokens
+(~1,000 chars), so a 2,400-char chunk embeds only its head — the citation prefix is
+front-loaded so it always survives, and BM25 (Phase 3) sees the full text. Replace the
+vacuous "≥90% non-empty `section_number`" gate (satisfied by construction) with measured
+acceptance evidence: 2,510,174 clean chars / 739 pages; chapter markers 16/16, 0 sequence
+violations; guard rejects (i)26 (ii)5 (iii)2 (iv)0; trailing-dot heading-shaped lines
+censused = 7; front-matter 104,550 B and index-tail 117,835 B excluded; 1,470 chunks,
+95.8% dotted depth-≥2 section number, 0 null pages, 0 oversize remaining, longest
+`chapter_title` 58 chars; biased spot-check **10/10** sentences located on their cited
+printed pages.
+**Why:** the old gate proved nothing (empty `section_number` was impossible by
+construction); these numbers are falsifiable and match the read-only corpus probe. The
+truncation note pre-registers a Phase 5 tuning suspect.
+**Rejected:** the by-construction gate; hiding the truncation limit.
+**Consequence:** chunk-size tuning in Phase 5 will revisit the 2,400-char oversize target
+against the 256-token embedding window.
 
 <!-- Append new entries below. Format: ## Dn — Title (date) / Decision / Why / Rejected / Consequence -->
