@@ -1,18 +1,23 @@
 """Embedding generation and ChromaDB vector storage module."""
 
+import hashlib
 import logging
 import shutil
+from pathlib import Path
 from typing import List, Optional
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from src.bm25_index import build_bm25_index, save_bm25_index
+
 logger = logging.getLogger(__name__)
 
 CHROMA_PERSIST_DIR = "./chroma_db"
 COLLECTION_NAME = "legal_documents"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL_MANIFEST = "embedding_model.txt"
 
 
 def get_embedding_function() -> HuggingFaceEmbeddings:
@@ -41,7 +46,51 @@ def get_vector_store(
         collection_name=COLLECTION_NAME,
         embedding_function=embedding_function,
         persist_directory=persist_directory,
+        # Best-effort, human-discoverable record (D5). Not load-bearing: Chroma
+        # only honours this on first creation, and langchain-chroma exposes no
+        # public getter for it back — see EMBEDDING_MODEL_MANIFEST below for the
+        # authoritative, asserted record.
+        collection_metadata={"embedding_model": EMBEDDING_MODEL},
     )
+
+
+def compute_chunk_id(text: str) -> str:
+    """Content-hash chunk ID (D7): identity means identity across re-chunking,
+    unlike positional IDs which collide with different content the moment
+    chunking changes."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _write_embedding_model_manifest(persist_directory: str) -> None:
+    """Record the configured embedding model beside the vector store (D5)."""
+    path = Path(persist_directory) / EMBEDDING_MODEL_MANIFEST
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(EMBEDDING_MODEL)
+
+
+def assert_embedding_model(
+    persist_directory: str = CHROMA_PERSIST_DIR, expected: str = EMBEDDING_MODEL
+) -> None:
+    """Raise if the persisted index was built with a different embedding model
+    than the one currently configured (D5) — corpus and queries must share one
+    coordinate system. Silently no-ops if the index predates this manifest."""
+    path = Path(persist_directory) / EMBEDDING_MODEL_MANIFEST
+    if not path.exists():
+        logger.warning(
+            "No embedding-model manifest at %s; skipping model-match check "
+            "(index predates this check, or nothing has been indexed yet).",
+            persist_directory,
+        )
+        return
+
+    recorded = path.read_text().strip()
+    if recorded != expected:
+        raise ValueError(
+            f"Embedding model mismatch: the index at {persist_directory!r} was "
+            f"built with {recorded!r}, but the pipeline is currently configured "
+            f"for {expected!r}. Re-index with --reset to rebuild under the "
+            "current model."
+        )
 
 
 def _sanitize_metadata(documents: List[Document]) -> tuple:
@@ -71,7 +120,17 @@ def add_documents(
 ) -> int:
     """Add documents to the vector store with deduplication.
 
-    Uses deterministic IDs based on source and chunk index to prevent duplicates.
+    Uses content-hash IDs (D7) so identity means identity: re-chunking the
+    same text always resolves to the same ID, regardless of position.
+
+    On any new documents, also rebuilds the BM25 lexical index (D6, D24) from
+    the store's full authoritative contents and (re)records the embedding
+    model manifest (D5) beside it.
+
+    Note: if you pass an explicit ``vector_store``, also pass the matching
+    ``persist_directory`` — that's where the BM25/manifest sidecars are
+    written, independent of the vector_store object itself (langchain-chroma
+    exposes no public way to recover a store's own directory).
 
     Returns:
         Number of documents added.
@@ -90,23 +149,28 @@ def add_documents(
     if vector_store is None:
         vector_store = get_vector_store(persist_directory=persist_directory)
 
-    # Generate deterministic IDs
-    ids = []
-    for i, doc in enumerate(documents):
-        source = doc.metadata.get("source", "unknown")
-        doc_id = f"{source}::chunk_{i}"
-        ids.append(doc_id)
+    ids = [compute_chunk_id(doc.page_content) for doc in documents]
 
-    # Check for existing IDs and filter out duplicates
-    try:
-        existing = vector_store._collection.get(ids=ids)
-        existing_ids = set(existing["ids"]) if existing["ids"] else set()
-    except Exception:
-        existing_ids = set()
+    # Dedupe WITHIN this batch first: two chunks with identical text hash to
+    # the same ID (D7 — identity means identity), but Chroma's get()/
+    # add_documents() reject duplicate IDs in a single call outright rather
+    # than deduping, so an un-deduped batch would raise DuplicateIDError.
+    seen_in_batch = set()
+    batch_docs = []
+    batch_ids = []
+    for doc, doc_id in zip(documents, ids):
+        if doc_id in seen_in_batch:
+            continue
+        seen_in_batch.add(doc_id)
+        batch_docs.append(doc)
+        batch_ids.append(doc_id)
+
+    existing = vector_store.get(ids=batch_ids)
+    existing_ids = set(existing["ids"]) if existing["ids"] else set()
 
     new_docs = []
     new_ids = []
-    for doc, doc_id in zip(documents, ids):
+    for doc, doc_id in zip(batch_docs, batch_ids):
         if doc_id not in existing_ids:
             new_docs.append(doc)
             new_ids.append(doc_id)
@@ -114,10 +178,31 @@ def add_documents(
     if new_docs:
         vector_store.add_documents(documents=new_docs, ids=new_ids)
         logger.info("Added %d new documents to vector store", len(new_docs))
+        _write_embedding_model_manifest(persist_directory)
+        _rebuild_bm25_index(vector_store, persist_directory)
     else:
         logger.info("No new documents to add (all duplicates)")
 
     return len(new_docs)
+
+
+def _rebuild_bm25_index(vector_store: Chroma, persist_directory: str) -> None:
+    """Rebuild the BM25 index from the store's full current contents.
+
+    rank_bm25 has no incremental-update API, so a from-scratch rebuild against
+    the vector store's own authoritative contents (rather than tracking deltas
+    ourselves) is what keeps the two indexes from drifting apart.
+    """
+    stored = vector_store.get(include=["documents", "metadatas"])
+    ids = stored["ids"]
+    texts = stored["documents"]
+    metadatas = stored["metadatas"] or [{} for _ in ids]
+    documents = [
+        Document(page_content=text, metadata=metadata or {})
+        for text, metadata in zip(texts, metadatas)
+    ]
+    index = build_bm25_index(ids, documents)
+    save_bm25_index(index, persist_directory)
 
 
 def clear_store(persist_directory: str = CHROMA_PERSIST_DIR) -> None:
