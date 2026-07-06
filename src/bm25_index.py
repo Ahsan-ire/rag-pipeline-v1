@@ -10,6 +10,7 @@ option at this corpus size (~1,500 chunks).
 """
 
 import logging
+import os
 import pickle
 import re
 from dataclasses import dataclass
@@ -22,11 +23,20 @@ from rank_bm25 import BM25Okapi
 logger = logging.getLogger(__name__)
 
 BM25_FILENAME = "bm25_index.pkl"
-_TOKEN_PATTERN = re.compile(r"\w+")
+# Dotted numeric sequences ("14.8.5", "3.2.1") are kept as single tokens — they
+# are this corpus's citation identity, and splitting them into bare digit
+# groups makes every section sharing those digits an equal lexical match
+# (observed on the real index: query "14.8.5" ranked 14.8.3.5 at #1). The
+# alternation order matters: the dotted branch must win before \w+ eats the
+# first digit group.
+_TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)+|\w+")
 
 
 def _tokenize(text: str) -> List[str]:
-    """Lowercase word tokens. Deliberately simple: exact tokens are the point."""
+    """Lowercase tokens; dotted section/paragraph numbers survive as one token.
+
+    Deliberately simple otherwise: exact tokens are the point.
+    """
     return _TOKEN_PATTERN.findall(text.lower())
 
 
@@ -50,20 +60,42 @@ def build_bm25_index(ids: List[str], documents: List[Document]) -> BM25Index:
 
 
 def save_bm25_index(index: BM25Index, persist_directory: str) -> None:
-    """Pickle the index next to the Chroma store."""
+    """Pickle the index next to the Chroma store.
+
+    Written to a temp file and moved into place with ``os.replace`` so an
+    interrupted write (Ctrl-C, full disk) can never leave a truncated pickle
+    at the real path — the index is either the old complete one or the new
+    complete one.
+    """
     path = Path(persist_directory) / BM25_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "wb") as f:
         pickle.dump(index, f)
+    os.replace(tmp_path, path)
 
 
 def load_bm25_index(persist_directory: str) -> Optional[BM25Index]:
-    """Load the persisted BM25 index, or None if it hasn't been built yet."""
+    """Load the persisted BM25 index, or None if it is missing or unreadable.
+
+    An unreadable pickle (truncated file, dependency version skew across the
+    pickled classes) is treated the same as an absent one: warn and return
+    None, so retrieval degrades to vector-only instead of crashing the query.
+    """
     path = Path(persist_directory) / BM25_FILENAME
     if not path.exists():
         return None
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except Exception as e:
+        logger.warning(
+            "Could not load BM25 index at %s (%s); falling back to "
+            "vector-only retrieval. Re-index with --reset to rebuild it.",
+            path,
+            e,
+        )
+        return None
 
 
 def search_bm25(

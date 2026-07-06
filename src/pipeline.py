@@ -2,7 +2,7 @@
 
 Usage:
     python -m src.pipeline index ./data/legislation/ --type legislation
-    python -m src.pipeline query "What are the succession rights of a spouse?" --top-k 5
+    python -m src.pipeline query "What are the succession rights of a spouse?" --top-k 6
 """
 
 import argparse
@@ -19,7 +19,7 @@ from src.ingest import (
     load_html_from_url,
     load_pdf,
 )
-from src.retriever import retrieve
+from src.retriever import DEFAULT_TOP_K, retrieve
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,7 +107,7 @@ def index_documents(
 
 def query(
     question: str,
-    top_k: int = 5,
+    top_k: int = DEFAULT_TOP_K,
     document_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
@@ -191,8 +191,8 @@ Examples:
     query_parser.add_argument(
         "--top-k",
         type=int,
-        default=5,
-        help="Number of chunks to retrieve (default: 5)",
+        default=DEFAULT_TOP_K,
+        help=f"Number of chunks to retrieve (default: {DEFAULT_TOP_K})",
     )
     query_parser.add_argument(
         "--type",

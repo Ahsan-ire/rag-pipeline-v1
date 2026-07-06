@@ -181,6 +181,21 @@ class TestVectorOnlyFallback:
 
         assert len(results) == 1
 
+    def test_retrieve_survives_a_corrupt_bm25_sidecar(self, seeded_store):
+        """A present-but-unloadable pickle (truncated write, dependency skew)
+        must degrade to vector-only retrieval like a missing one — the query
+        must still be served, not crash with an UnpicklingError."""
+        from pathlib import Path
+
+        store, persist_dir = seeded_store
+        # seeded_store wrote a valid sidecar via add_documents; corrupt it.
+        (Path(persist_dir) / "bm25_index.pkl").write_bytes(b"\x80truncated garbage")
+
+        with patch("src.retriever.get_vector_store", return_value=store):
+            results = retrieve("making a will", top_k=2, persist_directory=persist_dir)
+
+        assert len(results) > 0
+
 
 class TestFormatContext:
     def test_formats_results(self, mock_retrieved_results):

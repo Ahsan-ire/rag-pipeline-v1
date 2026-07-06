@@ -12,11 +12,12 @@ logger = logging.getLogger(__name__)
 
 RRF_K = 60
 CANDIDATE_POOL = 12
+DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 
 
 def retrieve(
     query: str,
-    top_k: int = 5,
+    top_k: int = DEFAULT_TOP_K,
     document_type: Optional[str] = None,
     persist_directory: str = "./chroma_db",
 ) -> List[Dict[str, Any]]:

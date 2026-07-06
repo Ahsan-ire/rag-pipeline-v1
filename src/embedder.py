@@ -116,7 +116,7 @@ def _sanitize_metadata(documents: List[Document]) -> tuple:
 def add_documents(
     documents: List[Document],
     vector_store: Optional[Chroma] = None,
-    persist_directory: str = CHROMA_PERSIST_DIR,
+    persist_directory: Optional[str] = None,
 ) -> int:
     """Add documents to the vector store with deduplication.
 
@@ -127,16 +127,29 @@ def add_documents(
     the store's full authoritative contents and (re)records the embedding
     model manifest (D5) beside it.
 
-    Note: if you pass an explicit ``vector_store``, also pass the matching
+    Passing an explicit ``vector_store`` REQUIRES the matching
     ``persist_directory`` — that's where the BM25/manifest sidecars are
     written, independent of the vector_store object itself (langchain-chroma
-    exposes no public way to recover a store's own directory).
+    exposes no public way to recover a store's own directory). Omitting both
+    uses the default store at ``CHROMA_PERSIST_DIR``.
 
     Returns:
         Number of documents added.
     """
     if not documents:
         return 0
+
+    if vector_store is not None and persist_directory is None:
+        raise ValueError(
+            "add_documents was given an explicit vector_store but no "
+            "persist_directory. The BM25 index and embedding-model manifest "
+            "are written to persist_directory; defaulting it would silently "
+            f"put them beside the default store ({CHROMA_PERSIST_DIR!r}) "
+            "while the vectors live elsewhere, permanently desyncing hybrid "
+            "retrieval. Pass the directory the vector_store persists to."
+        )
+    if persist_directory is None:
+        persist_directory = CHROMA_PERSIST_DIR
 
     dropped, affected = _sanitize_metadata(documents)
     if dropped:

@@ -104,6 +104,19 @@ class TestAddDocuments:
         count = add_documents([], vector_store=test_store)
         assert count == 0
 
+    def test_explicit_store_requires_persist_directory(self, tmp_path, test_documents):
+        """An explicit vector_store without its persist_directory must raise:
+        the BM25/manifest sidecars would otherwise be silently written beside
+        the DEFAULT store while the vectors live elsewhere, permanently
+        desyncing hybrid retrieval (D26)."""
+        store = get_vector_store(
+            embedding_function=FakeEmbeddings(),
+            persist_directory=str(tmp_path / "chroma"),
+        )
+
+        with pytest.raises(ValueError, match="persist_directory"):
+            add_documents(test_documents, vector_store=store)
+
 
 class TestGetVectorStore:
     def test_creates_store(self, tmp_path):
