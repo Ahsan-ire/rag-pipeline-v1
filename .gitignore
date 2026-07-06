@@ -12,3 +12,5 @@ build/
 data/
 *.pdf
 .DS_Store
+.claude/worktrees/
+.claude/settings.local.json
