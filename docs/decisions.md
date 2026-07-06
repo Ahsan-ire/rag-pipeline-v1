@@ -487,4 +487,133 @@ truncation note pre-registers a Phase 5 tuning suspect.
 **Consequence:** chunk-size tuning in Phase 5 will revisit the 2,400-char oversize target
 against the 256-token embedding window.
 
+---
+
+## D24 — Phase 3 implementation: BM25 + RRF hybrid retrieval (5 Jul 2026)
+**Decision:** implement the hybrid retrieval D6 already committed to. New `src/bm25_index.py`
+(`rank-bm25==0.2.2`, resolved and pinned per D12's methodology) builds a `BM25Okapi` index over
+the vector store's full contents, pickled beside `chroma_db/` as `bm25_index.pkl`. `retrieve()`
+pulls `max(12, top_k)` candidates from each of the vector and BM25 arms, fuses by reciprocal
+rank fusion (`score = Σ 1/(60 + rank)`), and returns the top-k fused results. Each arm is wrapped
+in its own try/except (a failure in one doesn't block the other), and retrieval falls back to
+vector-only, with a logged warning, when no BM25 sidecar exists yet (an index predating this
+phase). `search_bm25` excludes non-positive-scoring documents from its candidates entirely,
+rather than returning them as tied-zero "matches" — BM25 IDF goes non-positive once a term
+appears in at least half the corpus (true of common words at the real corpus's ~1,470-chunk
+scale), so including them would misrepresent absence of lexical evidence as a ranked signal and
+dilute the fused score of a genuine exact match.
+**Why:** legal queries are exact-token-heavy (section numbers, form names, statute titles); pure
+semantic search fuzzes past the literal token that matters (D6). Fusing on rank rather than raw
+score sidesteps the two arms having incomparable scales — Chroma's own relevance scores are not
+reliably normalised to [0, 1] under the project's embedding setup (observed directly: the test
+suite logs a `UserWarning` with scores like −45, on both the pre-Phase-3 code and this phase's,
+so this was a latent property of the retrieval stack, not a regression).
+**Rejected:** a single hard document_type filter applied only to the vector arm (would let
+mismatched-type chunks leak in via BM25); tied-zero BM25 "matches" counted as ranked (dilutes
+RRF for queries with no real lexical signal in most of the corpus); rebuilding BM25 incrementally
+per-add (rank_bm25 has no such API; correctness from a full, from-scratch rebuild against the
+store's own authoritative contents is simpler and cannot drift).
+**Consequence:** `tests/test_bm25_index.py` (6 tests: exact-token ranking, document_type
+filtering, empty-filter-match, top_k truncation, pickle round-trip, missing-file → None) plus
+`tests/test_retriever.py` additions (RRF fusion math on synthetic rankings, an exact-token test
+with 1 target + 9 vocabulary-disjoint decoys under `FakeEmbeddings` — the target ranks top-3 via
+BM25's contribution alone, independent of FakeEmbeddings' hash-based, semantically meaningless
+vector similarity — and a vector-only-fallback test with no BM25 sidecar present). Real-corpus
+acceptance (5 exact-token queries against the actual handbook index, each hitting top-3) is
+pending corpus arrival — tracked as open, not yet run.
+
+## D25 — Phase 3 implementation: content-hash IDs + embedding-model manifest (5 Jul 2026)
+**Decision:** implement D7 (content-hash chunk IDs) and the recording/assertion half of D5.
+`embedder.compute_chunk_id` = `sha256(text)[:16]`, replacing `f"{source}::chunk_{i}"` in
+`add_documents`. The private `vector_store._collection.get(ids=...)` dedup check is replaced
+with the public `vector_store.get(ids=...)` (confirmed present on `langchain_chroma.Chroma` by
+direct introspection of the pinned 1.1.0 install). The embedding model name is recorded two
+ways: best-effort via `collection_metadata` at `Chroma` construction (human-discoverable by
+inspecting the raw Chroma DB, but confirmed by direct testing *not* to update on reopen with a
+different value, and with no public getter back — so not load-bearing), and authoritatively via
+an `embedding_model.txt` sidecar written by `add_documents` and checked by
+`assert_embedding_model()`, which `retrieve()` calls before querying: raises `ValueError` on a
+real mismatch, warns and no-ops if the manifest doesn't exist yet (an index predating this
+phase, or nothing indexed yet).
+**Why:** D7's own rationale — positional IDs collide with different content the moment chunking
+changes. D5 needs corpus and queries to share one coordinate system by construction; a plain
+`collection_metadata` write is not sufficient on its own because it doesn't survive being reopened
+with a changed value, and reading it back has no public API — an explicit sidecar manifest is
+simpler, testable without spinning up real Chroma internals, and consistent with how BM25 is
+already persisted as a sidecar next to `chroma_db/`.
+**Rejected:** reading collection metadata back via the private `_collection.metadata` (works, but
+is exactly the kind of implementation-detail dependency D7 already argued against for the dedup
+path); a full freeze on `collection_metadata` alone (silently wrong once contradicted by a
+reopen, per the tested behaviour above).
+**Bug found and fixed by its own test:** a batch containing two documents with *identical* text
+hashes to the same ID twice within one `add_documents` call — Chroma's `get()`/`add_documents()`
+reject duplicate IDs outright rather than deduping, raising `DuplicateIDError`. Fixed by deduping
+within the incoming batch (keep first occurrence) before touching the store at all.
+**Consequence:** `tests/test_embedder.py` gains `TestComputeChunkId` (3), `TestContentHashDedup`
+(1 — proves two chunks with identical text but different `source` metadata now correctly dedupe,
+which positional IDs would have missed), `TestEmbeddingModelManifest` (4), and
+`TestBM25IndexSideEffect` (2). Existing fixtures that pass an explicit `vector_store` now also
+pass a matching `persist_directory` — BM25/manifest sidecars are written relative to that
+parameter regardless of the `vector_store` object's own (unrecoverable, no public accessor)
+directory. Full suite: **124 passed, 0 failed** (was 102 before Phase 3; +22 new tests across
+`test_bm25_index.py`, `test_embedder.py`, `test_retriever.py`).
+
+## D26 — Phase 3 local validation + robustness fixes from review (6 Jul 2026)
+**Decision:** validate PR #5 against the real corpus locally and land three fixes its review
+surfaced. (1) `load_bm25_index` now treats an *unreadable* pickle (truncated write, dependency
+version skew) the same as a missing one — warn and return `None`, so retrieval degrades to
+vector-only instead of crashing the query; `save_bm25_index` writes via temp file + `os.replace`
+so an interrupted write can never leave a truncated pickle at the real path. (2) `add_documents`
+raises `ValueError` when given an explicit `vector_store` without a `persist_directory` — the
+BM25/manifest sidecars are written relative to that parameter, and defaulting it would silently
+put them beside the default store while the vectors live elsewhere, permanently desyncing hybrid
+retrieval. (The guard closes the *omission* case only; a deliberately wrong pairing is
+undetectable because langchain-chroma exposes no accessor for a store's own directory.)
+(3) `DEFAULT_TOP_K = 6` shared constant in `retriever.py`, imported by the CLI — was `5` in
+three places, and the plan (line 67) specifies default 6; a shared constant follows the module's
+own `RRF_K`/`CANDIDATE_POOL` pattern and prevents silent drift.
+**Why:** the corrupt-pickle crash contradicted D24's advertised per-arm degradation — reproduced
+live: a truncated `bm25_index.pkl` raised `UnpicklingError` out of `retrieve()` before the fix,
+and degrades with a warning after it.
+**Rejected:** catching pickle errors in the retriever's BM25 arm instead (wrong altitude —
+`load`'s contract is already `Optional`; fixing it there serves every caller); deriving
+`persist_directory` from the store object (no public API).
+**Validation evidence (real corpus, fresh Python 3.12 venv):** full suite 129 passed.
+`index --reset` → 1,470 chunks created by the chunker = 1,470 stored IDs — **zero
+identical-text collapses**, so D25's text-only hashing cost no citations on this corpus. (The
+protection is D21's citation prefix living inside `page_content`; if a later phase moves the
+prefix to metadata, the collapse risk returns silently — re-run this check after any such
+change.) Sidecars present inside `chroma_db/` (gitignored, wiped by `--reset`); manifest reads
+the configured model; `git status` clean of forbidden paths. Exact-token acceptance: **4/5
+queries hit the right paragraph in top-3** — "priority entry" (14.8.5.x #1–3), "s.72 burdens"
+(14.12/14.12.7 #1–2), "Form 60" (14.15 #2), "compulsory first registration" (13.2 #1). The miss:
+the full statute title "Registration of Deeds and Title Act 2006" — BM25 ranked the right chunk
+(13.1.2) **#1**, but every query token is corpus-ubiquitous (of 98%, and 94%, act 49%, title
+47%, registration 30%), so mid-rank chunks appearing in *both* arms outscored a single-arm #1
+under RRF; it surfaces at fused rank 6 (inside the default top-6 the generator sees, outside the
+top-3 bar). Registered alongside D23's MiniLM truncation as the Phase 5 tuning suspects: RRF's
+consensus bias vs single-arm exact hits (candidate: weighted fusion or citation-query routing).
+Robustness probes, live: pickle removed → vector-only + warning; pickle truncated → warning +
+vector-only (the new path); manifest overwritten → `ValueError` naming both models.
+**Process note:** per the compressed-schedule decision (6 Jul), in-session go/no-go gates with
+posted acceptance evidence supersede the one-phase-per-session rule through the 10 Jul freeze.
+
+## D27 — BM25 tokenizer keeps dotted section numbers as single tokens (6 Jul 2026)
+**Decision:** `_TOKEN_PATTERN` changes from `\w+` to `\d+(?:\.\d+)+|\w+` — a dotted numeric
+sequence ("14.8.5", "3.2.1") is one token. BM25 pickle rebuilt (vector store unaffected).
+**Why:** observed on the real index before the change: query "14.8.5" tokenized to bare digit
+groups `[14, 8, 5]`, which made **any** section sharing those digits an equal lexical match —
+14.8.3.5 ranked #1 and 14.8.5 itself was absent from the fused top-3. Dotted paragraph numbers
+are this corpus's citation identity and the product's flagship exact-lookup case (D6's own
+motivating example). After the change: "14.8.5" → fused #2, "13.2" → fused #2, and the
+suite-level test pins the behaviour (a section sharing digit groups but not the dotted token
+must not match).
+**Rejected:** leaving `\w+` (flagship case unserved); hierarchical prefix-matching so "14.8.5"
+also matches child tokens like "14.8.5.2" (complexity; exactness is the point, and children stay
+reachable via their own tokens — the trade-off is deliberate). Known residual, deliberately not
+tuned tonight: for bare-citation queries the vector arm is semantic noise, and RRF's consensus
+bias can still push a BM25-only exact hit below double-dip chunks (e.g. "14.12.4.2" — BM25 #2–3,
+fused >3; that section is also split across 3 chunks, diluting each). Phase 5's golden set is
+the instrument for that decision — n=35, not n=2.
+
 <!-- Append new entries below. Format: ## Dn — Title (date) / Decision / Why / Rejected / Consequence -->

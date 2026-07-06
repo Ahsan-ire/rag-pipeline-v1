@@ -9,7 +9,9 @@ from langchain_core.documents import Document
 from src.embedder import (
     _sanitize_metadata,
     add_documents,
+    assert_embedding_model,
     clear_store,
+    compute_chunk_id,
     get_vector_store,
 )
 
@@ -74,31 +76,46 @@ def test_documents():
 class TestAddDocuments:
     def test_adds_documents_to_store(self, tmp_path, test_documents):
         """Test that documents are added to ChromaDB."""
+        persist_dir = str(tmp_path / "chroma")
         store = get_vector_store(
             embedding_function=FakeEmbeddings(),
-            persist_directory=str(tmp_path / "chroma"),
+            persist_directory=persist_dir,
         )
 
-        count = add_documents(test_documents, vector_store=store)
+        count = add_documents(test_documents, vector_store=store, persist_directory=persist_dir)
         assert count == 2
 
     def test_deduplication(self, tmp_path, test_documents):
         """Test that adding the same documents twice doesn't create duplicates."""
+        persist_dir = str(tmp_path / "chroma")
         store = get_vector_store(
             embedding_function=FakeEmbeddings(),
-            persist_directory=str(tmp_path / "chroma"),
+            persist_directory=persist_dir,
         )
 
-        count1 = add_documents(test_documents, vector_store=store)
+        count1 = add_documents(test_documents, vector_store=store, persist_directory=persist_dir)
         assert count1 == 2
 
-        count2 = add_documents(test_documents, vector_store=store)
+        count2 = add_documents(test_documents, vector_store=store, persist_directory=persist_dir)
         assert count2 == 0
 
     def test_empty_list_returns_zero(self, test_store):
         """Test that an empty document list returns 0."""
         count = add_documents([], vector_store=test_store)
         assert count == 0
+
+    def test_explicit_store_requires_persist_directory(self, tmp_path, test_documents):
+        """An explicit vector_store without its persist_directory must raise:
+        the BM25/manifest sidecars would otherwise be silently written beside
+        the DEFAULT store while the vectors live elsewhere, permanently
+        desyncing hybrid retrieval (D26)."""
+        store = get_vector_store(
+            embedding_function=FakeEmbeddings(),
+            persist_directory=str(tmp_path / "chroma"),
+        )
+
+        with pytest.raises(ValueError, match="persist_directory"):
+            add_documents(test_documents, vector_store=store)
 
 
 class TestGetVectorStore:
@@ -127,9 +144,10 @@ class TestSanitizeMetadata:
     def test_add_documents_accepts_none_page_metadata(self, tmp_path):
         # End-to-end: a chunk with page_start=None must index cleanly (Chroma
         # would otherwise reject the None value).
+        persist_dir = str(tmp_path / "chroma")
         store = get_vector_store(
             embedding_function=FakeEmbeddings(),
-            persist_directory=str(tmp_path / "chroma"),
+            persist_directory=persist_dir,
         )
         docs = [
             Document(
@@ -143,7 +161,7 @@ class TestSanitizeMetadata:
                 },
             )
         ]
-        count = add_documents(docs, vector_store=store)
+        count = add_documents(docs, vector_store=store, persist_directory=persist_dir)
         assert count == 1
         assert "page_start" not in docs[0].metadata
 
@@ -161,3 +179,92 @@ class TestClearStore:
     def test_clear_nonexistent_store(self, tmp_path):
         """Test that clearing a nonexistent store doesn't raise."""
         clear_store(str(tmp_path / "nonexistent"))
+
+
+class TestComputeChunkId:
+    """Content-hash chunk IDs (D7): identity means identity across re-chunking."""
+
+    def test_deterministic_for_same_text(self):
+        assert compute_chunk_id("hello world") == compute_chunk_id("hello world")
+
+    def test_different_for_different_text(self):
+        assert compute_chunk_id("hello world") != compute_chunk_id("goodbye world")
+
+    def test_is_16_char_hex(self):
+        chunk_id = compute_chunk_id("some chunk text")
+        assert len(chunk_id) == 16
+        int(chunk_id, 16)  # raises ValueError if not hex
+
+
+class TestContentHashDedup:
+    def test_dedupes_identical_text_regardless_of_source_metadata(self, tmp_path):
+        """The D7 payoff: positional IDs (source::chunk_i) would not have caught
+        this, since the two documents below differ only in 'source' metadata —
+        content-hash identity dedupes on text alone."""
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        same_text = "1.1 Every conveyance of freehold land shall be by deed."
+        docs = [
+            Document(page_content=same_text, metadata={"source": "handbook_v1.pdf"}),
+            Document(page_content=same_text, metadata={"source": "handbook_v2.pdf"}),
+        ]
+        count = add_documents(docs, vector_store=store, persist_directory=persist_dir)
+        assert count == 1
+
+
+class TestEmbeddingModelManifest:
+    """Recorded at index time, asserted at query time (D5)."""
+
+    def test_add_documents_writes_manifest(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        add_documents(
+            [Document(page_content="text", metadata={"source": "x.pdf"})],
+            vector_store=store,
+            persist_directory=persist_dir,
+        )
+        manifest = tmp_path / "chroma" / "embedding_model.txt"
+        assert manifest.exists()
+        assert manifest.read_text() == "sentence-transformers/all-MiniLM-L6-v2"
+
+    def test_assert_passes_when_model_matches(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        add_documents(
+            [Document(page_content="text", metadata={"source": "x.pdf"})],
+            vector_store=store,
+            persist_directory=persist_dir,
+        )
+        assert_embedding_model(persist_dir)  # must not raise
+
+    def test_assert_raises_on_mismatch(self, tmp_path):
+        persist_dir = tmp_path / "chroma"
+        persist_dir.mkdir()
+        (persist_dir / "embedding_model.txt").write_text("some-other-model")
+
+        with pytest.raises(ValueError, match="mismatch"):
+            assert_embedding_model(str(persist_dir))
+
+    def test_assert_skips_silently_when_manifest_missing(self, tmp_path):
+        assert_embedding_model(str(tmp_path / "never_indexed"))  # must not raise
+
+
+class TestBM25IndexSideEffect:
+    """add_documents keeps a BM25 sidecar in sync with the store (D24)."""
+
+    def test_add_documents_persists_bm25_index(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        add_documents(
+            [Document(page_content="1.1 Registration of title.", metadata={"source": "h.pdf"})],
+            vector_store=store,
+            persist_directory=persist_dir,
+        )
+        assert (tmp_path / "chroma" / "bm25_index.pkl").exists()
+
+    def test_no_bm25_file_written_when_nothing_new(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        count = add_documents([], vector_store=store, persist_directory=persist_dir)
+        assert count == 0
+        assert not (tmp_path / "chroma" / "bm25_index.pkl").exists()
