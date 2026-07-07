@@ -112,7 +112,11 @@ def _reciprocal_rank_fusion(
 def format_context(results: List[Dict[str, Any]]) -> str:
     """Format retrieved results into a context string for the LLM prompt.
 
-    Each chunk is formatted with its source metadata for citation purposes.
+    Each chunk gets a citation header the model is asked to echo. Handbook chunks
+    use the compact ``[Handbook, para 3.2.1, p.87]`` locator (Phase 4 / D28), built
+    from the chunk's ``section_number`` and page span; other document types keep
+    the generic ``[Source i: title | source]`` header so legislation/case-law
+    routing is unaffected.
     """
     if not results:
         return "No relevant documents found."
@@ -120,15 +124,45 @@ def format_context(results: List[Dict[str, Any]]) -> str:
     context_parts = []
     for i, result in enumerate(results, 1):
         doc = result["document"]
-        source = doc.metadata.get("source", "Unknown")
-        title = doc.metadata.get("title", "Unknown")
-        section = doc.metadata.get("section_number", "")
-
-        header = f"[Source {i}: {title}"
-        if section:
-            header += f", Section {section}"
-        header += f" | {source}]"
-
+        if doc.metadata.get("document_type") == "handbook":
+            header = _handbook_header(doc.metadata)
+        else:
+            header = _generic_header(i, doc.metadata)
         context_parts.append(f"{header}\n{doc.page_content}\n---")
 
     return "\n\n".join(context_parts)
+
+
+def _handbook_header(metadata: Dict[str, Any]) -> str:
+    """Compact citation header for a handbook chunk: ``[Handbook, para X, p.N]``.
+
+    ``para`` is omitted for chapter-intro chunks that carry no ``section_number``;
+    the page renders as a range (``pp.1–2``) when the chunk spans pages, matching
+    the D21 in-text prefix convention.
+    """
+    section = metadata.get("section_number", "")
+    page_start = metadata.get("page_start")
+    page_end = metadata.get("page_end")
+
+    parts = ["Handbook"]
+    if section:
+        parts.append(f"para {section}")
+    if page_start is not None:
+        if page_end is not None and page_end != page_start:
+            parts.append(f"pp.{page_start}–{page_end}")
+        else:
+            parts.append(f"p.{page_start}")
+    return "[" + ", ".join(parts) + "]"
+
+
+def _generic_header(index: int, metadata: Dict[str, Any]) -> str:
+    """Fallback header for non-handbook document types (legislation, case law)."""
+    title = metadata.get("title", "Unknown")
+    source = metadata.get("source", "Unknown")
+    section = metadata.get("section_number", "")
+
+    header = f"[Source {index}: {title}"
+    if section:
+        header += f", Section {section}"
+    header += f" | {source}]"
+    return header
