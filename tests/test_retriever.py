@@ -199,13 +199,22 @@ class TestVectorOnlyFallback:
 
 class TestFormatContext:
     def test_formats_results(self, mock_retrieved_results):
-        """Test context formatting for LLM prompt."""
+        """Non-handbook chunks keep the generic [Source i: ...] header."""
         context = format_context(mock_retrieved_results)
 
         assert "[Source 1:" in context
         assert "[Source 2:" in context
         assert "Succession Act 1965" in context
         assert "---" in context
+
+    def test_formats_handbook_results(self, handbook_retrieved_results):
+        """Handbook chunks get the compact [Handbook, para X, p.N] locator; a
+        multi-page chunk renders the page range (Phase 4 / D28)."""
+        context = format_context(handbook_retrieved_results)
+
+        assert "[Handbook, para 14.8.5, p.412]" in context
+        assert "[Handbook, para 1.2, pp.1–2]" in context
+        assert "[Source 1:" not in context  # handbook branch, not the generic one
 
     def test_empty_results(self):
         """Test formatting with no results."""

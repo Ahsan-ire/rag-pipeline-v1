@@ -71,3 +71,49 @@ def mock_retrieved_results(sample_chunks):
         {"document": sample_chunks[0], "score": 0.85, "metadata": sample_chunks[0].metadata},
         {"document": sample_chunks[1], "score": 0.72, "metadata": sample_chunks[1].metadata},
     ]
+
+
+@pytest.fixture
+def handbook_chunks():
+    """Pre-chunked handbook documents, carrying the D21 in-text prefix and the
+    Phase 2 metadata keys (section_number, page_start, page_end). The second
+    chunk spans two pages to exercise the range-rendering path."""
+    return [
+        Document(
+            page_content=(
+                "[Conveyancing Handbook, Ch.14 Registration Of Title, para 14.8.5, p.412] "
+                "The priority entry protects a purchaser pending completion of the sale."
+            ),
+            metadata={
+                "source": "Conveyancing_Handbook.pdf",
+                "title": "Conveyancing_Handbook.pdf",
+                "document_type": "handbook",
+                "section_number": "14.8.5",
+                "page_start": 412,
+                "page_end": 412,
+            },
+        ),
+        Document(
+            page_content=(
+                "[Conveyancing Handbook, Ch.1 Introduction, para 1.2, pp.1–2] "
+                "The objectives of the manual are set out for the practitioner."
+            ),
+            metadata={
+                "source": "Conveyancing_Handbook.pdf",
+                "title": "Conveyancing_Handbook.pdf",
+                "document_type": "handbook",
+                "section_number": "1.2",
+                "page_start": 1,
+                "page_end": 2,
+            },
+        ),
+    ]
+
+
+@pytest.fixture
+def handbook_retrieved_results(handbook_chunks):
+    """Mock retriever output for handbook chunks (fused RRF scores)."""
+    return [
+        {"document": handbook_chunks[0], "score": 0.03279, "metadata": handbook_chunks[0].metadata},
+        {"document": handbook_chunks[1], "score": 0.01639, "metadata": handbook_chunks[1].metadata},
+    ]

@@ -171,8 +171,49 @@ class TestQuery:
         assert result["answer"] == "The answer is..."
 
     def test_no_results_message(self):
-        """Test that empty retrieval gives a helpful message."""
+        """Empty retrieval gives a helpful message AND the same result shape as
+        the normal path, so callers (e.g. the Phase 5 eval) need no key guards."""
         with patch("src.pipeline.retrieve", return_value=[]):
             result = query("Unknown question")
 
         assert "No relevant documents" in result["answer"]
+        assert result["citations"] == []
+        assert result["sources"] == []
+        assert result["citation_check"] == {"grounded": [], "ungrounded": []}
+
+    def test_verbose_prints_scores_and_flags_ungrounded(self, capsys):
+        """--verbose prints per-chunk fused RRF scores before the answer and
+        flags citations that don't match any retrieved chunk after it."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Priority entry content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        "page_start": 412,
+                    },
+                ),
+                "score": 0.03279,
+                "metadata": {"section_number": "14.8.5"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer [Handbook, para 99.9, p.5].",
+            "sources": ["para 99.9, p.5"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [],
+                "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            },
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is a priority entry?", verbose=True)
+
+        out = capsys.readouterr().out
+        assert "RRF=0.03279" in out
+        assert "para 14.8.5" in out
+        assert "Ungrounded citations" in out

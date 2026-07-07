@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 3 — retrieval**
+**Current phase: 4 — generation**
 
 ---
 
@@ -617,3 +617,66 @@ fused >3; that section is also split across 3 chunks, diluting each). Phase 5's 
 the instrument for that decision — n=35, not n=2.
 
 <!-- Append new entries below. Format: ## Dn — Title (date) / Decision / Why / Rejected / Consequence -->
+
+## D28 — Phase 4 generation: compact citation locators, refusal path, grounding validation (6 Jul 2026)
+**Decision:** Handbook answers cite in the compact form `[Handbook, para 3.2.1, p.87]`, built in
+`format_context()` from each chunk's `section_number` + page span (legislation/case-law keep the
+generic `[Source i: …]` header, branched on `document_type`). The system prompt instructs that exact
+form plus a single `REFUSAL_PHRASE = "not covered in the source material"` constant (imported by the
+Phase 5 matcher so the string cannot drift). Source extraction uses one tolerant, token-anchored
+regex `CITATION_RE` that captures `(para, page)` from BOTH the compact form and the longer D21 in-text
+prefix `[Conveyancing Handbook, Ch.N …, para X, p.Y]` the model may echo verbatim — anchored on the
+`para`/`p.` tokens, never comma-split (the chapter-title segment is OCR'd free text containing commas).
+`validate_citations()` then splits cited `(para, page)` into grounded vs. ungrounded against the
+*actually-retrieved* chunk metadata: grounded when the cited page lies in a retrieved chunk whose
+`section_number` nests-or-equals the cited paragraph (component-wise on dot boundaries). `--verbose`
+prints per-chunk fused RRF scores + section/page and flags ungrounded citations.
+**Why:** the product's whole point is grounded, page-cited answers. Postel's law — prompt strictly for
+the short locator (the chapter is derivable from the decimal paragraph number, and the OCR'd chapter
+title is the noisiest part of the prefix), accept liberally (the model sometimes echoes the baked-in
+long prefix). The real anti-hallucination guarantee is not the citation *format* but validating each
+(para, page) against retrieved chunks — the tolerant regex without that check would parse invented
+locators just as happily. Live acceptance: 3/3 in-corpus answers grounded (0 ungrounded), each
+cross-checked against the PDF (para markers + content on the cited printed pages, e.g. 14.12/p.533,
+14.6.12/p.514, 16.13/p.691); the refusal path is prompt-driven on context *sufficiency* — "CGT rate"
+is answered (it is genuinely in the handbook's tax chapter 16.13) while genuinely out-of-corpus
+questions (divorce grounds, minimum wage, careless driving) return the canonical phrase.
+**Rejected:** adopting the long `[Conveyancing Handbook, …]` prefix as the canonical citation (more
+grounded but bloats multi-paragraph answers with noisy OCR'd titles; the short form loses nothing);
+comma-splitting the citation parser (breaks on commas inside chapter titles); exact `section_number`
+equality in grounding (flags legitimate sub-paragraph citations — a more capable model cites `14.12.1`
+where a chunk's section is the parent `14.12`; relaxed to nesting, which still catches invented
+paragraphs and page-mismatches).
+**Consequence:** F5's coupling stands — the D21 prefix is still baked into `page_content`; the citation
+chain is ingest page-map (D13) → chunk metadata (D21) → this locator. Phase 5's eval must score both
+the short and long captured forms as valid, or the tolerant regex becomes a silent metric penalty.
+**Known limitation (accepted 7 Jul):** citations into APPENDIX sections (e.g. `[Handbook, para
+APPENDIX 14.1, pp.565–566]`, which the model does emit) are not captured by `CITATION_RE` — the
+`para`+digits anchor skips them, so they render in the answer text but are invisible to the sources
+list and the grounding check. Fails safe (misses legitimate citations, never admits invented ones).
+Shipped as-is per user decision; the Phase 5 golden set gets ≥1 appendix-focused question to measure
+whether it matters in practice, and the fix is revisited only if it does.
+**Gate hardening (7 Jul, from /phase-gate 4 code review):** `is_refusal()` now requires the canonical
+phrase AND zero extracted citations (a partial answer hedging with the phrase while citing sources is
+an answer, not a refusal — protects the Phase 5 refusal metric); `query()`'s empty-retrieval return
+carries the same keys (`citations`, `citation_check`) as the normal path, so eval-loop callers never
+need key guards.
+
+## D29 — Generation model claude-sonnet-4-6 → claude-sonnet-5 (6 Jul 2026)
+**Decision:** `get_llm()` uses `claude-sonnet-5`, drops the `temperature=0` argument, and sets
+`thinking={"type": "disabled"}`.
+**Why:** the portfolio piece should ship on the latest Sonnet (adopted-delta #1). IMPLEMENTATION_PLAN.md
+Phase 4 lists no model change, so this is a sanctioned divergence, logged here per the CLAUDE.md
+"don't improvise silently" rule. Sonnet 5 **rejects a non-default `temperature` with a 400**, so the
+former `temperature=0` is removed and determinism is steered through the strict grounding system prompt
+instead. Adaptive thinking is on-by-default on Sonnet 5 (it was off on 4-6); `thinking` is held disabled
+to keep this a clean one-variable model swap and to avoid thinking eating into the 2048-token
+`max_tokens` budget on long cited answers. Sequenced last and verified in isolation: the full
+citation/refusal/grounding change landed and passed live acceptance on claude-sonnet-4-6 first, then the
+model was bumped and re-verified (3/3 grounded in-corpus, 2/2 refusals) — so if Sonnet 5 regresses
+before the freeze it reverts to a known-good baseline in one commit.
+**Rejected:** bumping the model up front (conflates a model regression with the prompt/format change);
+keeping `temperature=0` (400 on Sonnet 5); leaving adaptive thinking on (larger behavioural delta +
+truncation risk at max_tokens=2048 — revisit with a higher budget if answer quality warrants).
+**Consequence:** Sonnet 5's finer-grained citations (sub-paragraphs like `14.12.1`) are what motivated
+the nesting-aware grounding relaxation in D28; the two changes were validated together on the live corpus.

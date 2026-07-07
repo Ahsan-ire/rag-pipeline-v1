@@ -109,6 +109,7 @@ def query(
     question: str,
     top_k: int = DEFAULT_TOP_K,
     document_type: Optional[str] = None,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
 
@@ -116,9 +117,13 @@ def query(
         question: The natural-language legal question.
         top_k: Number of relevant chunks to retrieve.
         document_type: Optional filter for document type.
+        verbose: If True, print per-chunk fused RRF scores and page/section
+            before the answer, and flag any ungrounded citations after it.
 
     Returns:
-        Dict with answer, sources, and source_documents.
+        Dict with answer, citations, sources, source_documents, and
+        citation_check ({grounded, ungrounded}) — the same shape on every
+        path, so callers (e.g. the Phase 5 eval) never need key guards.
     """
     # Retrieve relevant chunks
     results = retrieve(question, top_k=top_k, document_type=document_type)
@@ -126,9 +131,27 @@ def query(
     if not results:
         msg = "No relevant documents found. Please index some documents first."
         print(f"\n{msg}")
-        return {"answer": msg, "sources": [], "source_documents": []}
+        return {
+            "answer": msg,
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+        }
 
     logger.info("Retrieved %d relevant chunks", len(results))
+
+    if verbose:
+        print("\nRetrieved chunks (by fused RRF score):")
+        for rank, r in enumerate(results, 1):
+            meta = r["document"].metadata
+            section = meta.get("section_number") or "—"
+            page = meta.get("page_start", "?")
+            doc_type = meta.get("document_type", "?")
+            print(
+                f"  {rank:>2}. RRF={r['score']:.5f}  para {section}  "
+                f"p.{page}  [{doc_type}]"
+            )
 
     # Generate answer with citations
     result = generate_with_sources(question, results)
@@ -139,6 +162,13 @@ def query(
         print("\nCitations found:")
         for source in result["sources"]:
             print(f"  - {source}")
+
+    if verbose:
+        ungrounded = result["citation_check"]["ungrounded"]
+        if ungrounded:
+            print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
+            for citation in ungrounded:
+                print(f"  - {citation['raw']}")
 
     return result
 
@@ -201,6 +231,11 @@ Examples:
         choices=["handbook", "legislation", "case_law", "contracts"],
         help="Filter by document type",
     )
+    query_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-chunk fused RRF scores and flag ungrounded citations",
+    )
 
     args = parser.parse_args()
 
@@ -211,7 +246,7 @@ Examples:
     if args.command == "index":
         index_documents(args.source_path, args.document_type, reset=args.reset)
     elif args.command == "query":
-        query(args.question, args.top_k, args.document_type)
+        query(args.question, args.top_k, args.document_type, args.verbose)
 
 
 if __name__ == "__main__":
