@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 4 — generation**
+**Current phase: 5 — evaluation**
 
 ---
 
@@ -680,3 +680,65 @@ keeping `temperature=0` (400 on Sonnet 5); leaving adaptive thinking on (larger 
 truncation risk at max_tokens=2048 — revisit with a higher budget if answer quality warrants).
 **Consequence:** Sonnet 5's finer-grained citations (sub-paragraphs like `14.12.1`) are what motivated
 the nesting-aware grounding relaxation in D28; the two changes were validated together on the live corpus.
+
+## D30 — Phase 5 evaluation harness: reuse D28's grounding logic, scrub the report of corpus text (7 Jul 2026)
+**Decision:** `src/evaluator.py` scores two metrics independently against `eval/golden_set.jsonl`
+(authored in parallel, not touched by this change): retrieval hit@k (`evaluate_retrieval`) and refusal
+accuracy (`evaluate_refusals`). Hit@k reuses `_sections_related` from `src.generator` unchanged — the
+same equal-or-dotted-nesting rule that grounds citations in D28 also decides whether a retrieved
+chunk's `section_number` counts as covering an expected section, so a golden question expecting the
+parent paragraph `14.12` still counts a retrieved child `14.12.1` as a hit. Refusal accuracy reuses
+`is_refusal` unchanged for the same reason D28 built it that way: a hedge that still cites a source is
+scored as an answer, not a refusal. `run_eval()` prints and writes an identical Markdown report (one
+`_format_report` string, not two), and both surfaces are hard-scrubbed to question text, section
+numbers, and metrics only — retrieved chunks are represented by `section_number` alone (no
+`page_content`) and refusal rows print only a `refused`/`answered` flag, never the generated answer
+text, since a hedged answer can itself echo corpus prose.
+**Why:** CLAUDE.md's copyright rule ("NEVER commit `data/`, any `*.pdf`... the corpus is copyrighted;
+the repo is public") extends to `eval/results.md`, which *is* committed — the report is generated from
+retrieved chunks and live LLM answers, both of which can carry verbatim handbook text, so the scrub has
+to happen at report-generation time, not as an afterthought. Reusing `_sections_related`/`is_refusal`
+rather than re-implementing matching logic keeps the eval honest: it measures the same notion of
+"related section" and "refusal" that the product actually uses, not a laxer or stricter stand-in that
+would silently inflate or deflate the hit@k the Phase 5 acceptance gate (≥80%) is judged against.
+**Rejected:** a separate section-matching function for eval (drift risk — the eval's definition of
+"hit" would diverge from the generator's definition of "grounded" over time); including retrieved page
+numbers in the per-question report line (the return contracts for `evaluate_retrieval`/
+`evaluate_refusals` carry section numbers only, and the copyright rule doesn't *require* pages be
+shown — adding them would mean threading page metadata through per-question dicts for no metric
+benefit); printing the raw refusal-path answer text in the report for debugging (the accuracy metric
+doesn't need it, and a hedged answer is exactly the case most likely to contain quoted corpus text).
+**Consequence:** `run_eval`'s default `retrieve_fn`/`answer_fn` make live vector-store and Claude API
+calls (unchanged retrieval/generation paths from Phases 3–4); every test in `tests/test_evaluator.py`
+injects fakes, per CLAUDE.md's no-network-in-tests rule. The one-tuning-iteration step and the ≥80%
+hit@6 acceptance check are deliberately left for a follow-up run against the real index — this phase
+is the harness only.
+**Gate fixes (10 Jul 2026):** the Phase 5 gate review caught two holes in the above. (1)
+`evaluate_refusals` was carrying the full generated answer in its per-question rows — a write-only
+field nothing read, and exactly the corpus-echo risk this entry's scrub exists to exclude; the field
+is dropped, so the return contract now genuinely carries only questions, section numbers, and flags.
+(2) `load_golden_set` validated `expected_sections` with a bare truthiness test, so a string value
+(`"14.8"` instead of `["14.8"]`) slipped through and was iterated character-by-character downstream,
+silently inflating hit@k; it now requires a non-empty list of non-empty strings (stored stripped) and
+raises the loader's usual line-numbered ValueError otherwise.
+
+## D31 — Phase 5 tuning iteration: fusion constants retained after grid search (9 Jul 2026)
+**Decision:** `RRF_K` stays 60 and `CANDIDATE_POOL` stays 12. A 12-config grid (RRF_K ∈ {60, 30, 20, 10} ×
+CANDIDATE_POOL ∈ {12, 20, 30}) was measured with the Phase 5 harness against the real index (hit@6,
+n=30 retrieval questions, offline — no API cost): baseline 27/30 = 0.900; every pool-widening config
+at RRF_K ∈ {60, 30, 20} scored 26/30; at RRF_K=10, POOL=20 matched the baseline at 27/30 by swapping
+misses (POOL=30 still 26/30); lowering RRF_K alone changed nothing. No configuration beat the defaults.
+**Why:** widening the pool fixes the two arguably-mislabelled misses (tenants in common, purpose of
+requisitions) but regresses three previously-passing questions (Form 60, Registration of Deeds and
+Title Act 2006, lender undertakings) — a net loss. Mechanism: a wider candidate pool feeds RRF's
+consensus bias; moderately-ranked double-dip chunks accumulate fused score and push single-arm exact
+hits out of the top 6 — empirical confirmation of D27's analysis. The requisition-27.5 miss survives
+every config: bare-number lookup is not addressable by fusion constants (the vector arm is semantic
+noise for numerals) and stays a documented limitation.
+**Rejected:** adopting RRF_K=10/POOL=20 (also 27/30 — swaps misses without improving the rate, for a
+larger delta from validated Phase 3 behaviour); chunk-size variants and an embedding-model swap
+(re-index + full re-validation two days before freeze; D23's MiniLM 256-token truncation remains the
+registered suspect and moves to the README roadmap).
+**Consequence:** eval/results.md ships the accepted numbers: hit@6 = 0.900, refusal accuracy 5/5. At
+n=30, ±1 hit is within noise; the grid's value is evidence the defaults aren't sitting left of a cheap
+win — tuning was *run and resolved*, not skipped.
