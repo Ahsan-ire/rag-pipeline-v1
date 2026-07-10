@@ -1,0 +1,35 @@
+{"question": "What is conveyancing?", "expected_sections": ["1.1"], "type": "direct"}
+{"question": "How does searching on the Index of Names work in the Registry of Deeds?", "expected_sections": ["1.7.2.3", "1.7.2"], "type": "direct"}
+{"question": "What are the essential differences between the Registry of Deeds and the Land Registry systems?", "expected_sections": ["1.8"], "type": "direct"}
+{"question": "In what order do the steps of a typical conveyancing transaction occur?", "expected_sections": ["2.1", "2.2"], "type": "direct"}
+{"question": "What special considerations apply to voluntary deeds transferring property between family members?", "expected_sections": ["3.4"], "type": "direct"}
+{"question": "What rules govern a solicitor giving an undertaking to a lender in a commercial property transaction?", "expected_sections": ["3.2.3.7", "APPENDIX 3.1"], "type": "direct"}
+{"question": "How long must a good root of title be under an open contract?", "expected_sections": ["4.5.1"], "type": "direct"}
+{"question": "Which three registers does the Land Registry maintain?", "expected_sections": ["4.9.2"], "type": "direct"}
+{"question": "How does ownership held as tenants in common devolve on the death of one owner?", "expected_sections": ["5.8"], "type": "direct"}
+{"question": "What form must a contract for the sale of land take in order to be enforceable?", "expected_sections": ["6.1"], "type": "direct"}
+{"question": "Who holds the deposit paid under a contract for sale, and in what capacity?", "expected_sections": ["6.3.2", "APPENDIX 6.1"], "type": "direct"}
+{"question": "What protection does the Family Home Protection Act 1976 give to a non-owning spouse?", "expected_sections": ["7.1", "7.2"], "type": "direct"}
+{"question": "When is a spouse's prior written consent required for a conveyance of the family home?", "expected_sections": ["7.2.9", "7.1"], "type": "direct"}
+{"question": "Why does a deed need a receipt clause?", "expected_sections": ["8.2.5.7"], "type": "direct"}
+{"question": "What is an accountable trust receipt and when is it used?", "expected_sections": ["9.6.1.1", "9.6.1"], "type": "direct"}
+{"question": "What searches should a purchaser's solicitor carry out before completion, and why?", "expected_sections": ["10.1", "10.2"], "type": "direct"}
+{"question": "When is a bankruptcy search appropriate?", "expected_sections": ["10.2.3"], "type": "direct"}
+{"question": "What is the purpose of requisitions on title?", "expected_sections": ["15.1"], "type": "direct"}
+{"question": "What is the current standard rate of Capital Gains Tax?", "expected_sections": ["16.13"], "type": "direct"}
+{"question": "Is stamp duty payable on house contents such as carpets and curtains?", "expected_sections": ["16.4.5"], "type": "direct"}
+{"question": "Can successive squatters add together their periods of adverse possession?", "expected_sections": ["13.4.8"], "type": "direct"}
+{"question": "Which wayleaves granted under the Gas Act 1976 affect registered land without registration?", "expected_sections": ["APPENDIX 14.1", "14.12"], "type": "direct"}
+{"question": "Why can a squatter not apply for a caution to protect their interest in registered land?", "expected_sections": ["14.6.12", "14.8.3"], "type": "direct"}
+{"question": "How is a priority entry lodged in the Land Registry?", "expected_sections": ["14.8.5"], "type": "exact_token"}
+{"question": "Which burdens affect registered land without registration under s.72?", "expected_sections": ["14.12", "APPENDIX 14.1"], "type": "exact_token"}
+{"question": "What is Form 60 used for?", "expected_sections": ["14.15"], "type": "exact_token"}
+{"question": "When is an application for first registration made on Form 1 rather than Form 2?", "expected_sections": ["13.3.4"], "type": "exact_token"}
+{"question": "What did the Registration of Deeds and Title Act 2006 change?", "expected_sections": ["13.1"], "type": "exact_token"}
+{"question": "What does paragraph 14.8.5 of the handbook deal with?", "expected_sections": ["14.8.5"], "type": "exact_token"}
+{"question": "What does requisition 27.5 concern?", "expected_sections": ["11.8.2.2"], "type": "exact_token"}
+{"question": "What are the legal grounds for divorce in Ireland?", "expected_sections": [], "type": "refusal"}
+{"question": "What is the current national minimum wage in Ireland?", "expected_sections": [], "type": "refusal"}
+{"question": "What is the penalty for careless driving under the Road Traffic Acts?", "expected_sections": [], "type": "refusal"}
+{"question": "What sentence can be imposed for burglary in Ireland?", "expected_sections": [], "type": "refusal"}
+{"question": "How many days of statutory annual leave is an employee entitled to in Ireland?", "expected_sections": [], "type": "refusal"}

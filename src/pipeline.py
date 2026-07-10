@@ -237,6 +237,27 @@ Examples:
         help="Show per-chunk fused RRF scores and flag ungrounded citations",
     )
 
+    # Eval subcommand
+    eval_parser = subparsers.add_parser(
+        "eval", help="Evaluate retrieval hit@k and refusal accuracy against a golden set"
+    )
+    eval_parser.add_argument(
+        "--golden",
+        default="eval/golden_set.jsonl",
+        help="Path to the golden-set JSONL file (default: eval/golden_set.jsonl)",
+    )
+    eval_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=DEFAULT_TOP_K,
+        help=f"Number of chunks to retrieve per question (default: {DEFAULT_TOP_K})",
+    )
+    eval_parser.add_argument(
+        "--skip-refusals",
+        action="store_true",
+        help="Skip the refusal-accuracy pass (avoids live API calls)",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -247,6 +268,10 @@ Examples:
         index_documents(args.source_path, args.document_type, reset=args.reset)
     elif args.command == "query":
         query(args.question, args.top_k, args.document_type, args.verbose)
+    elif args.command == "eval":
+        from src.evaluator import run_eval
+
+        run_eval(args.golden, top_k=args.top_k, skip_refusals=args.skip_refusals)
 
 
 if __name__ == "__main__":
