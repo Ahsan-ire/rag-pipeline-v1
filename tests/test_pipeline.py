@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.documents import Document
 
+from src.generator import REFUSAL_PHRASE
 from src.pipeline import index_documents, query
 
 
@@ -160,8 +161,13 @@ class TestQuery:
         ]
         mock_generated = {
             "answer": "The answer is...",
+            "citations": [{"para": "1", "page": "1", "raw": "Test, Section 1"}],
             "sources": ["Test, Section 1"],
             "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "1", "page": "1", "raw": "Test, Section 1"}],
+                "ungrounded": [],
+            },
         }
 
         with patch("src.pipeline.retrieve", return_value=mock_results), \
@@ -201,6 +207,7 @@ class TestQuery:
         ]
         mock_generated = {
             "answer": "Answer [Handbook, para 99.9, p.5].",
+            "citations": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
             "sources": ["para 99.9, p.5"],
             "source_documents": [],
             "citation_check": {
@@ -217,3 +224,162 @@ class TestQuery:
         assert "RRF=0.03279" in out
         assert "para 14.8.5" in out
         assert "Ungrounded citations" in out
+
+    def test_zero_citation_warning_on_uncited_non_refusal_answer(self, capsys):
+        """A non-refusal answer with no extractable citations gets a prominent
+        display warning — citation_check has nothing to validate here, so this
+        is the only thing that can catch an uncited answer."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf"},
+                ),
+                "score": 0.01,
+                "metadata": {},
+            }
+        ]
+        mock_generated = {
+            "answer": "The general rule is straightforward.",
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is the rule?")
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "no citations" in out
+
+    def test_no_zero_citation_warning_for_canonical_refusal(self, capsys):
+        """The canonical refusal has no citations by design — it must NOT
+        trigger the zero-citation warning, which is only for answers that
+        look substantive but forgot to cite anything."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Unrelated content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf"},
+                ),
+                "score": 0.01,
+                "metadata": {},
+            }
+        ]
+        mock_generated = {
+            "answer": REFUSAL_PHRASE,
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("An out-of-corpus question")
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_no_zero_citation_warning_for_normalized_refusal_shape(self, capsys):
+        """The warning suppression must track is_refusal's NORMALIZATION, not a
+        bare-string compare. The system prompt shows the refusal sentence
+        quote-wrapped with the period outside the quotes, so the model emits
+        `"<phrase>".`; that is still a refusal and must NOT trigger the
+        zero-citation warning. Pins the pipeline↔is_refusal coupling so a
+        regression to naive equality (== REFUSAL_PHRASE) is caught here."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Unrelated content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf"},
+                ),
+                "score": 0.01,
+                "metadata": {},
+            }
+        ]
+        mock_generated = {
+            "answer": f'"{REFUSAL_PHRASE}".',  # quotes, period OUTSIDE — prompt-displayed shape
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("An out-of-corpus question")
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_no_zero_citation_warning_when_citations_present(self, capsys):
+        """An answer that carries citations never gets the zero-citation
+        warning, regardless of whether those citations are grounded."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf"},
+                ),
+                "score": 0.01,
+                "metadata": {},
+            }
+        ]
+        mock_generated = {
+            "answer": "The rule is X [Handbook, para 3.2, p.10].",
+            "citations": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+            "sources": ["para 3.2, p.10"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+                "ungrounded": [],
+            },
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is the rule?")
+
+        out = capsys.readouterr().out
+        assert "WARNING" not in out
+
+    def test_ungrounded_citations_print_without_verbose(self, capsys):
+        """Ungrounded-citation warnings are a correctness signal, not debug
+        output — they must print even when --verbose is not passed."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Priority entry content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        "page_start": 412,
+                    },
+                ),
+                "score": 0.03279,
+                "metadata": {"section_number": "14.8.5"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer [Handbook, para 99.9, p.5].",
+            "citations": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            "sources": ["para 99.9, p.5"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [],
+                "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            },
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is a priority entry?")  # verbose defaults to False
+
+        out = capsys.readouterr().out
+        assert "Ungrounded citations" in out
+        assert "RRF=" not in out  # RRF listing stays verbose-only

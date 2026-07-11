@@ -7,11 +7,13 @@ generation path, matching the ``[{"document": Document, "score": float,
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.documents import Document
 
 from src.evaluator import (
+    collect_provenance,
     evaluate_refusals,
     evaluate_retrieval,
     load_golden_set,
@@ -30,6 +32,23 @@ def _result(section_number):
     """Build one fake retrieve() result carrying only a section_number."""
     doc = Document(page_content="", metadata={"section_number": section_number})
     return {"document": doc, "score": 1.0, "metadata": doc.metadata}
+
+
+def _fake_provenance():
+    """A canned provenance dict for run_eval tests.
+
+    The real ``collect_provenance`` shells out to git and opens the Chroma
+    store; injecting this keeps the test suite IO-free (CLAUDE.md: no network,
+    no real vector store). Shape matches ``collect_provenance``'s return.
+    """
+    return {
+        "git_sha": "deadbee",
+        "git_dirty": False,
+        "chunk_count": 42,
+        "embedding_model": "fake-embed-model",
+        "generation_model": "fake-gen-model",
+        "matching": "strict = exact; related = nested",
+    }
 
 
 class TestLoadGoldenSet:
@@ -153,37 +172,58 @@ class TestLoadGoldenSet:
 
 
 class TestEvaluateRetrieval:
-    def test_exact_section_match_is_a_hit(self):
+    def test_exact_section_match_is_a_hit_both_ways(self):
+        """An exact equality scores under BOTH strict and related."""
         golden = [{"question": "Q1", "type": "direct", "expected_sections": ["14.8.5"]}]
         fake_retrieve = lambda q, top_k=6: [_result("14.8.5")]
 
         report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
 
-        assert report["hits"] == 1
         assert report["total"] == 1
-        assert report["hit_rate"] == 1.0
-        assert report["per_question"][0]["hit"] is True
+        assert report["hits_strict"] == 1
+        assert report["hits_related"] == 1
+        assert report["hit_rate_strict"] == 1.0
+        assert report["hit_rate_related"] == 1.0
+        assert report["per_question"][0]["hit_strict"] is True
+        assert report["per_question"][0]["hit_related"] is True
 
-    def test_nested_section_is_a_hit(self):
-        """Expected 14.12 vs a retrieved sub-paragraph 14.12.1 still counts."""
+    def test_nested_section_is_related_hit_but_strict_miss(self):
+        """Expected 14.12 vs a retrieved sub-paragraph 14.12.1: nests (related
+        HIT) but is not an exact match (strict MISS). This is the whole point
+        of splitting the metric."""
         golden = [{"question": "Q1", "type": "direct", "expected_sections": ["14.12"]}]
         fake_retrieve = lambda q, top_k=6: [_result("14.12.1")]
 
         report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
 
-        assert report["hits"] == 1
-        assert report["per_question"][0]["hit"] is True
+        assert report["hits_strict"] == 0
+        assert report["hits_related"] == 1
+        assert report["per_question"][0]["hit_strict"] is False
+        assert report["per_question"][0]["hit_related"] is True
 
-    def test_sibling_section_is_a_miss(self):
-        """Expected 14.1 vs retrieved 14.12 do not nest -> miss."""
+        # by_type must split the SAME way on this diverging case. With exactly
+        # one diverging 'direct' question the numbers are unambiguous, so this
+        # catches the strict/related accumulators being swapped (they coincide
+        # on exact-match cases and only diverge here).
+        direct_stats = report["by_type"]["direct"]
+        assert direct_stats["hits_strict"] == 0
+        assert direct_stats["hits_related"] == 1
+        assert direct_stats["hit_rate_strict"] == 0.0
+        assert direct_stats["hit_rate_related"] == 1.0
+
+    def test_sibling_section_is_a_miss_both_ways(self):
+        """Expected 14.1 vs retrieved 14.12 do not nest -> miss under both."""
         golden = [{"question": "Q1", "type": "direct", "expected_sections": ["14.1"]}]
         fake_retrieve = lambda q, top_k=6: [_result("14.12")]
 
         report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
 
-        assert report["hits"] == 0
-        assert report["per_question"][0]["hit"] is False
-        assert report["hit_rate"] == 0.0
+        assert report["hits_strict"] == 0
+        assert report["hits_related"] == 0
+        assert report["per_question"][0]["hit_strict"] is False
+        assert report["per_question"][0]["hit_related"] is False
+        assert report["hit_rate_strict"] == 0.0
+        assert report["hit_rate_related"] == 0.0
 
     def test_refusal_questions_are_excluded_from_retrieval_scoring(self):
         golden = [
@@ -214,21 +254,39 @@ class TestEvaluateRetrieval:
 
         report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
 
-        assert report["hits"] == 2
+        # Every match here is exact, so strict and related counts coincide.
+        assert report["hits_strict"] == 2
+        assert report["hits_related"] == 2
         assert report["total"] == 3
-        assert report["hit_rate"] == pytest.approx(2 / 3)
-        assert report["by_type"]["direct"] == {"hits": 1, "total": 2, "hit_rate": 0.5}
-        assert report["by_type"]["exact_token"] == {"hits": 1, "total": 1, "hit_rate": 1.0}
+        assert report["hit_rate_strict"] == pytest.approx(2 / 3)
+        assert report["hit_rate_related"] == pytest.approx(2 / 3)
+        assert report["by_type"]["direct"] == {
+            "hits_strict": 1,
+            "hits_related": 1,
+            "total": 2,
+            "hit_rate_strict": 0.5,
+            "hit_rate_related": 0.5,
+        }
+        assert report["by_type"]["exact_token"] == {
+            "hits_strict": 1,
+            "hits_related": 1,
+            "total": 1,
+            "hit_rate_strict": 1.0,
+            "hit_rate_related": 1.0,
+        }
 
     def test_hit_rate_zero_when_no_questions(self):
-        """All-refusal golden set -> zero non-refusal questions -> hit_rate 0.0, no ZeroDivisionError."""
+        """All-refusal golden set -> zero non-refusal questions -> both hit
+        rates 0.0, no ZeroDivisionError."""
         golden = [{"question": "Q1", "type": "refusal", "expected_sections": []}]
 
         report = evaluate_retrieval(golden, retrieve_fn=lambda q, top_k=6: [])
 
         assert report["total"] == 0
-        assert report["hits"] == 0
-        assert report["hit_rate"] == 0.0
+        assert report["hits_strict"] == 0
+        assert report["hits_related"] == 0
+        assert report["hit_rate_strict"] == 0.0
+        assert report["hit_rate_related"] == 0.0
         assert report["by_type"] == {}
 
 
@@ -302,6 +360,9 @@ class TestRunEval:
         secret_chunk_text = "TOP-SECRET-COPYRIGHTED-HANDBOOK-PROSE"
 
         def fake_retrieve(question, top_k=6):
+            # The retrieved chunk carries copyrighted prose in page_content;
+            # the report must never echo it (D30). This is the leak source
+            # that keeps the assertions below meaningful.
             doc = Document(
                 page_content=secret_chunk_text,
                 metadata={"section_number": "14.8.5"},
@@ -309,7 +370,14 @@ class TestRunEval:
             return [{"document": doc, "score": 1.0, "metadata": doc.metadata}]
 
         def fake_answer(question):
-            return f"{secret_chunk_text} {REFUSAL_PHRASE}"
+            # The refusal question must score as a refusal under the tightened
+            # (exact-match) is_refusal, so return EXACTLY the canonical phrase.
+            # Any other question defensively returns corpus prose, so if the
+            # harness ever generated an answer for a non-refusal question and a
+            # report path leaked it, the leak assertions below would fire.
+            if "CGT" in question:
+                return REFUSAL_PHRASE
+            return f"Per the handbook, {secret_chunk_text}."
 
         result = run_eval(
             golden_path,
@@ -317,6 +385,7 @@ class TestRunEval:
             results_path=str(results_path),
             retrieve_fn=fake_retrieve,
             answer_fn=fake_answer,
+            provenance_fn=_fake_provenance,
         )
 
         assert results_path.exists()
@@ -327,7 +396,9 @@ class TestRunEval:
         captured = capsys.readouterr()
         assert secret_chunk_text not in captured.out
 
-        assert result["retrieval"]["hits"] == 1
+        # Dual metric: the retrieved 14.8.5 matches expected 14.8.5 exactly.
+        assert result["retrieval"]["hits_strict"] == 1
+        assert result["retrieval"]["hits_related"] == 1
         assert result["refusals"]["refused"] == 1
 
     def test_skip_refusals_prints_skipped(self, tmp_path, capsys):
@@ -343,9 +414,163 @@ class TestRunEval:
             skip_refusals=True,
             results_path=str(results_path),
             retrieve_fn=fake_retrieve,
+            provenance_fn=_fake_provenance,
         )
 
         captured = capsys.readouterr()
         assert "skipped" in captured.out
         assert result["refusals"] is None
         assert "skipped" in results_path.read_text(encoding="utf-8")
+
+
+class TestTopKForwarding:
+    """Pin: top_k must reach the retrieval and refusal passes, not silently
+    default to 6 (agreed in an earlier gate review). IO-free — all injected."""
+
+    def test_evaluate_retrieval_forwards_top_k(self):
+        """evaluate_retrieval(..., top_k=4) calls retrieve_fn with top_k=4."""
+        seen = {}
+
+        def spy_retrieve(question, top_k=6):
+            seen["top_k"] = top_k
+            return [_result("1.1")]
+
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["1.1"]}]
+
+        evaluate_retrieval(golden, retrieve_fn=spy_retrieve, top_k=4)
+
+        assert seen["top_k"] == 4
+
+    def test_run_eval_forwards_top_k_to_both_passes(self, tmp_path):
+        """run_eval(top_k=4) forwards top_k to the retrieval pass (observed on
+        the retrieve spy) and routes the refusal pass through the injected
+        answer_fn (observed by it being called) rather than the live default —
+        so neither pass silently reverts to top_k=6 or hits real IO."""
+        golden_path = TestRunEval()._golden_path(tmp_path)
+        results_path = tmp_path / "results.md"
+
+        retrieve_top_ks = []
+        answer_questions = []
+
+        def spy_retrieve(question, top_k=6):
+            retrieve_top_ks.append(top_k)
+            return [_result("14.8.5")]
+
+        def spy_answer(question):
+            answer_questions.append(question)
+            return REFUSAL_PHRASE
+
+        run_eval(
+            golden_path,
+            top_k=4,
+            results_path=str(results_path),
+            retrieve_fn=spy_retrieve,
+            answer_fn=spy_answer,
+            provenance_fn=_fake_provenance,
+        )
+
+        # One non-refusal question in the golden set -> exactly one retrieval
+        # call, and it carried the forwarded top_k=4.
+        assert retrieve_top_ks == [4]
+        # The refusal pass ran via our injected spy (no live-API default path).
+        assert answer_questions == ["What is the CGT rate?"]
+
+
+class TestProvenanceReport:
+    def test_collect_provenance_injected_into_report(self, tmp_path, capsys):
+        """run_eval renders the injected provenance fields into the report."""
+        golden_path = TestRunEval()._golden_path(tmp_path)
+        results_path = tmp_path / "results.md"
+
+        run_eval(
+            golden_path,
+            top_k=6,
+            skip_refusals=True,
+            results_path=str(results_path),
+            retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
+            provenance_fn=_fake_provenance,
+        )
+
+        content = results_path.read_text(encoding="utf-8")
+        assert "## Provenance" in content
+        assert "deadbee" in content  # git sha
+        assert "clean" in content  # git_dirty False -> "clean"
+        assert "42" in content  # chunk count
+        assert "fake-embed-model" in content
+        assert "fake-gen-model" in content
+        # Per-type counts of the loaded golden set (1 direct, 1 refusal).
+        assert "direct=1" in content
+        assert "refusal=1" in content
+        # Honesty label: the report must state the tuning set is NOT held-out,
+        # so a reader never mistakes it for an out-of-sample benchmark.
+        assert "NOT held-out" in content
+        # The strict-vs-related definition sentence must spell out that nesting
+        # counts in EITHER direction (parent or child), matching the symmetric
+        # _sections_related; "either direction" is the load-bearing phrase.
+        assert "either direction" in content
+
+
+class TestCollectProvenance:
+    """collect_provenance must NEVER raise — a real ``python -m src.pipeline
+    eval`` would otherwise crash mid-report — and must populate its dynamic
+    fields on the happy path. Both cases are fully IO-free: ``subprocess.run``
+    and ``get_vector_store`` are patched, so no real git, store, or network is
+    touched (CLAUDE.md test rule)."""
+
+    def test_never_raises_when_all_io_fails(self, monkeypatch):
+        """Git shelling out AND opening the store both blow up -> every dynamic
+        field degrades to the literal "unavailable" and no exception escapes."""
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("io down")
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", boom)
+        monkeypatch.setattr("src.evaluator.get_vector_store", boom)
+
+        # Must return normally (never raise), even pointed at a missing dir.
+        prov = collect_provenance(persist_directory="/nonexistent")
+
+        assert prov["git_sha"] == "unavailable"
+        assert prov["git_dirty"] == "unavailable"
+        assert prov["chunk_count"] == "unavailable"
+        # Static (import-sourced) fields are present regardless of IO failure.
+        assert prov["embedding_model"] and prov["embedding_model"] != "unavailable"
+        assert prov["generation_model"] and prov["generation_model"] != "unavailable"
+        assert prov["matching"] and prov["matching"] != "unavailable"
+
+    def test_happy_path_populates_dynamic_fields(self, monkeypatch):
+        """Git returns a sha + clean status and the store returns three ids, so
+        the dynamic fields carry those values (sha, git_dirty False, count 3)."""
+
+        def fake_run(cmd, *args, **kwargs):
+            # cmd is ["git", "rev-parse", "--short", "HEAD"] or
+            # ["git", "status", "--porcelain"]; branch on the subcommand.
+            # SimpleNamespace stands in for the CompletedProcess (only .stdout
+            # is read); an empty status string means a clean tree.
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(stdout="")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        class FakeStore:
+            def get(self, include=None):
+                # Count-only fetch: no documents/embeddings are loaded.
+                assert include == []
+                return {"ids": ["id0", "id1", "id2"]}
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: FakeStore(),
+        )
+
+        prov = collect_provenance(persist_directory="/nonexistent")
+
+        assert prov["git_sha"] == "abc1234"
+        assert prov["git_dirty"] is False
+        assert prov["chunk_count"] == 3
+        # Static fields still present alongside the populated dynamic ones.
+        assert prov["embedding_model"] and prov["embedding_model"] != "unavailable"
+        assert prov["generation_model"] and prov["generation_model"] != "unavailable"
+        assert prov["matching"] and prov["matching"] != "unavailable"

@@ -1,5 +1,6 @@
 """Embedding generation and ChromaDB vector storage module."""
 
+import functools
 import hashlib
 import logging
 import shutil
@@ -20,8 +21,17 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_MODEL_MANIFEST = "embedding_model.txt"
 
 
+@functools.lru_cache(maxsize=1)
 def get_embedding_function() -> HuggingFaceEmbeddings:
-    """Create and return a HuggingFace embedding function."""
+    """Create and return the HuggingFace embedding function (cached).
+
+    ``lru_cache`` means the underlying MiniLM model loads once per process
+    instead of once per ``get_vector_store()`` call — before this, every
+    ``retrieve()`` reloaded the model (35+ loads across one eval run). Safe
+    because the object is stateless configuration and the function takes no
+    arguments; callers that need a different embedding function (tests use
+    FakeEmbeddings) already pass it explicitly and never hit this path.
+    """
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": "cpu"},

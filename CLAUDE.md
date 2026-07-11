@@ -5,7 +5,8 @@ RAG pipeline over an OCR-scanned Irish conveyancing handbook (~800 pages, decima
 paragraph numbering: Chapter 3 → 3.2 → 3.2.1). The product's entire point is
 **grounded answers with chapter/paragraph/page citations** and explicit refusal
 when the answer is not in the corpus. Portfolio piece for the Claude Corps
-Fellowship — code freeze 10 July, submission 12 July.
+Fellowship — two-track: v1 freeze on 11 July (to be tagged `v1.0-baseline` at
+merge), v2 remediation target 13 July, fellowship deadline 17 July.
 
 Working spec lives in IMPLEMENTATION_PLAN.md. Design rationale lives in
 docs/decisions.md. Current phase is stated at the top of decisions.md.
@@ -37,7 +38,8 @@ docs/decisions.md. Current phase is stated at the top of decisions.md.
   markers (learned from the PART false-positive).
 - Chunk metadata keys: chapter_number, chapter_title, section_number,
   heading, page_start, page_end, source, title, document_type.
-- Tests mock all IO and models (see tests/conftest.py FakeEmbeddings pattern);
+- Tests mock all IO and models (see the FakeEmbeddings pattern in
+  tests/test_embedder.py, imported by the other test files that need it);
   no network or API calls in the test suite.
 - Explain non-obvious diffs at the level of someone re-learning Python.
 
