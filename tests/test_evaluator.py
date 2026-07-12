@@ -44,6 +44,7 @@ def _fake_provenance():
     return {
         "git_sha": "deadbee",
         "git_dirty": False,
+        "git_dirty_other": 0,
         "chunk_count": 42,
         "embedding_model": "fake-embed-model",
         "generation_model": "fake-gen-model",
@@ -532,6 +533,7 @@ class TestCollectProvenance:
 
         assert prov["git_sha"] == "unavailable"
         assert prov["git_dirty"] == "unavailable"
+        assert prov["git_dirty_other"] == "unavailable"
         assert prov["chunk_count"] == "unavailable"
         # Static (import-sourced) fields are present regardless of IO failure.
         assert prov["embedding_model"] and prov["embedding_model"] != "unavailable"
@@ -569,8 +571,187 @@ class TestCollectProvenance:
 
         assert prov["git_sha"] == "abc1234"
         assert prov["git_dirty"] is False
+        assert prov["git_dirty_other"] == 0
         assert prov["chunk_count"] == 3
         # Static fields still present alongside the populated dynamic ones.
         assert prov["embedding_model"] and prov["embedding_model"] != "unavailable"
         assert prov["generation_model"] and prov["generation_model"] != "unavailable"
         assert prov["matching"] and prov["matching"] != "unavailable"
+
+    def test_dirty_other_zero_when_only_excluded_path_dirty(self, monkeypatch):
+        """Porcelain reports exactly one dirty file, the caller's own
+        excluded (about-to-be-overwritten) report -> git_dirty True but
+        git_dirty_other 0 (nothing dirty BESIDES the excluded path)."""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(stdout=" M eval/results.md\n")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: SimpleNamespace(get=lambda include=None: {"ids": []}),
+        )
+
+        prov = collect_provenance(
+            persist_directory="/nonexistent",
+            exclude_paths=("eval/results.md",),
+        )
+
+        assert prov["git_dirty"] is True
+        assert prov["git_dirty_other"] == 0
+
+    def test_dirty_other_counts_non_excluded_dirty_files(self, monkeypatch):
+        """Two dirty files, only one excluded -> git_dirty_other counts just
+        the remaining (non-excluded) one."""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(
+                    stdout=" M eval/results.md\n M src/foo.py\n"
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: SimpleNamespace(get=lambda include=None: {"ids": []}),
+        )
+
+        prov = collect_provenance(
+            persist_directory="/nonexistent",
+            exclude_paths=("eval/results.md",),
+        )
+
+        assert prov["git_dirty"] is True
+        assert prov["git_dirty_other"] == 1
+
+    def test_empty_porcelain_is_clean_and_zero_other(self, monkeypatch):
+        """No dirty paths at all -> git_dirty False, git_dirty_other 0, no
+        ZeroDivisionError-style edge case (just an empty set to check)."""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(stdout="")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: SimpleNamespace(get=lambda include=None: {"ids": []}),
+        )
+
+        prov = collect_provenance(persist_directory="/nonexistent")
+
+        assert prov["git_dirty"] is False
+        assert prov["git_dirty_other"] == 0
+
+    def test_rename_line_parsed_by_new_path(self, monkeypatch):
+        """A rename porcelain line ('R  old -> new') is parsed by its
+        right-hand (new/current) path, not the raw line or the old path --
+        excluding the new path zeroes out git_dirty_other."""
+
+        def fake_run(cmd, *args, **kwargs):
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(
+                    stdout="R  old_name.py -> eval/results.md\n"
+                )
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: SimpleNamespace(get=lambda include=None: {"ids": []}),
+        )
+
+        prov = collect_provenance(
+            persist_directory="/nonexistent",
+            exclude_paths=("eval/results.md",),
+        )
+
+        assert prov["git_dirty"] is True
+        assert prov["git_dirty_other"] == 0
+
+
+class TestShaLineRendering:
+    """The report's sha line must disambiguate "clean", "dirty only because
+    of the report we're about to overwrite", and "dirty for other reasons
+    too" -- driven end-to-end through run_eval with an injected fake
+    provenance dict (IO-free: no real git, no real store)."""
+
+    def _provenance(self, **overrides):
+        prov = _fake_provenance()
+        prov.update(overrides)
+        return prov
+
+    def _report_text(self, tmp_path, provenance):
+        golden_path = TestRunEval()._golden_path(tmp_path)
+        results_path = tmp_path / "results.md"
+
+        run_eval(
+            golden_path,
+            top_k=6,
+            skip_refusals=True,
+            results_path=str(results_path),
+            retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
+            provenance_fn=lambda: provenance,
+        )
+
+        return results_path.read_text(encoding="utf-8")
+
+    def test_sha_line_clean_when_not_dirty(self, tmp_path):
+        provenance = self._provenance(git_dirty=False, git_dirty_other=0)
+
+        content = self._report_text(tmp_path, provenance)
+
+        assert "git sha: deadbee (clean)" in content
+        assert "apart" not in content
+
+    def test_sha_line_clean_apart_from_report_when_only_report_dirty(self, tmp_path):
+        provenance = self._provenance(git_dirty=True, git_dirty_other=0)
+
+        content = self._report_text(tmp_path, provenance)
+
+        assert (
+            "git sha: deadbee (clean apart from this generated report)" in content
+        )
+
+    def test_sha_line_dirty_with_other_files_when_others_dirty(self, tmp_path):
+        provenance = self._provenance(git_dirty=True, git_dirty_other=3)
+
+        content = self._report_text(tmp_path, provenance)
+
+        assert "git sha: deadbee (dirty: 3 file(s) beyond this report)" in content
+
+    def test_sha_line_degrades_when_git_dirty_unavailable(self, tmp_path):
+        """git_dirty itself is "unavailable" (git not usable at all) -> the
+        sha line renders that string as-is and run_eval does not raise,
+        regardless of what git_dirty_other holds."""
+        provenance = self._provenance(
+            git_sha="unavailable", git_dirty="unavailable", git_dirty_other="unavailable"
+        )
+
+        content = self._report_text(tmp_path, provenance)
+
+        assert "git sha: unavailable (unavailable)" in content
+
+    def test_sha_line_falls_back_to_plain_dirty_when_other_not_an_int(self, tmp_path):
+        """git_dirty is True but git_dirty_other is unavailable (the
+        subprocess call that would populate it raised) -- degrade to the
+        old plain "(dirty)" rather than crash on a non-int count."""
+        provenance = self._provenance(git_dirty=True, git_dirty_other="unavailable")
+
+        content = self._report_text(tmp_path, provenance)
+
+        assert "git sha: deadbee (dirty)" in content
+        assert "apart" not in content
+        assert "beyond this report" not in content

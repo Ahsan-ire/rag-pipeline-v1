@@ -2,8 +2,8 @@
 
 **Target (superseded — see "Two-track remediation" after Phase 12):** ~~working, evaluated,
 documented pipeline frozen by Fri 10 July, submitted Sun 12 July~~. Following the 11 Jul external
-critique, the plan split into two tracks: v1 frozen and tagged `v1.0-baseline` on **Fri 11 July**;
-v2 production-hardening (Phases 7–12) targeted for **Sun 13 July**; Claude Corps Fellowship
+critique, the plan split into two tracks: v1 frozen and tagged `v1.0-baseline` on **Sat 11 July**;
+v2 production-hardening (Phases 7–12) targeted for **Mon 13 July**; Claude Corps Fellowship
 deadline **17 July** is buffer for the v1-vs-v2 submission decision.
 
 **Scope discipline:** one corpus (the conveyancing handbook), one job (answer procedure questions with chapter/paragraph/page citations, refuse when out-of-corpus), one interface (CLI). Anything else is post-submission.
@@ -144,7 +144,7 @@ extractor. Response (see `docs/decisions.md` D32–D33 onward): freeze today as 
 fail-visible, not fail-closed — then implement the critique properly for v2 (fail-closed grounding
 gate, auditability, held-out eval) by 13 Jul, and decide on the 13th which to submit.
 
-## Phase 6 — v1 freeze: honesty + safety minimum (Fri 11 Jul, ~3.5–4.5h) — `phase-6-v1-freeze`
+## Phase 6 — v1 freeze: honesty + safety minimum (Sat 11 Jul, ~3.5–4.5h) — `phase-6-v1-freeze`
 
 **Design:** scope discipline is fail-visible, not fail-closed. No gate module, no appendix work, no
 lifecycle work — anything running past its timebox defers to its v2 phase.
@@ -190,7 +190,7 @@ tags exist on origin.
 
 ---
 
-## Phase 7 — appendix citations end-to-end (Sat am, ~2h) — `phase-7-appendix-citations`
+## Phase 7 — appendix citations end-to-end (Sun 12 Jul am, ~2h) — `phase-7-appendix-citations`
 
 **Design:** must precede the grounding gate — today an appendix-only-cited answer extracts zero
 citations and would be wrongly blocked. 4 golden questions expect APPENDIX sections.
@@ -214,7 +214,7 @@ lowercase "Appendix" extracts; eval hit against `["APPENDIX 14.1"]`.
 
 ---
 
-## Phase 8 — grounding gate + audit trail (Sat pm, ~3h) — `phase-8-grounding-gate`
+## Phase 8 — grounding gate + audit trail (Sun 12 Jul pm, ~3h) — `phase-8-grounding-gate`
 
 1. **New `src/grounding.py`** — `classify(answer, citations, citation_check)` → `REFUSAL` /
    `GROUNDED` (≥1 citation, zero ungrounded) / `PARTIALLY_GROUNDED` (≥1 grounded AND ≥1 ungrounded)
@@ -249,7 +249,7 @@ withheld with sources; one well-formed audit line per query; `git status` clean 
 
 ---
 
-## Phase 9 — index lifecycle + load-once retrieval (Sat eve, ~2h) — `phase-9-index-lifecycle`
+## Phase 9 — index lifecycle + load-once retrieval (Sun 12 Jul eve, ~2h) — `phase-9-index-lifecycle`
 
 1. **Per-source transactional replace** — new `sync_documents(documents, vector_store=None,
    persist_directory=None)` in `src/embedder.py` (`add_documents` stays insert-only): group by
@@ -272,9 +272,9 @@ delete-rebuild trap).
 
 ---
 
-## Phase 10 — Eval v2: honest, held-out, ablated (Sun am, ~4h) — `phase-10-eval-v2`
+## Phase 10 — Eval v2: honest, held-out, ablated (Mon 13 Jul am, ~4h) — `phase-10-eval-v2`
 
-**Prerequisite** (Fri 11 night, human, ~1h, no pipeline runs, no peeking): author
+**Prerequisite** (Sat 11 night, human, ~1h, no pipeline runs, no peeking): author
 `eval/heldout_set.jsonl` — 15–20 fresh in-corpus questions (direct + exact_token, verified against
 the PDF, never used in tuning) + 5–8 near-domain refusal hard negatives, each grepped against the
 PDF text before locking in (the handbook has tax/family-home/lease chapters that could make a
@@ -317,7 +317,7 @@ disclosed subset); D39 recorded with evidence.
 
 ---
 
-## Phase 11 — portfolio surface (Sun pm, ~3h) — `phase-11-portfolio-surface`
+## Phase 11 — portfolio surface (Mon 13 Jul pm, ~3h) — `phase-11-portfolio-surface`
 
 1. **Synthetic sample corpus:** `scripts/sample_corpus.py` — copyright-safe ~15-page synthetic
    handbook (2–3 chapters, nested sections, one APPENDIX, a false-positive trap line), standalone
@@ -343,7 +343,7 @@ above.
 
 ---
 
-## Phase 12 — final gate + v1-vs-v2 decision (Sun eve, ~1.5–2h) — on main
+## Phase 12 — final gate + v1-vs-v2 decision (Mon 13 Jul eve, ~1.5–2h) — on main
 
 1. `/phase-gate` over v2 (full suite, pressure-tester, high-effort code review, hygiene: nothing
    tracked in `data/`, `*.pdf`, `.env`, `chroma_db/`, `logs/`).

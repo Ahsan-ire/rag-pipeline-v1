@@ -811,3 +811,11 @@ SHA-256 `601a81c0a3e36aa5d90afb7904fdebad7704d3fff506871c0b9032d7576dcfe6`. Sele
 the full 42-candidate audit trail live in `eval/heldout_candidate_review.md`. Phase 10 scores it;
 Phase 12 runs BOTH v1 (worktree at `v1.0-baseline`) and v2 against this exact file for the
 head-to-head; nothing is ever tuned on its results.
+**Provenance dirty-flag disambiguation (12 Jul 2026):** a generated report cannot record its own
+commit's SHA, so the freshly regenerated `eval/results.md` always made the tree look dirty and the
+committed artifact read `(dirty)` with no explanation visible to a reviewer (colleague review,
+12 Jul). `collect_provenance` now takes `exclude_paths` (run_eval passes its own `results_path`)
+and reports `git_dirty_other` — the count of dirty files beyond the report; the sha line renders
+`(clean)` / `(clean apart from this generated report)` / `(dirty: N file(s) beyond this report)`,
+degrading gracefully when git is unavailable. Rejected: a footnote sentence in the report (mushy,
+"typically" phrasing) and amending commits to hide the two-step dance (history rewriting).

@@ -291,7 +291,36 @@ def evaluate_refusals(
     }
 
 
-def collect_provenance(persist_directory: str = CHROMA_PERSIST_DIR) -> Dict[str, Any]:
+def _porcelain_dirty_paths(porcelain_output: str) -> List[str]:
+    """Parse ``git status --porcelain`` stdout into a list of dirty paths.
+
+    Porcelain (v1) format is two status-code characters, one separator space,
+    then the path: ``"XY path/to/file"``. For a rename or copy, the path part
+    is instead ``"old/path -> new/path"``; the file's current location is the
+    right-hand side, so that is what gets returned for those lines.
+
+    Args:
+        porcelain_output: Raw stdout from ``git status --porcelain``.
+
+    Returns:
+        A list of paths (repo-root-relative, as git reports them), one per
+        non-blank line, in file order.
+    """
+    paths: List[str] = []
+    for line in porcelain_output.splitlines():
+        if not line:
+            continue
+        path_part = line[3:]  # past the 2-char status code + 1 separator space
+        if " -> " in path_part:
+            path_part = path_part.split(" -> ", 1)[1]
+        paths.append(path_part)
+    return paths
+
+
+def collect_provenance(
+    persist_directory: str = CHROMA_PERSIST_DIR,
+    exclude_paths: tuple = (),
+) -> Dict[str, Any]:
     """Gather the code + index + model facts that produced an eval run.
 
     Every field degrades to the string ``"unavailable"`` rather than raising,
@@ -301,6 +330,11 @@ def collect_provenance(persist_directory: str = CHROMA_PERSIST_DIR) -> Dict[str,
     - ``git_sha``: short commit hash (``git rev-parse --short HEAD``).
     - ``git_dirty``: True if ``git status --porcelain`` reports any change,
       else False (or ``"unavailable"`` if git is not usable here).
+    - ``git_dirty_other``: count of dirty paths whose ``os.path.normpath`` is
+      NOT among the normpath'd ``exclude_paths`` (or ``"unavailable"`` on the
+      same subprocess failure that takes down ``git_dirty``). This exists so
+      a report can say "the only dirty file is the report you're reading"
+      instead of a bare, unhelpful "dirty" — see ``exclude_paths`` below.
     - ``chunk_count``: number of vectors currently in the Chroma store; asks
       for ``include=[]`` so only the ``ids`` come back (no documents/embeddings
       loaded just to be counted).
@@ -310,6 +344,19 @@ def collect_provenance(persist_directory: str = CHROMA_PERSIST_DIR) -> Dict[str,
 
     Args:
         persist_directory: Chroma persistence directory to count chunks in.
+        exclude_paths: Paths to exclude when counting ``git_dirty_other`` —
+            typically the eval report file about to be (re)written, which is
+            expected to show up dirty and shouldn't count as a surprise.
+            Matching is by ``os.path.normpath`` equality. Caveat: porcelain
+            paths from git are always repo-root-relative (relative to the
+            repo containing this file), while ``exclude_paths`` is whatever
+            the caller passed — typically relative to the caller's own
+            process cwd. If the caller's process runs from outside the repo
+            root, a path here may fail to match the porcelain path even
+            though they name the same file. The failure mode is harmlessly
+            conservative: the unmatched file is counted as one "other" dirty
+            file, i.e. the report says "dirty: 1 file(s) beyond this report"
+            instead of the fully-clean phrasing — never a false "clean".
 
     Returns:
         A dict with the keys described above; string values are plain strings
@@ -339,9 +386,15 @@ def collect_provenance(persist_directory: str = CHROMA_PERSIST_DIR) -> Dict[str,
             check=True,
             cwd=repo_dir,
         ).stdout
-        git_dirty: Any = bool(status.strip())
+        dirty_paths = _porcelain_dirty_paths(status)
+        git_dirty: Any = bool(dirty_paths)
+        excluded = {os.path.normpath(p) for p in exclude_paths}
+        git_dirty_other: Any = sum(
+            1 for p in dirty_paths if os.path.normpath(p) not in excluded
+        )
     except Exception:
         git_dirty = "unavailable"
+        git_dirty_other = "unavailable"
 
     try:
         store = get_vector_store(persist_directory=persist_directory)
@@ -352,6 +405,7 @@ def collect_provenance(persist_directory: str = CHROMA_PERSIST_DIR) -> Dict[str,
     return {
         "git_sha": git_sha,
         "git_dirty": git_dirty,
+        "git_dirty_other": git_dirty_other,
         "chunk_count": chunk_count,
         "embedding_model": EMBEDDING_MODEL,
         "generation_model": GENERATION_MODEL,
@@ -390,13 +444,26 @@ def _format_report(
         type_counts[entry["type"]] = type_counts.get(entry["type"], 0) + 1
     counts_str = ", ".join(f"{t}={type_counts[t]}" for t in sorted(type_counts))
 
-    # git_dirty is a bool on success but the string "unavailable" on failure;
-    # render the bool as clean/dirty and pass any string through as-is.
+    # git_dirty is a bool on success but the string "unavailable" on failure.
+    # When dirty, git_dirty_other (also bool-guarded against "unavailable")
+    # disambiguates "only the report we're about to overwrite is dirty" from
+    # "something else changed too" — see collect_provenance's exclude_paths.
     dirty = provenance.get("git_dirty")
-    if isinstance(dirty, bool):
-        dirty_str = "dirty" if dirty else "clean"
-    else:
+    dirty_other = provenance.get("git_dirty_other")
+    if not isinstance(dirty, bool):
+        # git_dirty itself is "unavailable" (or some other non-bool) — degrade
+        # gracefully: render whatever string we have, never raise.
         dirty_str = str(dirty)
+    elif not dirty:
+        dirty_str = "clean"
+    elif isinstance(dirty_other, int) and dirty_other == 0:
+        dirty_str = "clean apart from this generated report"
+    elif isinstance(dirty_other, int):
+        dirty_str = f"dirty: {dirty_other} file(s) beyond this report"
+    else:
+        # dirty is True but git_dirty_other didn't come back as an int (e.g.
+        # "unavailable") — fall back to the old plain "dirty", never raise.
+        dirty_str = "dirty"
 
     lines: List[str] = []
     lines.append("# Legal RAG Evaluation Report")
@@ -514,8 +581,11 @@ def run_eval(
             ``evaluate_refusals``); mainly for tests.
         provenance_fn: Optional override for the provenance block; called with
             no arguments to return the ``collect_provenance`` shape. Defaults
-            to ``collect_provenance`` (which shells out to git and opens the
-            Chroma store), so tests MUST inject a fake to stay IO-free.
+            to ``collect_provenance`` with ``results_path`` passed as its
+            ``exclude_paths`` (the report about to be written is expected to
+            be dirty and shouldn't count as a surprise) — this default shells
+            out to git and opens the Chroma store, so tests MUST inject a
+            fake to stay IO-free.
 
     Returns:
         Dict with ``retrieval`` (evaluate_retrieval's return value),
@@ -531,7 +601,9 @@ def run_eval(
         else evaluate_refusals(golden, answer_fn=answer_fn, top_k=top_k)
     )
 
-    provenance = collect_provenance() if provenance_fn is None else provenance_fn()
+    if provenance_fn is None:
+        provenance_fn = lambda: collect_provenance(exclude_paths=(results_path,))
+    provenance = provenance_fn()
 
     report = _format_report(
         golden_path, top_k, retrieval, refusals, provenance, golden
