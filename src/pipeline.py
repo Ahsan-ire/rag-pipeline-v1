@@ -10,9 +10,16 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
+from src.audit import build_event, log_event
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import add_documents, clear_store
 from src.generator import generate_with_sources, is_refusal
+from src.grounding import (
+    CITATIONS_UNVERIFIED,
+    CITATIONS_VERIFIED,
+    PARTIALLY_VERIFIED,
+    REFUSAL,
+)
 from src.ingest import (
     load_directory,
     load_handbook_pdf,
@@ -105,11 +112,72 @@ def index_documents(
     return count
 
 
+def _write_audit(
+    *,
+    question: str,
+    top_k: int,
+    document_type: Optional[str],
+    results: list,
+    gate_outcome: Optional[str],
+    action: str,
+    citation_check: Dict[str, Any],
+    citations: list,
+    answer: str,
+) -> None:
+    """Build and append exactly one audit event, tolerating log failures.
+
+    A query must never crash because ``logs/`` is unwritable, so the whole
+    build-and-append is wrapped in a broad ``except``. The failure is not
+    swallowed silently, though: a one-line warning is printed so an operator
+    knows the audit trail has a hole. ``build_event`` records only
+    ``len(answer)`` (see src/audit.py), so passing the real draft answer here
+    never persists corpus text.
+    """
+    try:
+        log_event(
+            build_event(
+                question=question,
+                top_k=top_k,
+                document_type=document_type,
+                results=results,
+                gate_outcome=gate_outcome,
+                action=action,
+                citation_check=citation_check,
+                citations=citations,
+                answer=answer,
+            )
+        )
+    except Exception as e:  # noqa: BLE001 — an audit hiccup must not fail a query
+        print(f"⚠ audit log write failed: {e}")
+
+
+def _print_retrieved_sources(results: list) -> None:
+    """Print one locator+pages line per retrieved chunk, no chunk text.
+
+    Used by the CITATIONS_UNVERIFIED paths (both the block notice and the
+    ``--show-unverified`` draft) so a reviewer can see what the answer was
+    matched against. Reuses ``locator_label`` (D34) so the APPENDIX grammar
+    stays identical to every other display surface.
+    """
+    print("\nRetrieved sources (for manual review):")
+    for r in results:
+        meta = r["document"].metadata
+        section = meta.get("section_number") or "—"
+        p_start = meta.get("page_start", "?")
+        p_end = meta.get("page_end")
+        if p_end and p_end != p_start:
+            pages = f"pp.{p_start}-{p_end}"
+        else:
+            pages = f"p.{p_start}"
+        print(f"  - {locator_label(section)}  {pages}")
+
+
 def query(
     question: str,
     top_k: int = DEFAULT_TOP_K,
     document_type: Optional[str] = None,
     verbose: bool = False,
+    show_unverified: bool = False,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
 
@@ -121,11 +189,18 @@ def query(
             before the answer. Citation-honesty warnings (zero citations on a
             non-refusal answer; ungrounded citations) always print, regardless
             of this flag — they are correctness signals, not debug output.
+        show_unverified: If True and the grounding gate returns
+            CITATIONS_UNVERIFIED, print the withheld draft under an explicit
+            "UNVERIFIED DRAFT" banner and return the real answer instead of the
+            block notice. Has no effect on any other gate outcome.
 
     Returns:
-        Dict with answer, citations, sources, source_documents, and
-        citation_check ({grounded, ungrounded}) — the same shape on every
-        path, so callers (e.g. the Phase 5 eval) never need key guards.
+        Dict with answer, citations, sources, source_documents,
+        citation_check ({grounded, ungrounded}), and gate_outcome — the same
+        shape on every path, so callers (e.g. the Phase 5 eval) never need key
+        guards. When the gate blocks an answer (CITATIONS_UNVERIFIED without
+        ``show_unverified``), ``answer`` is a block notice, the draft text is
+        withheld, and ``answer_chars`` records that a draft existed.
     """
     # Retrieve relevant chunks
     results = retrieve(question, top_k=top_k, document_type=document_type)
@@ -133,12 +208,26 @@ def query(
     if not results:
         msg = "No relevant documents found. Please index some documents first."
         print(f"\n{msg}")
+        # The gate never ran (there was nothing to ground against), so the audit
+        # record carries gate_outcome=None and the no_results action.
+        _write_audit(
+            question=question,
+            top_k=top_k,
+            document_type=document_type,
+            results=[],
+            gate_outcome=None,
+            action="no_results",
+            citation_check={"grounded": [], "ungrounded": []},
+            citations=[],
+            answer=msg,
+        )
         return {
             "answer": msg,
             "citations": [],
             "sources": [],
             "source_documents": [],
             "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": None,
         }
 
     logger.info("Retrieved %d relevant chunks", len(results))
@@ -158,35 +247,135 @@ def query(
 
     # Generate answer with citations
     result = generate_with_sources(question, results)
+    draft_answer = result["answer"]
+    citations = result.get("citations") or []
+    citation_check = result.get("citation_check") or {"grounded": [], "ungrounded": []}
+    ungrounded = citation_check.get("ungrounded", [])
+    outcome = result.get("gate_outcome")
 
-    # Display results
-    print(f"\nAnswer:\n{result['answer']}")
-    if result["sources"]:
-        print("\nCitations found:")
-        for source in result["sources"]:
-            print(f"  - {source}")
+    # Default: pass generate_with_sources' dict through unchanged. Only the
+    # gated-block branch replaces it with a withheld-draft dict; every other
+    # outcome (and the legacy fallback) returns the real result untouched.
+    return_value: Dict[str, Any] = result
 
-    # A non-refusal answer with no extractable citations is invisible to
-    # citation_check (there is nothing to validate), so it needs its own flag:
-    # otherwise it reads exactly like a grounded answer even though a reader
-    # has no locator to check it against.
-    if not is_refusal(result["answer"]) and not result["citations"]:
+    if outcome is None:
+        # FALLBACK (belt and braces): no gate outcome means a legacy caller or a
+        # mock that predates the grounding gate. Reproduce the exact v1 display —
+        # answer + citations + zero-citation warning + ungrounded warning — and
+        # log it as a plain "shown". Real generate_with_sources always sets
+        # gate_outcome, so production never reaches this branch.
+        print(f"\nAnswer:\n{draft_answer}")
+        if result["sources"]:
+            print("\nCitations found:")
+            for source in result["sources"]:
+                print(f"  - {source}")
+        # A non-refusal answer with no extractable citations is invisible to
+        # citation_check (there is nothing to validate), so it needs its own
+        # flag: otherwise it reads exactly like a grounded answer even though a
+        # reader has no locator to check it against.
+        if not is_refusal(draft_answer) and not citations:
+            print(
+                "\n⚠ WARNING: this answer contains no citations and could not be "
+                "verified\n  against the retrieved sources — treat it as "
+                "unverified."
+            )
+        # Ungrounded citations are a correctness signal, not a debugging aid —
+        # always show them so an invented locator is never mistaken for a real
+        # one just because --verbose was left off.
+        if ungrounded:
+            print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
+            for citation in ungrounded:
+                print(f"  - {citation['raw']}")
+        action = "shown"
+
+    elif outcome == REFUSAL:
+        # The answer IS the refusal sentence — print it as-is, no warnings.
+        print(f"\nAnswer:\n{draft_answer}")
+        action = "refusal_shown"
+
+    elif outcome == CITATIONS_VERIFIED:
+        print(f"\nAnswer:\n{draft_answer}")
+        if result["sources"]:
+            print("\nCitations found:")
+            for source in result["sources"]:
+                print(f"  - {source}")
+        print("\n✓ All citations verified against the retrieved sources.")
+        action = "shown"
+
+    elif outcome == PARTIALLY_VERIFIED:
+        print(f"\nAnswer:\n{draft_answer}")
+        if result["sources"]:
+            print("\nCitations found:")
+            for source in result["sources"]:
+                print(f"  - {source}")
+        # Name every unverified citation so a reader knows exactly which
+        # locators to double-check before relying on them.
         print(
-            "\n⚠ WARNING: this answer contains no citations and could not be "
-            "verified\n  against the retrieved sources — treat it as "
-            "unverified."
+            f"\n⚠ {len(ungrounded)} of {len(citations)} citations could not be "
+            "verified against the retrieved sources — check these before relying "
+            "on them:"
         )
-
-    # Ungrounded citations are a correctness signal, not a debugging aid —
-    # always show them so an invented locator is never mistaken for a real
-    # one just because --verbose was left off.
-    ungrounded = result["citation_check"]["ungrounded"]
-    if ungrounded:
-        print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
         for citation in ungrounded:
             print(f"  - {citation['raw']}")
+        action = "shown_with_warning"
 
-    return result
+    else:  # CITATIONS_UNVERIFIED
+        if show_unverified:
+            # Explicit operator override: show the draft, clearly branded as
+            # unverified, plus the retrieved sources it was matched against.
+            print("\nUNVERIFIED DRAFT — do not rely on this text")
+            print(f"\nAnswer:\n{draft_answer}")
+            _print_retrieved_sources(results)
+            action = "shown_unverified_override"
+            # return_value stays as the real result (draft included).
+        else:
+            # Fail closed: the draft's citations could not be verified, so the
+            # answer body is withheld. Show only the retrieved source headers
+            # (no chunk text) so a reader can review the ground manually.
+            print("\n🚫 BLOCKED — CITATIONS UNVERIFIED")
+            print(
+                "This answer's citations could not be verified against the "
+                "retrieved sources, so it is withheld. This does NOT mean the "
+                "answer is absent from the corpus."
+            )
+            _print_retrieved_sources(results)
+            print(
+                "\nTry rephrasing the question, raising --top-k, or use "
+                "--show-unverified to see the unverified draft."
+            )
+            action = "blocked_unverified"
+            # Build a NEW dict so the draft text never leaves this function.
+            # answer_chars lets a caller see a draft existed without seeing it.
+            return_value = {
+                "answer": (
+                    "BLOCKED — CITATIONS UNVERIFIED: the answer was withheld "
+                    "because its citations could not be verified against the "
+                    "retrieved sources."
+                ),
+                "gate_outcome": outcome,
+                "citations": citations,
+                "sources": result.get("sources", []),
+                "citation_check": citation_check,
+                "source_documents": result.get("source_documents", []),
+                "answer_chars": len(draft_answer),
+            }
+
+    # One audit event per query, after the display decision so `action` is
+    # final. The REAL draft answer goes to build_event (it records only the
+    # length, never the text — see src/audit.py).
+    _write_audit(
+        question=question,
+        top_k=top_k,
+        document_type=document_type,
+        results=results,
+        gate_outcome=outcome,
+        action=action,
+        citation_check=citation_check,
+        citations=citations,
+        answer=draft_answer,
+    )
+
+    return return_value
 
 
 def main():
@@ -255,6 +444,15 @@ Examples:
             "(citation warnings always print, with or without this flag)"
         ),
     )
+    query_parser.add_argument(
+        "--show-unverified",
+        dest="show_unverified",
+        action="store_true",
+        help=(
+            "Reveal the withheld draft when the grounding gate blocks an answer "
+            "as CITATIONS_UNVERIFIED (clearly branded as unverified)"
+        ),
+    )
 
     # Eval subcommand
     eval_parser = subparsers.add_parser(
@@ -286,7 +484,13 @@ Examples:
     if args.command == "index":
         index_documents(args.source_path, args.document_type, reset=args.reset)
     elif args.command == "query":
-        query(args.question, args.top_k, args.document_type, args.verbose)
+        query(
+            args.question,
+            args.top_k,
+            args.document_type,
+            args.verbose,
+            args.show_unverified,
+        )
     elif args.command == "eval":
         from src.evaluator import run_eval
 

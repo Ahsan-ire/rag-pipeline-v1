@@ -6,6 +6,12 @@ import pytest
 from langchain_core.documents import Document
 
 from src.generator import REFUSAL_PHRASE
+from src.grounding import (
+    CITATIONS_UNVERIFIED,
+    CITATIONS_VERIFIED,
+    PARTIALLY_VERIFIED,
+    REFUSAL,
+)
 from src.pipeline import index_documents, query
 
 
@@ -147,6 +153,16 @@ class TestIndexDocuments:
 
 
 class TestQuery:
+    @pytest.fixture(autouse=True)
+    def _redirect_audit_log(self, tmp_path, monkeypatch):
+        """Send every query's audit event to a tmp file, never ./logs/.
+
+        The audit wiring is always-on, so any query test that does not patch
+        log_event would otherwise write a real JSONL line into the repo's
+        logs/ directory. Redirecting AUDIT_LOG_PATH per-test keeps the suite
+        hermetic (see src/audit.py log_event path resolution)."""
+        monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit_log.jsonl"))
+
     def test_returns_answer(self):
         """Test that query returns an answer dict."""
         mock_results = [
@@ -168,6 +184,7 @@ class TestQuery:
                 "grounded": [{"para": "1", "page": "1", "raw": "Test, Section 1"}],
                 "ungrounded": [],
             },
+            "gate_outcome": CITATIONS_VERIFIED,
         }
 
         with patch("src.pipeline.retrieve", return_value=mock_results), \
@@ -188,8 +205,10 @@ class TestQuery:
         assert result["citation_check"] == {"grounded": [], "ungrounded": []}
 
     def test_verbose_prints_scores_and_flags_ungrounded(self, capsys):
-        """--verbose prints per-chunk fused RRF scores before the answer and
-        flags citations that don't match any retrieved chunk after it."""
+        """--verbose prints per-chunk fused RRF scores before the answer; under a
+        PARTIALLY_VERIFIED gate outcome the unverified-citation banner (which
+        names each failed locator) prints after it, superseding the legacy
+        ungrounded-citations warning."""
         mock_results = [
             {
                 "document": Document(
@@ -214,6 +233,7 @@ class TestQuery:
                 "grounded": [],
                 "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
             },
+            "gate_outcome": PARTIALLY_VERIFIED,
         }
 
         with patch("src.pipeline.retrieve", return_value=mock_results), \
@@ -221,14 +241,16 @@ class TestQuery:
             query("What is a priority entry?", verbose=True)
 
         out = capsys.readouterr().out
-        assert "RRF=0.03279" in out
+        assert "RRF=0.03279" in out  # verbose RRF listing still prints
         assert "para 14.8.5" in out
-        assert "Ungrounded citations" in out
+        assert "1 of 1 citations could not be verified" in out
+        assert "para 99.9, p.5" in out  # the failed locator is named
 
     def test_verbose_appendix_section_has_no_para_token(self, capsys):
         """The --verbose retrieved-chunks block must mirror the APPENDIX
         locator grammar (chunker._prefix / retriever._handbook_header): an
         appendix section_number prints verbatim, not as "para APPENDIX ..."."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -267,6 +289,7 @@ class TestQuery:
         """A non-refusal answer with no extractable citations gets a prominent
         display warning — citation_check has nothing to validate here, so this
         is the only thing that can catch an uncited answer."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -297,6 +320,7 @@ class TestQuery:
         """The canonical refusal has no citations by design — it must NOT
         trigger the zero-citation warning, which is only for answers that
         look substantive but forgot to cite anything."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -329,6 +353,7 @@ class TestQuery:
         `"<phrase>".`; that is still a refusal and must NOT trigger the
         zero-citation warning. Pins the pipeline↔is_refusal coupling so a
         regression to naive equality (== REFUSAL_PHRASE) is caught here."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -357,6 +382,7 @@ class TestQuery:
     def test_no_zero_citation_warning_when_citations_present(self, capsys):
         """An answer that carries citations never gets the zero-citation
         warning, regardless of whether those citations are grounded."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -388,6 +414,7 @@ class TestQuery:
     def test_ungrounded_citations_print_without_verbose(self, capsys):
         """Ungrounded-citation warnings are a correctness signal, not debug
         output — they must print even when --verbose is not passed."""
+        # No gate_outcome in the mock → pins the legacy fallback display path.
         mock_results = [
             {
                 "document": Document(
@@ -421,3 +448,286 @@ class TestQuery:
         out = capsys.readouterr().out
         assert "Ungrounded citations" in out
         assert "RRF=" not in out  # RRF listing stays verbose-only
+
+    # --- Grounding-gate display policy (Phase 8) --------------------------
+
+    def test_unverified_outcome_withholds_answer_body(self, capsys):
+        """CITATIONS_UNVERIFIED fails closed: the draft body is withheld, the
+        block banner and the retrieved source headers (locator + pages, no
+        chunk text) are shown, and the returned dict carries the block notice
+        with answer_chars but not the draft. The retrieved chunk is an APPENDIX
+        chunk, so its header must render via locator_label (verbatim, no
+        'para' token)."""
+        draft = "SENTINEL DRAFT BODY: the interest is registrable on completion."
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Appendix content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "APPENDIX 14.1",
+                        "page_start": 87,
+                    },
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "APPENDIX 14.1"},
+            }
+        ]
+        mock_generated = {
+            "answer": draft,
+            "citations": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            "sources": ["para 99.9, p.5"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [],
+                "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            },
+            "gate_outcome": CITATIONS_UNVERIFIED,
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            result = query("What is the appendix rule?")
+
+        out = capsys.readouterr().out
+        assert draft not in out  # body is withheld
+        assert "BLOCKED — CITATIONS UNVERIFIED" in out
+        assert "APPENDIX 14.1" in out  # source header line (locator)
+        assert "p.87" in out  # source header line (pages)
+        assert "para APPENDIX" not in out  # appendix renders via locator_label
+        # Returned dict: block notice replaces the draft, but answer_chars proves
+        # a draft existed and the gate outcome is preserved.
+        assert result["answer"] != draft
+        assert "BLOCKED — CITATIONS UNVERIFIED" in result["answer"]
+        assert result["answer_chars"] == len(draft)
+        assert result["gate_outcome"] == CITATIONS_UNVERIFIED
+
+    def test_show_unverified_reveals_draft_and_logs_override(self, capsys):
+        """--show-unverified reveals the withheld draft under the UNVERIFIED
+        DRAFT banner, returns the real answer, and logs the override action."""
+        draft = "SENTINEL DRAFT BODY: the interest is registrable on completion."
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        "page_start": 412,
+                    },
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "14.8.5"},
+            }
+        ]
+        mock_generated = {
+            "answer": draft,
+            "citations": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            "sources": ["para 99.9, p.5"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [],
+                "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            },
+            "gate_outcome": CITATIONS_UNVERIFIED,
+        }
+
+        spy = MagicMock()
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            result = query("What is the rule?", show_unverified=True)
+
+        out = capsys.readouterr().out
+        assert "UNVERIFIED DRAFT" in out
+        assert draft in out  # the draft IS printed under the banner
+        assert result["answer"] == draft  # real answer returned
+        assert spy.call_count == 1
+        assert spy.call_args.args[0]["action"] == "shown_unverified_override"
+
+    def test_partially_verified_names_failed_citations(self, capsys):
+        """PARTIALLY_VERIFIED shows the answer plus a banner that names each
+        unverified locator with 'N of M' wording."""
+        draft = "The rule is X [Handbook, para 3.2, p.10] and Y [para 99.9, p.5]."
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf", "section_number": "3.2"},
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": draft,
+            "citations": [
+                {"para": "3.2", "page": "10", "raw": "para 3.2, p.10"},
+                {"para": "99.9", "page": "5", "raw": "para 99.9, p.5"},
+            ],
+            "sources": ["para 3.2, p.10", "para 99.9, p.5"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+                "ungrounded": [{"para": "99.9", "page": "5", "raw": "para 99.9, p.5"}],
+            },
+            "gate_outcome": PARTIALLY_VERIFIED,
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is the rule?")
+
+        out = capsys.readouterr().out
+        assert draft in out  # answer shown
+        assert "1 of 2 citations could not be verified" in out
+        assert "para 99.9, p.5" in out  # the failed locator is named
+
+    def test_citations_verified_shows_note_and_logs_shown(self, capsys):
+        """CITATIONS_VERIFIED shows the answer, the citations list, and the
+        all-verified closing note; the audit action is 'shown'."""
+        draft = "The rule is X [Handbook, para 3.2, p.10]."
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf", "section_number": "3.2"},
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": draft,
+            "citations": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+            "sources": ["para 3.2, p.10"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+                "ungrounded": [],
+            },
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+
+        spy = MagicMock()
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("What is the rule?")
+
+        out = capsys.readouterr().out
+        assert draft in out
+        assert "verified against the retrieved sources" in out
+        assert spy.call_args.args[0]["action"] == "shown"
+
+    def test_refusal_outcome_shows_no_warnings(self, capsys):
+        """A REFUSAL outcome prints only the refusal sentence — no zero-citation
+        warning, no gate banner — and logs action 'refusal_shown'."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Unrelated content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf"},
+                ),
+                "score": 0.01,
+                "metadata": {},
+            }
+        ]
+        mock_generated = {
+            "answer": REFUSAL_PHRASE,
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": REFUSAL,
+        }
+
+        spy = MagicMock()
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("An out-of-corpus question")
+
+        out = capsys.readouterr().out
+        assert REFUSAL_PHRASE in out
+        assert "WARNING" not in out
+        assert "BLOCKED" not in out
+        assert "✓" not in out
+        assert "could not be verified" not in out
+        assert spy.call_args.args[0]["action"] == "refusal_shown"
+
+    def test_audit_logs_exactly_once_including_no_results(self):
+        """Auditing is always-on: exactly one log_event per query, on both the
+        normal path and the empty-retrieval early-return path (where the
+        recorded action is 'no_results')."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf", "section_number": "3.2"},
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": "The rule is X [Handbook, para 3.2, p.10].",
+            "citations": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+            "sources": ["para 3.2, p.10"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+                "ungrounded": [],
+            },
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+
+        normal_spy = MagicMock()
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", normal_spy):
+            query("What is the rule?")
+        assert normal_spy.call_count == 1
+
+        no_results_spy = MagicMock()
+        with patch("src.pipeline.retrieve", return_value=[]), \
+             patch("src.pipeline.log_event", no_results_spy):
+            query("Unknown question")
+        assert no_results_spy.call_count == 1
+        assert no_results_spy.call_args.args[0]["action"] == "no_results"
+
+    def test_audit_write_failure_is_non_fatal(self, capsys):
+        """A log_event failure must not crash the query: it returns normally and
+        prints a visible one-line warning instead of raising."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Some content.",
+                    metadata={"source": "Conveyancing_Handbook.pdf", "section_number": "3.2"},
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": "The rule is X [Handbook, para 3.2, p.10].",
+            "citations": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+            "sources": ["para 3.2, p.10"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "3.2", "page": "10", "raw": "para 3.2, p.10"}],
+                "ungrounded": [],
+            },
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", side_effect=OSError("disk full")):
+            result = query("What is the rule?")
+
+        out = capsys.readouterr().out
+        assert result["answer"] == "The rule is X [Handbook, para 3.2, p.10]."
+        assert "audit log write failed" in out

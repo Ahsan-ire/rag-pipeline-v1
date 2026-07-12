@@ -9,6 +9,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from src.grounding import classify
 from src.retriever import format_context
 
 load_dotenv()
@@ -250,10 +251,15 @@ def _citation_matches_chunk(
     """True if the citation's page lies in a retrieved chunk that covers its paragraph.
 
     A chunk covers the citation when its ``section_number`` nests-or-equals the
-    cited paragraph (see ``_sections_related``) and the cited page falls within
-    the chunk's ``[page_start, page_end]`` span. A related paragraph with no page
-    metadata counts (nothing to contradict the page). An invented paragraph, or a
-    real one cited on a page no retrieved chunk covers, stays ungrounded.
+    cited paragraph (see ``_sections_related``) AND the cited page falls within
+    the chunk's ``[page_start, page_end]`` span. The page-span check is
+    mandatory and fails closed: a related chunk that carries no ``page_start``
+    cannot verify the citation — the loop moves on, since another retrieved
+    chunk may still cover the same paragraph on the right page. That page check
+    is what does the safety work here, because chunks are section-granular (D28)
+    so section-nesting alone is coarse, and exact-locator equality was rejected
+    (D35). An invented paragraph, or a real one cited on a page no retrieved
+    chunk covers, stays ungrounded.
     """
     para = citation["para"]
     try:
@@ -267,7 +273,7 @@ def _citation_matches_chunk(
             continue
         start = meta.get("page_start")
         if start is None:
-            return True  # paragraph related; no page info to contradict it
+            continue  # fail closed: no page info can't verify — try another chunk
         end = meta.get("page_end", start) or start
         if start <= page <= end:
             return True
@@ -328,13 +334,19 @@ def generate_with_sources(
         retrieved_results: Output from retriever.retrieve().
 
     Returns:
-        Dict with 'answer', 'citations', 'sources', 'source_documents', and
-        'citation_check' ({grounded, ungrounded}) keys.
+        Dict with 'answer', 'citations', 'sources', 'source_documents',
+        'citation_check' ({grounded, ungrounded}), and 'gate_outcome' keys.
+        'gate_outcome' is the grounding-gate classification (see
+        src.grounding.classify) and reaches every consumer; the display policy
+        that decides what to do with each outcome stays in pipeline.py.
     """
     context = format_context(retrieved_results)
     result = generate(question, context)
     result["source_documents"] = [r["document"] for r in retrieved_results]
     result["citation_check"] = validate_citations(
         result["citations"], retrieved_results
+    )
+    result["gate_outcome"] = classify(
+        result["answer"], result["citations"], result["citation_check"]
     )
     return result

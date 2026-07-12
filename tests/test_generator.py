@@ -18,6 +18,7 @@ from src.generator import (
     is_refusal,
     validate_citations,
 )
+from src.grounding import CITATIONS_UNVERIFIED, PARTIALLY_VERIFIED
 
 
 class TestGetLlm:
@@ -445,6 +446,69 @@ class TestValidateCitations:
         assert check["grounded"] == []
         assert len(check["ungrounded"]) == 1
 
+    def test_related_chunk_without_page_start_is_ungrounded(self):
+        """Fail closed (D35 mandatory page check): a chunk whose section relates
+        to the citation but carries NO page_start cannot verify the page, so the
+        citation stays ungrounded. Previously such a chunk grounded the citation
+        outright ('no page info to contradict it') — that hole is now closed."""
+        results = [
+            {
+                "document": Document(
+                    page_content="s.72 burdens...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        # no page_start / page_end at all
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            }
+        ]
+        citations = [{"para": "14.8.5", "page": "412", "raw": "para 14.8.5, p.412"}]
+        check = validate_citations(citations, results)
+
+        assert check["grounded"] == []
+        assert len(check["ungrounded"]) == 1
+
+    def test_page_outside_span_not_rescued_by_a_pageless_related_chunk(self):
+        """A related chunk with pages puts the cited page OUTSIDE its span, and a
+        SECOND related chunk has no pages: the second no longer rescues the
+        citation (it fails closed), so the citation stays ungrounded even though
+        two chunks relate to the paragraph."""
+        results = [
+            {
+                "document": Document(
+                    page_content="priority entry...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        "page_start": 412,
+                        "page_end": 412,
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            },
+            {
+                "document": Document(
+                    page_content="priority entry (duplicate, no pages)...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "14.8.5",
+                        # no page metadata
+                    },
+                ),
+                "score": 0.02,
+                "metadata": {},
+            },
+        ]
+        citations = [{"para": "14.8.5", "page": "999", "raw": "para 14.8.5, p.999"}]
+        check = validate_citations(citations, results)
+
+        assert check["grounded"] == []
+        assert len(check["ungrounded"]) == 1
+
 
 class TestSectionsRelatedAppendix:
     """D34: ``_sections_related`` now formalizes appendix matching as an
@@ -490,6 +554,8 @@ class TestGenerateWithSources:
 
         assert "source_documents" in result
         assert len(result["source_documents"]) == 2
+        # A non-refusal answer that cites nothing is unverified (P0 fix).
+        assert result["gate_outcome"] == CITATIONS_UNVERIFIED
 
     def test_attaches_citation_check(self, handbook_retrieved_results):
         """generate_with_sources runs the grounding check against the retrieved
@@ -508,3 +574,5 @@ class TestGenerateWithSources:
 
         assert len(result["citation_check"]["grounded"]) == 1
         assert len(result["citation_check"]["ungrounded"]) == 1
+        # One grounded + one ungrounded citation → partially verified.
+        assert result["gate_outcome"] == PARTIALLY_VERIFIED
