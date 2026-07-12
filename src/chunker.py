@@ -531,6 +531,18 @@ def _make_doc(
     return Document(page_content=prefix + body, metadata=meta)
 
 
+def locator_label(secnum: str) -> str:
+    """Render a section number as its in-citation locator segment.
+
+    The single locator grammar every display surface follows (D34): a numbered
+    paragraph becomes ``para 3.2.1``; an ``APPENDIX`` section renders verbatim
+    (``APPENDIX 14.1``, never ``para APPENDIX 14.1``). The retriever's compact
+    header and the CLI's ``--verbose`` listing call this instead of restating
+    the rule, so the three surfaces cannot drift apart.
+    """
+    return secnum if secnum.startswith("APPENDIX") else f"para {secnum}"
+
+
 def _prefix(
     doc_title: str,
     chapter: int,
@@ -547,7 +559,7 @@ def _prefix(
     """
     parts = [doc_title, f"Ch.{chapter} {chap_title}".rstrip()]
     if secnum:
-        parts.append(secnum if secnum.startswith("APPENDIX") else f"para {secnum}")
+        parts.append(locator_label(secnum))
     page = _page_string(p_start, p_end)
     if page:
         parts.append(page)

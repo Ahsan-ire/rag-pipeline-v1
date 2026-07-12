@@ -216,59 +216,118 @@ lowercase "Appendix" extracts; eval hit against `["APPENDIX 14.1"]`.
 
 ## Phase 8 — grounding gate + audit trail (Sun 12 Jul pm, ~3h) — `phase-8-grounding-gate`
 
-1. **New `src/grounding.py`** — `classify(answer, citations, citation_check)` → `REFUSAL` /
-   `GROUNDED` (≥1 citation, zero ungrounded) / `PARTIALLY_GROUNDED` (≥1 grounded AND ≥1 ungrounded)
-   / `UNGROUNDED` (non-refusal, zero grounded — includes zero-citation). Called inside
-   `generate_with_sources` → `result["gate_outcome"]` reaches every consumer; display policy stays
-   in pipeline.py.
-2. **Fail-closed display** (`pipeline.query`): GROUNDED → answer + citations + "verified" note.
-   PARTIALLY_GROUNDED → answer shown, ungrounded citations under a warning banner. UNGROUNDED →
-   answer withheld, banner "BLOCKED — UNVERIFIED" (wording says grounding *could not be verified*,
-   never "not in the corpus"), retrieved source headers (section + pages only) shown, hints to
-   rephrase / `--top-k` / `--show-unverified`. `--show-unverified` reveals the draft under an
-   "UNVERIFIED DRAFT" banner, flagged in the audit record. Returned dict always carries the full
-   answer; only CLI display is gated. `query()` reads `gate_outcome` with a defined fallback for
-   legacy/missing results; the two existing `test_pipeline.py` mocks get `gate_outcome` added.
-   Extend `/phase-gate`'s hygiene check to cover `logs/` alongside `data/`/`*.pdf`/`.env`/`chroma_db/`.
-3. **New `src/audit.py`** — `log_event(record, path)` append-only JSONL
-   (`logs/audit_log.jsonl`, `AUDIT_LOG_PATH` env override); record: timestamp, git SHA, query text,
-   top_k, type filter, retrieved `[{id, section_number, page_start, page_end, score}]`,
-   `gate_outcome`, `action` (`shown`/`shown_with_warning`/`blocked_unverified`/`refusal_shown`/
-   `shown_unverified_override`), grounded/ungrounded counts, citation locators, generation model,
-   `answer_chars`. Answer text and chunk text excluded (copyright). Always-on in `pipeline.query`.
+(Amended 11 Jul per colleague review — outcome renames, mandatory page check, gated public
+return, query hashing. PARTIALLY_VERIFIED display: user chose show-with-banner over the
+colleague's withhold; record both positions in D35.)
+
+1. **New `src/grounding.py`** — `classify(answer, citations, citation_check)` → string
+   constants named for what the system actually verifies (LOCATORS, not legal claims):
+   `REFUSAL` / `CITATIONS_VERIFIED` (≥1 citation, zero unverified) / `PARTIALLY_VERIFIED`
+   (≥1 verified AND ≥1 unverified) / `CITATIONS_UNVERIFIED` (non-refusal, zero verified —
+   includes zero-citation, closing the P0). Display copy says "citations verified against
+   retrieved sources", never a bare "verified". Called inside `generate_with_sources` →
+   `result["gate_outcome"]` reaches every consumer; display policy stays in pipeline.py.
+   **Gate matching rule:** `_citation_matches_chunk` keeps nesting-plus-page-span, but the
+   page check becomes MANDATORY — a chunk with no page metadata cannot verify a citation
+   (fail closed). Exact-only locator equality REJECTED (record in D35): chunks are
+   section-granular (D28); correct answers cite finer sub-paragraphs inside a chunk, so
+   exact equality would structurally block the best answers.
+2. **Fail-closed display** (`pipeline.query`), per locked decisions:
+   - CITATIONS_VERIFIED → answer + citations + "all citations verified against retrieved
+     sources".
+   - PARTIALLY_VERIFIED → answer shown; the warning banner NAMES each unverified citation
+     ("N of M citations could not be verified — check before relying: …"). (User decision
+     11 Jul; colleague preferred withholding — D35 records the trade.)
+   - CITATIONS_UNVERIFIED → **answer withheld**; banner `BLOCKED — CITATIONS UNVERIFIED`
+     (wording says citations *could not be verified*, never "not in the corpus");
+     retrieved source headers (section + pages only, no chunk text) shown; hints to
+     rephrase / `--top-k` / `--show-unverified`.
+   - `--show-unverified` (new flag): reveals the draft under "UNVERIFIED DRAFT — do not
+     rely on this text"; use recorded in the event log.
+   - **Gated public return:** when withheld, `query()`'s returned dict does NOT carry the
+     draft text — `answer` holds the block notice; `gate_outcome`, citation lists,
+     sources, and `answer_chars` are present. Programmatic access to the raw draft is only
+     via `generate_with_sources` (internal; eval already calls it directly) or an explicit
+     `show_unverified=True` param mirroring the CLI flag — keeps any future API consumer
+     safe by default.
+   - `query()` reads `result.get("gate_outcome")` with a defined fallback for
+     legacy/missing results; the two existing `test_pipeline.py` mocks get `gate_outcome`
+     added — both, belt and braces.
+   - Extend `/phase-gate`'s hygiene check to cover `logs/` alongside
+     `data/`/`*.pdf`/`.env`/`chroma_db/` (`.gitignore` is the primary guard, the skill is
+     the backstop).
+3. **New `src/audit.py`** — an **operational event log** (append-only JSONL,
+   `logs/audit_log.jsonl`, `AUDIT_LOG_PATH` env override; no tamper-evidence claims).
+   Record: ISO timestamp, git SHA (best-effort), **`query_sha256` + `query_chars` — NOT
+   raw query text by default** (legal queries can reveal client matters; raw logging only
+   via explicit `AUDIT_LOG_RAW_QUERIES=1`), top_k, type filter, retrieved
+   `[{id, section_number, page_start, page_end, score}]` (content-hash IDs —
+   copyright-safe), `gate_outcome`, `action` (`shown`/`shown_with_warning`/
+   `blocked_unverified`/`refusal_shown`/`shown_unverified_override`), verified/unverified
+   counts, citation locator strings, generation model, `answer_chars`. **Excluded: answer
+   text, chunk text, and (by default) query text.** Always-on in `pipeline.query`.
    Add `logs/` to `.gitignore`.
 
-**Tests:** classification matrix (refusal / zero-citation / all-grounded / mixed / appendix-only);
-capsys: UNGROUNDED withholds body + shows sources, override reveals with banner + audit flag,
-PARTIALLY shows banner; audit line has expected keys, no answer/chunk text, appends (tmp_path);
-generation seams patched — no live calls.
-**decisions.md:** D35 (gate semantics + block-and-show-sources rationale), D36 (audit record
-contents; why text is excluded).
-**Acceptance:** suite green; live in-corpus Q → GROUNDED + shown; citation-stripped answer →
-withheld with sources; one well-formed audit line per query; `git status` clean of `logs/`.
+**Tests:** classification matrix (refusal / zero-citation / all-verified / mixed /
+appendix-only / no-page-metadata chunk → fails closed); capsys: CITATIONS_UNVERIFIED
+withholds body + shows sources AND the returned dict carries no draft text, override
+reveals with banner + event-log flag, PARTIALLY shows banner naming the failed citations;
+audit line has expected keys, no answer/chunk/raw-query text by default, raw query present
+only under the env opt-in, appends (tmp_path); generation seams patched — no live calls.
+**decisions.md:** D35 (gate semantics; outcome naming rationale; exact-only matching
+rejected via D28; mandatory page check; show-vs-withhold for PARTIALLY — user decision
+with colleague counter-position recorded), D36 (event-log contents; why answer/chunk/
+raw-query text excluded; "operational log, not tamper-evident audit trail").
+**Acceptance:** suite green; live in-corpus Q → CITATIONS_VERIFIED + shown;
+citation-stripped answer → withheld with sources and no draft in the returned dict; one
+well-formed event line per query with hashed query; `git status` clean of `logs/`.
 
 ---
 
-## Phase 9 — index lifecycle + load-once retrieval (Sun 12 Jul eve, ~2h) — `phase-9-index-lifecycle`
+## Phase 9 — index lifecycle + load-once retrieval (Sun 12 Jul eve, ~2.5h) — `phase-9-index-lifecycle`
 
-1. **Per-source transactional replace** — new `sync_documents(documents, vector_store=None,
-   persist_directory=None)` in `src/embedder.py` (`add_documents` stays insert-only): group by
-   `metadata["source"]`; per source, delete stale content-hash ids no longer present; rebuild BM25
-   sidecar + manifest whenever `stale or new_docs` (fixes the trap where a delete-only re-sync
-   leaves deleted chunks in BM25). `pipeline.index_documents` switches to `sync_documents`;
-   `--reset` retained for full rebuilds.
-2. **Retriever injection** — `retrieve(query, ..., vector_store=None, bm25_index=None)`; skip
-   store/BM25 construction when injected. Evaluator's default `retrieve_fn`/`answer_fn` build once
-   and close over them (eval currently reloads MiniLM 35×); `pipeline.query` passes a once-built
-   store. Land the Phase 6 `lru_cache` here if it was deferred.
+(Amended 11 Jul per colleague review — all five hardening points adopted.)
 
-**Tests:** index → mutate one chunk → re-sync → stale ID absent from store AND from BM25 results
-(the trap test); unchanged chunks not re-embedded (ID set stable); two sources don't delete each
-other; injected store/bm25 used without disk loads (monkeypatch counters).
-**decisions.md:** D37 (per-source replace semantics; `add_documents` stays insert-only; BM25
-delete-rebuild trap).
-**Acceptance:** suite green; real corpus: re-index without `--reset` → chunk count equals fresh
-`--reset` build; retrieval-only eval wall-clock measurably down (record before/after).
+1. **Per-source replace, hardened** — new `sync_documents(source, documents,
+   vector_store=None, persist_directory=None)` in `src/embedder.py` (`add_documents` stays
+   untouched/insert-only for additive callers):
+   - **Source-scoped chunk IDs:** `compute_chunk_id(source, text)` =
+     `sha256(source + "\0" + text)[:16]`. Pure text-hashes collide across sources
+     (identical boilerplate in two documents → deleting source A's stale IDs could destroy
+     source B's chunk; insert-dedup would skip B's copy) — real risk given the multi-doc
+     roadmap. D7's "identity means identity" now holds per-source. **Consequence: all
+     existing IDs change → one full `--reset` re-index after this lands** (BM25 sidecar
+     rebuilds with it).
+   - **Explicit `source` param** so an empty `documents` list expresses "this source now
+     has zero chunks" (delete-all-for-source), which group-by-metadata cannot.
+   - **Upsert before delete:** insert/refresh new chunks FIRST, delete stale IDs LAST — a
+     crash mid-sync leaves harmless extras (re-sync converges), never missing chunks.
+   - **Metadata-only updates propagate:** for surviving IDs (text unchanged), compare
+     metadata; on difference, update in place (wrapper update API if available, else
+     delete+re-add those IDs) — fixes the case where a chunker improvement only changes
+     page/section metadata and content-hash dedup would silently keep the stale metadata.
+   - **Rebuild BM25 sidecar + manifest if anything changed** (`stale or new or updated`) —
+     covers the delete-only trap where a re-sync leaves deleted chunks in BM25.
+   `pipeline.index_documents` switches to `sync_documents`; `--reset` retained for full
+   rebuilds.
+2. **Retriever injection** — `retrieve(query, ..., vector_store=None, bm25_index=None)`
+   (same explicit-injection convention as `add_documents`); skip store/BM25 construction
+   when injected. Evaluator's default `retrieve_fn`/`answer_fn` build once and close over
+   them (eval currently reloads MiniLM 35×); `pipeline.query` passes a once-built store.
+   Expose `--persist-dir` on the CLI (index/query/eval) — needed by Phase 11's isolated
+   `sample_chroma_db/`. Land the Phase 6 `lru_cache` here if it was deferred.
+
+**Tests:** index → mutate one chunk's text → re-sync → stale ID absent from store AND from
+BM25 results (the trap test); metadata-only change → surviving ID's metadata updated;
+unchanged chunks not re-embedded (ID set stable); two sources with IDENTICAL chunk text
+don't collide or delete each other (the source-scoped-ID test); `sync_documents(source, [])`
+empties exactly that source; injected store/bm25 used without disk loads (monkeypatch
+counters).
+**decisions.md:** D37 (per-source replace semantics; `add_documents` stays insert-only;
+BM25 delete-rebuild trap; source-scoped IDs).
+**Acceptance:** suite green; real corpus: re-index without `--reset` → final ID set exactly
+equals a fresh `--reset` build's; retrieval-only eval wall-clock measurably down (record
+before/after).
 
 ---
 
@@ -293,8 +352,12 @@ candidate negative actually in-corpus). Same schema; `load_golden_set` reused un
    with mode + set hashes; headline = strict hit@6 on held-out; ablation table; per-question
    detail; sets labeled "tuning (used for D31)" vs "held-out (never tuned)".
 4. **Answer-generation pass (shared):** generate once for in-corpus questions; feed both the
-   citation-completeness metrics (sentence-citation coverage, citation-grounded fraction,
-   gate-outcome distribution) and the judge below.
+   citation-completeness metrics — (a) sentence-citation coverage, (b) citation-grounded
+   fraction, (c) gate-outcome distribution, **(d) false-refusal rate: fraction of answerable
+   (in-corpus) questions whose answer scored `is_refusal` — and, with the gate on,
+   false-block rate (answerable questions wrongly withheld)** (colleague point adopted:
+   refusal quality must be measured in both directions) — and the judge below. Flag
+   `--skip-completeness` mirrors `--skip-refusals`.
 5. **`--judge` (experimental, off by default):** per generated answer, one judge call over the
    retrieved context → per-claim supported/unsupported/unclear + mean faithfulness, reported as
    "LLM-judged faithfulness estimate"; judge model + prompt version + config recorded in
@@ -320,13 +383,19 @@ disclosed subset); D39 recorded with evidence.
 ## Phase 11 — portfolio surface (Mon 13 Jul pm, ~3h) — `phase-11-portfolio-surface`
 
 1. **Synthetic sample corpus:** `scripts/sample_corpus.py` — copyright-safe ~15-page synthetic
-   handbook (2–3 chapters, nested sections, one APPENDIX, a false-positive trap line), standalone
-   from test fixtures. `scripts/build_sample_index.py`: text → `chunk_handbook` → `sync_documents`
-   → `./chroma_db`. Plus `eval/sample_golden_set.jsonl` (5–8 questions incl. one appendix
-   expectation).
+   handbook adapted from `_handbook`/`_body` in tests/test_chunker_handbook.py (standalone copy
+   + cross-ref comment; don't make tests import from scripts): 2–3 chapters, nested sections,
+   one APPENDIX, a false-positive trap line. `scripts/build_sample_index.py`: text →
+   `chunk_handbook` → `sync_documents` → **`./sample_chroma_db/` — NEVER the real
+   `./chroma_db/`** (colleague point adopted: the sample builder must not contaminate or
+   replace the local real index; directory gitignored; smoke eval points at it via Phase 9's
+   `--persist-dir`). Recorded decision: script-not-PDF (PDF generation = new dependency,
+   rejected per CLAUDE.md; the script enters the real pipeline at the post-extraction seam).
+   Plus `eval/sample_golden_set.jsonl` (5–8 questions incl. one appendix expectation).
 2. **CI** (`.github/workflows/ci.yml`): job 1 — ubuntu, Python 3.12, pip cache, `pytest tests/ -q`;
    job 2 (smoke) — build sample index, `eval --golden eval/sample_golden_set.jsonl
-   --skip-refusals --skip-completeness`. No `ANTHROPIC_API_KEY` in CI — offline paths only.
+   --skip-refusals --skip-completeness`; cache `~/.cache/huggingface`. No `ANTHROPIC_API_KEY`
+   in CI — offline paths only.
 3. **LICENSE:** MIT; README states it covers code only, corpus never distributed.
 4. **README final:** what/why; ASCII architecture diagram (ingest → chunk → hybrid index → RRF →
    generate → grounding gate → audit log); fresh-clone quickstart via sample corpus; honest eval
@@ -343,21 +412,35 @@ above.
 
 ---
 
-## Phase 12 — final gate + v1-vs-v2 decision (Mon 13 Jul eve, ~1.5–2h) — on main
+## Phase 12 — final gate + v1-vs-v2 decision (Mon 13 Jul eve, ~2h) — on main
+
+(Amended 11 Jul per colleague review: the head-to-head must be same-set, same-index.)
 
 1. `/phase-gate` over v2 (full suite, pressure-tester, high-effort code review, hygiene: nothing
-   tracked in `data/`, `*.pdf`, `.env`, `chroma_db/`, `logs/`).
+   tracked in `data/`, `*.pdf`, `.env`, `chroma_db/`, `sample_chroma_db/`, `logs/`).
 2. Re-run full Phase 10 eval at v2 HEAD (live refusals + completeness; `--judge` per user opt-in);
    commit.
-3. **`docs/v1-v2-comparison.md`:** metric table (v1 numbers from `eval/results.md` at the
-   `v1.0-baseline` tag) + feature table (gate, appendix citations, lifecycle, audit, provenance,
-   held-out eval, CI, LICENSE, README). State honestly if v2's held-out strict headline is lower
-   than v1's related-basis 0.900 — lower-but-honest is the expected, defensible outcome.
-4. Submission decision recorded as **D42** (recommendation: v2 if the gate passes; `v1.0-baseline`
-   stays the fallback). Tag `v2.0`; push.
+3. **Valid head-to-head (replaces tag-report comparison):** evaluate BOTH versions on the SAME
+   frozen held-out set: `git worktree add /tmp/v1-eval v1.0-baseline`, run v1's own evaluator
+   (`python -m src.pipeline eval --golden <heldout>` — v1's evaluator already speaks dual metrics
+   and `load_golden_set` is schema-compatible) against the SAME index as v2. Caveat: valid only if
+   the index is unchanged between versions (expected — D39's default is defer); if Phase 10
+   re-chunked, each version runs against its own freshly built index and the comparison discloses
+   that retrieval differences include chunking. Comparing v1's tuning-set related score against
+   v2's held-out strict score is narrative, not measurement — both appear in the doc, but only
+   same-set/same-basis numbers sit in the head-to-head table.
+4. **`docs/v1-v2-comparison.md`:** the same-set head-to-head table (strict + related, hit@{1,3,6},
+   refusal accuracy incl. false-refusal rate, for v1 and v2) + feature table (gate, appendix
+   citations, lifecycle, event log, provenance, held-out eval, CI, LICENSE, README) + the
+   narrative metrics clearly labeled as such. State honestly if v2's held-out strict headline is
+   lower than v1's tuning-set related 0.900 — lower-but-honest is the expected, defensible
+   outcome.
+5. Submission decision recorded as **D42** (recommendation: v2 if the gate passes — "critique →
+   production hardening → honest metrics" is itself the portfolio story; `v1.0-baseline` stays
+   the fallback). Tag `v2.0`; push.
 
-**Acceptance:** gate PASS; comparison doc committed; D42 records the decision; chosen artifact
-tagged + pushed.
+**Acceptance:** gate PASS; comparison doc committed with the same-set table; D42 records the
+decision; chosen artifact tagged + pushed.
 
 ---
 

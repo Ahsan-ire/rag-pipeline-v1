@@ -225,6 +225,44 @@ class TestQuery:
         assert "para 14.8.5" in out
         assert "Ungrounded citations" in out
 
+    def test_verbose_appendix_section_has_no_para_token(self, capsys):
+        """The --verbose retrieved-chunks block must mirror the APPENDIX
+        locator grammar (chunker._prefix / retriever._handbook_header): an
+        appendix section_number prints verbatim, not as "para APPENDIX ..."."""
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Appendix content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "APPENDIX 14.1",
+                        "page_start": 87,
+                    },
+                ),
+                "score": 0.03279,
+                "metadata": {"section_number": "APPENDIX 14.1"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer [Handbook, APPENDIX 14.1, p.87].",
+            "citations": [{"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}],
+            "sources": ["APPENDIX 14.1, p.87"],
+            "source_documents": [],
+            "citation_check": {
+                "grounded": [{"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}],
+                "ungrounded": [],
+            },
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("What is in the appendix?", verbose=True)
+
+        out = capsys.readouterr().out
+        assert "APPENDIX 14.1" in out
+        assert "para APPENDIX" not in out
+
     def test_zero_citation_warning_on_uncited_non_refusal_answer(self, capsys):
         """A non-refusal answer with no extractable citations gets a prominent
         display warning — citation_check has nothing to validate here, so this

@@ -226,6 +226,39 @@ class TestEvaluateRetrieval:
         assert report["hit_rate_strict"] == 0.0
         assert report["hit_rate_related"] == 0.0
 
+    def test_appendix_expected_section_scores_both_metrics_against_an_appendix_chunk(self):
+        """Phase 7 / D34: a golden entry expecting an appendix locator scores
+        a hit under BOTH strict (exact string equality) and related (which
+        delegates to _sections_related's never-cross-match rule) when the
+        retrieved chunk's section_number is the same appendix."""
+        golden = [
+            {"question": "Q1", "type": "direct", "expected_sections": ["APPENDIX 14.1"]}
+        ]
+        fake_retrieve = lambda q, top_k=6: [_result("APPENDIX 14.1")]
+
+        report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
+
+        assert report["hits_strict"] == 1
+        assert report["hits_related"] == 1
+        assert report["per_question"][0]["hit_strict"] is True
+        assert report["per_question"][0]["hit_related"] is True
+
+    def test_appendix_expected_section_misses_against_a_numeric_chunk(self):
+        """Never-cross-match: a numeric chunk '14.1' must not satisfy an
+        expected 'APPENDIX 14.1' under either metric, even though the digits
+        are identical."""
+        golden = [
+            {"question": "Q1", "type": "direct", "expected_sections": ["APPENDIX 14.1"]}
+        ]
+        fake_retrieve = lambda q, top_k=6: [_result("14.1")]
+
+        report = evaluate_retrieval(golden, retrieve_fn=fake_retrieve)
+
+        assert report["hits_strict"] == 0
+        assert report["hits_related"] == 0
+        assert report["per_question"][0]["hit_strict"] is False
+        assert report["per_question"][0]["hit_related"] is False
+
     def test_refusal_questions_are_excluded_from_retrieval_scoring(self):
         golden = [
             {"question": "Q1", "type": "direct", "expected_sections": ["1.1"]},
