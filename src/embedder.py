@@ -11,7 +11,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from src.bm25_index import build_bm25_index, save_bm25_index
+from src.bm25_index import BM25_FILENAME, build_bm25_index, save_bm25_index
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +241,7 @@ def sync_documents(
     documents: List[Document],
     vector_store: Optional[Chroma] = None,
     persist_directory: Optional[str] = None,
+    rebuild_bm25: bool = True,
 ) -> Dict[str, int]:
     """Make the store's chunks for ``source`` exactly equal ``documents``.
 
@@ -298,6 +299,14 @@ def sync_documents(
         persist_directory: Where the BM25 index and embedding-model manifest
             live. Defaults to ``CHROMA_PERSIST_DIR`` only when no explicit
             ``vector_store`` was passed.
+        rebuild_bm25: When True (default), a sync that changed anything also
+            rewrites the embedding-model manifest and rebuilds the BM25 sidecar
+            from the store's full contents. Set False by a *batch* indexer
+            syncing many sources in a loop: each rebuild scans the whole store,
+            so rebuilding per source is O(N x total_chunks); the batch caller
+            instead defers and calls :func:`rebuild_bm25_index` exactly once
+            after the loop. The vector-store writes and the returned counts are
+            unaffected either way.
 
     Returns:
         ``{"added": n, "updated": n, "deleted": n}``.
@@ -387,7 +396,7 @@ def sync_documents(
         vector_store.delete(ids=stale_ids)
 
     added, updated, deleted = len(new_ids), len(update_ids), len(stale_ids)
-    if added or updated or deleted:
+    if (added or updated or deleted) and rebuild_bm25:
         _write_embedding_model_manifest(persist_directory)
         _rebuild_bm25_index(vector_store, persist_directory)
     logger.info(
@@ -400,6 +409,33 @@ def sync_documents(
     return {"added": added, "updated": updated, "deleted": deleted}
 
 
+def rebuild_bm25_index(
+    vector_store: Optional[Chroma] = None,
+    persist_directory: str = CHROMA_PERSIST_DIR,
+) -> None:
+    """Rewrite the embedding-model manifest and BM25 sidecar from the store's
+    full current contents (public entry point).
+
+    Factored out so a batch indexer can sync many sources with
+    ``sync_documents(..., rebuild_bm25=False)`` and then rebuild the global
+    lexical index exactly ONCE at the end, instead of paying an
+    O(total_chunks) rebuild per source (O(N x total_chunks) across N sources —
+    each rebuild scans the whole store). The empty-store case is handled inside
+    :func:`_rebuild_bm25_index`: an empty store leaves no sidecar rather than
+    trying to build a BM25 index over an empty corpus.
+
+    Args:
+        vector_store: The store to rebuild from; opened at ``persist_directory``
+            if omitted.
+        persist_directory: Where the BM25 sidecar and embedding-model manifest
+            live.
+    """
+    if vector_store is None:
+        vector_store = get_vector_store(persist_directory=persist_directory)
+    _write_embedding_model_manifest(persist_directory)
+    _rebuild_bm25_index(vector_store, persist_directory)
+
+
 def _rebuild_bm25_index(vector_store: Chroma, persist_directory: str) -> None:
     """Rebuild the BM25 index from the store's full current contents.
 
@@ -409,6 +445,16 @@ def _rebuild_bm25_index(vector_store: Chroma, persist_directory: str) -> None:
     """
     stored = vector_store.get(include=["documents", "metadatas"])
     ids = stored["ids"]
+    if not ids:
+        # rank_bm25 cannot represent an empty corpus — BM25Okapi([]) divides by
+        # zero computing the average document length. An ABSENT sidecar is the
+        # correct artifact for an empty store: load_bm25_index returns None, so
+        # retrieval falls back to vector-only, which also returns nothing on an
+        # empty store. Delete any stale pickle so it can't ghost the chunks that
+        # were just deleted (returning them as lexical hits the store no longer
+        # holds).
+        (Path(persist_directory) / BM25_FILENAME).unlink(missing_ok=True)
+        return
     texts = stored["documents"]
     metadatas = stored["metadatas"] or [{} for _ in ids]
     documents = [

@@ -1007,3 +1007,38 @@ retrieval-only eval wall-clock **4.24s → 0.37s** (11.5×, 30 questions) with i
 (strict 24/30, related 27/30) — the injection changes cost, not behavior. The old
 `TestContentHashDedup` cross-source-dedup pin was rewritten: identical text under two sources now
 deliberately yields two ids.
+**Gate-review hardening (12 Jul 2026, same day):** the pressure-tester passed all three
+acceptance criteria (independently corroborating the timing win at 3.3× with the model pre-warmed
+in both arms — isolating pure load-once effect); the 8-angle adversarial review then drove these
+fixes, applied in-branch: **(1)** delete-all on a single-source store crashed —
+`sync_documents(source, [])` emptied the store and `BM25Okapi([])` raises ZeroDivisionError
+(reproduced end-to-end; the existing test masked it by keeping a second source alive) — an empty
+store now REMOVES the sidecar pickle instead of rebuilding, since an absent sidecar is the correct
+artifact (`load_bm25_index` → None → vector-only fallback); **(2)** `run_eval`'s default
+provenance ignored `--persist-dir` — the report's chunk_count attested to `./chroma_db` while the
+scores came from the flag's store, exactly the wrong-corpus attestation Phase 11's smoke eval
+would have hit; `collect_provenance` now takes the directory; **(3)** the
+assert+store+BM25 build triple lived in three files and ran TWICE per eval run (once per pass) —
+a new `retriever.load_retrieval_context(persist_directory)` is the single blessed way to build
+injection args (the manifest check lives inside it, so future injectors cannot forget it — closing
+the review's bypassed-guard concern), and `run_eval` now builds once and threads one shared
+`retrieve_fn` into both passes; **(4)** a latent full-corpus wipe: the handbook path had no
+empty-chunk-list guard, so a `chunk_handbook` regression returning `[]` would have made a routine
+re-index silently delete all 1,470 chunks via sync's delete-all form — guarded with a loud
+warning + no-op (deliberate deletion stays available via the sync API directly); **(5)** the
+multi-source loop's silent `source_path` fallback for chunks missing `source` metadata now raises
+(silence would mask a loader regression and mis-scope the sync); **(6)** the multi-source loop
+rebuilt the GLOBAL BM25 index once per source (O(N × corpus)) — `sync_documents` gained
+`rebuild_bm25=False` and the pipeline rebuilds exactly once after the loop; **(7)** `query()`'s
+missing `persist_directory` docstring entry. **Empirically ruled out by the review** (negative
+results worth recording): chromadb 1.5.9 round-trips metadata byte-equal incl. int types, so the
+feared re-update-forever loop cannot occur; `where={"source": ""}` matches empty strings.
+**Accepted as designed, documented not changed:** `update_documents` re-embeds unchanged text on
+metadata-only drift — the cheaper metadata-only path needs private `_collection` access, which D7/
+D25 deliberately banned; the cost is rare and index-time (revisit if the multi-doc phase makes
+metadata corrections routine); the degraded double BM25 load attempt when the sidecar is missing
+(None is both "not injected" and "nothing to load" — trivial, warn-once behavior preserved);
+`add_documents` retained per spec for additive callers though currently production-dead
+(pipeline switched to sync; revisit at the multi-doc phase); injected `retrieve()` skipping the
+manifest check stays by design — the injector owns it, and `load_retrieval_context` now makes the
+safe path the easy path.

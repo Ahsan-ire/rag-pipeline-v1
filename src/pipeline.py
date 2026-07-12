@@ -20,13 +20,11 @@ from src.audit import (
     build_event,
     log_event,
 )
-from src.bm25_index import load_bm25_index
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import (
     CHROMA_PERSIST_DIR,
-    assert_embedding_model,
     clear_store,
-    get_vector_store,
+    rebuild_bm25_index,
     sync_documents,
 )
 from src.generator import generate_with_sources, is_refusal
@@ -42,7 +40,7 @@ from src.ingest import (
     load_html_from_url,
     load_pdf,
 )
-from src.retriever import DEFAULT_TOP_K, retrieve
+from src.retriever import DEFAULT_TOP_K, load_retrieval_context, retrieve
 
 logging.basicConfig(
     level=logging.INFO,
@@ -99,6 +97,18 @@ def index_documents(
         # existing index and then crash.
         all_chunks = chunk_handbook(clean_text, page_map, metadata)
         logger.info("Created %d handbook chunks from %s", len(all_chunks), source_path)
+        # An empty chunk list from a real PDF is never an intended delete-all:
+        # sync_documents(source, []) would silently delete every stored chunk
+        # for this source — and the handbook is one source, so that is the whole
+        # corpus. Guard it out here; deliberate deletion stays available via the
+        # sync API directly.
+        if not all_chunks:
+            logger.warning(
+                "chunk_handbook produced 0 chunks from %s; skipping sync to "
+                "avoid a silent full-corpus wipe. Returning 0.",
+                source_path,
+            )
+            return 0
         if reset:
             clear_store(persist_directory)
         # ingest writes the CLI path verbatim into metadata["source"], so the
@@ -148,14 +158,36 @@ def index_documents(
     # one document's re-index can never delete another's chunks (D37).
     by_source: Dict[str, list] = {}
     for chunk in all_chunks:
-        by_source.setdefault(chunk.metadata.get("source", source_path), []).append(chunk)
+        # ingest guarantees every chunk carries its "source"; a missing one is a
+        # loader/chunker regression. Grouping by a fallback would silently mis-
+        # scope the per-source sync and could delete another document's chunks,
+        # so fail loudly instead — naming the offending chunk's leading text.
+        chunk_source = chunk.metadata.get("source")
+        if not chunk_source:
+            raise ValueError(
+                "Chunk is missing its 'source' metadata (ingest guarantees it); "
+                "refusing to group it under a fallback source, which would mis-"
+                "scope the per-source sync. Offending chunk starts: "
+                f"{chunk.page_content[:60]!r}"
+            )
+        by_source.setdefault(chunk_source, []).append(chunk)
 
+    # Defer the BM25 rebuild: each per-source sync scans the whole store to
+    # rebuild the global lexical index, so rebuilding once per source is
+    # O(N x total_chunks). Sync all sources with rebuild_bm25=False, then rebuild
+    # the global sidecar + manifest exactly once below.
     added = updated = deleted = 0
     for src, chunks in by_source.items():
-        counts = sync_documents(src, chunks, persist_directory=persist_directory)
+        counts = sync_documents(
+            src, chunks, persist_directory=persist_directory, rebuild_bm25=False
+        )
         added += counts["added"]
         updated += counts["updated"]
         deleted += counts["deleted"]
+    # Only when something actually changed; an all-no-op re-sync leaves the
+    # existing sidecar untouched.
+    if added or updated or deleted:
+        rebuild_bm25_index(persist_directory=persist_directory)
     logger.info(
         "Synced %d source(s): %d added, %d updated, %d deleted",
         len(by_source), added, updated, deleted,
@@ -269,6 +301,8 @@ def query(
             CITATIONS_UNVERIFIED, print the withheld draft under an explicit
             "UNVERIFIED DRAFT" banner and return the real answer instead of the
             block notice. Has no effect on any other gate outcome.
+        persist_directory: Vector-store directory to query; the BM25 sidecar and
+            embedding-model manifest are read from beside it.
 
     Returns:
         Dict with answer, citations, sources, source_documents,
@@ -282,11 +316,9 @@ def query(
         is withheld — ``answer_chars`` is then the only trace of its size.
     """
     # Build the store and BM25 sidecar once and inject them (load-once, D37);
-    # retrieve() skips its per-call construction when injected, and the
-    # injector owns the embedding-model manifest check.
-    assert_embedding_model(persist_directory)
-    vector_store = get_vector_store(persist_directory=persist_directory)
-    bm25_index = load_bm25_index(persist_directory)
+    # retrieve() skips its per-call construction when injected, and the shared
+    # helper owns the embedding-model manifest check.
+    vector_store, bm25_index = load_retrieval_context(persist_directory)
     results = retrieve(
         question,
         top_k=top_k,

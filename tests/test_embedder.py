@@ -13,6 +13,7 @@ from src.embedder import (
     clear_store,
     compute_chunk_id,
     get_vector_store,
+    rebuild_bm25_index,
     sync_documents,
 )
 
@@ -500,3 +501,48 @@ class TestSyncDocuments:
                 [Document(page_content="z", metadata={"source": "A.pdf"})],
                 vector_store=store,
             )
+
+    def test_clearing_the_only_source_removes_bm25_sidecar_without_crashing(self, tmp_path):
+        """FIX 1: sync_documents(source, []) on the ONLY source empties the
+        store. rank_bm25 cannot represent an empty corpus (BM25Okapi([]) divides
+        by zero on average doc length), so the rebuild must NOT try to build —
+        it deletes any existing sidecar instead, so a stale pickle can't ghost
+        the just-deleted chunks. load_bm25_index then returns None and retrieval
+        degrades to vector-only (also empty)."""
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        sync_documents(
+            "A.pdf",
+            [Document(page_content="alpha unique content", metadata={"source": "A.pdf"})],
+            vector_store=store,
+            persist_directory=persist_dir,
+        )
+        assert (tmp_path / "chroma" / "bm25_index.pkl").exists()
+
+        # Clear the only source: this used to crash in the BM25 rebuild.
+        result = sync_documents("A.pdf", [], vector_store=store, persist_directory=persist_dir)
+        assert result == {"added": 0, "updated": 0, "deleted": 1}
+        assert store.get()["ids"] == []  # store is empty
+        assert not (tmp_path / "chroma" / "bm25_index.pkl").exists()  # sidecar removed
+        assert load_bm25_index(persist_dir) is None
+
+    def test_rebuild_bm25_false_defers_sidecar_but_still_writes_store(self, tmp_path):
+        """FIX 7: sync_documents(..., rebuild_bm25=False) still writes the vector
+        store and returns accurate counts, but does NOT touch the BM25 sidecar —
+        a batch indexer defers the O(total_chunks) rebuild and does it once at
+        the end via the public rebuild_bm25_index."""
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        docs = [Document(page_content="alpha unique", metadata={"source": "A.pdf"})]
+
+        result = sync_documents(
+            "A.pdf", docs, vector_store=store, persist_directory=persist_dir, rebuild_bm25=False
+        )
+        assert result == {"added": 1, "updated": 0, "deleted": 0}
+        assert compute_chunk_id("A.pdf", "alpha unique") in store.get()["ids"]  # store updated
+        assert not (tmp_path / "chroma" / "bm25_index.pkl").exists()  # sidecar deferred
+
+        # The public wrapper then builds the sidecar (+ manifest) exactly once.
+        rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
+        assert (tmp_path / "chroma" / "bm25_index.pkl").exists()
+        assert set(load_bm25_index(persist_dir).ids) == {compute_chunk_id("A.pdf", "alpha unique")}

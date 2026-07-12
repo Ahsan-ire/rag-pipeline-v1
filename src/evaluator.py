@@ -27,11 +27,9 @@ import subprocess
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from src.bm25_index import load_bm25_index
 from src.embedder import (
     CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
-    assert_embedding_model,
     get_vector_store,
 )
 from src.generator import (
@@ -40,7 +38,7 @@ from src.generator import (
     generate_with_sources,
     is_refusal,
 )
-from src.retriever import retrieve
+from src.retriever import load_retrieval_context, retrieve
 
 VALID_TYPES = {"direct", "exact_token", "refusal"}
 
@@ -144,8 +142,9 @@ def _build_default_retrieve_fn(
     ``src.retriever.retrieve`` re-opens the Chroma wrapper, re-unpickles the
     BM25 index, and re-checks the embedding-model manifest on every single
     call. Over a golden set of dozens of questions that per-question cost
-    dominates; this builds each of those three things exactly ONCE and closes
-    over them, so only the query itself varies per call.
+    dominates; :func:`src.retriever.load_retrieval_context` builds each of
+    those three things exactly ONCE and this closes over the result, so only
+    the query itself varies per call.
 
     Args:
         top_k: Default ``top_k`` baked into the returned callable (still
@@ -159,9 +158,7 @@ def _build_default_retrieve_fn(
         ``retrieve`` with the pre-built store/index injected, so ``retrieve``
         itself skips its own disk load and manifest check for this call.
     """
-    assert_embedding_model(persist_directory)
-    store = get_vector_store(persist_directory=persist_directory)
-    bm25 = load_bm25_index(persist_directory)
+    store, bm25 = load_retrieval_context(persist_directory)
 
     def _retrieve_fn(question: str, top_k: int = top_k) -> List[Dict[str, Any]]:
         """Retrieve ``question`` using the store/BM25 index built once above."""
@@ -646,11 +643,12 @@ def run_eval(
             ``evaluate_refusals``); mainly for tests.
         provenance_fn: Optional override for the provenance block; called with
             no arguments to return the ``collect_provenance`` shape. Defaults
-            to ``collect_provenance`` with ``results_path`` passed as its
-            ``exclude_paths`` (the report about to be written is expected to
-            be dirty and shouldn't count as a surprise) — this default shells
-            out to git and opens the Chroma store, so tests MUST inject a
-            fake to stay IO-free.
+            to ``collect_provenance`` with this run's ``persist_directory`` (so
+            the chunk count is read from the index under test, not the hard-coded
+            default dir) and ``results_path`` passed as its ``exclude_paths``
+            (the report about to be written is expected to be dirty and
+            shouldn't count as a surprise) — this default shells out to git and
+            opens the Chroma store, so tests MUST inject a fake to stay IO-free.
         persist_directory: ChromaDB persistence directory, threaded into both
             ``evaluate_retrieval`` and ``evaluate_refusals`` (Phase 9
             load-once retrieval); ignored by either pass whose ``retrieve_fn``
@@ -664,19 +662,42 @@ def run_eval(
     """
     golden = load_golden_set(golden_path)
 
+    # Build the load-once retrieve_fn a SINGLE time for the whole run (Phase 9 /
+    # D37): one store open + one BM25 unpickle, shared by the retrieval pass AND
+    # (when it runs) the refusal pass's default answer_fn. Previously each pass
+    # built its own default, so a full run opened the store and unpickled the
+    # sidecar twice. An explicitly injected retrieve_fn/answer_fn bypasses this.
+    if retrieve_fn is None:
+        retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
+
     retrieval = evaluate_retrieval(
         golden, retrieve_fn=retrieve_fn, top_k=top_k, persist_directory=persist_directory
     )
-    refusals = (
-        None
-        if skip_refusals
-        else evaluate_refusals(
+
+    if skip_refusals:
+        refusals = None
+    else:
+        if answer_fn is None:
+
+            def answer_fn(question: str) -> str:
+                """Answer via the run's single load-once retrieve_fn, then generate.
+
+                Derived from the SAME retrieve_fn as the retrieval pass so the
+                whole run opens the store and unpickles the BM25 index exactly
+                once, not once per evaluate_* pass.
+                """
+                return generate_with_sources(
+                    question, retrieve_fn(question, top_k=top_k)
+                )["answer"]
+
+        refusals = evaluate_refusals(
             golden, answer_fn=answer_fn, top_k=top_k, persist_directory=persist_directory
         )
-    )
 
     if provenance_fn is None:
-        provenance_fn = lambda: collect_provenance(exclude_paths=(results_path,))
+        provenance_fn = lambda: collect_provenance(
+            persist_directory=persist_directory, exclude_paths=(results_path,)
+        )
     provenance = provenance_fn()
 
     report = _format_report(
