@@ -39,7 +39,13 @@ def classify(
         Exactly one of ``REFUSAL``, ``CITATIONS_VERIFIED``,
         ``PARTIALLY_VERIFIED``, ``CITATIONS_UNVERIFIED``:
 
-        * a refusal answer → ``REFUSAL`` (regardless of any citations);
+        * an answer that IS the refusal sentence (D32's normalized exact
+          match) → ``REFUSAL``, even if a caller passes citation dicts
+          alongside it. An answer that merely *contains* the refusal phrase
+          plus other text — e.g. the refusal sentence with a stray citation
+          bracket appended — is NOT a refusal under D32; it falls through to
+          citation verification like any other malformed answer and fails
+          closed to ``CITATIONS_UNVERIFIED`` unless its citations verify;
         * ≥1 citation and zero ungrounded → ``CITATIONS_VERIFIED``;
         * ≥1 grounded and ≥1 ungrounded → ``PARTIALLY_VERIFIED``;
         * a non-refusal with zero grounded (this includes the zero-citation

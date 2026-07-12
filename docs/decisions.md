@@ -938,3 +938,29 @@ the visible-warning middle ground was chosen; tamper-evidence claims without an 
 (the `.gitignore` entry predates this phase). Tests exercise the real write path only under
 `tmp_path`/patched env, keeping the suite IO-clean; `test_pipeline.py` carries an autouse fixture
 pointing `AUDIT_LOG_PATH` at `tmp_path` so no test can touch a real `logs/` directory.
+**Gate-review hardening (12 Jul 2026, same day):** the phase's pressure-tester passed all five
+acceptance criteria pre-hardening; the 8-angle adversarial review then produced fixes applied
+in-branch: the retriever now attaches `.id` to BM25-arm Documents (the audit's content-hash
+fallback was silently the *common* case — the sidecar stores Documents id-less); the six audit
+`action` strings became `ACTION_*` constants in `src/audit.py` (a call-site typo would have minted
+a bucket Phase 10's distribution metric silently miscounts, while the sibling gate-outcome
+vocabulary already had constants); `_git_sha` is `lru_cache`d and the pipeline test fixture patches
+it (the review caught, empirically, ~15 unit tests spawning a real `git` subprocess each run — a
+no-unmocked-IO violation); the three copies of the answer+citations print block collapsed into
+`_print_answer_and_sources`; the manual-review source listing fixed two page bugs (`p.None` for
+explicit-None pages; ASCII hyphen where every other surface uses the D21 en-dash) and the blocked
+path now NAMES the unverified locators (restoring v1's hallucinated-locator triage signal that the
+block banner had dropped); `query()`'s return shape is now uniform — `answer_chars` and
+`gate_outcome` on every path, with `no_results` recording `answer_chars: 0` since no draft ever
+existed; audit's heavy imports went lazy so a log-replay script can import `src.audit` without the
+chromadb/anthropic stack. **Measured, not assumed:** 0 of 1,470 chunks in the real index lack
+`page_start` (and `_sanitize_metadata` drops None-valued keys at index time), so D35's mandatory
+page check blocks nothing on the current corpus — the fail-closed rule's blast radius today is
+zero. **Accepted as designed, documented not changed:** the broad `except` around the audit write
+(a visible warning beats a crashed query; the record hole is the trade); the withheld-return dict
+stays a key-by-key allowlist rather than a `{**result}` spread (a spread is fail-open the day a
+future key carries draft text); `classify` keeps its spec'd three-param signature; the legacy
+display fallback stays (belt-and-braces per the colleague review) with an explicit removal trigger
+comment; and a refusal-sentence-plus-stray-citation hybrid intentionally falls through to citation
+verification and fails closed — `classify`'s docstring now states this instead of overpromising
+"regardless of any citations".

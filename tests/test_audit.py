@@ -87,6 +87,15 @@ class TestGitSha:
     """Direct coverage of the helper, with subprocess.run itself patched
     (no real subprocess calls)."""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        """``_git_sha`` is lru_cached for the process lifetime; clear it
+        around each test so the patched ``subprocess.run`` is actually
+        consulted instead of a value cached by an earlier test."""
+        _git_sha.cache_clear()
+        yield
+        _git_sha.cache_clear()
+
     def test_returns_short_sha_on_success(self, monkeypatch):
         class FakeResult:
             returncode = 0

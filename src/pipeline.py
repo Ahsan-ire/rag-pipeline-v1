@@ -10,7 +10,16 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
-from src.audit import build_event, log_event
+from src.audit import (
+    ACTION_BLOCKED_UNVERIFIED,
+    ACTION_NO_RESULTS,
+    ACTION_REFUSAL_SHOWN,
+    ACTION_SHOWN,
+    ACTION_SHOWN_UNVERIFIED_OVERRIDE,
+    ACTION_SHOWN_WITH_WARNING,
+    build_event,
+    log_event,
+)
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import add_documents, clear_store
 from src.generator import generate_with_sources, is_refusal
@@ -151,22 +160,41 @@ def _write_audit(
         print(f"⚠ audit log write failed: {e}")
 
 
+def _print_answer_and_sources(answer: str, sources: list) -> None:
+    """Print the answer body and its extracted citation list.
+
+    The shared opening of every branch that shows the draft (legacy fallback,
+    CITATIONS_VERIFIED, PARTIALLY_VERIFIED) — one owner so the branches
+    cannot drift apart on wording or format.
+    """
+    print(f"\nAnswer:\n{answer}")
+    if sources:
+        print("\nCitations found:")
+        for source in sources:
+            print(f"  - {source}")
+
+
 def _print_retrieved_sources(results: list) -> None:
     """Print one locator+pages line per retrieved chunk, no chunk text.
 
     Used by the CITATIONS_UNVERIFIED paths (both the block notice and the
     ``--show-unverified`` draft) so a reviewer can see what the answer was
     matched against. Reuses ``locator_label`` (D34) so the APPENDIX grammar
-    stays identical to every other display surface.
+    stays identical to every other display surface; the page range uses the
+    same en-dash as the chunk prefix and retriever header. ``page_start`` is
+    stored as an explicit ``None`` when OCR found no printed page number, so
+    the missing-page guard must test the value, not the key.
     """
     print("\nRetrieved sources (for manual review):")
     for r in results:
         meta = r["document"].metadata
         section = meta.get("section_number") or "—"
-        p_start = meta.get("page_start", "?")
+        p_start = meta.get("page_start")
         p_end = meta.get("page_end")
-        if p_end and p_end != p_start:
-            pages = f"pp.{p_start}-{p_end}"
+        if p_start is None:
+            pages = f"pp.?–{p_end}" if p_end is not None else "p.?"
+        elif p_end and p_end != p_start:
+            pages = f"pp.{p_start}–{p_end}"
         else:
             pages = f"p.{p_start}"
         print(f"  - {locator_label(section)}  {pages}")
@@ -196,11 +224,14 @@ def query(
 
     Returns:
         Dict with answer, citations, sources, source_documents,
-        citation_check ({grounded, ungrounded}), and gate_outcome — the same
-        shape on every path, so callers (e.g. the Phase 5 eval) never need key
-        guards. When the gate blocks an answer (CITATIONS_UNVERIFIED without
-        ``show_unverified``), ``answer`` is a block notice, the draft text is
-        withheld, and ``answer_chars`` records that a draft existed.
+        citation_check ({grounded, ungrounded}), gate_outcome, and
+        answer_chars — the same key set on every path, so callers (e.g. the
+        Phase 5 eval) never need key guards. ``answer_chars`` is the generated
+        draft's length (0 when retrieval was empty and no draft ever existed);
+        ``gate_outcome`` is None for the no-results path and legacy/ungated
+        results. When the gate blocks an answer (CITATIONS_UNVERIFIED without
+        ``show_unverified``), ``answer`` is a block notice and the draft text
+        is withheld — ``answer_chars`` is then the only trace of its size.
     """
     # Retrieve relevant chunks
     results = retrieve(question, top_k=top_k, document_type=document_type)
@@ -216,10 +247,13 @@ def query(
             document_type=document_type,
             results=[],
             gate_outcome=None,
-            action="no_results",
+            action=ACTION_NO_RESULTS,
             citation_check={"grounded": [], "ungrounded": []},
             citations=[],
-            answer=msg,
+            # Generation never ran — record a zero-length draft, not the
+            # length of this UI notice, so log analysis can't mistake
+            # no_results rows for real answers.
+            answer="",
         )
         return {
             "answer": msg,
@@ -228,6 +262,7 @@ def query(
             "source_documents": [],
             "citation_check": {"grounded": [], "ungrounded": []},
             "gate_outcome": None,
+            "answer_chars": 0,
         }
 
     logger.info("Retrieved %d relevant chunks", len(results))
@@ -237,7 +272,10 @@ def query(
         for rank, r in enumerate(results, 1):
             meta = r["document"].metadata
             section = meta.get("section_number") or "—"
-            page = meta.get("page_start", "?")
+            # page_start can be an explicit None (no printed page found by
+            # OCR), which .get's default would let through as "p.None".
+            page = meta.get("page_start")
+            page = "?" if page is None else page
             doc_type = meta.get("document_type", "?")
             locator = locator_label(section)
             print(
@@ -247,10 +285,13 @@ def query(
 
     # Generate answer with citations
     result = generate_with_sources(question, results)
+    # Direct indexing on purpose: generate_with_sources always sets these
+    # keys, and a defensive default here would mask an upstream regression as
+    # a fully-unverified answer instead of raising at the real bug.
     draft_answer = result["answer"]
-    citations = result.get("citations") or []
-    citation_check = result.get("citation_check") or {"grounded": [], "ungrounded": []}
-    ungrounded = citation_check.get("ungrounded", [])
+    citations = result["citations"]
+    citation_check = result["citation_check"]
+    ungrounded = citation_check["ungrounded"]
     outcome = result.get("gate_outcome")
 
     # Default: pass generate_with_sources' dict through unchanged. Only the
@@ -263,12 +304,10 @@ def query(
         # mock that predates the grounding gate. Reproduce the exact v1 display —
         # answer + citations + zero-citation warning + ungrounded warning — and
         # log it as a plain "shown". Real generate_with_sources always sets
-        # gate_outcome, so production never reaches this branch.
-        print(f"\nAnswer:\n{draft_answer}")
-        if result["sources"]:
-            print("\nCitations found:")
-            for source in result["sources"]:
-                print(f"  - {source}")
+        # gate_outcome, so production never reaches this branch. (Remove it when
+        # the legacy-mock fixtures in tests/test_pipeline.py migrate to
+        # gate_outcome-carrying mocks — it exists for them, not for production.)
+        _print_answer_and_sources(draft_answer, result["sources"])
         # A non-refusal answer with no extractable citations is invisible to
         # citation_check (there is nothing to validate), so it needs its own
         # flag: otherwise it reads exactly like a grounded answer even though a
@@ -286,28 +325,20 @@ def query(
             print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
             for citation in ungrounded:
                 print(f"  - {citation['raw']}")
-        action = "shown"
+        action = ACTION_SHOWN
 
     elif outcome == REFUSAL:
         # The answer IS the refusal sentence — print it as-is, no warnings.
         print(f"\nAnswer:\n{draft_answer}")
-        action = "refusal_shown"
+        action = ACTION_REFUSAL_SHOWN
 
     elif outcome == CITATIONS_VERIFIED:
-        print(f"\nAnswer:\n{draft_answer}")
-        if result["sources"]:
-            print("\nCitations found:")
-            for source in result["sources"]:
-                print(f"  - {source}")
+        _print_answer_and_sources(draft_answer, result["sources"])
         print("\n✓ All citations verified against the retrieved sources.")
-        action = "shown"
+        action = ACTION_SHOWN
 
     elif outcome == PARTIALLY_VERIFIED:
-        print(f"\nAnswer:\n{draft_answer}")
-        if result["sources"]:
-            print("\nCitations found:")
-            for source in result["sources"]:
-                print(f"  - {source}")
+        _print_answer_and_sources(draft_answer, result["sources"])
         # Name every unverified citation so a reader knows exactly which
         # locators to double-check before relying on them.
         print(
@@ -317,7 +348,7 @@ def query(
         )
         for citation in ungrounded:
             print(f"  - {citation['raw']}")
-        action = "shown_with_warning"
+        action = ACTION_SHOWN_WITH_WARNING
 
     else:  # CITATIONS_UNVERIFIED
         if show_unverified:
@@ -326,7 +357,7 @@ def query(
             print("\nUNVERIFIED DRAFT — do not rely on this text")
             print(f"\nAnswer:\n{draft_answer}")
             _print_retrieved_sources(results)
-            action = "shown_unverified_override"
+            action = ACTION_SHOWN_UNVERIFIED_OVERRIDE
             # return_value stays as the real result (draft included).
         else:
             # Fail closed: the draft's citations could not be verified, so the
@@ -338,13 +369,23 @@ def query(
                 "retrieved sources, so it is withheld. This does NOT mean the "
                 "answer is absent from the corpus."
             )
+            # Name the locators that failed verification — an operator triaging
+            # a block needs to see WHICH citations the draft tried to rely on
+            # (locator strings only, never draft text).
+            if ungrounded:
+                print("\nUnverified citations in the withheld draft:")
+                for citation in ungrounded:
+                    print(f"  - {citation['raw']}")
             _print_retrieved_sources(results)
             print(
                 "\nTry rephrasing the question, raising --top-k, or use "
                 "--show-unverified to see the unverified draft."
             )
-            action = "blocked_unverified"
+            action = ACTION_BLOCKED_UNVERIFIED
             # Build a NEW dict so the draft text never leaves this function.
+            # Deliberate key-by-key allowlist, NOT {**result, ...}: a spread
+            # would silently forward any future key that carries draft text —
+            # fail-open. New keys must be consciously added here.
             # answer_chars lets a caller see a draft existed without seeing it.
             return_value = {
                 "answer": (
@@ -354,9 +395,9 @@ def query(
                 ),
                 "gate_outcome": outcome,
                 "citations": citations,
-                "sources": result.get("sources", []),
+                "sources": result["sources"],
                 "citation_check": citation_check,
-                "source_documents": result.get("source_documents", []),
+                "source_documents": result["source_documents"],
                 "answer_chars": len(draft_answer),
             }
 
@@ -375,6 +416,13 @@ def query(
         answer=draft_answer,
     )
 
+    # Uniform return shape: every path carries answer_chars (the generated
+    # draft's length — 0 on the no-results path, where no draft ever existed)
+    # and gate_outcome (None for legacy/ungated results). On shown paths
+    # answer_chars equals len(answer); on the blocked path it is the only
+    # trace of the withheld draft's size.
+    return_value.setdefault("answer_chars", len(draft_answer))
+    return_value.setdefault("gate_outcome", None)
     return return_value
 
 

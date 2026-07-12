@@ -20,6 +20,7 @@ logged:
   not import time, so it can be toggled per-process without reimporting.
 """
 
+import functools
 import hashlib
 import json
 import os
@@ -28,12 +29,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.embedder import compute_chunk_id
-from src.generator import GENERATION_MODEL
-
 DEFAULT_LOG_PATH = Path("logs/audit_log.jsonl")
 
+# Action vocabulary: what pipeline.query actually did with the answer. Owned
+# here, next to the record schema, as constants — a typo at a call site would
+# otherwise mint a new bucket that Phase 10's outcome-distribution metric
+# silently miscounts (the sibling gate-outcome vocabulary is owned the same
+# way in src/grounding.py).
+ACTION_SHOWN = "shown"
+ACTION_SHOWN_WITH_WARNING = "shown_with_warning"
+ACTION_BLOCKED_UNVERIFIED = "blocked_unverified"
+ACTION_REFUSAL_SHOWN = "refusal_shown"
+ACTION_SHOWN_UNVERIFIED_OVERRIDE = "shown_unverified_override"
+ACTION_NO_RESULTS = "no_results"
 
+
+@functools.lru_cache(maxsize=1)
 def _git_sha() -> Optional[str]:
     """Best-effort short git SHA of HEAD, or ``None`` on any failure.
 
@@ -41,7 +52,10 @@ def _git_sha() -> Optional[str]:
     of shelling out to git. Deliberately swallows everything (missing git
     binary, not-a-repo, timeout, non-zero exit): this value is diagnostic
     metadata for an operational log, never something a caller should have
-    to handle a raised exception for.
+    to handle a raised exception for. Cached for the process lifetime — the
+    SHA cannot change mid-process, and a per-query subprocess spawn is pure
+    waste in any future batch caller (same convention as the cached
+    ``get_embedding_function``).
     """
     try:
         result = subprocess.run(
@@ -102,6 +116,15 @@ def build_event(
     missing per-chunk document id falls back to the same content-hash id
     the vector store itself uses (``compute_chunk_id``).
     """
+    # Lazy imports: embedder pulls chromadb + sentence-transformers and
+    # generator pulls the Anthropic client — a lightweight consumer of this
+    # module (a log-replay script, a bare build_event test) shouldn't pay for
+    # the full stack. compute_chunk_id is only a fallback: the retriever
+    # attaches .id to every Document it returns, so re-hashing here means an
+    # id-less Document came from somewhere else.
+    from src.embedder import compute_chunk_id
+    from src.generator import GENERATION_MODEL
+
     retrieved: List[Dict[str, Any]] = []
     for r in results:
         doc = r["document"]

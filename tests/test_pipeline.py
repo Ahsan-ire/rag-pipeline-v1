@@ -160,8 +160,11 @@ class TestQuery:
         The audit wiring is always-on, so any query test that does not patch
         log_event would otherwise write a real JSONL line into the repo's
         logs/ directory. Redirecting AUDIT_LOG_PATH per-test keeps the suite
-        hermetic (see src/audit.py log_event path resolution)."""
+        hermetic (see src/audit.py log_event path resolution). _git_sha is
+        patched too — build_event would otherwise spawn a real ``git``
+        subprocess on every query call, breaking the no-unmocked-IO rule."""
         monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit_log.jsonl"))
+        monkeypatch.setattr("src.audit._git_sha", lambda: "t3st5ha")
 
     def test_returns_answer(self):
         """Test that query returns an answer dict."""
@@ -502,6 +505,50 @@ class TestQuery:
         assert "BLOCKED — CITATIONS UNVERIFIED" in result["answer"]
         assert result["answer_chars"] == len(draft)
         assert result["gate_outcome"] == CITATIONS_UNVERIFIED
+
+    def test_zero_citation_answer_blocks_through_the_production_path(self, capsys):
+        """The P0 case routed through the code path production actually runs:
+        a non-refusal draft with ZERO citations gets gate_outcome
+        CITATIONS_UNVERIFIED from the real generate_with_sources, so it must
+        hit the BLOCKED branch — not the legacy fallback whose '⚠ WARNING:
+        this answer contains no citations' text production never emits."""
+        draft = "SENTINEL DRAFT: an uncited assertion about registration."
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="Chunk content.",
+                    metadata={
+                        "source": "Conveyancing_Handbook.pdf",
+                        "document_type": "handbook",
+                        "section_number": "3.2.1",
+                        "page_start": 40,
+                    },
+                ),
+                "score": 0.02,
+                "metadata": {"section_number": "3.2.1"},
+            }
+        ]
+        mock_generated = {
+            "answer": draft,
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": CITATIONS_UNVERIFIED,
+        }
+
+        with patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            result = query("What does the handbook assert?")
+
+        out = capsys.readouterr().out
+        assert draft not in out
+        assert "BLOCKED — CITATIONS UNVERIFIED" in out
+        # No unverified-locator list (there were no citations at all) and no
+        # legacy fallback warning — this is the gated branch, not v1 display.
+        assert "Unverified citations in the withheld draft" not in out
+        assert "this answer contains no citations" not in out
+        assert result["answer_chars"] == len(draft)
 
     def test_show_unverified_reveals_draft_and_logs_override(self, capsys):
         """--show-unverified reveals the withheld draft under the UNVERIFIED
