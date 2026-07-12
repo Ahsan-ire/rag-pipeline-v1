@@ -68,6 +68,11 @@ def retrieve(
             for doc_id, doc, _score in search_bm25(
                 bm25_index, query, candidate_k, document_type
             ):
+                # BM25-sidecar Documents are stored without .id; attach the
+                # store id here so downstream consumers (audit log) never have
+                # to re-derive it by re-hashing the chunk text.
+                if doc.id is None:
+                    doc.id = doc_id
                 bm25_ranked_ids.append(doc_id)
                 id_to_doc.setdefault(doc_id, doc)
         except Exception as e:

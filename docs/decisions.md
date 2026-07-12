@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 7 — appendix citations end-to-end**
+**Current phase: 8 — grounding gate + audit trail**
 
 ---
 
@@ -870,3 +870,97 @@ ungrounded. Known and accepted, not fixed: a re-cased `Para 3.2.1` locator still
 (pre-existing; case-tolerance stays deliberately scoped to the APPENDIX token, whose casing the
 model must reproduce from metadata — a `para` token appears lowercase in every header the model
 sees).
+
+## D35 — fail-closed grounding gate: outcomes, display policy, mandatory page check (12 Jul 2026)
+**Decision:** `src/grounding.py` classifies every generated answer into exactly one of four
+outcomes, named for what the system actually verifies — citation **locators** against retrieved
+sources, never legal claims: `REFUSAL` / `CITATIONS_VERIFIED` (≥1 citation, zero unverified) /
+`PARTIALLY_VERIFIED` (≥1 verified and ≥1 unverified) / `CITATIONS_UNVERIFIED` (non-refusal with
+zero verified, which includes the zero-citation case — closing the critique's P0). `classify` runs
+inside `generate_with_sources`, so `result["gate_outcome"]` reaches every consumer; display policy
+lives in `pipeline.query`. Default posture is **block-and-show-sources**: `CITATIONS_UNVERIFIED`
+withholds the answer body behind a `BLOCKED — CITATIONS UNVERIFIED` banner whose wording says the
+citations *could not be verified* — never that the answer "is not in the corpus" — and prints the
+retrieved source headers (locator + pages only, no chunk text) so a solicitor can review manually,
+plus rephrase/`--top-k`/`--show-unverified` hints. `--show-unverified` (CLI) / `show_unverified=True`
+(API) reveals the draft under an "UNVERIFIED DRAFT" banner and is recorded in the event log.
+**Gated public return:** when withheld, `query()`'s returned dict does not carry the draft — the
+`answer` key holds the block notice and `answer_chars` records that a draft existed; programmatic
+access to raw drafts is only via `generate_with_sources` or the explicit override, so any future
+API consumer is safe by default. `PARTIALLY_VERIFIED` answers are **shown** with a banner naming
+each failed citation. The grounding check itself is tightened: `_citation_matches_chunk`'s page
+check is now **mandatory** — a section-related chunk with no page metadata can no longer verify a
+citation (the old `start is None → grounded` branch, which no test pinned, fails closed).
+**Why:** The external critique's P0, verified in code: grounding was computed but never enforced at
+the output boundary — a citation-free answer displayed exactly like a verified one. For a legal-firm
+posture the failure mode must be a visible block with a manual-review path, not silent plausibility.
+The mandatory page check does the real safety work because chunks are section-granular (D28):
+section-nesting alone is coarse, and page-span agreement is the strongest signal available offline.
+**Rejected:** exact-locator-only gate matching (colleague proposal) — D28's section-granular chunks
+mean correct answers routinely cite finer sub-paragraphs living inside a chunk, so exact equality
+would structurally block the best answers. Withholding `PARTIALLY_VERIFIED` answers (colleague
+preference) — the user chose show-with-banner naming the failed citations, reserving full
+withholding for zero-verified; both positions recorded here. `GROUNDED`/`UNGROUNDED` outcome names
+(the original plan wording) — renamed because "grounded" reads as claim-level truth, which the gate
+cannot check; the vocabulary now states citation-locator verification only.
+**Consequence:** `query()` reads `gate_outcome` with a defined fallback — a result lacking the key
+(legacy callers, old test mocks) gets the exact v1 fail-visible display, and the D32 zero-citation
+warning now lives only in that fallback branch, superseded by the gate everywhere else. Two
+existing pipeline mocks were updated to carry outcomes; the remaining legacy-mock tests now pin the
+fallback path deliberately. The evaluator inherits `gate_outcome` in every generated result for
+Phase 10's outcome-distribution metric with no evaluator change.
+
+## D36 — operational event log: contents, hashing, and what is deliberately excluded (12 Jul 2026)
+**Decision:** `src/audit.py` writes one JSONL event per `pipeline.query` call, always-on —
+including the no-results early return (`action: "no_results"`, a sixth action value added to the
+plan's five: shown / shown_with_warning / blocked_unverified / refusal_shown /
+shown_unverified_override). Default path `logs/audit_log.jsonl` (already gitignored), `AUDIT_LOG_PATH`
+env override. Record: UTC ISO timestamp, best-effort git SHA, **`query_sha256` + `query_chars` —
+not raw query text** (raw only under explicit `AUDIT_LOG_RAW_QUERIES=1`, read at call time), top_k,
+document-type filter, retrieved `[{id, section_number, page_start, page_end, score}]` (content-hash
+IDs — `document.id`, recomputed via `compute_chunk_id` when unset), `gate_outcome`, `action`,
+verified/unverified counts, citation locator strings, generation model, `answer_chars`.
+**Excluded always: answer text and chunk text.** A failed log write prints a visible one-line
+warning and the query proceeds. This is an operational log, **not** a tamper-evident audit trail —
+no chaining, signing, or integrity checks are claimed.
+**Why:** The critique's auditability theme: a firm must be able to reconstruct what the pipeline
+did (what was retrieved, what the gate decided, what the user was shown, whether the override was
+used) — but the log itself must not become a new leak: chunk text is copyrighted, and legal query
+text can reveal a client's matter, so identity-preserving hashes stand in for both.
+**Rejected:** raw query text by default (client confidentiality); logging answer or chunk text in
+any form (copyright — same rule as D30's report scrub); hooking the log into
+`generate_with_sources` instead of `pipeline.query` — the evaluator calls `generate_with_sources`
+directly ~30× per eval run and an operational log of eval traffic is noise that would also slow
+evals (the CLI is the operational surface; eval provenance is D33's job); crash-on-log-failure
+(a query must not die because `logs/` is unwritable) and silent failure (invisible audit gaps) —
+the visible-warning middle ground was chosen; tamper-evidence claims without an implementation.
+**Consequence:** `/phase-gate`'s hygiene step now checks `logs/` alongside the never-commit list
+(the `.gitignore` entry predates this phase). Tests exercise the real write path only under
+`tmp_path`/patched env, keeping the suite IO-clean; `test_pipeline.py` carries an autouse fixture
+pointing `AUDIT_LOG_PATH` at `tmp_path` so no test can touch a real `logs/` directory.
+**Gate-review hardening (12 Jul 2026, same day):** the phase's pressure-tester passed all five
+acceptance criteria pre-hardening; the 8-angle adversarial review then produced fixes applied
+in-branch: the retriever now attaches `.id` to BM25-arm Documents (the audit's content-hash
+fallback was silently the *common* case — the sidecar stores Documents id-less); the six audit
+`action` strings became `ACTION_*` constants in `src/audit.py` (a call-site typo would have minted
+a bucket Phase 10's distribution metric silently miscounts, while the sibling gate-outcome
+vocabulary already had constants); `_git_sha` is `lru_cache`d and the pipeline test fixture patches
+it (the review caught, empirically, ~15 unit tests spawning a real `git` subprocess each run — a
+no-unmocked-IO violation); the three copies of the answer+citations print block collapsed into
+`_print_answer_and_sources`; the manual-review source listing fixed two page bugs (`p.None` for
+explicit-None pages; ASCII hyphen where every other surface uses the D21 en-dash) and the blocked
+path now NAMES the unverified locators (restoring v1's hallucinated-locator triage signal that the
+block banner had dropped); `query()`'s return shape is now uniform — `answer_chars` and
+`gate_outcome` on every path, with `no_results` recording `answer_chars: 0` since no draft ever
+existed; audit's heavy imports went lazy so a log-replay script can import `src.audit` without the
+chromadb/anthropic stack. **Measured, not assumed:** 0 of 1,470 chunks in the real index lack
+`page_start` (and `_sanitize_metadata` drops None-valued keys at index time), so D35's mandatory
+page check blocks nothing on the current corpus — the fail-closed rule's blast radius today is
+zero. **Accepted as designed, documented not changed:** the broad `except` around the audit write
+(a visible warning beats a crashed query; the record hole is the trade); the withheld-return dict
+stays a key-by-key allowlist rather than a `{**result}` spread (a spread is fail-open the day a
+future key carries draft text); `classify` keeps its spec'd three-param signature; the legacy
+display fallback stays (belt-and-braces per the colleague review) with an explicit removal trigger
+comment; and a refusal-sentence-plus-stray-citation hybrid intentionally falls through to citation
+verification and fails closed — `classify`'s docstring now states this instead of overpromising
+"regardless of any citations".

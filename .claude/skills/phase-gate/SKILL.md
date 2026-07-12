@@ -18,7 +18,7 @@ You are running the quality gate for **Phase $ARGUMENTS** of this repo. Collect 
 2. Run the full test suite: `.venv/bin/python -m pytest tests/ -q` (fall back to `python -m pytest tests/ -q` if no venv). The whole suite must pass. Paste the output.
 3. Spawn the **pressure-tester** subagent (Agent tool), passing: the phase number, the acceptance criteria verbatim, and a reminder to return the per-criterion table with pasted evidence.
 4. Invoke the built-in **code-review** skill (Skill tool) on the current diff at high effort.
-5. Git hygiene: confirm `git status --porcelain` shows nothing matching `data/`, `*.pdf`, `.env`, or `chroma_db/` (their presence means .gitignore failed).
+5. Git hygiene: confirm `git status --porcelain` shows nothing matching `data/`, `*.pdf`, `.env`, `chroma_db/`, or `logs/` (their presence means .gitignore failed).
 6. Confirm docs/decisions.md contains entries covering this phase's design choices. If missing, draft the entry and ask the user before appending.
 7. Assemble the gate report:
    - Acceptance criterion table (criterion → PASS/FAIL → evidence)
