@@ -851,3 +851,22 @@ pattern deliberately mirrors the para grammar (`\d+(?:\.\d+)*`) as a harmless su
 adds a capture group). Evaluator `hit_related` inherits the rule via its `_sections_related`
 import; `hit_strict` already handled appendix strings by literal equality — no evaluator change.
 The zero-citation warning and the Phase 8 gate now see appendix citations like any other locator.
+**Gate-review hardening (12 Jul 2026, same day):** the phase's 8-angle adversarial review found
+(with empirical repros) that the alternation's lazy scan let a locator-shaped token inside the
+OCR'd chapter-title free-text run hijack the match — `[..., Ch.6 Contracts see Appendix 3,
+para 6.3.2, p.220]` extracted `APPENDIX 3` instead of `para 6.3.2` (a regression: the para-only
+regex was immune in this direction), and symmetrically a free-text `para N` could steal from a
+real appendix locator (pre-existing). Fix: the locator segment must sit directly before the page
+segment (`\s*,\s*` replaces the opaque run between number and page) — that adjacency IS the
+emitted grammar in both the compact header and the D21 prefix, no test or live output ever
+carried interstitial text there, and the change also collapses the reviewer-timed quadratic
+backtracking on degenerate unclosed-bracket input to linear. Semantics note: if a bracket somehow
+carries two locator tokens, nearest-to-page now wins (was leftmost). Same review: the
+`startswith("APPENDIX")`/`para` guard, triplicated across chunker/retriever/pipeline, is
+extracted into `chunker.locator_label()` (single owner, surfaces cannot drift); SYSTEM_PROMPT
+rule 2 gains the appendix example and an explicit "never rewrite an APPENDIX locator as a para
+number" instruction, since the never-cross-match rule would (correctly) flag such a rewrite as
+ungrounded. Known and accepted, not fixed: a re-cased `Para 3.2.1` locator still does not extract
+(pre-existing; case-tolerance stays deliberately scoped to the APPENDIX token, whose casing the
+model must reproduce from metadata — a `para` token appears lowercase in every header the model
+sees).

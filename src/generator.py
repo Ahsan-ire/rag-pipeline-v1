@@ -28,7 +28,9 @@ context. Follow these rules:
 
 1. Ground every statement in the context. Do not rely on outside legal knowledge.
 2. Cite the source of each claim using the exact bracketed locator shown in that \
-source's header, e.g. [Handbook, para 14.8.5, p.412]. Give the paragraph and page \
+source's header, e.g. [Handbook, para 14.8.5, p.412] or, for an appendix source, \
+[Handbook, APPENDIX 14.1, p.566]. Copy the locator exactly as the header shows it \
+— never rewrite an APPENDIX locator as a para number. Give the locator and page \
 for every statement you make.
 3. If the context does not contain enough information to answer the question, \
 reply with exactly this sentence and nothing else: "{REFUSAL_PHRASE}". Do not \
@@ -54,30 +56,37 @@ not cover the question, reply with the exact refusal sentence.""",
     ]
 )
 
-# Citation extractor. Anchors on the locator token and the ``p.``/``pp.`` tokens
-# rather than splitting on commas: both the compact ``[Handbook, para 3.2.1, p.87]``
-# header and the longer ``[Conveyancing Handbook, Ch.3 Some Title, para 3.2.1,
-# p.87]`` prefix baked into every chunk (D21) are valid, and the chapter-title
-# segment is OCR'd free text that can itself contain commas. Everything between
-# ``[`` and the locator token (and between the locator number and the page) is
-# treated as an opaque run that never crosses a closing bracket (``[^\]]``).
+# Citation extractor. Anchors on the locator token and requires the page segment
+# to follow it immediately (``, p.``/``, pp.``): both the compact
+# ``[Handbook, para 3.2.1, p.87]`` header and the longer ``[Conveyancing
+# Handbook, Ch.3 Some Title, para 3.2.1, p.87]`` prefix baked into every chunk
+# (D21) are valid, and the chapter-title segment is OCR'd free text that can
+# itself contain commas. Everything between ``[`` and the locator token is an
+# opaque run that never crosses a closing bracket (``[^\]]``) — but between the
+# locator number and the page only ``,`` plus whitespace is allowed, because in
+# both emitted grammars the locator segment sits directly before the page
+# segment. That adjacency is load-bearing: a locator-shaped token inside the
+# free-text title run (e.g. a chapter title containing "see Appendix 3") is not
+# followed by ``, p.N``, so it can no longer hijack the match away from the real
+# locator (gate-review regression fix, D34 addendum). It also bounds regex
+# backtracking on degenerate unclosed-bracket input to linear.
 #
 # Two mutually exclusive locator forms, per the chunker's two-grammar prefix
-# (chunker._prefix, src/chunker.py:550): a numbered paragraph, ``para <digits>``
-# (named group ``para``), or a verbatim appendix locator, ``APPENDIX <digits>``
-# (named group ``appendix``) — chunk metadata renders the appendix form with no
-# "para" token, and the model may echo it in any case ("Appendix", "APPENDIX"),
-# so only that token is wrapped in a scoped case-insensitive group ``(?i:...)``;
-# the rest of the pattern (including the numbered-paragraph branch) stays
-# case-sensitive per project convention. Because the two branches are tried at
-# each position via lazy ``[^\]]*?`` expansion, whichever locator token occurs
-# first (left-to-right) in the bracket is the one that matches — deterministic,
-# and a plain paragraph can never be captured as an appendix or vice versa.
-# Captures (paragraph number OR appendix number, first page).
+# (chunker._prefix / chunker.locator_label): a numbered paragraph,
+# ``para <digits>`` (named group ``para``), or a verbatim appendix locator,
+# ``APPENDIX <digits>`` (named group ``appendix``) — chunk metadata renders the
+# appendix form with no "para" token, and the model may echo it in any case
+# ("Appendix", "APPENDIX"), so only that token is wrapped in a scoped
+# case-insensitive group ``(?i:...)``; the rest of the pattern (including the
+# numbered-paragraph branch) stays case-sensitive per project convention. When
+# a bracket somehow contains two locator tokens, the one adjacent to the page
+# segment wins — deterministic, and a plain paragraph can never be captured as
+# an appendix or vice versa. Captures (paragraph number OR appendix number,
+# first page).
 CITATION_RE = re.compile(
     r"\[[^\]]*?(?:\bpara\s+(?P<para>\d+(?:\.\d+)*)"
     r"|\b(?i:appendix)\s+(?P<appendix>\d+(?:\.\d+)*))"
-    r"[^\]]*?\bpp?\.\s*(?P<page>\d+)[^\]]*?\]"
+    r"\s*,\s*pp?\.\s*(?P<page>\d+)[^\]]*?\]"
 )
 
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index, search_bm25
+from src.chunker import locator_label
 from src.embedder import assert_embedding_model, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ def _handbook_header(metadata: Dict[str, Any]) -> str:
 
     parts = ["Handbook"]
     if section:
-        parts.append(section if section.startswith("APPENDIX") else f"para {section}")
+        parts.append(locator_label(section))
     if page_start is not None:
         if page_end is not None and page_end != page_start:
             parts.append(f"pp.{page_start}–{page_end}")

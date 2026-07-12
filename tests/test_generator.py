@@ -151,6 +151,35 @@ class TestGenerate:
             {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"},
         ]
 
+    def test_appendix_word_in_title_text_cannot_hijack_a_para_locator(self):
+        """Gate-review regression (D34 addendum): the OCR'd chapter-title run
+        is free text and may itself contain a locator-shaped token. Only the
+        locator directly before the page segment is the real one — a title
+        cross-reference like 'see Appendix 3' must not steal the match."""
+        answer = (
+            "See [Conveyancing Handbook, Ch.6 Contracts see Appendix 3, "
+            "para 6.3.2, p.220]."
+        )
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "6.3.2", "page": "220", "raw": "para 6.3.2, p.220"}
+        ]
+
+    def test_para_token_in_title_text_cannot_hijack_an_appendix_locator(self):
+        """Reverse direction of the hijack guard: a 'para N' fragment in the
+        free-text run must not steal the match from the real appendix locator
+        adjacent to the page segment."""
+        answer = (
+            "See [Conveyancing Handbook, Ch.5 See para 3.2 Notes, "
+            "APPENDIX 14.1, p.87]."
+        )
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+
 
 class TestRefusal:
     def test_system_prompt_embeds_refusal_phrase(self):

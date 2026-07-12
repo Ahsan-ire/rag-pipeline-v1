@@ -10,7 +10,7 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
-from src.chunker import chunk_handbook, chunk_legal_document
+from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import add_documents, clear_store
 from src.generator import generate_with_sources, is_refusal
 from src.ingest import (
@@ -150,9 +150,7 @@ def query(
             section = meta.get("section_number") or "—"
             page = meta.get("page_start", "?")
             doc_type = meta.get("document_type", "?")
-            # Mirrors chunker._prefix / retriever._handbook_header: an APPENDIX
-            # section renders verbatim, with no "para" token.
-            locator = section if section.startswith("APPENDIX") else f"para {section}"
+            locator = locator_label(section)
             print(
                 f"  {rank:>2}. RRF={r['score']:.5f}  {locator}  "
                 f"p.{page}  [{doc_type}]"
