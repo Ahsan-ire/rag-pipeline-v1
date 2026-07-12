@@ -128,8 +128,12 @@ def build_event(
     retrieved: List[Dict[str, Any]] = []
     for r in results:
         doc = r["document"]
-        doc_id = doc.id if getattr(doc, "id", None) else compute_chunk_id(doc.page_content)
         metadata = doc.metadata or {}
+        doc_id = (
+            doc.id
+            if getattr(doc, "id", None)
+            else compute_chunk_id(metadata.get("source", ""), doc.page_content)
+        )
         retrieved.append(
             {
                 "id": doc_id,

@@ -39,7 +39,9 @@ class TestIndexDocuments:
 
         with patch("src.pipeline.load_directory", return_value=mock_docs), \
              patch("src.pipeline.chunk_legal_document", return_value=mock_chunks), \
-             patch("src.pipeline.add_documents", return_value=1):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}), \
+             patch("src.pipeline.rebuild_bm25_index"):
             count = index_documents("/test/data/", "legislation")
 
         assert count == 1
@@ -55,7 +57,9 @@ class TestIndexDocuments:
 
         with patch("src.pipeline.load_html_from_url", return_value=mock_docs), \
              patch("src.pipeline.chunk_legal_document", return_value=mock_docs), \
-             patch("src.pipeline.add_documents", return_value=1):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}), \
+             patch("src.pipeline.rebuild_bm25_index"):
             count = index_documents("https://example.com/act", "legislation")
 
         assert count == 1
@@ -71,7 +75,9 @@ class TestIndexDocuments:
 
         with patch("src.pipeline.load_pdf", return_value=mock_docs), \
              patch("src.pipeline.chunk_legal_document", return_value=mock_docs), \
-             patch("src.pipeline.add_documents", return_value=1):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}), \
+             patch("src.pipeline.rebuild_bm25_index"):
             count = index_documents("/test/doc.pdf", "case_law")
 
         assert count == 1
@@ -102,7 +108,8 @@ class TestIndexDocuments:
         with patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple) as m_load, \
              patch("src.pipeline.chunk_handbook", return_value=mock_chunks) as m_chunk, \
              patch("src.pipeline.load_pdf") as m_load_pdf, \
-             patch("src.pipeline.add_documents", return_value=1):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}):
             count = index_documents("/data/Conveyancing_Handbook.pdf", "handbook")
 
         assert count == 1
@@ -114,7 +121,8 @@ class TestIndexDocuments:
         """An empty extraction (missing/blank PDF) returns 0 without chunking."""
         with patch("src.pipeline.load_handbook_pdf", return_value=("", [], {})), \
              patch("src.pipeline.chunk_handbook") as m_chunk, \
-             patch("src.pipeline.add_documents", return_value=0):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 0, "updated": 0, "deleted": 0}):
             count = index_documents("/data/missing.pdf", "handbook")
 
         assert count == 0
@@ -126,7 +134,8 @@ class TestIndexDocuments:
         with patch("src.pipeline.clear_store") as m_clear, \
              patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple), \
              patch("src.pipeline.chunk_handbook", return_value=[Document(page_content="x", metadata={})]), \
-             patch("src.pipeline.add_documents", return_value=1):
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}):
             index_documents("/data/handbook.pdf", "handbook", reset=True)
 
         m_clear.assert_called_once()
@@ -137,19 +146,136 @@ class TestIndexDocuments:
         with patch("src.pipeline.clear_store") as m_clear, \
              patch("src.pipeline.load_handbook_pdf", return_value=triple), \
              patch("src.pipeline.chunk_handbook", side_effect=ValueError("no CHAPTER markers")), \
-             patch("src.pipeline.add_documents") as m_add:
+             patch("src.pipeline.sync_documents") as m_sync:
             with pytest.raises(ValueError):
                 index_documents("/data/notahandbook.pdf", "handbook", reset=True)
 
         m_clear.assert_not_called()   # store survives
-        m_add.assert_not_called()
+        m_sync.assert_not_called()
 
     def test_handbook_type_rejects_non_pdf_source(self):
         """--type handbook requires a single PDF; a dir/URL would mis-tag chunks."""
         with pytest.raises(ValueError, match="PDF"):
             index_documents("/data/legislation/", "handbook")
+
+    def test_handbook_sync_scoped_to_the_cli_source_path(self):
+        """The sync scope must be the CLI path verbatim — ingest writes the same
+        string into metadata["source"], and any other spelling would be a
+        different source (D37)."""
+        handbook_triple = ("CHAPTER 1\n1.1 x", [], {"source": "./data/h.pdf"})
+        chunks = [Document(page_content="x", metadata={"source": "./data/h.pdf"})]
+        with patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple), \
+             patch("src.pipeline.chunk_handbook", return_value=chunks), \
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}) as m_sync:
+            index_documents("./data/h.pdf", "handbook", persist_directory="/tmp/pd")
+
+        m_sync.assert_called_once_with(
+            "./data/h.pdf", chunks, persist_directory="/tmp/pd"
+        )
+
+    def test_multi_source_directory_syncs_each_source_separately(self):
+        """A directory of documents yields chunks from several sources; each
+        source syncs under its own scope so one document's re-index can never
+        delete another's chunks (D37)."""
+        chunks_a = [Document(page_content="a", metadata={"source": "a.html"})]
+        chunks_b = [Document(page_content="b", metadata={"source": "b.html"})]
+        mock_docs = [
+            Document(page_content="A", metadata={"source": "a.html"}),
+            Document(page_content="B", metadata={"source": "b.html"}),
+        ]
+        with patch("src.pipeline.load_directory", return_value=mock_docs), \
+             patch("src.pipeline.chunk_legal_document",
+                   side_effect=[chunks_a, chunks_b]), \
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}) as m_sync, \
+             patch("src.pipeline.rebuild_bm25_index"):
+            count = index_documents("/test/data/", "legislation")
+
+        assert count == 2
+        sources_synced = [call.args[0] for call in m_sync.call_args_list]
+        assert sources_synced == ["a.html", "b.html"]
+        assert m_sync.call_args_list[0].args[1] == chunks_a
+        assert m_sync.call_args_list[1].args[1] == chunks_b
         with pytest.raises(ValueError, match="PDF"):
             index_documents("https://example.com/act", "handbook")
+
+    def test_handbook_empty_chunk_list_skips_sync_and_returns_zero(self):
+        """FIX 5: chunk_handbook returning [] from a real (non-blank) PDF must
+        NOT reach sync_documents — sync(source, []) would silently delete every
+        stored chunk for the handbook (the whole corpus). An empty chunk list is
+        never an intended delete-all; the guard returns 0 without touching the
+        store."""
+        handbook_triple = ("CHAPTER 1\n1.1 body text.", [], {"source": "h.pdf"})
+        with patch("src.pipeline.load_handbook_pdf", return_value=handbook_triple), \
+             patch("src.pipeline.chunk_handbook", return_value=[]), \
+             patch("src.pipeline.sync_documents") as m_sync:
+            count = index_documents("/data/handbook.pdf", "handbook")
+
+        assert count == 0
+        m_sync.assert_not_called()
+
+    def test_multi_source_chunk_missing_source_raises(self):
+        """FIX 6: a chunk missing its 'source' metadata (ingest guarantees it) is
+        a loader/chunker regression. Grouping by a fallback would silently mis-
+        scope the per-source sync and could delete another document's chunks, so
+        the grouping raises ValueError naming the offending chunk's leading text
+        instead of syncing."""
+        mock_docs = [Document(page_content="A", metadata={"source": "a.html"})]
+        bad_chunks = [
+            Document(page_content="orphan chunk with no source metadata at all", metadata={})
+        ]
+        with patch("src.pipeline.load_directory", return_value=mock_docs), \
+             patch("src.pipeline.chunk_legal_document", return_value=bad_chunks), \
+             patch("src.pipeline.sync_documents") as m_sync, \
+             patch("src.pipeline.rebuild_bm25_index") as m_rebuild:
+            with pytest.raises(ValueError, match="source"):
+                index_documents("/test/data/", "legislation")
+
+        m_sync.assert_not_called()
+        m_rebuild.assert_not_called()
+
+    def test_multi_source_rebuilds_bm25_once_after_all_syncs(self):
+        """FIX 7: per-source syncs pass rebuild_bm25=False; the global BM25
+        sidecar is rebuilt exactly ONCE after the loop (not once per source,
+        which would be O(N x total_chunks)), and only because something
+        changed."""
+        chunks_a = [Document(page_content="a", metadata={"source": "a.html"})]
+        chunks_b = [Document(page_content="b", metadata={"source": "b.html"})]
+        mock_docs = [
+            Document(page_content="A", metadata={"source": "a.html"}),
+            Document(page_content="B", metadata={"source": "b.html"}),
+        ]
+        with patch("src.pipeline.load_directory", return_value=mock_docs), \
+             patch("src.pipeline.chunk_legal_document", side_effect=[chunks_a, chunks_b]), \
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 1, "updated": 0, "deleted": 0}) as m_sync, \
+             patch("src.pipeline.rebuild_bm25_index") as m_rebuild:
+            index_documents("/test/data/", "legislation", persist_directory="/tmp/pd")
+
+        # Every per-source sync deferred its own rebuild...
+        for call in m_sync.call_args_list:
+            assert call.kwargs["rebuild_bm25"] is False
+        # ...and the global rebuild ran exactly once, after the loop, at the dir.
+        m_rebuild.assert_called_once_with(persist_directory="/tmp/pd")
+
+    def test_multi_source_skips_bm25_rebuild_when_all_syncs_are_noops(self):
+        """FIX 7: if every per-source sync reports no change, the global BM25
+        rebuild is skipped entirely — the existing sidecar stays untouched."""
+        chunks_a = [Document(page_content="a", metadata={"source": "a.html"})]
+        chunks_b = [Document(page_content="b", metadata={"source": "b.html"})]
+        mock_docs = [
+            Document(page_content="A", metadata={"source": "a.html"}),
+            Document(page_content="B", metadata={"source": "b.html"}),
+        ]
+        with patch("src.pipeline.load_directory", return_value=mock_docs), \
+             patch("src.pipeline.chunk_legal_document", side_effect=[chunks_a, chunks_b]), \
+             patch("src.pipeline.sync_documents",
+                   return_value={"added": 0, "updated": 0, "deleted": 0}), \
+             patch("src.pipeline.rebuild_bm25_index") as m_rebuild:
+            index_documents("/test/data/", "legislation")
+
+        m_rebuild.assert_not_called()
 
 
 class TestQuery:
@@ -162,9 +288,40 @@ class TestQuery:
         logs/ directory. Redirecting AUDIT_LOG_PATH per-test keeps the suite
         hermetic (see src/audit.py log_event path resolution). _git_sha is
         patched too — build_event would otherwise spawn a real ``git``
-        subprocess on every query call, breaking the no-unmocked-IO rule."""
+        subprocess on every query call, breaking the no-unmocked-IO rule.
+        The load-once builder (D37) is stubbed for the same reason: query()
+        builds the store + BM25 sidecar up front via load_retrieval_context and
+        injects them into retrieve(), and since every test here patches
+        src.pipeline.retrieve, the stub objects are never dereferenced."""
         monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit_log.jsonl"))
         monkeypatch.setattr("src.audit._git_sha", lambda: "t3st5ha")
+        monkeypatch.setattr(
+            "src.pipeline.load_retrieval_context", lambda *a, **k: (object(), object())
+        )
+
+    def test_query_builds_once_and_injects_into_retrieve(self, monkeypatch):
+        """query() builds the store + BM25 sidecar once up front via the shared
+        load_retrieval_context helper (which also runs the manifest check) and
+        injects them into retrieve() along with persist_directory (load-once,
+        D37)."""
+        store_sentinel, bm25_sentinel = object(), object()
+        calls = {"context": 0}
+
+        def fake_context(persist_directory):
+            calls["context"] += 1
+            assert persist_directory == "/tmp/custom_pd"
+            return store_sentinel, bm25_sentinel
+
+        monkeypatch.setattr("src.pipeline.load_retrieval_context", fake_context)
+
+        with patch("src.pipeline.retrieve", return_value=[]) as m_retrieve:
+            query("anything", persist_directory="/tmp/custom_pd")
+
+        assert calls == {"context": 1}
+        kwargs = m_retrieve.call_args.kwargs
+        assert kwargs["vector_store"] is store_sentinel
+        assert kwargs["bm25_index"] is bm25_sentinel
+        assert kwargs["persist_directory"] == "/tmp/custom_pd"
 
     def test_returns_answer(self):
         """Test that query returns an answer dict."""

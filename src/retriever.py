@@ -3,11 +3,12 @@
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
-from src.bm25_index import load_bm25_index, search_bm25
+from src.bm25_index import BM25Index, load_bm25_index, search_bm25
 from src.chunker import locator_label
-from src.embedder import assert_embedding_model, get_vector_store
+from src.embedder import CHROMA_PERSIST_DIR, assert_embedding_model, get_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,42 @@ CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 
 
+def load_retrieval_context(
+    persist_directory: str = CHROMA_PERSIST_DIR,
+) -> Tuple[Chroma, Optional[BM25Index]]:
+    """Build the injection args for :func:`retrieve` exactly once.
+
+    The one blessed way to construct ``(vector_store, bm25_index)`` for
+    injection into ``retrieve``: it runs :func:`assert_embedding_model` (so an
+    injector can never forget the corpus/query model-match check — ``retrieve``
+    itself skips that check when a store is injected), opens the Chroma store,
+    and loads the BM25 sidecar. Callers that score many queries against one
+    index (the evaluator over a golden set, the CLI query path) call this once
+    and reuse the pair, instead of paying a fresh store open + BM25 unpickle +
+    manifest check on every single ``retrieve`` call.
+
+    Args:
+        persist_directory: ChromaDB persistence directory; the BM25 sidecar and
+            embedding-model manifest live beside it.
+
+    Returns:
+        ``(vector_store, bm25_index)``; ``bm25_index`` is ``None`` when no
+        sidecar has been built yet (an index predating Phase 3, or an empty
+        store), in which case ``retrieve`` degrades to vector-only.
+    """
+    assert_embedding_model(persist_directory)
+    vector_store = get_vector_store(persist_directory=persist_directory)
+    bm25_index = load_bm25_index(persist_directory)
+    return vector_store, bm25_index
+
+
 def retrieve(
     query: str,
     top_k: int = DEFAULT_TOP_K,
     document_type: Optional[str] = None,
-    persist_directory: str = "./chroma_db",
+    persist_directory: str = CHROMA_PERSIST_DIR,
+    vector_store: Optional[Chroma] = None,
+    bm25_index: Optional[BM25Index] = None,
 ) -> List[Dict[str, Any]]:
     """Retrieve the most relevant document chunks for a query.
 
@@ -31,18 +63,50 @@ def retrieve(
     block the other — and retrieval falls back to vector-only if no BM25
     index has been built yet (e.g. an index that predates Phase 3).
 
+    Phase 9 (load-once retrieval): ``vector_store`` and ``bm25_index`` can be
+    injected by a caller that builds them once and reuses them across many
+    ``retrieve`` calls (e.g. the evaluator, scoring dozens of golden
+    questions), avoiding a fresh Chroma wrapper + BM25 unpickle per call.
+
+    - ``vector_store`` given: it is used as-is and ``assert_embedding_model``
+      is SKIPPED — the caller that built the store already owns that check
+      (it ran it, if at all, when it first opened the store). ``vector_store``
+      omitted (None): current behavior — ``assert_embedding_model`` runs and
+      the store is opened fresh via ``get_vector_store(persist_directory=...)``.
+    - ``bm25_index`` given: it is used as-is and ``load_bm25_index`` is
+      SKIPPED. ``bm25_index`` omitted (None): current behavior — the index is
+      loaded from disk, falling back to vector-only with a warning if none is
+      found (or the pickle is unreadable).
+
     Args:
         query: The search query.
         top_k: Number of results to return.
         document_type: Optional filter for document type (e.g., "legislation", "case_law").
-        persist_directory: ChromaDB persistence directory.
+        persist_directory: ChromaDB persistence directory. Only consulted for
+            whichever of ``vector_store``/``bm25_index`` was not injected.
+        vector_store: Optional pre-built Chroma store to search directly,
+            instead of opening one at ``persist_directory``.
+        bm25_index: Optional pre-loaded BM25 index to search directly, instead
+            of loading one from ``persist_directory``.
 
     Returns:
         List of dicts with keys: document, score (fused RRF score), metadata.
     """
-    assert_embedding_model(persist_directory)
+    # Resolve the backing objects for the two arms (load-once injection, D37).
+    # Neither injected: build both once via the blessed helper (which also runs
+    # the embedding-model manifest check). Otherwise fill only whichever arm was
+    # left un-injected, preserving the per-arm skip semantics injecting callers
+    # rely on (e.g. a store injected without a bm25_index still loads the
+    # sidecar from disk exactly once, and never re-opens the store).
+    if vector_store is None and bm25_index is None:
+        vector_store, bm25_index = load_retrieval_context(persist_directory)
+    else:
+        if vector_store is None:
+            assert_embedding_model(persist_directory)
+            vector_store = get_vector_store(persist_directory=persist_directory)
+        if bm25_index is None:
+            bm25_index = load_bm25_index(persist_directory)
 
-    vector_store = get_vector_store(persist_directory=persist_directory)
     candidate_k = max(CANDIDATE_POOL, top_k)
     filter_dict = {"document_type": document_type} if document_type else None
 
@@ -62,7 +126,6 @@ def retrieve(
         logger.error("Error during vector retrieval: %s", e)
 
     bm25_ranked_ids: List[str] = []
-    bm25_index = load_bm25_index(persist_directory)
     if bm25_index is not None:
         try:
             for doc_id, doc, _score in search_bm25(

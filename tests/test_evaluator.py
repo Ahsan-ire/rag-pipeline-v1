@@ -13,6 +13,7 @@ import pytest
 from langchain_core.documents import Document
 
 from src.evaluator import (
+    CHROMA_PERSIST_DIR,
     collect_provenance,
     evaluate_refusals,
     evaluate_retrieval,
@@ -324,6 +325,98 @@ class TestEvaluateRetrieval:
         assert report["by_type"] == {}
 
 
+class TestLoadOnceDefaultRetrieveFn:
+    """Phase 9 (load-once retrieval): when evaluate_retrieval is NOT given a
+    retrieve_fn, its default builds the vector store + BM25 index + embedding-
+    model check exactly ONCE per evaluate_retrieval call (not once per question)
+    via src.retriever.load_retrieval_context, and reuses them through
+    src.retriever.retrieve's injection params. Fully IO-free:
+    src.evaluator.load_retrieval_context and src.evaluator.retrieve are replaced
+    with fakes, so no real Chroma store, BM25 pickle, or embedding model is ever
+    touched."""
+
+    def _patch_builders(self, monkeypatch, fake_store, fake_bm25):
+        """Patch the load-once helper and the retrieve seam evaluate_retrieval's
+        default path touches, recording every call, and return the call logs."""
+        context_calls = []
+        retrieve_calls = []
+
+        def fake_load_retrieval_context(persist_directory):
+            context_calls.append(persist_directory)
+            return fake_store, fake_bm25
+
+        def fake_retrieve(
+            question, top_k=6, persist_directory=None, vector_store=None, bm25_index=None
+        ):
+            retrieve_calls.append(
+                {
+                    "question": question,
+                    "top_k": top_k,
+                    "persist_directory": persist_directory,
+                    "vector_store": vector_store,
+                    "bm25_index": bm25_index,
+                }
+            )
+            return [_result("1.1")]
+
+        monkeypatch.setattr("src.evaluator.load_retrieval_context", fake_load_retrieval_context)
+        monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
+
+        return context_calls, retrieve_calls
+
+    def test_builders_called_once_across_three_questions(self, monkeypatch):
+        """3 non-refusal questions -> retrieve is called 3 times, but
+        load_retrieval_context (which builds the store + BM25 index + runs the
+        model check) runs exactly once, and every retrieve call received the
+        SAME injected store/bm25 objects (proof they were built once and reused,
+        not rebuilt per question)."""
+        golden = [
+            {"question": f"Q{i}", "type": "direct", "expected_sections": ["1.1"]}
+            for i in range(3)
+        ]
+        fake_store = object()
+        fake_bm25 = object()
+        context_calls, retrieve_calls = self._patch_builders(
+            monkeypatch, fake_store, fake_bm25
+        )
+
+        report = evaluate_retrieval(golden, top_k=6)
+
+        assert report["total"] == 3
+        assert len(context_calls) == 1
+        assert len(retrieve_calls) == 3
+        for call in retrieve_calls:
+            assert call["vector_store"] is fake_store
+            assert call["bm25_index"] is fake_bm25
+
+    def test_persist_directory_threaded_to_every_builder(self, monkeypatch):
+        """A non-default persist_directory reaches load_retrieval_context AND
+        the retrieve call itself."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["1.1"]}]
+        context_calls, retrieve_calls = self._patch_builders(
+            monkeypatch, object(), object()
+        )
+
+        evaluate_retrieval(golden, persist_directory="/tmp/custom")
+
+        assert context_calls == ["/tmp/custom"]
+        assert retrieve_calls[0]["persist_directory"] == "/tmp/custom"
+
+    def test_explicit_retrieve_fn_bypasses_all_building(self, monkeypatch):
+        """Passing retrieve_fn explicitly must never touch
+        load_retrieval_context at all."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["1.1"]}]
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("must not be called when retrieve_fn is given explicitly")
+
+        monkeypatch.setattr("src.evaluator.load_retrieval_context", _boom)
+
+        report = evaluate_retrieval(golden, retrieve_fn=lambda q, top_k=6: [_result("1.1")])
+
+        assert report["hits_strict"] == 1
+
+
 class TestEvaluateRefusals:
     def test_canonical_phrase_alone_is_refused(self):
         golden = [{"question": "What is the CGT rate?", "type": "refusal", "expected_sections": []}]
@@ -456,6 +549,47 @@ class TestRunEval:
         assert result["refusals"] is None
         assert "skipped" in results_path.read_text(encoding="utf-8")
 
+    def test_load_retrieval_context_built_once_for_the_whole_run(self, tmp_path, monkeypatch):
+        """FIX 2: a full run_eval (retrieval pass + refusal pass, both defaults)
+        opens the store and unpickles the BM25 index EXACTLY ONCE for the whole
+        run, not once per evaluate_* pass. The refusal pass's default answer_fn
+        is derived from the same load-once retrieve_fn as the retrieval pass, so
+        load_retrieval_context fires a single time. Fully IO-free: the helper,
+        retrieve, and generate_with_sources are all faked."""
+        golden_path = self._golden_path(tmp_path)  # 1 direct + 1 refusal
+        results_path = tmp_path / "results.md"
+
+        context_calls = []
+
+        def fake_load_retrieval_context(persist_directory):
+            context_calls.append(persist_directory)
+            return object(), object()  # sentinel store, sentinel bm25
+
+        def fake_retrieve(
+            question, top_k=6, persist_directory=None, vector_store=None, bm25_index=None
+        ):
+            return [_result("14.8.5")]
+
+        def fake_generate_with_sources(question, results):
+            # Only ["answer"] is read by the derived answer_fn; a refusal answer
+            # makes the refusal question score as refused.
+            return {"answer": REFUSAL_PHRASE}
+
+        monkeypatch.setattr("src.evaluator.load_retrieval_context", fake_load_retrieval_context)
+        monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
+        monkeypatch.setattr("src.evaluator.generate_with_sources", fake_generate_with_sources)
+
+        result = run_eval(
+            golden_path,
+            top_k=6,
+            results_path=str(results_path),
+            provenance_fn=_fake_provenance,
+        )
+
+        assert context_calls == [CHROMA_PERSIST_DIR]  # built once, default dir
+        assert result["retrieval"]["hits_strict"] == 1
+        assert result["refusals"]["refused"] == 1
+
 
 class TestTopKForwarding:
     """Pin: top_k must reach the retrieval and refusal passes, not silently
@@ -542,6 +676,42 @@ class TestProvenanceReport:
         # counts in EITHER direction (parent or child), matching the symmetric
         # _sections_related; "either direction" is the load-bearing phrase.
         assert "either direction" in content
+
+    def test_run_eval_threads_persist_directory_into_provenance(self, tmp_path, monkeypatch):
+        """FIX 3: run_eval's DEFAULT provenance_fn (provenance_fn=None) must pass
+        run_eval's persist_directory through to collect_provenance, so the chunk
+        count is read from the index under test — not the hard-coded default
+        dir. The store-opening seam (get_vector_store) must receive that
+        directory. IO-free: git and the store are faked."""
+        golden_path = TestRunEval()._golden_path(tmp_path)
+        results_path = tmp_path / "results.md"
+        seen_dirs = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="abc1234\n")
+            if "status" in cmd:
+                return SimpleNamespace(stdout="")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        def fake_get_vector_store(persist_directory=None):
+            seen_dirs.append(persist_directory)
+            return SimpleNamespace(get=lambda include=None: {"ids": []})
+
+        monkeypatch.setattr("src.evaluator.subprocess.run", fake_run)
+        monkeypatch.setattr("src.evaluator.get_vector_store", fake_get_vector_store)
+
+        run_eval(
+            golden_path,
+            top_k=6,
+            skip_refusals=True,
+            results_path=str(results_path),
+            retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
+            persist_directory="/tmp/custom_pd",
+        )
+
+        # collect_provenance opened the store exactly once, at the run's dir.
+        assert seen_dirs == ["/tmp/custom_pd"]
 
 
 class TestCollectProvenance:
