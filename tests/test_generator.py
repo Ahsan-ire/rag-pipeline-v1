@@ -7,8 +7,10 @@ import pytest
 from langchain_core.documents import Document
 
 from src.generator import (
+    GENERATION_MODEL,
     REFUSAL_PHRASE,
     SYSTEM_PROMPT,
+    _sections_related,
     extract_citations,
     generate,
     generate_with_sources,
@@ -36,6 +38,15 @@ class TestGetLlm:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
             llm = get_llm()
             assert llm is not None
+
+    def test_uses_the_generation_model_constant(self):
+        """get_llm() must build its ChatAnthropic from the hoisted
+        GENERATION_MODEL constant, not a separate hardcoded string, so the
+        eval-report provenance block (which imports GENERATION_MODEL) can
+        never drift out of sync with what actually generated the answers."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            llm = get_llm()
+            assert llm.model == GENERATION_MODEL
 
 
 class TestGenerate:
@@ -100,22 +111,81 @@ class TestRefusal:
         refusal instruction and the detector cannot drift apart."""
         assert REFUSAL_PHRASE in SYSTEM_PROMPT
 
-    def test_is_refusal_detects_the_phrase(self):
+    def test_is_refusal_detects_the_exact_phrase(self):
         assert is_refusal(REFUSAL_PHRASE)
-        assert is_refusal(f"  {REFUSAL_PHRASE.upper()}.  ")
+
+    def test_is_refusal_true_with_trailing_period(self):
+        assert is_refusal(f"{REFUSAL_PHRASE}.")
+
+    def test_is_refusal_true_with_multiple_trailing_periods(self):
+        assert is_refusal(f"{REFUSAL_PHRASE}...")
+
+    def test_is_refusal_true_wrapped_in_straight_quotes(self):
+        assert is_refusal(f'"{REFUSAL_PHRASE}"')
+        assert is_refusal(f"'{REFUSAL_PHRASE}'")
+
+    def test_is_refusal_true_wrapped_in_curly_quotes(self):
+        """The system prompt shows the refusal phrase inside quotes, so models
+        sometimes echo the quote marks — including curly/smart quotes."""
+        assert is_refusal(f"“{REFUSAL_PHRASE}”")
+        assert is_refusal(f"‘{REFUSAL_PHRASE}’")
+
+    def test_is_refusal_true_wrapped_in_straight_quotes_period_outside(self):
+        """This is the exact shape the SYSTEM_PROMPT itself displays: reply
+        with exactly this sentence and nothing else: "phrase". — straight
+        quotes with the period OUTSIDE the closing quote. A model echoing the
+        prompt verbatim produces this, so it must be detected as a refusal."""
+        assert is_refusal(f'"{REFUSAL_PHRASE}".')
+
+    def test_is_refusal_true_wrapped_in_curly_quotes_period_outside(self):
+        """Curly-quote counterpart of the prompt-displayed shape above."""
+        assert is_refusal(f"“{REFUSAL_PHRASE}”.")
+
+    def test_is_refusal_true_prompt_displayed_shape_with_trailing_whitespace(self):
+        """Prompt-displayed shape (period outside straight quotes) plus
+        trailing whitespace, as a model reply might include."""
+        assert is_refusal(f'  "{REFUSAL_PHRASE}".  \n')
+
+    def test_is_refusal_true_with_different_casing(self):
+        assert is_refusal(REFUSAL_PHRASE.upper())
+
+    def test_is_refusal_true_with_surrounding_whitespace(self):
+        assert is_refusal(f"  {REFUSAL_PHRASE}  \n")
 
     def test_is_refusal_false_for_a_real_answer(self):
         assert not is_refusal("A priority entry protects the purchaser [Handbook, para 14.8.5, p.412].")
 
-    def test_partial_answer_with_citations_is_not_a_refusal(self):
-        """An answer that hedges with the canonical phrase mid-sentence while
-        still citing sources is an answer — scoring it as a refusal would
-        corrupt the Phase 5 refusal-accuracy metric."""
+    def test_hedged_sentence_with_phrase_is_not_a_refusal(self):
+        """New contract: the answer must equal the canonical refusal sentence
+        exactly (after normalization) — nothing more. A substring match is
+        unsafe because a hedged partial answer can contain the phrase while
+        still asserting a (possibly wrong) answer; scoring that as a refusal
+        would corrupt the Phase 5 refusal-accuracy metric. This replaces the
+        old citation-based guard (``and not extract_citations(answer)``),
+        which is now redundant since an exact match can never contain a
+        bracket citation."""
+        hedged = (
+            "This is not covered in the source material, but the likely "
+            "answer is 20 days."
+        )
+        assert not is_refusal(hedged)
+
+    def test_hedged_answer_with_citations_is_not_a_refusal(self):
+        """Same hedged-answer case as above, but with a citation attached —
+        pinned separately because this is the exact shape the old
+        ``extract_citations``-based guard used to special-case."""
         partial = (
             "The 2025 amendment is not covered in the source material, but the "
             "general position is stated [Handbook, para 16.13, p.691]."
         )
         assert not is_refusal(partial)
+
+    def test_phrase_embedded_mid_sentence_is_not_a_refusal(self):
+        embedded = f"The board found this {REFUSAL_PHRASE} and moved on."
+        assert not is_refusal(embedded)
+
+    def test_empty_string_is_not_a_refusal(self):
+        assert not is_refusal("")
 
 
 class TestValidateCitations:
@@ -194,6 +264,29 @@ class TestValidateCitations:
 
         assert check["grounded"] == []
         assert len(check["ungrounded"]) == 1
+
+
+class TestSectionsRelatedAppendixPin:
+    """Pins the CURRENT behavior of ``_sections_related`` for appendix-style
+    section strings (agreed in an earlier gate review). ``_sections_related``
+    itself is untouched by this change — these tests only document what it
+    already does, so a future refactor doesn't silently change appendix
+    matching without someone noticing. Phase 7 will formalize appendix
+    matching properly and may update these pins."""
+
+    def test_identical_appendix_strings_relate(self):
+        # Both sides split into the same components on "." (e.g. ["APPENDIX
+        # 14", "1"]), so they compare equal — component split happens to
+        # align for identical strings, not because of any appendix-aware
+        # logic in _sections_related.
+        assert _sections_related("APPENDIX 14.1", "APPENDIX 14.1") is True
+
+    def test_numeric_paragraph_never_relates_to_an_appendix(self):
+        # "14.1" splits to ["14", "1"]; "APPENDIX 14.1" splits to
+        # ["APPENDIX 14", "1"] — the first components differ, so a plain
+        # numeric paragraph never relates to an appendix, in either direction.
+        assert _sections_related("14.1", "APPENDIX 14.1") is False
+        assert _sections_related("APPENDIX 14.1", "14.1") is False
 
 
 class TestGenerateWithSources:

@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 5 — evaluation**
+**Current phase: 6 — v1 freeze (honesty + safety minimum)**
 
 ---
 
@@ -742,3 +742,80 @@ registered suspect and moves to the README roadmap).
 **Consequence:** eval/results.md ships the accepted numbers: hit@6 = 0.900, refusal accuracy 5/5. At
 n=30, ±1 hit is within noise; the grid's value is evidence the defaults aren't sitting left of a cheap
 win — tuning was *run and resolved*, not skipped.
+
+## D32 — v1 freeze: fail-visible warnings + strict refusal matching (11 Jul 2026)
+**Decision:** Two interim safety changes ahead of the v1 tag, both display/scoring only. (1) The CLI
+now warns on every answer whose grounding cannot be vouched for: a non-refusal answer with zero
+extractable citations prints an explicit "unverified" warning, and ungrounded-citation warnings print
+unconditionally instead of only under `--verbose`. (2) `is_refusal` is tightened from
+substring-plus-no-citations to normalized exact match: the whole answer, after stripping whitespace,
+one layer of surrounding quotes, and trailing periods, then casefolding, must equal
+`REFUSAL_PHRASE`. The old `extract_citations` guard is removed as redundant under exact matching.
+**Why:** An external review (11 Jul) correctly identified that grounding was checked but never
+enforced or surfaced at the output boundary — a citation-free answer produced two empty validation
+lists and printed as if valid, and a hedged sentence like "This is not covered in the source
+material, but the likely answer is 20 days." scored as a successful refusal. The system prompt has
+always demanded exactly the refusal sentence and nothing else, so the scorer now holds the model to
+the contract the prompt states. The live refusal pass was re-run under the strict matcher: still 5/5.
+**Rejected:** The full fail-closed grounding gate (blocking unverified answers) for v1 — it requires
+appendix-citation support first, or correct appendix-cited answers would be wrongly blocked; both
+land in v2 (Phases 7–8). Keeping the substring matcher to protect the 5/5 metric — an honest 4/5
+would have been reported instead.
+**Consequence:** v1 is fail-visible, not fail-closed: nothing is withheld, but nothing unverified
+passes silently. The evaluator imports `is_refusal`, so eval scoring inherits the strict definition
+with no separate harness logic. `GENERATION_MODEL` is hoisted to a constant in `generator.py` so the
+eval provenance block (D33) records it from one source of truth.
+
+## D33 — dual-metric eval labeling + provenance block (11 Jul 2026)
+**Decision:** `evaluate_retrieval` scores every question under two explicit bases and the report
+carries both, strict first: *strict* = exact section-number equality; *related* = the existing
+`_sections_related` dotted-nesting, which matches **either direction** — a retrieved parent OR child
+of an expected section counts (e.g. expected `6.3.2` matches retrieved `6.3.2.2` or `6.3`); the
+symmetry is inherent to `_sections_related`'s component-prefix comparison and predates this phase
+(Phase 5's 27/30 used the same matcher). The report
+also gains a Provenance section (git SHA + dirty flag, indexed chunk count, embedding model,
+generation model, matching definitions, per-type question counts, refusals-skipped flag), a label
+stating the 30-question set was used to tune fusion constants (D31) and is NOT held-out, and
+per-question `strict=`/`related=` flags. Current real-index numbers: strict 24/30 = 0.800, related
+27/30 = 0.900, refusals 5/5.
+**Why:** The external review reproduced our 27/30 but showed the headline conflated related-section
+matching with exact retrieval, was tuned on its own eval set, and shipped without provenance —
+"the artifact itself does not establish reproducibility." Related-matching is a defensible retrieval
+metric (a child chunk usually contains the parent's answer), but presenting it unlabeled overclaims.
+The two bases bracket the truth; the reviewer's independently-measured 24/30 strict matches ours
+exactly, which is itself evidence the harness is honest.
+**Rejected:** Dropping the related metric entirely (it captures real retrieval quality the strict
+basis undercounts — three of the six strict-misses retrieved a directly-nested neighbour of the
+expected section); making provenance collection mandatory in tests (tests inject a fake
+`provenance_fn`; git/store access inside the suite would violate the no-IO rule).
+**Consequence:** From Phase 10 (eval v2), the submission headline becomes strict hit@6 on a held-out
+set — expected to be lower than 0.900 and defensibly so. `run_eval`'s return and the report format
+changed shape (`hits_strict`/`hits_related`); nothing outside the evaluator consumed the old keys.
+**Definition correction (11 Jul 2026, same day):** the initial D33 wording described "related" as
+child-counts-for-parent only. An adversarial review of this phase's own diff caught that
+`_sections_related` is symmetric — a retrieved *parent* also counts — and that exactly one of the 27
+related hits (the accountable-trust-receipt question, expected `9.6.1`, retrieved parent `9.6`)
+exists only via that direction; under a child-only reading the related rate would be 26/30. The
+matcher is unchanged (it is the same one Phase 5 shipped); the definition text here, in the report,
+and in the README was corrected to state "either direction" so the published metric describes the
+code exactly. Strict 24/30 remains the conservative anchor and is unaffected.
+**Numbering note:** decisions entries written before 11 Jul that refer to "Phase 6" mean the OLD
+Phase 6 (portfolio surface / fresh-clone quickstart), which the two-track re-plan renumbered to
+**Phase 11**. See IMPLEMENTATION_PLAN.md.
+**Held-out set frozen (12 Jul 2026):** `eval/heldout_set.jsonl` — 20 in-corpus questions (15
+direct, 5 exact_token, incl. APPENDIX 7.1 and APPENDIX 16.3 expectations) + 8 near-domain refusal
+hard negatives, authored from the handbook itself and verified against the corpus only (exact-chunk
+existence, printed-page agreement, zero tuning-set overlap, negative answer-absence) with NO
+retrieval, similarity search, or generation run against any question before freezing.
+SHA-256 `601a81c0a3e36aa5d90afb7904fdebad7704d3fff506871c0b9032d7576dcfe6`. Selection rationale and
+the full 42-candidate audit trail live in `eval/heldout_candidate_review.md`. Phase 10 scores it;
+Phase 12 runs BOTH v1 (worktree at `v1.0-baseline`) and v2 against this exact file for the
+head-to-head; nothing is ever tuned on its results.
+**Provenance dirty-flag disambiguation (12 Jul 2026):** a generated report cannot record its own
+commit's SHA, so the freshly regenerated `eval/results.md` always made the tree look dirty and the
+committed artifact read `(dirty)` with no explanation visible to a reviewer (colleague review,
+12 Jul). `collect_provenance` now takes `exclude_paths` (run_eval passes its own `results_path`)
+and reports `git_dirty_other` — the count of dirty files beyond the report; the sha line renders
+`(clean)` / `(clean apart from this generated report)` / `(dirty: N file(s) beyond this report)`,
+degrading gracefully when git is unavailable. Rejected: a footnote sentence in the report (mushy,
+"typically" phrasing) and amending commits to hide the two-step dance (history rewriting).

@@ -18,6 +18,10 @@ load_dotenv()
 # string cannot drift between the generator and the harness that scores it.
 REFUSAL_PHRASE = "not covered in the source material"
 
+# Generation model, hoisted to a constant so the eval-report provenance block
+# can import it instead of hardcoding a second copy of the model string.
+GENERATION_MODEL = "claude-sonnet-5"
+
 SYSTEM_PROMPT = f"""You are an Irish legal research assistant answering questions about the \
 Law Society of Ireland Conveyancing Handbook. Answer using ONLY the provided \
 context. Follow these rules:
@@ -75,7 +79,7 @@ def get_llm() -> ChatAnthropic:
         )
 
     return ChatAnthropic(
-        model="claude-sonnet-5",
+        model=GENERATION_MODEL,
         max_tokens=2048,
         # Sonnet 5 rejects a non-default temperature (400), so we omit it and
         # steer determinism through the system prompt instead. Thinking is held
@@ -99,14 +103,63 @@ def extract_citations(text: str) -> List[Dict[str, str]]:
 
 
 def is_refusal(answer: str) -> bool:
-    """True if the answer is the canonical refusal.
+    """True if the answer IS the canonical refusal sentence, and nothing more.
 
-    A refusal must contain the canonical phrase (case-insensitive) AND carry
-    no extractable citations: a partial answer that hedges with the phrase
-    mid-sentence while still citing sources is an answer, not a refusal.
-    Shared with the Phase 5 eval so refusal detection uses one definition.
+    Contract: the answer must equal ``REFUSAL_PHRASE`` after normalizing:
+    (a) strip surrounding whitespace; (b) strip one layer of surrounding
+    matching quotes (straight ``"``/``'`` or curly ``""``/``''`` — the system
+    prompt shows the phrase inside quotes, so models sometimes echo the
+    quote marks); (c) strip trailing period(s); (d) strip whitespace again;
+    (e) casefold. Only then is it compared, case-insensitively, to
+    ``REFUSAL_PHRASE``.
+
+    A plain substring check is unsafe: a hedged partial answer like "This is
+    not covered in the source material, but the likely answer is 20 days."
+    contains the phrase yet is a real (if evasive) answer, not a refusal —
+    substring matching would score it as a refusal. Requiring an exact match
+    after normalization closes that hole. Because an exact match can never
+    also contain a bracket citation, the previous
+    ``and not extract_citations(answer)`` guard is now redundant and has been
+    removed.
+
+    Steps (b) and (c) are order-*independent*: the system prompt itself
+    displays the refusal sentence as ``"phrase".`` — straight quotes with the
+    period OUTSIDE the closing quote — so a model can echo either
+    ``"phrase".`` (period outside) or ``"phrase."`` (period inside). A single
+    fixed-order pass (quotes-then-period) only strips one of those shapes: for
+    ``"phrase".`` the trailing character is ``.``, not a closing quote, so the
+    quote-stripping check never fires, the string is left as ``"phrase".``,
+    and the match fails. Looping the whole normalization pass to a fixed
+    point handles both interleavings: each pass strips whichever layer
+    (quote or period) is currently outermost, so the quote eventually becomes
+    outermost and gets stripped regardless of which layer started outside.
+
+    The Phase 5 eval imports this function directly, so eval refusal scoring
+    inherits this same strict definition automatically.
     """
-    return REFUSAL_PHRASE.lower() in answer.lower() and not extract_citations(answer)
+    quote_pairs = [('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")]
+    normalized = answer
+
+    # Iterate to a fixed point instead of a fixed sequence: whichever layer
+    # (quotes or trailing period) currently sits outermost gets peeled first,
+    # so the fix works no matter which one the model put on the outside. Each
+    # pass strictly shortens the string or leaves it unchanged, so this
+    # always terminates; the small cap is just a defensive belt-and-braces
+    # bound, not something normal input should ever reach.
+    for _ in range(5):
+        before = normalized
+        normalized = normalized.strip()
+        if len(normalized) >= 2 and any(
+            normalized[0] == open_q and normalized[-1] == close_q
+            for open_q, close_q in quote_pairs
+        ):
+            normalized = normalized[1:-1]
+        normalized = normalized.rstrip(".")
+        normalized = normalized.strip()
+        if normalized == before:
+            break
+
+    return normalized.casefold() == REFUSAL_PHRASE.casefold()
 
 
 def _sections_related(cited: str, chunk_section: str) -> bool:

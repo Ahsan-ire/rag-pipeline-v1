@@ -1,6 +1,10 @@
 # Implementation Plan — Legal RAG Pipeline (v1 → submission)
 
-**Target:** working, evaluated, documented pipeline frozen by **Fri 10 July** (reviewer buffer), submitted **Sun 12 July**. Claude Corps deadline: 17 July.
+**Target (superseded — see "Two-track remediation" after Phase 12):** ~~working, evaluated,
+documented pipeline frozen by Fri 10 July, submitted Sun 12 July~~. Following the 11 Jul external
+critique, the plan split into two tracks: v1 frozen and tagged `v1.0-baseline` on **Sat 11 July**;
+v2 production-hardening (Phases 7–12) targeted for **Mon 13 July**; Claude Corps Fellowship
+deadline **17 July** is buffer for the v1-vs-v2 submission decision.
 
 **Scope discipline:** one corpus (the conveyancing handbook), one job (answer procedure questions with chapter/paragraph/page citations, refuse when out-of-corpus), one interface (CLI). Anything else is post-submission.
 
@@ -94,7 +98,12 @@ Review the plan, challenge it, approve, implement, run the acceptance checks, co
 
 ---
 
-## Phase 6 — Portfolio surface (Thu 9, evening)
+## Superseded (was Phase 6 — Portfolio surface): content moved to Phase 11
+
+> This section's original scope (README rewrite, demo recording, decisions.md completeness,
+> fresh-clone test) is superseded by the new Phase 6 (v1 freeze) and folded into
+> **Phase 11 — portfolio surface** below. Body kept for reference only — `/phase-gate 6` must
+> resolve against the new Phase 6, not this one.
 
 1. **README rewrite** — the most-read artefact in the repo: what/why (the real workplace problem), architecture diagram (ASCII fine), quickstart that works from `git clone` in ≤5 commands, the eval results table, honest limitations, roadmap (matter-scoped deployment vision).
 2. 2–3 minute screen recording: index → ask 3 questions → show citations → show a refusal → show eval output.
@@ -104,6 +113,10 @@ Review the plan, challenge it, approve, implement, run the acceptance checks, co
 ---
 
 ## Freeze + submission track
+
+> **Superseded** by the two-track plan (Phases 6–12 below, see "Two-track remediation" after
+> Phase 12): the 11 Jul external critique triggered a v1 freeze + v2 production-hardening split.
+> Original single-track dates kept below for the record.
 
 - **Fri 10:** code freeze. Hand repo + demo to PhD reviewer. Switch fully to essays.
 - **Sat 11:** incorporate feedback (docs/small fixes only — no new features), essays final.
@@ -118,3 +131,249 @@ Review the plan, challenge it, approve, implement, run the acceptance checks, co
 4. Screen recording (README screenshots instead)
 
 **Never cut:** page-aware citations, the golden set, the README.
+
+---
+
+## Two-track remediation (Phases 6–12 supersede the tail above)
+
+An external critique (11 Jul 2026) verified against the code: grounding was checked but not
+enforced at the output boundary; the 90% eval headline conflated related-section matching with
+exact retrieval and was tuned on its own question set; re-indexing without `--reset` leaves stale
+chunks; `is_refusal` accepted hedged answers; appendix citations were invisible to the citation
+extractor. Response (see `docs/decisions.md` D32–D33 onward): freeze today as v1 — honest,
+fail-visible, not fail-closed — then implement the critique properly for v2 (fail-closed grounding
+gate, auditability, held-out eval) by 13 Jul, and decide on the 13th which to submit.
+
+## Phase 6 — v1 freeze: honesty + safety minimum (Sat 11 Jul, ~3.5–4.5h) — `phase-6-v1-freeze`
+
+**Design:** scope discipline is fail-visible, not fail-closed. No gate module, no appendix work, no
+lifecycle work — anything running past its timebox defers to its v2 phase.
+
+1. **Zero-citation warning** (`src/pipeline.py` `query()`): a non-refusal answer with empty
+   `citations` prints a prominent "WARNING: this answer contains no citations and could not be
+   verified — treat as unverified."
+2. **Always-print ungrounded warnings**: move the ungrounded block out of `if verbose:` so it
+   always shows.
+3. **Strict refusal matching** (`src/generator.py` `is_refusal`): normalized exact match — strip
+   whitespace + surrounding quotes + trailing period, casefold, compare to `REFUSAL_PHRASE`.
+   Evaluator imports it, so eval inherits the stricter definition.
+4. **Eval labeling + provenance** (`src/evaluator.py`): per-question `hit_strict` (exact
+   section-number equality) alongside existing `hit_related` (dotted-nesting); report shows both,
+   strict first, labeled "n=30 tuning set — used to select fusion constants (D31); NOT held-out."
+   `collect_provenance()` records git SHA + dirty flag, indexed chunk count, embedding model,
+   generation model, and the matching definitions; `_format_report` adds top_k, golden path +
+   per-type counts, and the refusals-skipped flag from its own arguments. Injectable `provenance_fn`
+   keeps tests IO-free.
+5. **Embedding cache** (timeboxed 20 min): `@functools.lru_cache(maxsize=1)` on
+   `get_embedding_function()`. Revert and defer to Phase 9 if anything fights it.
+6. **Re-run eval on the real index** (retrieval offline; refusal pass = 5 live calls under the
+   strict matcher). Report the honest number even if strict matching drops a live refusal —
+   do not loosen the matcher to protect the metric. Commit regenerated `eval/results.md`.
+7. **README honest interim rewrite**: drop the "corpus-agnostic" overclaim; real quickstart with
+   the corpus-not-distributable caveat; eval table with both strict and related hit@6, labeled;
+   short honest limitations list.
+8. **Extend this file** with Phases 6–12, and physically rename the old
+   "Phase 6 — Portfolio surface" heading (done above) so `/phase-gate 6` locks onto this Phase 6,
+   not the old one.
+9. **Gate + tag:** `/phase-gate 6`, PR, merge; tag `v1.0-pre-critique` on `17d23b1` and
+   `v1.0-baseline` on the merge commit; push both tags.
+
+**Tests:** hedged-phrase answer NOT a refusal / exact-phrase-with-period IS; zero-citation warning
+printed (capsys) and absent for refusals; ungrounded warning without `--verbose`; strict-vs-related
+divergence fixture (expected `14.12`, retrieved `14.12.1` → related hit, strict miss); provenance
+from injected fake; existing suite green.
+**decisions.md:** D32 (fail-visible warnings + strict refusal semantics), D33 (dual-metric labeling
++ provenance; strict becomes the headline basis going forward).
+**Acceptance:** full suite green; live citation-free non-refusal shows the warning; eval/results.md
+carries strict AND related rates plus provenance (git SHA, chunk count, both model names); both
+tags exist on origin.
+
+---
+
+## Phase 7 — appendix citations end-to-end (Sun 12 Jul am, ~2h) — `phase-7-appendix-citations`
+
+**Design:** must precede the grounding gate — today an appendix-only-cited answer extracts zero
+citations and would be wrongly blocked. 4 golden questions expect APPENDIX sections.
+
+1. **Fix `_handbook_header`** (retriever.py:143-155): `section_number.startswith("APPENDIX")` →
+   emit verbatim, no `para` token — mirrors `chunker._prefix`, one locator grammar everywhere.
+2. **Extend `CITATION_RE`** (generator.py, ~the `CITATION_RE = re.compile(` line): alternation `para <digits>` OR
+   `APPENDIX <d+.d+>` (case-tolerant on the token); normalize into the existing dict shape (`para`
+   key holds `"3.2.1"` or canonical `"APPENDIX 14.1"`).
+3. **Extend `_sections_related`**: appendix-ness must match on both sides — `"14.1"` never relates
+   to `"APPENDIX 14.1"`; both-appendix → strip prefix, existing component-nesting rule; mixed →
+   False. `_citation_matches_chunk` + eval hit@k inherit automatically.
+4. Live spot-check: golden Q22 (Gas Act wayleaves) — appendix citation appears in sources and
+   grounds.
+
+**Tests:** header rendering (no "para", verbatim); extraction in compact + long D21 bracket forms;
+appendix citation grounds against appendix chunk; para/appendix cross-match False both directions;
+lowercase "Appendix" extracts; eval hit against `["APPENDIX 14.1"]`.
+**decisions.md:** D34 (appendix locators first-class; never-cross-match rule).
+**Acceptance:** suite green; live Q22 shows grounded appendix citation; malformed header gone.
+
+---
+
+## Phase 8 — grounding gate + audit trail (Sun 12 Jul pm, ~3h) — `phase-8-grounding-gate`
+
+1. **New `src/grounding.py`** — `classify(answer, citations, citation_check)` → `REFUSAL` /
+   `GROUNDED` (≥1 citation, zero ungrounded) / `PARTIALLY_GROUNDED` (≥1 grounded AND ≥1 ungrounded)
+   / `UNGROUNDED` (non-refusal, zero grounded — includes zero-citation). Called inside
+   `generate_with_sources` → `result["gate_outcome"]` reaches every consumer; display policy stays
+   in pipeline.py.
+2. **Fail-closed display** (`pipeline.query`): GROUNDED → answer + citations + "verified" note.
+   PARTIALLY_GROUNDED → answer shown, ungrounded citations under a warning banner. UNGROUNDED →
+   answer withheld, banner "BLOCKED — UNVERIFIED" (wording says grounding *could not be verified*,
+   never "not in the corpus"), retrieved source headers (section + pages only) shown, hints to
+   rephrase / `--top-k` / `--show-unverified`. `--show-unverified` reveals the draft under an
+   "UNVERIFIED DRAFT" banner, flagged in the audit record. Returned dict always carries the full
+   answer; only CLI display is gated. `query()` reads `gate_outcome` with a defined fallback for
+   legacy/missing results; the two existing `test_pipeline.py` mocks get `gate_outcome` added.
+   Extend `/phase-gate`'s hygiene check to cover `logs/` alongside `data/`/`*.pdf`/`.env`/`chroma_db/`.
+3. **New `src/audit.py`** — `log_event(record, path)` append-only JSONL
+   (`logs/audit_log.jsonl`, `AUDIT_LOG_PATH` env override); record: timestamp, git SHA, query text,
+   top_k, type filter, retrieved `[{id, section_number, page_start, page_end, score}]`,
+   `gate_outcome`, `action` (`shown`/`shown_with_warning`/`blocked_unverified`/`refusal_shown`/
+   `shown_unverified_override`), grounded/ungrounded counts, citation locators, generation model,
+   `answer_chars`. Answer text and chunk text excluded (copyright). Always-on in `pipeline.query`.
+   Add `logs/` to `.gitignore`.
+
+**Tests:** classification matrix (refusal / zero-citation / all-grounded / mixed / appendix-only);
+capsys: UNGROUNDED withholds body + shows sources, override reveals with banner + audit flag,
+PARTIALLY shows banner; audit line has expected keys, no answer/chunk text, appends (tmp_path);
+generation seams patched — no live calls.
+**decisions.md:** D35 (gate semantics + block-and-show-sources rationale), D36 (audit record
+contents; why text is excluded).
+**Acceptance:** suite green; live in-corpus Q → GROUNDED + shown; citation-stripped answer →
+withheld with sources; one well-formed audit line per query; `git status` clean of `logs/`.
+
+---
+
+## Phase 9 — index lifecycle + load-once retrieval (Sun 12 Jul eve, ~2h) — `phase-9-index-lifecycle`
+
+1. **Per-source transactional replace** — new `sync_documents(documents, vector_store=None,
+   persist_directory=None)` in `src/embedder.py` (`add_documents` stays insert-only): group by
+   `metadata["source"]`; per source, delete stale content-hash ids no longer present; rebuild BM25
+   sidecar + manifest whenever `stale or new_docs` (fixes the trap where a delete-only re-sync
+   leaves deleted chunks in BM25). `pipeline.index_documents` switches to `sync_documents`;
+   `--reset` retained for full rebuilds.
+2. **Retriever injection** — `retrieve(query, ..., vector_store=None, bm25_index=None)`; skip
+   store/BM25 construction when injected. Evaluator's default `retrieve_fn`/`answer_fn` build once
+   and close over them (eval currently reloads MiniLM 35×); `pipeline.query` passes a once-built
+   store. Land the Phase 6 `lru_cache` here if it was deferred.
+
+**Tests:** index → mutate one chunk → re-sync → stale ID absent from store AND from BM25 results
+(the trap test); unchanged chunks not re-embedded (ID set stable); two sources don't delete each
+other; injected store/bm25 used without disk loads (monkeypatch counters).
+**decisions.md:** D37 (per-source replace semantics; `add_documents` stays insert-only; BM25
+delete-rebuild trap).
+**Acceptance:** suite green; real corpus: re-index without `--reset` → chunk count equals fresh
+`--reset` build; retrieval-only eval wall-clock measurably down (record before/after).
+
+---
+
+## Phase 10 — Eval v2: honest, held-out, ablated (Mon 13 Jul am, ~4h) — `phase-10-eval-v2`
+
+**Prerequisite** (Sat 11 night, human, ~1h, no pipeline runs, no peeking): author
+`eval/heldout_set.jsonl` — 15–20 fresh in-corpus questions (direct + exact_token, verified against
+the PDF, never used in tuning) + 5–8 near-domain refusal hard negatives, each grepped against the
+PDF text before locking in (the handbook has tax/family-home/lease chapters that could make a
+candidate negative actually in-corpus). Same schema; `load_golden_set` reused unchanged.
+
+1. **Ablation plumbing:** `retrieve(..., mode="hybrid"|"vector"|"bm25")` selects what feeds RRF.
+2. **Metrics:** hit@1/3/6 in strict AND related bases + MRR (first strict / first related match),
+   from one retrieval at k=6 per question.
+   - **Carry-over from Phase 6 (pressure-tester footgun):** `run_eval` ALWAYS overwrites
+     `results_path` (default `eval/results.md`), even under `--skip-refusals` — so an offline/CI run
+     silently degrades the canonical report (drops the live 5/5 refusal line). Add a `--results`/`-o`
+     CLI flag (and/or refuse to overwrite the default path when refusals are skipped) so CI and
+     ad-hoc offline runs write elsewhere. This is the natural home for the fix (eval CLI is already
+     gaining `--skip-completeness`/`--judge` here); Phase 11 CI depends on it.
+3. **Runner + report:** each mode × each set (tuning, held-out) → full table; provenance extended
+   with mode + set hashes; headline = strict hit@6 on held-out; ablation table; per-question
+   detail; sets labeled "tuning (used for D31)" vs "held-out (never tuned)".
+4. **Answer-generation pass (shared):** generate once for in-corpus questions; feed both the
+   citation-completeness metrics (sentence-citation coverage, citation-grounded fraction,
+   gate-outcome distribution) and the judge below.
+5. **`--judge` (experimental, off by default):** per generated answer, one judge call over the
+   retrieved context → per-claim supported/unsupported/unclear + mean faithfulness, reported as
+   "LLM-judged faithfulness estimate"; judge model + prompt version + config recorded in
+   provenance; `--judge-sample N` if time is tight, disclosed in the report; ≥5-answer manual
+   spot-review noted.
+6. **Sub-chunking decision gate (decide, don't build):** write D39 from the ablation numbers — if
+   vector-only related-hit@6 is within ~10 pts of hybrid, defer multi-vector post-submission; if
+   materially weak, the sanctioned lever is lowering the oversize-chunk threshold + re-index, not a
+   multi-vector build.
+7. Full eval on real corpus; commit reports (D30 scrub rule: no corpus prose).
+
+**Tests:** mode selection via fakes; strict/related + MRR math on synthetic rankings; hit@1 ≤ hit@3
+≤ hit@6 property; splitter + completeness on fixed fake answers; both-set report rendering
+(injected fakes); judge prompt construction with mocked LLM. All IO injected.
+**decisions.md:** D38 (eval v2 design: held-out strict headline, never-tune-on-held-out protocol),
+D39 (sub-chunking go/no-go with pasted ablation numbers).
+**Acceptance:** committed report has provenance; strict+related hit@{1,3,6}+MRR for 3 modes × 2
+sets; refusal accuracy incl. near-domain negatives; completeness metrics; judge estimate (or
+disclosed subset); D39 recorded with evidence.
+
+---
+
+## Phase 11 — portfolio surface (Mon 13 Jul pm, ~3h) — `phase-11-portfolio-surface`
+
+1. **Synthetic sample corpus:** `scripts/sample_corpus.py` — copyright-safe ~15-page synthetic
+   handbook (2–3 chapters, nested sections, one APPENDIX, a false-positive trap line), standalone
+   from test fixtures. `scripts/build_sample_index.py`: text → `chunk_handbook` → `sync_documents`
+   → `./chroma_db`. Plus `eval/sample_golden_set.jsonl` (5–8 questions incl. one appendix
+   expectation).
+2. **CI** (`.github/workflows/ci.yml`): job 1 — ubuntu, Python 3.12, pip cache, `pytest tests/ -q`;
+   job 2 (smoke) — build sample index, `eval --golden eval/sample_golden_set.jsonl
+   --skip-refusals --skip-completeness`. No `ANTHROPIC_API_KEY` in CI — offline paths only.
+3. **LICENSE:** MIT; README states it covers code only, corpus never distributed.
+4. **README final:** what/why; ASCII architecture diagram (ingest → chunk → hybrid index → RRF →
+   generate → grounding gate → audit log); fresh-clone quickstart via sample corpus; honest eval
+   table (held-out strict headline, ablations); data-handling section; firm-deployment notes;
+   limitations; troubleshooting; demo script; roadmap.
+5. **Fresh-clone verification:** clone to scratch dir, new venv, follow README verbatim; fix README
+   where it breaks.
+
+**Tests:** sample builder yields expected chunks/sections/one appendix via `chunk_handbook`
+(offline).
+**decisions.md:** D40 (sample-corpus mechanism), D41 (MIT + scope note).
+**Acceptance:** fresh clone passes quickstart offline; CI green on the PR; README complete per
+above.
+
+---
+
+## Phase 12 — final gate + v1-vs-v2 decision (Mon 13 Jul eve, ~1.5–2h) — on main
+
+1. `/phase-gate` over v2 (full suite, pressure-tester, high-effort code review, hygiene: nothing
+   tracked in `data/`, `*.pdf`, `.env`, `chroma_db/`, `logs/`).
+2. Re-run full Phase 10 eval at v2 HEAD (live refusals + completeness; `--judge` per user opt-in);
+   commit.
+3. **`docs/v1-v2-comparison.md`:** metric table (v1 numbers from `eval/results.md` at the
+   `v1.0-baseline` tag) + feature table (gate, appendix citations, lifecycle, audit, provenance,
+   held-out eval, CI, LICENSE, README). State honestly if v2's held-out strict headline is lower
+   than v1's related-basis 0.900 — lower-but-honest is the expected, defensible outcome.
+4. Submission decision recorded as **D42** (recommendation: v2 if the gate passes; `v1.0-baseline`
+   stays the fallback). Tag `v2.0`; push.
+
+**Acceptance:** gate PASS; comparison doc committed; D42 records the decision; chosen artifact
+tagged + pushed.
+
+---
+
+## Cut list (v2)
+
+**Cut order if behind:** judge pass → MRR/hit@1,3 → CI smoke job → completeness metric → demo
+polish.
+**Never cut:** fail-closed gate, appendix support, per-source replace (with BM25 rebuild), held-out
+set, strict labeling + provenance, honest README, `v1.0-baseline` tag.
+
+## Two-track git strategy
+
+Tags freeze a fixed commit (`v1.0-pre-critique` on `17d23b1`, `v1.0-baseline` on the Phase 6 merge
+commit, `v2.0` on main after Phase 12 if v2 is chosen); branches are movable pointers meant to keep
+receiving commits, so freezing v1 for later comparison calls for a tag, not a branch — if a v1
+hotfix is ever needed, a branch can still be cut from the tag afterwards. Day-to-day work continues
+on the existing convention (branch `phase-N-slug` → PR → merge after user "go"), with phase
+branches stacked from the previous phase's branch on Saturday so work isn't blocked waiting for
+each PR's merge approval.

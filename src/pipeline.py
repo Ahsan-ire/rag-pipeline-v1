@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 
 from src.chunker import chunk_handbook, chunk_legal_document
 from src.embedder import add_documents, clear_store
-from src.generator import generate_with_sources
+from src.generator import generate_with_sources, is_refusal
 from src.ingest import (
     load_directory,
     load_handbook_pdf,
@@ -118,7 +118,9 @@ def query(
         top_k: Number of relevant chunks to retrieve.
         document_type: Optional filter for document type.
         verbose: If True, print per-chunk fused RRF scores and page/section
-            before the answer, and flag any ungrounded citations after it.
+            before the answer. Citation-honesty warnings (zero citations on a
+            non-refusal answer; ungrounded citations) always print, regardless
+            of this flag — they are correctness signals, not debug output.
 
     Returns:
         Dict with answer, citations, sources, source_documents, and
@@ -163,12 +165,25 @@ def query(
         for source in result["sources"]:
             print(f"  - {source}")
 
-    if verbose:
-        ungrounded = result["citation_check"]["ungrounded"]
-        if ungrounded:
-            print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
-            for citation in ungrounded:
-                print(f"  - {citation['raw']}")
+    # A non-refusal answer with no extractable citations is invisible to
+    # citation_check (there is nothing to validate), so it needs its own flag:
+    # otherwise it reads exactly like a grounded answer even though a reader
+    # has no locator to check it against.
+    if not is_refusal(result["answer"]) and not result["citations"]:
+        print(
+            "\n⚠ WARNING: this answer contains no citations and could not be "
+            "verified\n  against the retrieved sources — treat it as "
+            "unverified."
+        )
+
+    # Ungrounded citations are a correctness signal, not a debugging aid —
+    # always show them so an invented locator is never mistaken for a real
+    # one just because --verbose was left off.
+    ungrounded = result["citation_check"]["ungrounded"]
+    if ungrounded:
+        print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
+        for citation in ungrounded:
+            print(f"  - {citation['raw']}")
 
     return result
 
@@ -234,7 +249,10 @@ Examples:
     query_parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Show per-chunk fused RRF scores and flag ungrounded citations",
+        help=(
+            "Show per-chunk fused RRF scores before the answer "
+            "(citation warnings always print, with or without this flag)"
+        ),
     )
 
     # Eval subcommand
