@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from langchain_core.documents import Document
 
+from src.bm25_index import load_bm25_index
 from src.retriever import _reciprocal_rank_fusion, format_context, retrieve
 from tests.test_embedder import FakeEmbeddings
 
@@ -112,6 +113,75 @@ class TestRetrieve:
         # All results should be case_law type
         for result in results:
             assert result["metadata"]["document_type"] == "case_law"
+
+
+class TestLoadOnceInjection:
+    """Phase 9 (load-once retrieval): a caller that already holds a built
+    vector store and/or BM25 index can inject them, so retrieve() skips its
+    own per-call disk load / embedding-model manifest check for whichever one
+    was injected. This is what lets the evaluator build both exactly once and
+    reuse them across a whole golden set instead of paying that cost per
+    question."""
+
+    def test_injected_store_and_bm25_skip_all_per_call_loads(self, seeded_store):
+        """Both vector_store and bm25_index injected -> get_vector_store,
+        load_bm25_index, AND assert_embedding_model must never be called;
+        retrieve still returns correct results using only the injected
+        objects."""
+        store, persist_dir = seeded_store
+        # Load the BM25 sidecar ourselves, once, before the call under test —
+        # mirroring what a load-once caller (the evaluator) would already
+        # have on hand.
+        bm25 = load_bm25_index(persist_dir)
+        assert bm25 is not None  # sanity: seeded_store did write a sidecar
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(
+                "must not be called when both vector_store and bm25_index are injected"
+            )
+
+        with patch(
+            "src.retriever.get_vector_store", side_effect=_boom
+        ) as mock_get_store, patch(
+            "src.retriever.load_bm25_index", side_effect=_boom
+        ) as mock_load_bm25, patch(
+            "src.retriever.assert_embedding_model", side_effect=_boom
+        ) as mock_assert:
+            results = retrieve(
+                "making a will",
+                top_k=2,
+                persist_directory=persist_dir,
+                vector_store=store,
+                bm25_index=bm25,
+            )
+
+        assert len(results) > 0
+        mock_get_store.assert_not_called()
+        mock_load_bm25.assert_not_called()
+        mock_assert.assert_not_called()
+
+    def test_injected_store_only_still_loads_bm25_from_disk_once(self, seeded_store):
+        """vector_store injected but bm25_index omitted -> get_vector_store
+        and assert_embedding_model are skipped (store already built), but
+        load_bm25_index still runs, exactly once, to fill the un-injected
+        arm."""
+        store, persist_dir = seeded_store
+
+        with patch(
+            "src.retriever.load_bm25_index", side_effect=load_bm25_index
+        ) as mock_load_bm25, patch(
+            "src.retriever.get_vector_store"
+        ) as mock_get_store, patch(
+            "src.retriever.assert_embedding_model"
+        ) as mock_assert:
+            results = retrieve(
+                "making a will", top_k=2, persist_directory=persist_dir, vector_store=store
+            )
+
+        assert len(results) > 0
+        mock_load_bm25.assert_called_once_with(persist_dir)
+        mock_get_store.assert_not_called()
+        mock_assert.assert_not_called()
 
 
 class TestExactTokenRetrieval:

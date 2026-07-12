@@ -180,10 +180,11 @@ class TestBuildEventRetrieved:
             citations=citations,
             answer="a",
         )
+        source = without_id_doc.metadata.get("source", "")
         fallback_id = record["retrieved"][1]["id"]
-        assert fallback_id == compute_chunk_id(without_id_doc.page_content)
+        assert fallback_id == compute_chunk_id(source, without_id_doc.page_content)
         assert fallback_id == hashlib.sha256(
-            without_id_doc.page_content.encode("utf-8")
+            (source + "\0" + without_id_doc.page_content).encode("utf-8")
         ).hexdigest()[:16]
 
     def test_retrieved_fields_pulled_from_metadata_and_score(

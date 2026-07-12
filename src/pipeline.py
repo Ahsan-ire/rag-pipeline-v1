@@ -20,8 +20,15 @@ from src.audit import (
     build_event,
     log_event,
 )
+from src.bm25_index import load_bm25_index
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
-from src.embedder import add_documents, clear_store
+from src.embedder import (
+    CHROMA_PERSIST_DIR,
+    assert_embedding_model,
+    clear_store,
+    get_vector_store,
+    sync_documents,
+)
 from src.generator import generate_with_sources, is_refusal
 from src.grounding import (
     CITATIONS_UNVERIFIED,
@@ -45,21 +52,31 @@ logger = logging.getLogger(__name__)
 
 
 def index_documents(
-    source_path: str, document_type: str = "handbook", reset: bool = False
+    source_path: str,
+    document_type: str = "handbook",
+    reset: bool = False,
+    persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> int:
     """Ingest, chunk, embed, and store documents from a source path or URL.
+
+    Indexing is a per-source SYNC (D37): the store's contents for each source
+    are made to exactly match the freshly chunked documents — new chunks are
+    added, metadata-only drift is updated in place, and stale chunks (text that
+    no longer exists after a chunker or corpus change) are deleted, with the
+    BM25 sidecar rebuilt whenever anything changed. ``--reset`` is retained for
+    full rebuilds (e.g. after an ID-scheme or embedding-model change).
 
     Args:
         source_path: A file path, directory path, or URL.
         document_type: Type of document (handbook, legislation, case_law,
             contracts). ``handbook`` PDFs use the page-aware loader and the
             handbook chunker (Phase 2); everything else keeps the original path.
-        reset: If True, clear the vector store before indexing. Interim guard
-            against the positional-ID dedup trap while re-indexing during a
-            chunker-iteration loop (content-hash IDs land in Phase 3).
+        reset: If True, clear the vector store before indexing.
+        persist_directory: Vector-store directory (BM25 sidecar and model
+            manifest live beside it).
 
     Returns:
-        Number of chunks indexed.
+        Number of newly added chunks (0 on a no-op re-sync).
     """
     # Handbook PDFs take the page-aware route: extract_pdf's (clean_text,
     # page_map) feeds chunk_handbook so chunks carry printed-page citations. The
@@ -83,11 +100,23 @@ def index_documents(
         all_chunks = chunk_handbook(clean_text, page_map, metadata)
         logger.info("Created %d handbook chunks from %s", len(all_chunks), source_path)
         if reset:
-            clear_store()
-        count = add_documents(all_chunks)
-        logger.info("Indexed %d chunks in vector store", count)
-        print(f"\nIndexed {count} chunks from 1 document")
-        return count
+            clear_store(persist_directory)
+        # ingest writes the CLI path verbatim into metadata["source"], so the
+        # same string is the sync scope — a different spelling of the path is a
+        # different source and would duplicate the corpus.
+        counts = sync_documents(
+            source_path, all_chunks, persist_directory=persist_directory
+        )
+        logger.info(
+            "Synced %s: %d added, %d updated, %d deleted",
+            source_path, counts["added"], counts["updated"], counts["deleted"],
+        )
+        print(
+            f"\nSynced 1 document ({len(all_chunks)} chunks): "
+            f"{counts['added']} added, {counts['updated']} updated, "
+            f"{counts['deleted']} deleted"
+        )
+        return counts["added"]
 
     # Load documents based on source type
     if source_path.startswith(("http://", "https://")):
@@ -111,14 +140,32 @@ def index_documents(
 
     logger.info("Created %d chunks from %d document(s)", len(all_chunks), len(documents))
 
-    # Store in vector database (clear only after chunks are in hand — see above)
+    # Store in vector database (clear only after chunks are in hand — see above).
     if reset:
-        clear_store()
-    count = add_documents(all_chunks)
-    logger.info("Indexed %d chunks in vector store", count)
+        clear_store(persist_directory)
+    # Sync per source: a directory of documents yields chunks from several
+    # sources, and each source's chunks must be synced under its own scope so
+    # one document's re-index can never delete another's chunks (D37).
+    by_source: Dict[str, list] = {}
+    for chunk in all_chunks:
+        by_source.setdefault(chunk.metadata.get("source", source_path), []).append(chunk)
 
-    print(f"\nIndexed {count} chunks from {len(documents)} document(s)")
-    return count
+    added = updated = deleted = 0
+    for src, chunks in by_source.items():
+        counts = sync_documents(src, chunks, persist_directory=persist_directory)
+        added += counts["added"]
+        updated += counts["updated"]
+        deleted += counts["deleted"]
+    logger.info(
+        "Synced %d source(s): %d added, %d updated, %d deleted",
+        len(by_source), added, updated, deleted,
+    )
+
+    print(
+        f"\nSynced {len(documents)} document(s) across {len(by_source)} "
+        f"source(s): {added} added, {updated} updated, {deleted} deleted"
+    )
+    return added
 
 
 def _write_audit(
@@ -206,6 +253,7 @@ def query(
     document_type: Optional[str] = None,
     verbose: bool = False,
     show_unverified: bool = False,
+    persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
 
@@ -233,8 +281,20 @@ def query(
         ``show_unverified``), ``answer`` is a block notice and the draft text
         is withheld — ``answer_chars`` is then the only trace of its size.
     """
-    # Retrieve relevant chunks
-    results = retrieve(question, top_k=top_k, document_type=document_type)
+    # Build the store and BM25 sidecar once and inject them (load-once, D37);
+    # retrieve() skips its per-call construction when injected, and the
+    # injector owns the embedding-model manifest check.
+    assert_embedding_model(persist_directory)
+    vector_store = get_vector_store(persist_directory=persist_directory)
+    bm25_index = load_bm25_index(persist_directory)
+    results = retrieve(
+        question,
+        top_k=top_k,
+        document_type=document_type,
+        persist_directory=persist_directory,
+        vector_store=vector_store,
+        bm25_index=bm25_index,
+    )
 
     if not results:
         msg = "No relevant documents found. Please index some documents first."
@@ -467,6 +527,13 @@ Examples:
         action="store_true",
         help="Clear the vector store before indexing (avoids the positional-ID dedup trap)",
     )
+    index_parser.add_argument(
+        "--persist-dir",
+        dest="persist_directory",
+        default=CHROMA_PERSIST_DIR,
+        help=f"Vector-store directory (default: {CHROMA_PERSIST_DIR}); the BM25 "
+        "sidecar and model manifest live beside it",
+    )
 
     # Query subcommand
     query_parser = subparsers.add_parser("query", help="Query the RAG pipeline")
@@ -501,6 +568,12 @@ Examples:
             "as CITATIONS_UNVERIFIED (clearly branded as unverified)"
         ),
     )
+    query_parser.add_argument(
+        "--persist-dir",
+        dest="persist_directory",
+        default=CHROMA_PERSIST_DIR,
+        help=f"Vector-store directory to query (default: {CHROMA_PERSIST_DIR})",
+    )
 
     # Eval subcommand
     eval_parser = subparsers.add_parser(
@@ -522,6 +595,14 @@ Examples:
         action="store_true",
         help="Skip the refusal-accuracy pass (avoids live API calls)",
     )
+    eval_parser.add_argument(
+        "--persist-dir",
+        dest="persist_directory",
+        default=CHROMA_PERSIST_DIR,
+        help=f"Vector-store directory to evaluate against (default: "
+        f"{CHROMA_PERSIST_DIR}); Phase 11's sample-index smoke eval points "
+        "this at sample_chroma_db/",
+    )
 
     args = parser.parse_args()
 
@@ -530,7 +611,12 @@ Examples:
         sys.exit(1)
 
     if args.command == "index":
-        index_documents(args.source_path, args.document_type, reset=args.reset)
+        index_documents(
+            args.source_path,
+            args.document_type,
+            reset=args.reset,
+            persist_directory=args.persist_directory,
+        )
     elif args.command == "query":
         query(
             args.question,
@@ -538,11 +624,17 @@ Examples:
             args.document_type,
             args.verbose,
             args.show_unverified,
+            persist_directory=args.persist_directory,
         )
     elif args.command == "eval":
         from src.evaluator import run_eval
 
-        run_eval(args.golden, top_k=args.top_k, skip_refusals=args.skip_refusals)
+        run_eval(
+            args.golden,
+            top_k=args.top_k,
+            skip_refusals=args.skip_refusals,
+            persist_directory=args.persist_directory,
+        )
 
 
 if __name__ == "__main__":

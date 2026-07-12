@@ -27,7 +27,13 @@ import subprocess
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
-from src.embedder import CHROMA_PERSIST_DIR, EMBEDDING_MODEL, get_vector_store
+from src.bm25_index import load_bm25_index
+from src.embedder import (
+    CHROMA_PERSIST_DIR,
+    EMBEDDING_MODEL,
+    assert_embedding_model,
+    get_vector_store,
+)
 from src.generator import (
     GENERATION_MODEL,
     _sections_related,
@@ -129,10 +135,52 @@ def load_golden_set(path: str) -> List[Dict[str, Any]]:
     return golden
 
 
+def _build_default_retrieve_fn(
+    top_k: int, persist_directory: str
+) -> Callable[..., List[Dict[str, Any]]]:
+    """Build a load-once ``retrieve_fn`` (Phase 9): one store + one BM25 index,
+    reused across every question instead of rebuilt per call.
+
+    ``src.retriever.retrieve`` re-opens the Chroma wrapper, re-unpickles the
+    BM25 index, and re-checks the embedding-model manifest on every single
+    call. Over a golden set of dozens of questions that per-question cost
+    dominates; this builds each of those three things exactly ONCE and closes
+    over them, so only the query itself varies per call.
+
+    Args:
+        top_k: Default ``top_k`` baked into the returned callable (still
+            overridable per call via its own ``top_k`` keyword argument).
+        persist_directory: Where to open the vector store and load the BM25
+            index from.
+
+    Returns:
+        A callable ``(question, top_k=top_k) -> retrieved results`` — the
+        same shape ``src.retriever.retrieve`` returns — that delegates to
+        ``retrieve`` with the pre-built store/index injected, so ``retrieve``
+        itself skips its own disk load and manifest check for this call.
+    """
+    assert_embedding_model(persist_directory)
+    store = get_vector_store(persist_directory=persist_directory)
+    bm25 = load_bm25_index(persist_directory)
+
+    def _retrieve_fn(question: str, top_k: int = top_k) -> List[Dict[str, Any]]:
+        """Retrieve ``question`` using the store/BM25 index built once above."""
+        return retrieve(
+            question,
+            top_k=top_k,
+            persist_directory=persist_directory,
+            vector_store=store,
+            bm25_index=bm25,
+        )
+
+    return _retrieve_fn
+
+
 def evaluate_retrieval(
     golden: List[Dict[str, Any]],
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     top_k: int = 6,
+    persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Score retrieval hit@k over the non-refusal questions in ``golden``.
 
@@ -154,9 +202,16 @@ def evaluate_retrieval(
         golden: Golden-set entries, as returned by ``load_golden_set``.
         retrieve_fn: Callable ``(question, top_k=...) -> retrieved results``,
             in the shape returned by ``src.retriever.retrieve`` (a list of
-            ``{"document", "score", "metadata"}`` dicts). Defaults to
-            ``src.retriever.retrieve`` when omitted.
+            ``{"document", "score", "metadata"}`` dicts). Defaults to None, in
+            which case the vector store and BM25 index are built ONCE here
+            (Phase 9 load-once retrieval) and reused across every question via
+            ``_build_default_retrieve_fn``, instead of ``src.retriever.retrieve``
+            re-opening the Chroma store and re-unpickling the BM25 index on
+            every single call.
         top_k: Number of chunks to request per question.
+        persist_directory: ChromaDB persistence directory, used only to build
+            the default ``retrieve_fn`` (ignored when ``retrieve_fn`` is
+            given explicitly).
 
     Returns:
         Dict with ``per_question`` (each carrying ``hit_strict`` and
@@ -166,7 +221,7 @@ def evaluate_retrieval(
         total, broken out per question ``type``).
     """
     if retrieve_fn is None:
-        retrieve_fn = retrieve
+        retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
     per_question: List[Dict[str, Any]] = []
     by_type: Dict[str, Dict[str, Any]] = {}
@@ -243,16 +298,23 @@ def evaluate_refusals(
     golden: List[Dict[str, Any]],
     answer_fn: Optional[Callable[[str], str]] = None,
     top_k: int = 6,
+    persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Score refusal accuracy over the refusal-type questions in ``golden``.
 
     Args:
         golden: Golden-set entries, as returned by ``load_golden_set``.
-        answer_fn: Callable ``(question) -> answer string``. Defaults to
-            retrieving ``top_k`` chunks with ``src.retriever.retrieve`` and
-            generating with ``src.generator.generate_with_sources`` — this
-            default makes live Claude API calls, so tests must inject a fake.
+        answer_fn: Callable ``(question) -> answer string``. Defaults to None,
+            in which case the default retrieves ``top_k`` chunks via a
+            load-once ``retrieve_fn`` (``_build_default_retrieve_fn`` — the
+            same Phase 9 store/BM25-index-built-once pattern used by
+            ``evaluate_retrieval``) and generates with
+            ``src.generator.generate_with_sources`` — this default makes live
+            Claude API calls, so tests must inject a fake.
         top_k: Number of chunks the default ``answer_fn`` retrieves.
+        persist_directory: ChromaDB persistence directory, used only to build
+            the default ``answer_fn`` (ignored when ``answer_fn`` is given
+            explicitly).
 
     Returns:
         Dict with ``per_question`` (list of ``{"question", "refused"}``),
@@ -261,9 +323,11 @@ def evaluate_refusals(
         can echo copyrighted corpus prose, so only the refusal flag escapes.
     """
     if answer_fn is None:
+        default_retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
         def answer_fn(question: str) -> str:
-            results = retrieve(question, top_k=top_k)
+            """Retrieve via the once-built store/BM25 index, then generate."""
+            results = default_retrieve_fn(question)
             return generate_with_sources(question, results)["answer"]
 
     per_question: List[Dict[str, Any]] = []
@@ -561,6 +625,7 @@ def run_eval(
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     answer_fn: Optional[Callable[[str], str]] = None,
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Run the full Phase 5/6 evaluation and report the results.
 
@@ -586,6 +651,11 @@ def run_eval(
             be dirty and shouldn't count as a surprise) — this default shells
             out to git and opens the Chroma store, so tests MUST inject a
             fake to stay IO-free.
+        persist_directory: ChromaDB persistence directory, threaded into both
+            ``evaluate_retrieval`` and ``evaluate_refusals`` (Phase 9
+            load-once retrieval); ignored by either pass whose ``retrieve_fn``
+            / ``answer_fn`` was given explicitly, since only their own default
+            builders consult it.
 
     Returns:
         Dict with ``retrieval`` (evaluate_retrieval's return value),
@@ -594,11 +664,15 @@ def run_eval(
     """
     golden = load_golden_set(golden_path)
 
-    retrieval = evaluate_retrieval(golden, retrieve_fn=retrieve_fn, top_k=top_k)
+    retrieval = evaluate_retrieval(
+        golden, retrieve_fn=retrieve_fn, top_k=top_k, persist_directory=persist_directory
+    )
     refusals = (
         None
         if skip_refusals
-        else evaluate_refusals(golden, answer_fn=answer_fn, top_k=top_k)
+        else evaluate_refusals(
+            golden, answer_fn=answer_fn, top_k=top_k, persist_directory=persist_directory
+        )
     )
 
     if provenance_fn is None:

@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 8 — grounding gate + audit trail**
+**Current phase: 9 — index lifecycle + load-once retrieval**
 
 ---
 
@@ -964,3 +964,46 @@ display fallback stays (belt-and-braces per the colleague review) with an explic
 comment; and a refusal-sentence-plus-stray-citation hybrid intentionally falls through to citation
 verification and fails closed — `classify`'s docstring now states this instead of overpromising
 "regardless of any citations".
+
+## D37 — source-scoped chunk IDs + per-source sync; load-once retrieval (12 Jul 2026)
+**Decision:** Chunk identity becomes source-scoped: `compute_chunk_id(source, text)` =
+`sha256(source + "\0" + text)[:16]` (NUL separator prevents `("ab","c")`/`("a","bc")` ambiguity).
+New `sync_documents(source, documents, vector_store=None, persist_directory=None)` makes the
+store's contents for one source exactly equal the given documents: source authority (a doc's
+`metadata["source"]` is set from the param when missing and raises on a conflicting value — the
+`where={"source": ...}` lookup keys off it, so a mismatch would silently duplicate the corpus);
+**upsert before delete** (new chunks added first, stale ids deleted last — a crash mid-sync leaves
+harmless extras that the next sync converges, never missing chunks); **metadata-only drift updates
+in place** via `Chroma.update_documents` (langchain-chroma 1.1.0; only on a genuine diff, since the
+wrapper re-embeds on update); BM25 sidecar + model manifest rebuilt whenever anything changed —
+added, updated, OR deleted — closing the delete-only trap where a re-sync would leave deleted
+chunks alive inside the BM25 pickle; `sync_documents(source, [])` empties exactly that source.
+`add_documents` stays insert-only for additive callers. `pipeline.index_documents` switches to
+sync (grouping chunks by `metadata["source"]` on multi-document paths; the handbook path scopes to
+the CLI path verbatim, which is what ingest writes into `source`); `--reset` retained for full
+rebuilds. Load-once retrieval: `retrieve(..., vector_store=None, bm25_index=None)` skips per-call
+store construction, manifest re-read, and BM25 unpickling when injected (the injector owns the
+manifest check); the evaluator's default `retrieve_fn`/`answer_fn` build once per run and close
+over the store; `pipeline.query` builds once and injects; `--persist-dir` lands on
+index/query/eval (Phase 11's isolated `sample_chroma_db/` depends on it).
+**Why:** The critique verified that re-indexing without `--reset` left stale chunks (insert-only
+`add_documents` had no delete path — the only removal was whole-directory `rmtree`). Pure text
+hashes collide across sources: identical boilerplate in two documents would share one id, so
+deleting source A's stale ids could destroy source B's chunk — a real risk on the multi-document
+roadmap; D7's "identity means identity" now holds per source. `rank_bm25` has no incremental API,
+so correctness demands a from-scratch sidecar rebuild on ANY change, including delete-only syncs.
+Eval reloaded the Chroma wrapper, manifest, and BM25 pickle once per question.
+**Rejected:** deriving the source scope by grouping `metadata["source"]` inside sync (cannot
+express "this source now has zero chunks" — the explicit param can); keeping text-only hashes
+(cross-source collision above); delete-before-add ordering (a mid-sync crash loses chunks; the
+chosen order only ever leaves extras); unconditional `update_documents` on surviving ids (the
+wrapper re-embeds on update — an unchanged re-sync must embed nothing, verified by an
+embed-call-counter test); caching the store/BM25 globally in the retriever (explicit injection
+matches the `add_documents` convention and keeps tests seam-friendly).
+**Consequence:** All pre-Phase-9 ids changed → one full `--reset` re-index performed (1,470
+chunks). Acceptance evidence: re-index WITHOUT `--reset` → `0 added, 0 updated, 0 deleted` and the
+final ID set EXACTLY equals a fresh `--reset` build's (1,470 ids, set equality True);
+retrieval-only eval wall-clock **4.24s → 0.37s** (11.5×, 30 questions) with identical results
+(strict 24/30, related 27/30) — the injection changes cost, not behavior. The old
+`TestContentHashDedup` cross-source-dedup pin was rewritten: identical text under two sources now
+deliberately yields two ids.

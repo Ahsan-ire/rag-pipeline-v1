@@ -324,6 +324,114 @@ class TestEvaluateRetrieval:
         assert report["by_type"] == {}
 
 
+class TestLoadOnceDefaultRetrieveFn:
+    """Phase 9 (load-once retrieval): when evaluate_retrieval is NOT given a
+    retrieve_fn, its default builds the vector store, BM25 index, and
+    embedding-model check exactly ONCE per evaluate_retrieval call (not once
+    per question) and reuses them via src.retriever.retrieve's injection
+    params. Fully IO-free: src.evaluator.get_vector_store / load_bm25_index /
+    assert_embedding_model / retrieve are all replaced with fakes, so no real
+    Chroma store, BM25 pickle, or embedding model is ever touched."""
+
+    def _patch_builders(self, monkeypatch, fake_store, fake_bm25):
+        """Patch the four names evaluate_retrieval's default path touches,
+        recording every call, and return the call-log lists."""
+        assert_calls = []
+        get_store_calls = []
+        load_bm25_calls = []
+        retrieve_calls = []
+
+        def fake_assert_embedding_model(persist_directory):
+            assert_calls.append(persist_directory)
+
+        def fake_get_vector_store(persist_directory=None):
+            get_store_calls.append(persist_directory)
+            return fake_store
+
+        def fake_load_bm25_index(persist_directory):
+            load_bm25_calls.append(persist_directory)
+            return fake_bm25
+
+        def fake_retrieve(
+            question, top_k=6, persist_directory=None, vector_store=None, bm25_index=None
+        ):
+            retrieve_calls.append(
+                {
+                    "question": question,
+                    "top_k": top_k,
+                    "persist_directory": persist_directory,
+                    "vector_store": vector_store,
+                    "bm25_index": bm25_index,
+                }
+            )
+            return [_result("1.1")]
+
+        monkeypatch.setattr("src.evaluator.assert_embedding_model", fake_assert_embedding_model)
+        monkeypatch.setattr("src.evaluator.get_vector_store", fake_get_vector_store)
+        monkeypatch.setattr("src.evaluator.load_bm25_index", fake_load_bm25_index)
+        monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
+
+        return assert_calls, get_store_calls, load_bm25_calls, retrieve_calls
+
+    def test_builders_called_once_across_three_questions(self, monkeypatch):
+        """3 non-refusal questions -> retrieve is called 3 times, but each
+        builder (assert_embedding_model / get_vector_store / load_bm25_index)
+        runs exactly once, and every retrieve call received the SAME injected
+        store/bm25 objects (proof they were built once and reused, not
+        rebuilt per question)."""
+        golden = [
+            {"question": f"Q{i}", "type": "direct", "expected_sections": ["1.1"]}
+            for i in range(3)
+        ]
+        fake_store = object()
+        fake_bm25 = object()
+        assert_calls, get_store_calls, load_bm25_calls, retrieve_calls = self._patch_builders(
+            monkeypatch, fake_store, fake_bm25
+        )
+
+        report = evaluate_retrieval(golden, top_k=6)
+
+        assert report["total"] == 3
+        assert len(assert_calls) == 1
+        assert len(get_store_calls) == 1
+        assert len(load_bm25_calls) == 1
+        assert len(retrieve_calls) == 3
+        for call in retrieve_calls:
+            assert call["vector_store"] is fake_store
+            assert call["bm25_index"] is fake_bm25
+
+    def test_persist_directory_threaded_to_every_builder(self, monkeypatch):
+        """A non-default persist_directory reaches assert_embedding_model,
+        get_vector_store, load_bm25_index, AND the retrieve call itself."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["1.1"]}]
+        assert_calls, get_store_calls, load_bm25_calls, retrieve_calls = self._patch_builders(
+            monkeypatch, object(), object()
+        )
+
+        evaluate_retrieval(golden, persist_directory="/tmp/custom")
+
+        assert assert_calls == ["/tmp/custom"]
+        assert get_store_calls == ["/tmp/custom"]
+        assert load_bm25_calls == ["/tmp/custom"]
+        assert retrieve_calls[0]["persist_directory"] == "/tmp/custom"
+
+    def test_explicit_retrieve_fn_bypasses_all_building(self, monkeypatch):
+        """Passing retrieve_fn explicitly must never touch
+        assert_embedding_model / get_vector_store / load_bm25_index at all."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["1.1"]}]
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("must not be called when retrieve_fn is given explicitly")
+
+        monkeypatch.setattr("src.evaluator.assert_embedding_model", _boom)
+        monkeypatch.setattr("src.evaluator.get_vector_store", _boom)
+        monkeypatch.setattr("src.evaluator.load_bm25_index", _boom)
+
+        report = evaluate_retrieval(golden, retrieve_fn=lambda q, top_k=6: [_result("1.1")])
+
+        assert report["hits_strict"] == 1
+
+
 class TestEvaluateRefusals:
     def test_canonical_phrase_alone_is_refused(self):
         golden = [{"question": "What is the CGT rate?", "type": "refusal", "expected_sections": []}]
