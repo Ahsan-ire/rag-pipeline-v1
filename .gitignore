@@ -16,3 +16,10 @@ data/
 .claude/settings.local.json
 .vscode/
 logs/
+# Phase 10 eval (D38): only the canonical eval/results.md is committed. Partial
+# runs, the offline ablation preview, and the local judge review dump (which
+# carries claim text, D30) stay untracked.
+eval/results_partial.md
+eval/results_ablation_preview.md
+eval/judge_review.jsonl
+sample_chroma_db/
