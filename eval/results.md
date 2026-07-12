@@ -1,12 +1,12 @@
 # Legal RAG Evaluation Report
 
-- Date: 2026-07-11T01:50:48.065789
+- Date: 2026-07-12T17:01:36.937956
 - Golden set: eval/golden_set.jsonl
 - top_k: 6
 
 ## Provenance
 
-- git sha: 9b8d02e (dirty)
+- git sha: e386faf (clean)
 - indexed chunk count: 1470
 - embedding model: sentence-transformers/all-MiniLM-L6-v2
 - generation model: claude-sonnet-5
