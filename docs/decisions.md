@@ -802,3 +802,12 @@ code exactly. Strict 24/30 remains the conservative anchor and is unaffected.
 **Numbering note:** decisions entries written before 11 Jul that refer to "Phase 6" mean the OLD
 Phase 6 (portfolio surface / fresh-clone quickstart), which the two-track re-plan renumbered to
 **Phase 11**. See IMPLEMENTATION_PLAN.md.
+**Held-out set frozen (12 Jul 2026):** `eval/heldout_set.jsonl` — 20 in-corpus questions (15
+direct, 5 exact_token, incl. APPENDIX 7.1 and APPENDIX 16.3 expectations) + 8 near-domain refusal
+hard negatives, authored from the handbook itself and verified against the corpus only (exact-chunk
+existence, printed-page agreement, zero tuning-set overlap, negative answer-absence) with NO
+retrieval, similarity search, or generation run against any question before freezing.
+SHA-256 `601a81c0a3e36aa5d90afb7904fdebad7704d3fff506871c0b9032d7576dcfe6`. Selection rationale and
+the full 42-candidate audit trail live in `eval/heldout_candidate_review.md`. Phase 10 scores it;
+Phase 12 runs BOTH v1 (worktree at `v1.0-baseline`) and v2 against this exact file for the
+head-to-head; nothing is ever tuned on its results.
