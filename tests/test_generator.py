@@ -104,6 +104,53 @@ class TestGenerate:
         """A refusal carries no bracketed locators, so extraction is empty."""
         assert extract_citations(REFUSAL_PHRASE) == []
 
+    def test_extracts_compact_appendix_citation(self):
+        """The verbatim appendix grammar (no 'para' token) must extract too
+        (Phase 7 / D34) — chunk metadata for appendices is 'APPENDIX 14.1',
+        never a 'para' locator."""
+        answer = "See the form at [Handbook, APPENDIX 14.1, p.87]."
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+
+    def test_extracts_appendix_citation_from_long_prefix_form(self):
+        """The D21 long prefix form applies to appendix locators too."""
+        answer = (
+            "See [Conveyancing Handbook, Ch.14 Registration, APPENDIX 14.1, p.87]."
+        )
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+
+    def test_extracts_lowercase_appendix_and_canonicalizes(self):
+        """The model may echo 'Appendix' in any case; extraction canonicalizes
+        the label to uppercase regardless (case-tolerance lives only at this
+        extraction boundary — see CITATION_RE)."""
+        answer = "See [Handbook, Appendix 14.1, p.87]."
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+
+    def test_extracts_both_a_para_and_an_appendix_citation(self):
+        """An answer mixing both locator grammars extracts one citation per
+        bracket, each keeping its own grammar's raw string."""
+        answer = (
+            "The general rule is set out [Handbook, para 14.8.5, p.412], and "
+            "the prescribed form is at [Handbook, APPENDIX 14.1, p.87]."
+        )
+        citations = extract_citations(answer)
+
+        assert citations == [
+            {"para": "14.8.5", "page": "412", "raw": "para 14.8.5, p.412"},
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"},
+        ]
+
 
 class TestRefusal:
     def test_system_prompt_embeds_refusal_phrase(self):
@@ -265,28 +312,139 @@ class TestValidateCitations:
         assert check["grounded"] == []
         assert len(check["ungrounded"]) == 1
 
+    def test_appendix_citation_grounds_against_an_appendix_chunk(self):
+        """An appendix citation (as produced by extract_citations, para key
+        'APPENDIX 14.1') grounds when a retrieved chunk's section_number is
+        the same appendix and the cited page falls within its page span."""
+        results = [
+            {
+                "document": Document(
+                    page_content="Form 14.1 — prescribed contract for sale...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "APPENDIX 14.1",
+                        "page_start": 86,
+                        "page_end": 88,
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            }
+        ]
+        citations = [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+        check = validate_citations(citations, results)
 
-class TestSectionsRelatedAppendixPin:
-    """Pins the CURRENT behavior of ``_sections_related`` for appendix-style
-    section strings (agreed in an earlier gate review). ``_sections_related``
-    itself is untouched by this change — these tests only document what it
-    already does, so a future refactor doesn't silently change appendix
-    matching without someone noticing. Phase 7 will formalize appendix
-    matching properly and may update these pins."""
+        assert len(check["grounded"]) == 1
+        assert check["ungrounded"] == []
+
+    def test_appendix_citation_page_outside_span_is_ungrounded(self):
+        """Same appendix chunk as above, but the cited page (99) falls
+        outside its [86, 88] span — a page hallucination, stays ungrounded."""
+        results = [
+            {
+                "document": Document(
+                    page_content="Form 14.1 — prescribed contract for sale...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "APPENDIX 14.1",
+                        "page_start": 86,
+                        "page_end": 88,
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            }
+        ]
+        citations = [
+            {"para": "APPENDIX 14.1", "page": "99", "raw": "APPENDIX 14.1, p.99"}
+        ]
+        check = validate_citations(citations, results)
+
+        assert check["grounded"] == []
+        assert len(check["ungrounded"]) == 1
+
+    def test_para_citation_does_not_ground_against_an_appendix_chunk(self):
+        """A plain paragraph citation '14.1' must never match an appendix
+        chunk 'APPENDIX 14.1', even on the same page — never-cross-match
+        (D34)."""
+        results = [
+            {
+                "document": Document(
+                    page_content="Form 14.1 — prescribed contract for sale...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "APPENDIX 14.1",
+                        "page_start": 86,
+                        "page_end": 88,
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            }
+        ]
+        citations = [{"para": "14.1", "page": "87", "raw": "para 14.1, p.87"}]
+        check = validate_citations(citations, results)
+
+        assert check["grounded"] == []
+        assert len(check["ungrounded"]) == 1
+
+    def test_appendix_citation_does_not_ground_against_a_numeric_chunk(self):
+        """Reverse direction of the never-cross-match rule: an appendix
+        citation must never match a plain numeric chunk '14.1'."""
+        results = [
+            {
+                "document": Document(
+                    page_content="...",
+                    metadata={
+                        "document_type": "handbook",
+                        "section_number": "14.1",
+                        "page_start": 86,
+                        "page_end": 88,
+                    },
+                ),
+                "score": 0.03,
+                "metadata": {},
+            }
+        ]
+        citations = [
+            {"para": "APPENDIX 14.1", "page": "87", "raw": "APPENDIX 14.1, p.87"}
+        ]
+        check = validate_citations(citations, results)
+
+        assert check["grounded"] == []
+        assert len(check["ungrounded"]) == 1
+
+
+class TestSectionsRelatedAppendix:
+    """D34: ``_sections_related`` now formalizes appendix matching as an
+    explicit never-cross-match rule — appendix-ness must match on both sides,
+    and nesting applies WITHIN appendices the same way it does for plain
+    paragraphs. (Previously this behavior was accidental — a side effect of
+    splitting both strings on "." with no appendix-aware logic; these tests
+    used to pin that accident. It is now an intentional, documented rule.)"""
 
     def test_identical_appendix_strings_relate(self):
-        # Both sides split into the same components on "." (e.g. ["APPENDIX
-        # 14", "1"]), so they compare equal — component split happens to
-        # align for identical strings, not because of any appendix-aware
-        # logic in _sections_related.
         assert _sections_related("APPENDIX 14.1", "APPENDIX 14.1") is True
 
     def test_numeric_paragraph_never_relates_to_an_appendix(self):
-        # "14.1" splits to ["14", "1"]; "APPENDIX 14.1" splits to
-        # ["APPENDIX 14", "1"] — the first components differ, so a plain
-        # numeric paragraph never relates to an appendix, in either direction.
+        # Never-cross-match: a plain numeric paragraph never relates to an
+        # appendix locator, in either direction, even when the numeric tail
+        # is identical.
         assert _sections_related("14.1", "APPENDIX 14.1") is False
         assert _sections_related("APPENDIX 14.1", "14.1") is False
+
+    def test_subitem_nests_within_an_appendix(self):
+        # Nesting applies within appendices: "APPENDIX 14.1" relates to its
+        # sub-item "APPENDIX 14.1.2", the same component-nesting rule used
+        # for plain paragraphs, applied after stripping the shared
+        # "APPENDIX " prefix from both sides.
+        assert _sections_related("APPENDIX 14.1", "APPENDIX 14.1.2") is True
+        assert _sections_related("APPENDIX 14.1.2", "APPENDIX 14.1") is True
+
+    def test_sibling_appendices_do_not_relate(self):
+        assert _sections_related("APPENDIX 14.1", "APPENDIX 14.2") is False
 
 
 class TestGenerateWithSources:

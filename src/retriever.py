@@ -137,8 +137,11 @@ def _handbook_header(metadata: Dict[str, Any]) -> str:
     """Compact citation header for a handbook chunk: ``[Handbook, para X, p.N]``.
 
     ``para`` is omitted for chapter-intro chunks that carry no ``section_number``;
-    the page renders as a range (``pp.1–2``) when the chunk spans pages, matching
-    the D21 in-text prefix convention.
+    an ``APPENDIX`` section renders verbatim with no ``para`` token instead
+    (e.g. ``[Handbook, APPENDIX 14.1, p.87]``), mirroring the chunker's
+    contextual prefix (``chunker._prefix``); the page renders as a range
+    (``pp.1–2``) when the chunk spans pages, matching the D21 in-text prefix
+    convention.
     """
     section = metadata.get("section_number", "")
     page_start = metadata.get("page_start")
@@ -146,7 +149,7 @@ def _handbook_header(metadata: Dict[str, Any]) -> str:
 
     parts = ["Handbook"]
     if section:
-        parts.append(f"para {section}")
+        parts.append(section if section.startswith("APPENDIX") else f"para {section}")
     if page_start is not None:
         if page_end is not None and page_end != page_start:
             parts.append(f"pp.{page_start}–{page_end}")

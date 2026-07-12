@@ -54,15 +54,30 @@ not cover the question, reply with the exact refusal sentence.""",
     ]
 )
 
-# Citation extractor. Anchors on the ``para`` and ``p.``/``pp.`` tokens rather than
-# splitting on commas: both the compact ``[Handbook, para 3.2.1, p.87]`` header and
-# the longer ``[Conveyancing Handbook, Ch.3 Some Title, para 3.2.1, p.87]`` prefix
-# baked into every chunk (D21) are valid, and the chapter-title segment is OCR'd
-# free text that can itself contain commas. Everything between ``[`` and ``para``
-# (and between the paragraph number and the page) is treated as an opaque run that
-# never crosses a closing bracket (``[^\]]``). Captures (paragraph, first page).
+# Citation extractor. Anchors on the locator token and the ``p.``/``pp.`` tokens
+# rather than splitting on commas: both the compact ``[Handbook, para 3.2.1, p.87]``
+# header and the longer ``[Conveyancing Handbook, Ch.3 Some Title, para 3.2.1,
+# p.87]`` prefix baked into every chunk (D21) are valid, and the chapter-title
+# segment is OCR'd free text that can itself contain commas. Everything between
+# ``[`` and the locator token (and between the locator number and the page) is
+# treated as an opaque run that never crosses a closing bracket (``[^\]]``).
+#
+# Two mutually exclusive locator forms, per the chunker's two-grammar prefix
+# (chunker._prefix, src/chunker.py:550): a numbered paragraph, ``para <digits>``
+# (named group ``para``), or a verbatim appendix locator, ``APPENDIX <digits>``
+# (named group ``appendix``) — chunk metadata renders the appendix form with no
+# "para" token, and the model may echo it in any case ("Appendix", "APPENDIX"),
+# so only that token is wrapped in a scoped case-insensitive group ``(?i:...)``;
+# the rest of the pattern (including the numbered-paragraph branch) stays
+# case-sensitive per project convention. Because the two branches are tried at
+# each position via lazy ``[^\]]*?`` expansion, whichever locator token occurs
+# first (left-to-right) in the bracket is the one that matches — deterministic,
+# and a plain paragraph can never be captured as an appendix or vice versa.
+# Captures (paragraph number OR appendix number, first page).
 CITATION_RE = re.compile(
-    r"\[[^\]]*?\bpara\s+(\d+(?:\.\d+)*)[^\]]*?\bpp?\.\s*(\d+)[^\]]*?\]"
+    r"\[[^\]]*?(?:\bpara\s+(?P<para>\d+(?:\.\d+)*)"
+    r"|\b(?i:appendix)\s+(?P<appendix>\d+(?:\.\d+)*))"
+    r"[^\]]*?\bpp?\.\s*(?P<page>\d+)[^\]]*?\]"
 )
 
 
@@ -90,16 +105,33 @@ def get_llm() -> ChatAnthropic:
 
 
 def extract_citations(text: str) -> List[Dict[str, str]]:
-    """Pull ``(paragraph, page)`` citations out of an answer.
+    """Pull ``(paragraph-or-appendix, page)`` citations out of an answer.
 
     Returns one dict per bracketed locator found, with keys ``para``, ``page``,
     and a ``raw`` display string. Tolerant of both the compact and the long
-    (D21-prefix) bracket forms — see ``CITATION_RE``.
+    (D21-prefix) bracket forms, and of either locator grammar — a numbered
+    paragraph (``para 3.2.1``) or a verbatim appendix (``APPENDIX 14.1``,
+    matched case-tolerantly since the model may write "Appendix") — see
+    ``CITATION_RE``.
+
+    For a paragraph match, ``para`` holds the bare number (e.g. ``"3.2.1"``)
+    and ``raw`` is ``"para 3.2.1, p.87"``, unchanged from before. For an
+    appendix match, ``para`` holds the canonical uppercase label (e.g.
+    ``"APPENDIX 14.1"``, normalized regardless of how the model cased it) and
+    ``raw`` is ``"APPENDIX 14.1, p.87"`` — no "para" token, since the appendix
+    grammar never uses one (one-grammar rule; this string is what the CLI
+    prints under "Citations found:").
     """
-    return [
-        {"para": para, "page": page, "raw": f"para {para}, p.{page}"}
-        for para, page in CITATION_RE.findall(text)
-    ]
+    citations: List[Dict[str, str]] = []
+    for match in CITATION_RE.finditer(text):
+        page = match.group("page")
+        para = match.group("para")
+        if para is not None:
+            citations.append({"para": para, "page": page, "raw": f"para {para}, p.{page}"})
+        else:
+            label = f"APPENDIX {match.group('appendix')}"
+            citations.append({"para": label, "page": page, "raw": f"{label}, p.{page}"})
+    return citations
 
 
 def is_refusal(answer: str) -> bool:
@@ -163,15 +195,40 @@ def is_refusal(answer: str) -> bool:
 
 
 def _sections_related(cited: str, chunk_section: str) -> bool:
-    """True if two decimal paragraph numbers are equal or one nests the other.
+    """True if two section locators are equal or one nests the other.
 
-    Compared component-wise on dot boundaries, so ``14.12`` relates to its
-    sub-paragraph ``14.12.1`` (a more capable model often cites the finer
-    sub-paragraph that lives inside a chunk whose ``section_number`` is the
-    parent), while ``14.1`` does NOT relate to ``14.12``.
+    D34: appendix-ness must match on both sides — never-cross-match. A plain
+    numbered paragraph like ``"14.1"`` never relates to an appendix locator
+    like ``"APPENDIX 14.1"``, in either direction, even though the numeric
+    tail is identical; they are different grammars (see ``CITATION_RE``'s
+    ``para`` vs ``appendix`` branches) naming different structures in the
+    handbook. When both sides ARE appendix locators, the ``"APPENDIX "``
+    prefix is stripped from each before applying the same nesting rule used
+    for plain paragraphs, so ``"APPENDIX 14.1"`` relates to its sub-item
+    ``"APPENDIX 14.1.2"`` the same way ``"14.12"`` relates to ``"14.12.1"``.
+
+    Otherwise (both plain paragraphs), compared component-wise on dot
+    boundaries: ``14.12`` relates to its sub-paragraph ``14.12.1`` (a more
+    capable model often cites the finer sub-paragraph that lives inside a
+    chunk whose ``section_number`` is the parent), while ``14.1`` does NOT
+    relate to ``14.12``.
+
+    No case-tolerance here: metadata, canonical extraction output (see
+    ``extract_citations``), and golden-set expectations are all uppercase
+    already — case handling lives only at the extraction boundary.
     """
     if not cited or not chunk_section:
         return False
+
+    a_is_appendix = cited.startswith("APPENDIX")
+    b_is_appendix = chunk_section.startswith("APPENDIX")
+    if a_is_appendix != b_is_appendix:
+        return False
+
+    if a_is_appendix:
+        cited = cited.removeprefix("APPENDIX ")
+        chunk_section = chunk_section.removeprefix("APPENDIX ")
+
     a = cited.split(".")
     b = chunk_section.split(".")
     n = min(len(a), len(b))

@@ -150,8 +150,11 @@ def query(
             section = meta.get("section_number") or "—"
             page = meta.get("page_start", "?")
             doc_type = meta.get("document_type", "?")
+            # Mirrors chunker._prefix / retriever._handbook_header: an APPENDIX
+            # section renders verbatim, with no "para" token.
+            locator = section if section.startswith("APPENDIX") else f"para {section}"
             print(
-                f"  {rank:>2}. RRF={r['score']:.5f}  para {section}  "
+                f"  {rank:>2}. RRF={r['score']:.5f}  {locator}  "
                 f"p.{page}  [{doc_type}]"
             )
 

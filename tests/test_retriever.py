@@ -220,3 +220,59 @@ class TestFormatContext:
         """Test formatting with no results."""
         context = format_context([])
         assert "No relevant documents found" in context
+
+    def test_formats_handbook_appendix_section(self):
+        """An APPENDIX section_number renders verbatim with no "para" token,
+        mirroring chunker._prefix (chunker.py:550); a normal section retrieved
+        in the same call still gets the "para X" form."""
+        docs = [
+            Document(
+                page_content="Appendix content.",
+                metadata={
+                    "source": "Conveyancing_Handbook.pdf",
+                    "document_type": "handbook",
+                    "section_number": "APPENDIX 14.1",
+                    "page_start": 87,
+                    "page_end": 87,
+                },
+            ),
+            Document(
+                page_content="Regular section content.",
+                metadata={
+                    "source": "Conveyancing_Handbook.pdf",
+                    "document_type": "handbook",
+                    "section_number": "3.2.1",
+                    "page_start": 40,
+                    "page_end": 40,
+                },
+            ),
+        ]
+        results = [
+            {"document": docs[0], "score": 0.5, "metadata": docs[0].metadata},
+            {"document": docs[1], "score": 0.4, "metadata": docs[1].metadata},
+        ]
+
+        context = format_context(results)
+
+        assert "[Handbook, APPENDIX 14.1, p.87]" in context
+        assert "para APPENDIX" not in context
+        assert "[Handbook, para 3.2.1, p.40]" in context
+
+    def test_formats_handbook_appendix_page_range(self):
+        """A multi-page appendix chunk renders the page range while keeping
+        the section verbatim (no "para" token), per D21 + the APPENDIX rule."""
+        doc = Document(
+            page_content="Appendix content spanning pages.",
+            metadata={
+                "source": "Conveyancing_Handbook.pdf",
+                "document_type": "handbook",
+                "section_number": "APPENDIX 14.1",
+                "page_start": 87,
+                "page_end": 89,
+            },
+        )
+        results = [{"document": doc, "score": 0.5, "metadata": doc.metadata}]
+
+        context = format_context(results)
+
+        assert "[Handbook, APPENDIX 14.1, pp.87–89]" in context

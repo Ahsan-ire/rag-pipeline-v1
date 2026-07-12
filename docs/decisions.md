@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 6 — v1 freeze (honesty + safety minimum)**
+**Current phase: 7 — appendix citations end-to-end**
 
 ---
 
@@ -819,3 +819,35 @@ and reports `git_dirty_other` — the count of dirty files beyond the report; th
 `(clean)` / `(clean apart from this generated report)` / `(dirty: N file(s) beyond this report)`,
 degrading gracefully when git is unavailable. Rejected: a footnote sentence in the report (mushy,
 "typically" phrasing) and amending commits to hide the two-step dance (history rewriting).
+
+## D34 — appendix locators first-class end-to-end; never-cross-match rule (12 Jul 2026)
+**Decision:** `APPENDIX N.M` becomes a first-class citation locator with one grammar on every
+surface, `chunker._prefix` being the reference: an appendix section renders **verbatim, never
+behind a `para` token** — in the chunk prefix (already correct), the retriever's compact header
+(was emitting malformed `[Handbook, para APPENDIX 14.1, p.N]`), the CLI `--verbose` retrieval
+lines (same hardcoded `para`), and the `raw` display string of extracted citations.
+`CITATION_RE` gains an alternation branch for `APPENDIX \d+(?:\.\d+)*` inside the same
+bracket-with-page structure; the `APPENDIX` token alone is case-tolerant (scoped `(?i:...)` group,
+model output may write "Appendix") and `extract_citations` canonicalizes it to uppercase, keeping
+the existing `{"para", "page", "raw"}` dict shape (`para` holds `"3.2.1"` or `"APPENDIX 14.1"`).
+`_sections_related` states the matching rule explicitly: **appendix-ness must match on both
+sides** — `"14.1"` never relates to `"APPENDIX 14.1"` in either direction; two appendix locators
+strip the prefix and reuse the existing component-nesting rule (so `APPENDIX 14.1` relates to
+`APPENDIX 14.1.2`); mixed is always False.
+**Why:** An appendix-only-cited answer extracted zero citations, so it printed the D32
+"unverified" warning today and would be **wrongly blocked** by Phase 8's fail-closed gate — the
+critique item this phase clears before the gate lands. 4 of 30 golden questions (and 2 held-out
+questions) expect APPENDIX sections. The never-cross-match rule exists because paragraph `14.1`
+and `APPENDIX 14.1` are different documents in different locator namespaces: letting them relate
+would let a paragraph citation verify against an appendix chunk — a grounding false positive.
+**Rejected:** `re.IGNORECASE` on the whole pattern (the convention since the PART false-positive
+is that case-tolerance is scoped to exactly the token that needs it); treating the formalized
+`_sections_related` as a behavior fix (adversarial audit confirmed the old component-split
+returned correct results for every appendix case by accident — the change makes the rule explicit
+and intentional rather than emergent, and the old pin tests are reframed as the rule); widening
+appendix numbers beyond the chunker's `\d{1,2}\.\d{1,3}` shape was NOT rejected — the extraction
+pattern deliberately mirrors the para grammar (`\d+(?:\.\d+)*`) as a harmless superset.
+**Consequence:** `extract_citations` moves from 2-tuple `findall` to `finditer` (the alternation
+adds a capture group). Evaluator `hit_related` inherits the rule via its `_sections_related`
+import; `hit_strict` already handled appendix strings by literal equality — no evaluator change.
+The zero-citation warning and the Phase 8 gate now see appendix citations like any other locator.
