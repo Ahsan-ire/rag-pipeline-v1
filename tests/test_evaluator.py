@@ -500,6 +500,23 @@ class TestHitAtKAndMrr:
         assert report["hit_at_k"]["strict"][3] == 1  # matched at rank 3
         assert report["hit_at_k"]["strict"][1] == 0
 
+    def test_over_returning_retrieve_fn_is_truncated_to_top_k(self):
+        """An injected retrieve_fn that returns MORE than top_k results must not
+        let a match beyond the cutoff count: top_k=3, match at position 5 -> the
+        result is truncated to 3, so it is a MISS (codex finding 7)."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["9.9"]}]
+        # 6 results, the only match at rank 5 — but top_k=3.
+        over = lambda q, top_k=3: [
+            _result("1.1"), _result("2.2"), _result("3.3"),
+            _result("4.4"), _result("9.9"), _result("6.6"),
+        ]
+
+        report = evaluate_retrieval(golden, retrieve_fn=over, top_k=3)
+
+        assert report["per_question"][0]["first_strict_rank"] is None
+        assert report["hit_at_k"]["strict"][3] == 0
+        assert report["mrr_strict"] == 0.0
+
     def test_zero_questions_gives_zero_mrr_and_empty_counts(self):
         """All-refusal set -> no non-refusal questions -> MRR 0.0 and every
         hit@k count 0, with no ZeroDivisionError."""
@@ -1903,21 +1920,24 @@ class TestRunEvalMatrix:
 
         assert open(default, encoding="utf-8").read() == original
 
-    # --- default factory: load-once + mode threading ----------------------
-    def test_default_factory_loads_context_once_and_threads_mode(self, tmp_path, monkeypatch):
-        """With no injected factory, the default builds the store+BM25 index
-        exactly ONCE across all three modes, and threads mode= + strict_errors
-        into every retrieve call."""
-        self._patch_paths(monkeypatch, tmp_path)
-        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
-
-        context_calls = []
-        retrieve_calls = []
+    # --- default factory: per-backend load-once + mode isolation ----------
+    def _patch_backends(self, monkeypatch):
+        """Patch the three backend loaders + retrieve; return call logs."""
+        vector_calls, assert_calls, bm25_calls, retrieve_calls = [], [], [], []
         fake_store, fake_bm25 = object(), object()
 
-        def fake_load(persist_directory):
-            context_calls.append(persist_directory)
-            return fake_store, fake_bm25
+        monkeypatch.setattr(
+            "src.evaluator.assert_embedding_model",
+            lambda pd: assert_calls.append(pd),
+        )
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store",
+            lambda persist_directory=None: (vector_calls.append(persist_directory) or fake_store),
+        )
+        monkeypatch.setattr(
+            "src.evaluator.load_bm25_index",
+            lambda pd: (bm25_calls.append(pd) or fake_bm25),
+        )
 
         def fake_retrieve(question, top_k=6, persist_directory=None, vector_store=None,
                           bm25_index=None, mode="hybrid", strict_errors=False):
@@ -1925,8 +1945,20 @@ class TestRunEvalMatrix:
                                    "strict": strict_errors})
             return [{"document": _matrix_doc("3.2"), "score": 1.0, "metadata": _matrix_doc("3.2").metadata}]
 
-        monkeypatch.setattr("src.evaluator.load_retrieval_context", fake_load)
         monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
+        return {
+            "vector": vector_calls, "assert": assert_calls, "bm25": bm25_calls,
+            "retrieve": retrieve_calls, "fake_store": fake_store, "fake_bm25": fake_bm25,
+        }
+
+    def test_default_factory_loads_each_backend_once_and_threads_mode(self, tmp_path, monkeypatch):
+        """With no injected factory over all three modes: the vector store loads
+        ONCE (with the manifest check) and the BM25 index loads ONCE, reused
+        across the modes that need them, and every retrieve call carries mode= +
+        strict_errors=True with only that mode's arm(s) injected."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        logs = self._patch_backends(monkeypatch)
 
         run_eval_matrix(
             [("held-out", gp)],
@@ -1937,13 +1969,97 @@ class TestRunEvalMatrix:
             judge=False,
         )
 
-        # Store/BM25 built once, reused across all 3 modes' retrieve calls.
-        assert len(context_calls) == 1
-        assert {c["mode"] for c in retrieve_calls} == {"hybrid", "vector", "bm25"}
-        for c in retrieve_calls:
-            assert c["store"] is fake_store
-            assert c["bm25"] is fake_bm25
+        assert len(logs["vector"]) == 1  # store built once, reused
+        assert len(logs["assert"]) == 1  # manifest checked once
+        assert len(logs["bm25"]) == 1    # sidecar loaded once
+        by_mode = {c["mode"]: c for c in logs["retrieve"]}
+        assert set(by_mode) == {"hybrid", "vector", "bm25"}
+        assert by_mode["hybrid"]["store"] is logs["fake_store"]
+        assert by_mode["hybrid"]["bm25"] is logs["fake_bm25"]
+        # vector mode: only the vector arm injected.
+        assert by_mode["vector"]["store"] is logs["fake_store"]
+        assert by_mode["vector"]["bm25"] is None
+        # bm25 mode: only the bm25 arm injected.
+        assert by_mode["bm25"]["store"] is None
+        assert by_mode["bm25"]["bm25"] is logs["fake_bm25"]
+        for c in logs["retrieve"]:
             assert c["strict"] is True
+
+    def test_bm25_only_matrix_never_opens_chroma_or_checks_manifest(self, tmp_path, monkeypatch):
+        """A bm25-only matrix run (offline) must not open Chroma or run the
+        embedding-model manifest check — the isolation retrieve() provides,
+        preserved by the runner (codex finding 2)."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        logs = self._patch_backends(monkeypatch)
+
+        run_eval_matrix(
+            [("held-out", gp)],
+            modes=["bm25"],
+            provenance_fn=self._prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+
+        assert logs["vector"] == []  # get_vector_store never called
+        assert logs["assert"] == []  # assert_embedding_model never called
+        assert len(logs["bm25"]) == 1
+
+    def test_vector_only_matrix_never_loads_bm25(self, tmp_path, monkeypatch):
+        """A vector-only matrix run must not unpickle the BM25 sidecar."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        logs = self._patch_backends(monkeypatch)
+
+        run_eval_matrix(
+            [("held-out", gp)],
+            modes=["vector"],
+            provenance_fn=self._prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+
+        assert logs["bm25"] == []  # load_bm25_index never called
+        assert len(logs["vector"]) == 1
+        assert len(logs["assert"]) == 1
+
+    def test_results_path_alias_of_set_refused(self, tmp_path, monkeypatch):
+        """An absolute/relative alias of an input set path is refused too, not
+        just an identical spelling (codex finding 3)."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        # gp is absolute; pass a path that realpath-resolves to the same file
+        # via a redundant '.' segment — a different string, same file.
+        alias = os.path.join(os.path.dirname(gp), ".", os.path.basename(gp))
+        assert alias != gp
+
+        with pytest.raises(ValueError, match="eval-set"):
+            run_eval_matrix(
+                [("held-out", gp)],
+                results_path=alias,
+                retrieve_fn_factory=self._retrieve_factory(),
+                generate_fn=self._generate_fn([]),
+                provenance_fn=self._prov,
+            )
+
+    def test_negative_top_k_and_judge_sample_rejected(self, tmp_path, monkeypatch):
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        with pytest.raises(ValueError, match="top_k"):
+            run_eval_matrix(
+                [("held-out", gp)], top_k=-1,
+                retrieve_fn_factory=self._retrieve_factory(),
+                generate_fn=self._generate_fn([]), provenance_fn=self._prov,
+            )
+        with pytest.raises(ValueError, match="judge_sample"):
+            run_eval_matrix(
+                [("held-out", gp)], judge_sample=-1,
+                retrieve_fn_factory=self._retrieve_factory(),
+                generate_fn=self._generate_fn([]), provenance_fn=self._prov,
+            )
 
     # --- report rendering --------------------------------------------------
     def test_two_set_report_rendering(self, tmp_path, monkeypatch):

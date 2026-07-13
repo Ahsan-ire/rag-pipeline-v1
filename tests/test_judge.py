@@ -135,6 +135,32 @@ class TestJudgeAnswerScoring:
         assert result["ok"] is False
         assert result["error_type"] == "parse"
 
+    def test_malformed_claim_elements_are_parse_error(self):
+        """A claims list whose elements are not verdict-bearing objects (null, a
+        bare string, or an object with no verdict) is a schema violation -> parse
+        error, NOT a zero-faithfulness 'success' that would drag the mean down
+        and dodge the failure counter (codex finding 5)."""
+        for bad in (
+            '{"claims": [null, null]}',
+            '{"claims": ["just a string claim"]}',
+            '{"claims": [{"claim": "c"}]}',            # no verdict key
+            '{"claims": [{"claim": "c", "verdict": 3}]}',  # verdict not a string
+        ):
+            result = judge_answer("q", "a", "c", llm_fn=lambda v, _b=bad: _b)
+            assert result["ok"] is False, bad
+            assert result["error_type"] == "parse", bad
+
+    def test_verdict_only_object_is_accepted(self):
+        """A well-formed record with a string verdict but no claim text is still
+        a valid claim (text defaults to empty) — only structure is enforced."""
+        result = judge_answer(
+            "q", "a", "c",
+            llm_fn=lambda v: '{"claims": [{"verdict": "supported"}]}',
+        )
+        assert result["ok"] is True
+        assert result["n_claims"] == 1
+        assert result["supported"] == 1
+
     def test_llm_fn_exception_is_api_error(self):
         """An llm_fn that raises (network/auth/rate-limit) is an API error,
         held apart from parse errors, with everything zeroed out."""

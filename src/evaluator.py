@@ -32,9 +32,11 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from src.bm25_index import load_bm25_index
 from src.embedder import (
     CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
+    assert_embedding_model,
     get_vector_store,
 )
 from src.generator import (
@@ -336,7 +338,10 @@ def evaluate_retrieval(
 
         question = entry["question"]
         expected_sections = [str(s).strip() for s in entry["expected_sections"]]
-        results = retrieve_fn(question, top_k=top_k)
+        # Clamp to top_k so a hit@k / MRR@k figure can never count a match that
+        # sits below the declared cutoff — production retrieve() already returns
+        # <= top_k, but an injected/custom retrieve_fn might over-return.
+        results = retrieve_fn(question, top_k=top_k)[:top_k]
         retrieved_sections = [
             str(r["document"].metadata.get("section_number", "")).strip()
             for r in results
@@ -875,14 +880,17 @@ def _resolve_results_path(
     """
     warnings: List[str] = []
     if explicit_path is not None:
-        norm = os.path.normpath(explicit_path)
+        # Compare by realpath, not normpath, so an absolute/relative spelling or
+        # a symlink that names the SAME file as an input set is still caught
+        # (a normpath string-compare would miss those aliases).
+        real = os.path.realpath(explicit_path)
         for p in set_paths:
-            if norm == os.path.normpath(p):
+            if real == os.path.realpath(p):
                 raise ValueError(
-                    f"--results path {explicit_path!r} equals an input eval-set "
-                    f"path; refusing to overwrite the eval set with a report"
+                    f"--results path {explicit_path!r} resolves to an input "
+                    f"eval-set path; refusing to overwrite the eval set with a report"
                 )
-        if not is_canonical and norm == os.path.normpath(DEFAULT_RESULTS_PATH):
+        if not is_canonical and real == os.path.realpath(DEFAULT_RESULTS_PATH):
             warnings.append(
                 f"Writing a NON-canonical run to the canonical path "
                 f"{DEFAULT_RESULTS_PATH} (explicitly requested via --results)."
@@ -1367,17 +1375,22 @@ def run_eval_matrix(
             raise ValueError(
                 f"Unknown retrieval mode {mode!r}; expected from {RETRIEVAL_MODES}"
             )
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1, got {top_k}")
+    if judge_sample is not None and judge_sample < 0:
+        raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
 
     set_paths = [path for _label, path in set_specs]
     # Fail fast on the dangerous footgun (report over an eval set) BEFORE any
     # expensive generation, even though _resolve_results_path re-guards at write.
+    # Compare by realpath so abs/rel/symlink aliases are caught too.
     if results_path is not None:
-        norm = os.path.normpath(results_path)
+        real = os.path.realpath(results_path)
         for p in set_paths:
-            if norm == os.path.normpath(p):
+            if real == os.path.realpath(p):
                 raise ValueError(
-                    f"--results path {results_path!r} equals an input eval-set "
-                    f"path; refusing to overwrite the eval set with a report"
+                    f"--results path {results_path!r} resolves to an input "
+                    f"eval-set path; refusing to overwrite the eval set with a report"
                 )
 
     # Which passes run, and therefore which answers to generate (Design 2).
@@ -1388,26 +1401,40 @@ def run_eval_matrix(
     if (not skip_completeness) or judge:
         include_types.extend(IN_CORPUS_TYPES)
 
-    # Lazily build the shared store+BM25 index at most once, reused by every
-    # mode's retrieve_fn AND the default generation retrieval.
-    shared_context: List[Any] = []  # boxed so the closures can fill it lazily
+    # Load each backend at most once, and ONLY when a mode that uses it actually
+    # runs — so a vector-only matrix never unpickles the BM25 sidecar and a
+    # bm25-only matrix never opens Chroma or runs the embedding-model manifest
+    # check (the isolation retrieve() itself provides, preserved end-to-end
+    # rather than defeated by pre-loading both). The vector loader keeps the
+    # blessed manifest check that load_retrieval_context bundles.
+    vector_cache: List[Any] = []
+    bm25_cache: List[Any] = []
 
-    def _ensure_context() -> Tuple[Any, Any]:
-        if not shared_context:
-            shared_context.extend(load_retrieval_context(persist_directory))
-        return shared_context[0], shared_context[1]
+    def _get_vector() -> Any:
+        if not vector_cache:
+            assert_embedding_model(persist_directory)
+            vector_cache.append(get_vector_store(persist_directory=persist_directory))
+        return vector_cache[0]
+
+    def _get_bm25() -> Any:
+        if not bm25_cache:
+            bm25_cache.append(load_bm25_index(persist_directory))
+        return bm25_cache[0]
 
     if retrieve_fn_factory is None:
 
         def retrieve_fn_factory(mode: str) -> Callable[..., List[Dict[str, Any]]]:
             def _fn(question: str, top_k: int = top_k) -> List[Dict[str, Any]]:
-                store, bm25 = _ensure_context()
+                # Inject only the arm this mode uses; retrieve()'s mode gating
+                # then never touches (or loads) the other arm.
+                vs = _get_vector() if mode in ("hybrid", "vector") else None
+                bm = _get_bm25() if mode in ("hybrid", "bm25") else None
                 return retrieve(
                     question,
                     top_k=top_k,
                     persist_directory=persist_directory,
-                    vector_store=store,
-                    bm25_index=bm25,
+                    vector_store=vs,
+                    bm25_index=bm,
                     mode=mode,
                     strict_errors=True,
                 )
@@ -1417,13 +1444,12 @@ def run_eval_matrix(
     if generate_fn is None:
 
         def generate_fn(question: str) -> Dict[str, Any]:
-            store, bm25 = _ensure_context()
             results = retrieve(
                 question,
                 top_k=top_k,
                 persist_directory=persist_directory,
-                vector_store=store,
-                bm25_index=bm25,
+                vector_store=_get_vector(),
+                bm25_index=_get_bm25(),
                 mode="hybrid",
                 strict_errors=True,
             )
@@ -1463,6 +1489,11 @@ def run_eval_matrix(
         refusals = None
         if not skip_refusals:
             def _answer_fn(question: str, _a: Dict[str, Any] = answers) -> str:
+                # A generation error yields "" -> is_refusal("")=False -> scored
+                # as "not refused". That is the CONSERVATIVE direction (it can
+                # only DEFLATE refusal accuracy, never inflate it) and a run with
+                # any generation error is already flagged non-canonical and
+                # discloses the error count, so the deflation is never silent.
                 cached = _a.get(question) or {}
                 result = cached.get("result") or {}
                 return result.get("answer", "")

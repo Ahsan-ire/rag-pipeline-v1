@@ -187,20 +187,24 @@ def judge_answer(
         claims = payload["claims"]
         if not isinstance(claims, list):
             raise ValueError("'claims' is not a list")
+        for claim in claims:
+            # Each element must be an object carrying a string "verdict". A bare
+            # string, null, or a verdict-less object is a SCHEMA violation and is
+            # counted as a parse error — not as a zero-faithfulness "success",
+            # which would silently drag the mean down AND dodge the failure
+            # counter that drives suppression.
+            if not isinstance(claim, dict) or not isinstance(claim.get("verdict"), str):
+                raise ValueError("malformed claim record")
     except Exception:
         return _error("parse")
 
     verdicts: List[Dict[str, str]] = []
     counts = {"supported": 0, "unsupported": 0, "unclear": 0}
     for claim in claims:
-        # Tolerate a claim given as a bare string or a dict without a verdict:
-        # missing/odd verdicts normalise to "unclear" (never to "supported").
-        if isinstance(claim, dict):
-            text = str(claim.get("claim", ""))
-            verdict = _normalise_verdict(claim.get("verdict"))
-        else:
-            text = str(claim)
-            verdict = "unclear"
+        # verdict is a string here (validated above); an unrecognised VALUE
+        # (e.g. "maybe") still normalises to "unclear", never "supported".
+        text = str(claim.get("claim", ""))
+        verdict = _normalise_verdict(claim.get("verdict"))
         counts[verdict] += 1
         verdicts.append({"claim": text, "verdict": verdict})
 
@@ -250,6 +254,9 @@ def judge_answers(
         ``prompt_version``, and ``per_item`` (full ``judge_answer`` records,
         including claim text, for the gitignored review dump only).
     """
+    if sample_n is not None and sample_n < 0:
+        raise ValueError(f"sample_n must be >= 0, got {sample_n}")
+
     # Deterministic sub-sample when asked for fewer than we have.
     to_judge = items
     if sample_n is not None and 0 <= sample_n < len(items):
