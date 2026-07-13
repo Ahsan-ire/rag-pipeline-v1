@@ -29,6 +29,7 @@ from scripts.sample_corpus import (
     SOURCE,
     TITLE,
     build_sample_corpus,
+    sample_pages,
 )
 
 # The frozen contract: the exact set of section numbers the corpus must chunk
@@ -65,7 +66,8 @@ def by_section(docs):
 # --- Corpus / page-map shape --------------------------------------------------
 
 def test_page_map_invariant(corpus):
-    """15 contiguous spans covering the whole clean text, first starting at 0."""
+    """15 contiguous spans covering the whole clean text, first starting at 0,
+    each slice round-tripping to the exact authored page text."""
     clean_text, page_map, _ = corpus
     assert len(page_map) == 15
     assert page_map[0].char_start == 0
@@ -73,9 +75,11 @@ def test_page_map_invariant(corpus):
     for prev, nxt in zip(page_map, page_map[1:]):
         # Pages join with a single "\n", so the next span starts one char on.
         assert nxt.char_start == prev.char_end + 1
-    # Each span's slice must round-trip to the authored page text.
-    for span in page_map:
-        assert clean_text[span.char_start:span.char_end]  # non-empty, in range
+    # Each span's slice must equal the exact authored page text (a real
+    # round-trip: wrong-but-non-empty boundaries would fail here).
+    for span, page in zip(page_map, sample_pages()):
+        authored = page[0] if isinstance(page, tuple) else page
+        assert clean_text[span.char_start:span.char_end] == authored
 
 
 def test_front_matter_has_no_printed_page(corpus):
@@ -238,15 +242,14 @@ def _fail_if_model_loaded(monkeypatch):
 
 
 def test_build_sample_index_offline(tmp_path, monkeypatch):
-    """Injecting a FakeEmbeddings store builds 16 chunks and writes both sidecars,
-    with no model download."""
+    """Injecting a FakeEmbeddings function builds 16 chunks and writes both
+    sidecars, with no model download."""
     _fail_if_model_loaded(monkeypatch)
     persist = str(tmp_path / "sample_chroma")
-    store = get_vector_store(
-        embedding_function=FakeEmbeddings(), persist_directory=persist
-    )
 
-    counts = build_sample_index(persist_dir=persist, vector_store=store)
+    counts = build_sample_index(
+        persist_dir=persist, embedding_function=FakeEmbeddings()
+    )
     assert counts["added"] == 16
     assert counts["chunks"] == 16
 
@@ -260,21 +263,25 @@ def test_build_sample_index_offline(tmp_path, monkeypatch):
 
 
 def test_build_sample_index_idempotent(tmp_path, monkeypatch):
-    """A second build against the same store is a pure no-op (converged)."""
+    """A second build against the same persist dir is a pure no-op (converged)."""
     _fail_if_model_loaded(monkeypatch)
     persist = str(tmp_path / "sample_chroma")
-    store = get_vector_store(
-        embedding_function=FakeEmbeddings(), persist_directory=persist
-    )
 
-    first = build_sample_index(persist_dir=persist, vector_store=store)
+    first = build_sample_index(
+        persist_dir=persist, embedding_function=FakeEmbeddings()
+    )
     assert first["added"] == 16
 
-    second = build_sample_index(persist_dir=persist, vector_store=store)
+    second = build_sample_index(
+        persist_dir=persist, embedding_function=FakeEmbeddings()
+    )
     assert second["added"] == 0
     assert second["updated"] == 0
     assert second["deleted"] == 0
 
+    store = get_vector_store(
+        embedding_function=FakeEmbeddings(), persist_directory=persist
+    )
     stored = store.get(where={"source": SOURCE})
     assert len(stored["ids"]) == 16
 

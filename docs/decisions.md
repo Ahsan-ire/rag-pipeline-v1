@@ -1187,8 +1187,12 @@ post-merge segment ≤ ~3,500 chars so nothing re-splits into duplicate section 
 (`OVERSIZE_CHAR_THRESHOLD = 4000`, measured on the whole segment incl. heading). Section 2.4.1 is a
 deliberate sub-600 trailing runt (the merge-into-2.4 demonstration) and is never cited. Every golden
 question embeds its section's unique fictional token (e.g. "Form VX-9", "Blackthorn Conditions") so
-**BM25 alone** — pure Python, platform-deterministic — ranks the right chunk #1; a unit test asserts
-BM25 top-3 for all 7 questions, which is the floor under the CI hybrid `7/7` assertion. The builder
+**BM25 alone** — pure Python, platform-deterministic — ranks the right chunk first (a unit test
+asserts BM25 top-3 for all 7 questions, with the extra headroom for authoring latitude; in practice
+all 7 land at rank 1). That is the floor under the CI hybrid `7/7` assertion; CI additionally asserts
+the BM25-only ablation row is a clean sweep so a broken lexical sidecar can't hide behind the hybrid
+headline, while the vector row is deliberately left unasserted (its floats vary across platforms). The
+builder
 **refuses to write into the real `./chroma_db/`** (realpath compare + a casefolded `chroma_db`
 basename check, run before any model loads) so a demo can never clobber or contaminate the real index.
 **Rejected:** generating a real PDF (a PDF-writing library would be a new dependency for no benefit,
@@ -1201,8 +1205,9 @@ accepted risk).
 ## D41 — MIT LICENSE, code-and-sample scope (13 Jul 2026)
 **Decision:** add an MIT `LICENSE` (© 2026 Ahsan Malik). The README states the licence covers
 **everything in this repository, including the wholly synthetic sample corpus**; the real,
-copyrighted handbook is never distributed here and no rights over it are granted. This one wording is
-used identically in `LICENSE` context, the README licence section, and here. It reconciles the Phase 11
+copyrighted handbook is never distributed here and no rights over it are granted. The scope note lives
+in the README licence section and in this entry; the `LICENSE` file itself is left as unmodified,
+standard MIT text so licence-detection tooling recognizes it cleanly. It reconciles the Phase 11
 spec's "MIT covers code only" with the fact that the synthetic sample now lives in the repo: the
 sample is original synthetic text authored for this project, so MIT can and does cover it; the phrase
 "code only" in the spec was shorthand for "not the corpus", which remains true.

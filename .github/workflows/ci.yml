@@ -56,5 +56,12 @@ jobs:
       # The eval CLI exits 0 regardless of hit rate, so assert the outcome here.
       # A non-canonical run (custom golden, no held-out set) writes the gitignored
       # eval/results_partial.md; grep the stable ASCII fragment of the headline.
-      - name: Assert the sample eval scored 7/7
+      - name: Assert the sample eval scored 7/7 (hybrid headline)
         run: grep -F "strict hit@6 = 7/7 = 1.000" eval/results_partial.md
+      # Independently assert the BM25-only ablation row is a clean sweep. BM25 is
+      # pure-Python and platform-deterministic, so this is safe to pin — and it
+      # catches a missing/broken lexical sidecar that the hybrid headline could
+      # otherwise mask (BM25 alone pins every sample question). The vector row is
+      # intentionally NOT asserted: its floats vary across platforms (see D40).
+      - name: Assert the BM25 arm is a clean sweep
+        run: grep -E "^\| bm25 \| 1.000 \| 1.000 \| 1.000 \|" eval/results_partial.md

@@ -29,7 +29,11 @@ if _ROOT not in sys.path:
 
 from scripts.sample_corpus import SOURCE, build_sample_corpus  # noqa: E402
 from src.chunker import chunk_handbook  # noqa: E402
-from src.embedder import CHROMA_PERSIST_DIR, sync_documents  # noqa: E402
+from src.embedder import (  # noqa: E402
+    CHROMA_PERSIST_DIR,
+    get_vector_store,
+    sync_documents,
+)
 
 DEFAULT_SAMPLE_DIR = "./sample_chroma_db"
 
@@ -59,31 +63,37 @@ def _assert_not_real_index(persist_dir: str) -> None:
 
 def build_sample_index(
     persist_dir: str = DEFAULT_SAMPLE_DIR,
-    vector_store: Optional[object] = None,
+    embedding_function: Optional[object] = None,
 ) -> dict:
     """Chunk the synthetic corpus and sync it into ``persist_dir``.
 
     Args:
         persist_dir: Where to persist the sample index. Guarded against the real
             ``./chroma_db/``.
-        vector_store: Optional explicit Chroma store, forwarded to
-            ``sync_documents``. Tests inject one over ``FakeEmbeddings`` so the
-            build runs with no model download; production passes ``None`` and the
-            real MiniLM store is built from ``persist_dir``.
+        embedding_function: Optional embedding function. Tests inject
+            ``FakeEmbeddings`` so the build needs no model download; production
+            passes ``None`` and the real MiniLM store is built.
 
     Returns:
-        The ``sync_documents`` counts, ``{"added", "updated", "deleted"}``.
+        The ``sync_documents`` counts plus ``chunks``.
     """
-    # Guard FIRST — before build_sample_corpus/chunk_handbook/sync_documents can
+    # Guard FIRST — before build_sample_corpus/chunk_handbook/get_vector_store can
     # construct a store or load an embedding model.
     _assert_not_real_index(persist_dir)
 
     clean_text, page_map, metadata = build_sample_corpus()
     chunks = chunk_handbook(clean_text, page_map, metadata)
+    # Construct the store HERE, at the already-guarded persist_dir, rather than
+    # accepting an injected store. That means the vectors can only ever land in
+    # the guarded directory — an injected store could point anywhere (e.g. the
+    # real ./chroma_db/) and slip past a persist_dir-only guard.
+    store = get_vector_store(
+        embedding_function=embedding_function, persist_directory=persist_dir
+    )
     counts = sync_documents(
         SOURCE,
         chunks,
-        vector_store=vector_store,
+        vector_store=store,
         persist_directory=persist_dir,
     )
     return counts | {"chunks": len(chunks)}

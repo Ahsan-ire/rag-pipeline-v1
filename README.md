@@ -2,9 +2,9 @@
 
 A retrieval-augmented question-answering pipeline over an ~800-page, OCR-scanned Irish conveyancing
 handbook. The entire point is **grounded answers with chapter/paragraph/page citations**, an explicit
-**refusal** when a question isn't answered in the corpus, and a **fail-closed grounding gate** that
-withholds an answer whose citations can't be verified against what was actually retrieved — never a
-confident guess.
+**refusal** when a question isn't answered in the corpus, and a **fail-closed grounding gate**: an
+answer with no verifiable citation is withheld, and a partially-verified answer is shown with a
+warning that names each citation it could not verify — never a confident, unchecked guess.
 
 ## What it is, and why
 
@@ -27,15 +27,16 @@ here.
         ▼  src/ingest.py      extract + clean the OCR text layer   →  (clean_text, page_map)
         │                     strip running headers/footers, repair hyphenation, keep offsets
         ▼  src/chunker.py     structural grammar: CHAPTER / decimal / APPENDIX
-        │                     one chunk per numbered paragraph, carrying a citation prefix
+        │                     ~one chunk per numbered paragraph (runts merged, oversize split)
         ▼  src/embedder.py    MiniLM vectors in Chroma  +  a BM25 sidecar   (per-source sync)
         │
         ▼  src/retriever.py   hybrid retrieval: BM25 ⊕ vector, fused by reciprocal rank fusion
         │
         ▼  src/generator.py   Claude drafts an answer citing [Handbook, para 3.2.1, p.87]
         │
-        ▼  src/grounding.py   fail-closed gate: every citation checked against a retrieved chunk;
-        │                     unverified → answer WITHHELD, sources shown, draft available on request
+        ▼  src/grounding.py   fail-closed gate: every citation checked against a retrieved chunk.
+        │                     none verified → answer WITHHELD (sources shown, draft on request);
+        │                     some verified → shown with a warning naming the unverified ones
         ▼  src/audit.py       append-only event log (query HASH + retrieval + gate outcome; no text)
 ```
 
@@ -121,8 +122,9 @@ deterministic.
 - The corpus PDF, the Chroma index, and any `.pdf`/`.env`/`logs/` are **gitignored and never
   committed** — the handbook is copyrighted and the repo is public.
 - The **sample corpus is wholly synthetic** original text authored for this project.
-- Committed eval reports carry **no chunk, answer, or claim prose** (D30) — only section numbers,
-  page ranges, and aggregate metrics.
+- Committed eval reports carry **no chunk, answer, or claim prose** (D30) — no corpus text. They do
+  include the eval *questions* (authored, not corpus) and the retrieved section numbers and page
+  ranges, alongside the aggregate metrics.
 - The audit log (`logs/`, `src/audit.py`) records a **SHA-256 hash of the query**, not the query
   text (legal queries can reveal client matters), plus retrieval IDs, gate outcome, and counts —
   never the answer or chunk text. Raw-query logging is opt-in via `AUDIT_LOG_RAW_QUERIES=1`.
@@ -184,6 +186,16 @@ python -m pytest tests/ -q
 
 400 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`)
 — no network access, no API key required.
+
+## Roadmap
+
+- **Now (v2):** fail-closed grounding gate, appendix citations, per-source re-indexing, audit log,
+  held-out evaluation, keyless CI, synthetic sample corpus — all landed (Phases 7–11).
+- **Next:** a final gate and a same-set, same-index v1-vs-v2 head-to-head, then the submission
+  decision (Phase 12 of `IMPLEMENTATION_PLAN.md`).
+- **Beyond submission:** matter-scoped deployment (per-transaction corpora), a larger held-out set to
+  tighten the confidence interval, and multi-document indexing (the per-source sync already supports
+  it).
 
 ## License
 
