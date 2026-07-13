@@ -105,12 +105,12 @@ Answer quality on the held-out set (hybrid, generation on):
 | --- | --- |
 | False refusals (answerable questions wrongly refused) | 0/20 |
 | Near-domain negatives correctly refused | 8/8 |
-| Citation-grounded fraction (Σ grounded / Σ citations) | 86/86 = 1.000 |
-| Sentence-citation coverage | 84/95 = 0.884 |
+| Citation-grounded fraction (Σ grounded / Σ citations) | 89/89 = 1.000 |
+| Sentence-citation coverage | 89/101 = 0.881 |
 | False-block rate (answerable drafts the gate would withhold) | 0/20 |
-| LLM-judged mean faithfulness *(experimental, same-family judge — a rough estimate)* | 0.983 |
+| LLM-judged mean faithfulness *(experimental, same-family judge — a rough estimate)* | 0.995 |
 
-Provenance for these numbers (from `eval/results.md`): git `61d6341`, 1470 indexed chunks, embedding
+Provenance for these numbers (from `eval/results.md`): git `d0c93e1`, 1470 indexed chunks, embedding
 `all-MiniLM-L6-v2`, generation `claude-sonnet-5`.
 
 The CI smoke number (`7/7` on the synthetic sample) is a **plumbing check that the retrieval path

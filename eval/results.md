@@ -1,13 +1,13 @@
 # Legal RAG Evaluation Report v2 (held-out, ablated)
 
-- Date: 2026-07-13T01:20:23.717351
+- Date: 2026-07-13T20:01:22.821669
 - top_k: 6
 - Retrieval modes ablated: hybrid, vector, bm25
 - Canonical run (writes the committed report): True
 
 ## Provenance
 
-- git sha: 61d6341 (dirty: False)
+- git sha: d0c93e1 (dirty: False)
 - indexed chunk count: 1470
 - embedding model: sentence-transformers/all-MiniLM-L6-v2
 - generation model: claude-sonnet-5
@@ -73,8 +73,8 @@ Two-sided refusal view — a system can fail by refusing answerable questions OR
 
 Answer quality on the answerable questions:
 
-- Syntactic sentence-citation coverage (micro-avg over non-refused answers): 0.770 (201/261 sentences; 2 refusal(s) excluded). "Syntactic" = has a bracket citation; a cited sentence may still carry a wrong locator (grounding measured separately).
-- Citation-grounded fraction (micro-avg Σ grounded / Σ citations): 1.000 (209/209 citations).
+- Syntactic sentence-citation coverage (micro-avg over non-refused answers): 0.754 (202/268 sentences; 2 refusal(s) excluded). "Syntactic" = has a bracket citation; a cited sentence may still carry a wrong locator (grounding measured separately).
+- Citation-grounded fraction (micro-avg Σ grounded / Σ citations): 1.000 (215/215 citations).
 - False-block rate (answerable drafts the gate would WITHHOLD as CITATIONS_UNVERIFIED): 0.000 (95% CI 0.000–0.114; 0/30). This is over-blocking PRESSURE, not proof each block was wrong.
 - Gate-outcome distribution: REFUSAL=2, CITATIONS_VERIFIED=28, PARTIALLY_VERIFIED=0, CITATIONS_UNVERIFIED=0
 
@@ -89,8 +89,8 @@ Two-sided refusal view — a system can fail by refusing answerable questions OR
 
 Answer quality on the answerable questions:
 
-- Syntactic sentence-citation coverage (micro-avg over non-refused answers): 0.884 (84/95 sentences; 0 refusal(s) excluded). "Syntactic" = has a bracket citation; a cited sentence may still carry a wrong locator (grounding measured separately).
-- Citation-grounded fraction (micro-avg Σ grounded / Σ citations): 1.000 (86/86 citations).
+- Syntactic sentence-citation coverage (micro-avg over non-refused answers): 0.881 (89/101 sentences; 0 refusal(s) excluded). "Syntactic" = has a bracket citation; a cited sentence may still carry a wrong locator (grounding measured separately).
+- Citation-grounded fraction (micro-avg Σ grounded / Σ citations): 1.000 (89/89 citations).
 - False-block rate (answerable drafts the gate would WITHHOLD as CITATIONS_UNVERIFIED): 0.000 (95% CI 0.000–0.161; 0/20). This is over-blocking PRESSURE, not proof each block was wrong.
 - Gate-outcome distribution: REFUSAL=0, CITATIONS_VERIFIED=20, PARTIALLY_VERIFIED=0, CITATIONS_UNVERIFIED=0
 
@@ -98,8 +98,8 @@ Answer quality on the answerable questions:
 
 Experimental and secondary — gates nothing. Conditional on a non-refused answer. The judge is the SAME model family as the generator, so it can share its blind spots; read as a rough estimate.
 
-- tuning: mean faithfulness = 0.982 (over 28 scored; attempted 28, parsed 28, api-errors 0, parse-errors 0, zero-claim 0; judge=claude-sonnet-5 faithfulness-judge-v1).
-- held-out: mean faithfulness = 0.983 (over 20 scored; attempted 20, parsed 20, api-errors 0, parse-errors 0, zero-claim 0; judge=claude-sonnet-5 faithfulness-judge-v1).
+- tuning: mean faithfulness = 0.994 (over 28 scored; attempted 28, parsed 28, api-errors 0, parse-errors 0, zero-claim 0; judge=claude-sonnet-5 faithfulness-judge-v1).
+- held-out: mean faithfulness = 0.995 (over 20 scored; attempted 20, parsed 20, api-errors 0, parse-errors 0, zero-claim 0; judge=claude-sonnet-5 faithfulness-judge-v1).
 
 ## tuning — per-question detail (hybrid)
 
