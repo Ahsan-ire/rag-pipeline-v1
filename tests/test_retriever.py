@@ -1,5 +1,6 @@
 """Tests for the retrieval module."""
 
+import logging
 import shutil
 from unittest.mock import patch
 
@@ -7,7 +8,7 @@ import pytest
 from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index
-from src.retriever import _reciprocal_rank_fusion, format_context, retrieve
+from src.retriever import RETRIEVAL_MODES, _reciprocal_rank_fusion, format_context, retrieve
 from tests.test_embedder import FakeEmbeddings
 
 
@@ -346,3 +347,170 @@ class TestFormatContext:
         context = format_context(results)
 
         assert "[Handbook, APPENDIX 14.1, pp.87–89]" in context
+
+
+class TestRetrieveModes:
+    """Phase 10 ablation (D38): ``mode`` gates both backend resolution and arm
+    execution, so the evaluator can measure each arm's standalone hit@k
+    without paying for, or being contaminated by, the other arm."""
+
+    def test_unknown_mode_raises_before_any_io(self):
+        """An unknown mode must raise ValueError before touching any backend
+        seam — validated first so a typo'd mode fails fast and cheap, never
+        after opening the store or unpickling the BM25 sidecar. Patching all
+        three IO seams to raise AssertionError, and getting ValueError back
+        instead, proves none of them fired."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("no IO on bad mode")
+
+        with patch("src.retriever.get_vector_store", side_effect=_boom), patch(
+            "src.retriever.load_bm25_index", side_effect=_boom
+        ), patch("src.retriever.assert_embedding_model", side_effect=_boom):
+            with pytest.raises(ValueError) as exc_info:
+                retrieve("q", mode="banana")
+
+        message = str(exc_info.value)
+        assert "banana" in message
+        # The valid set is spelled out in the error so a caller sees the fix,
+        # not just that they got it wrong.
+        for valid_mode in RETRIEVAL_MODES:
+            assert valid_mode in message
+
+    def test_vector_mode_never_loads_bm25_or_warns(self, seeded_store, caplog):
+        """mode="vector" runs the vector arm only: it must never call
+        load_bm25_index or emit the missing-sidecar warning, even though the
+        seeded store has a valid BM25 sidecar sitting right beside it."""
+        store, persist_dir = seeded_store
+
+        with patch(
+            "src.retriever.load_bm25_index",
+            side_effect=AssertionError("must not load BM25 index in vector mode"),
+        ), caplog.at_level(logging.WARNING, logger="src.retriever"):
+            results = retrieve(
+                "making a will",
+                top_k=2,
+                mode="vector",
+                vector_store=store,
+                persist_directory=persist_dir,
+            )
+
+        assert len(results) > 0
+        assert "No BM25 index" not in caplog.text
+
+    def test_bm25_mode_never_touches_vector_backend(self, exact_token_store):
+        """mode="bm25" runs the BM25 arm only: it must never resolve a vector
+        backend via get_vector_store/assert_embedding_model, and must never
+        query an injected vector_store either.
+
+        Uses exact_token_store rather than seeded_store: seeded_store has
+        only 2 documents with zero shared vocabulary between them, which
+        makes rank_bm25's classic idf (log((N-freq+0.5)/(freq+0.5))) come out
+        to exactly 0 for every term (freq=1, N=2) — so no query can ever get
+        a positive BM25 score there. exact_token_store's 10 documents (D6's
+        exact-phrase fixture) don't have that degeneracy, so "priority entry"
+        genuinely surfaces its target chunk.
+        """
+        store, persist_dir, target = exact_token_store
+        bm25 = load_bm25_index(persist_dir)
+        assert bm25 is not None  # sanity: exact_token_store did write a sidecar
+
+        class ExplodingStore:
+            def similarity_search_with_relevance_scores(self, *args, **kwargs):
+                raise AssertionError("vector arm must not run in bm25 mode")
+
+        stub = ExplodingStore()
+
+        with patch(
+            "src.retriever.get_vector_store",
+            side_effect=AssertionError("must not resolve vector store in bm25 mode"),
+        ), patch(
+            "src.retriever.assert_embedding_model",
+            side_effect=AssertionError("must not check embedding model in bm25 mode"),
+        ):
+            results = retrieve(
+                "priority entry",
+                top_k=2,
+                mode="bm25",
+                vector_store=stub,
+                bm25_index=bm25,
+                persist_directory=persist_dir,
+            )
+
+        # Results are non-empty (BM25 found something) and the call returning
+        # normally at all proves none of the AssertionErrors above fired.
+        assert len(results) > 0
+        assert target.page_content in [r["document"].page_content for r in results]
+
+    def test_bm25_mode_missing_sidecar_warns_and_returns_empty(self, tmp_path, caplog):
+        """mode="bm25" with no sidecar (load_bm25_index returns None) warns
+        and returns [] rather than silently falling back to a vector search
+        that this mode never runs. get_vector_store/assert_embedding_model
+        are patched to raise too, proving bm25 mode skips them outright."""
+        with patch("src.retriever.load_bm25_index", return_value=None), patch(
+            "src.retriever.get_vector_store",
+            side_effect=AssertionError("must not resolve vector store in bm25 mode"),
+        ), patch(
+            "src.retriever.assert_embedding_model",
+            side_effect=AssertionError("must not check embedding model in bm25 mode"),
+        ), caplog.at_level(logging.WARNING, logger="src.retriever"):
+            results = retrieve("q", mode="bm25", persist_directory=str(tmp_path))
+
+        assert results == []
+        assert "No BM25 index" in caplog.text
+
+    def test_single_arm_preserves_candidate_order(self, tmp_path):
+        """A single-arm mode is RRF over one ranked list, which is
+        order-preserving: the returned results must follow the arm's
+        candidate order, not be re-sorted by the arm's own score values."""
+        # Deliberately NOT in score order (0.1, 0.9, 0.5) so a test that
+        # passed only because results got re-sorted by score would fail here.
+        docs_and_scores = [
+            (Document(id="doc_c", page_content="third", metadata={"section_number": "3"}), 0.1),
+            (Document(id="doc_a", page_content="first", metadata={"section_number": "1"}), 0.9),
+            (Document(id="doc_b", page_content="second", metadata={"section_number": "2"}), 0.5),
+        ]
+
+        class FakeStore:
+            def similarity_search_with_relevance_scores(self, *args, **kwargs):
+                return docs_and_scores
+
+        results = retrieve(
+            "q",
+            top_k=3,
+            mode="vector",
+            vector_store=FakeStore(),
+            bm25_index=None,
+            persist_directory=str(tmp_path),
+        )
+
+        section_numbers = [r["metadata"]["section_number"] for r in results]
+        assert section_numbers == ["3", "1", "2"]
+
+    def test_strict_errors_propagates_arm_exception_vs_default_swallow(self, tmp_path):
+        """By default an arm's search exception is logged and swallowed —
+        production retrieval degrades rather than 500s. strict_errors=True
+        lets it propagate, so eval runs don't silently score an operational
+        failure as a retrieval miss."""
+
+        class ExplodingStore:
+            def similarity_search_with_relevance_scores(self, *args, **kwargs):
+                raise RuntimeError("boom")
+
+        stub = ExplodingStore()
+
+        # (a) default: swallowed, no other arm ran, so no candidates at all.
+        results = retrieve(
+            "q", mode="vector", vector_store=stub, persist_directory=str(tmp_path)
+        )
+        assert results == []
+
+        # (b) strict: the same exception propagates instead.
+        with pytest.raises(RuntimeError):
+            retrieve(
+                "q",
+                mode="vector",
+                vector_store=stub,
+                persist_directory=str(tmp_path),
+                strict_errors=True,
+            )

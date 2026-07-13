@@ -935,3 +935,78 @@ class TestQuery:
         out = capsys.readouterr().out
         assert result["answer"] == "The rule is X [Handbook, para 3.2, p.10]."
         assert "audit log write failed" in out
+
+
+class TestEvalCli:
+    """The Phase 10 `eval` subcommand parses its flags and dispatches to
+    run_eval_matrix with the right set_specs, modes, and knobs. IO-free: the
+    matrix runner is replaced with a spy, so no store/API is touched. main()
+    imports run_eval_matrix from src.evaluator at call time, so patching
+    src.evaluator.run_eval_matrix is what the local import resolves to."""
+
+    def _dispatch(self, monkeypatch, argv):
+        import src.evaluator
+        import src.pipeline
+
+        captured = {}
+
+        def spy(set_specs, **kwargs):
+            captured["set_specs"] = set_specs
+            captured["kwargs"] = kwargs
+
+        monkeypatch.setattr("src.evaluator.run_eval_matrix", spy)
+        monkeypatch.setattr("sys.argv", ["prog", "eval", *argv])
+        src.pipeline.main()
+        return captured
+
+    def test_default_dispatch_shape(self, monkeypatch):
+        c = self._dispatch(monkeypatch, [])
+        assert c["set_specs"] == [("tuning", "eval/golden_set.jsonl")]
+        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25"]
+        assert c["kwargs"]["skip_refusals"] is False
+        assert c["kwargs"]["skip_completeness"] is False
+        assert c["kwargs"]["judge"] is False
+        assert c["kwargs"]["results_path"] is None
+        assert c["kwargs"]["judge_dump_path"] is None
+
+    def test_full_flag_threading(self, monkeypatch):
+        c = self._dispatch(
+            monkeypatch,
+            [
+                "--heldout", "eval/heldout_set.jsonl",
+                "--mode", "vector",
+                "--judge", "--judge-sample", "15",
+                "-o", "out.md",
+                "--top-k", "8",
+            ],
+        )
+        assert c["set_specs"] == [
+            ("tuning", "eval/golden_set.jsonl"),
+            ("held-out", "eval/heldout_set.jsonl"),
+        ]
+        assert c["kwargs"]["modes"] == ["vector"]
+        assert c["kwargs"]["judge"] is True
+        assert c["kwargs"]["judge_sample"] == 15
+        assert c["kwargs"]["results_path"] == "out.md"
+        assert c["kwargs"]["top_k"] == 8
+        # Judge on -> a gitignored dump path is passed for local review.
+        assert c["kwargs"]["judge_dump_path"] == "eval/judge_review.jsonl"
+
+    def test_offline_ci_shape_has_no_generation_flags(self, monkeypatch):
+        """Phase 11 CI shape: --skip-refusals --skip-completeness (no --judge)
+        threads through as both skips True + judge False — the combination the
+        matrix runner turns into zero generation calls (its own blocker test
+        proves the zero-call guarantee)."""
+        c = self._dispatch(monkeypatch, ["--skip-refusals", "--skip-completeness"])
+        assert c["kwargs"]["skip_refusals"] is True
+        assert c["kwargs"]["skip_completeness"] is True
+        assert c["kwargs"]["judge"] is False
+        assert c["kwargs"]["judge_dump_path"] is None
+
+    def test_non_default_golden_labeled_golden(self, monkeypatch):
+        c = self._dispatch(monkeypatch, ["--golden", "eval/custom.jsonl"])
+        assert c["set_specs"] == [("golden", "eval/custom.jsonl")]
+
+    def test_mode_all_expands_to_three(self, monkeypatch):
+        c = self._dispatch(monkeypatch, ["--mode", "all"])
+        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25"]

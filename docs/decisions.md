@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 9 — index lifecycle + load-once retrieval**
+**Current phase: 10 — eval v2 (honest, held-out, ablated)**
 
 ---
 
@@ -1042,3 +1042,128 @@ metadata corrections routine); the degraded double BM25 load attempt when the si
 (pipeline switched to sync; revisit at the multi-doc phase); injected `retrieve()` skipping the
 manifest check stays by design — the injector owns it, and `load_retrieval_context` now makes the
 safe path the easy path.
+
+---
+
+## D38 — eval v2: held-out headline, retrieval ablation, two-sided answer quality, experimental judge (13 Jul 2026)
+**Decision:** Rebuild the eval around honesty after the 11 Jul external critique found the v1
+headline (90% hit@6) was tuned on its own question set and conflated related-section nesting with
+exact retrieval. New `run_eval_matrix` (the `eval` CLI now dispatches to it; `run_eval` is retained
+unchanged for its Phase 5/6 callers/tests) scores every `(set, mode)` cell and renders one v2
+report. Concretely:
+
+- **Held-out headline, strict.** The report's headline is **strict hit@6 on the frozen held-out
+  set** (D33), with the count and a **Wilson 95% interval** (`_wilson_ci`, stdlib math) beside it —
+  n≈20 means the interval spans several questions' worth of rate, and the report says so ("single
+  curated-set estimate", no "statistically-validated architecture" language). Strict = exact
+  `section_number` equality; related (dotted-nesting) is reported alongside, never as the headline.
+- **Retrieval-mode ablation.** `retrieve()` gained keyword-only `mode` (`RETRIEVAL_MODES =
+  hybrid/vector/bm25`, single source of truth) that gates **both** backend resolution AND arm
+  execution: `vector` mode never unpickles the BM25 sidecar (no missing-sidecar warning), `bm25`
+  mode never opens Chroma or runs the manifest check, and an *injected* arm the mode doesn't use is
+  ignored. `bm25` with no sidecar warns and returns `[]` (fail-visible), never a silent fallback.
+- **`strict_errors` for benchmarks.** `retrieve(..., strict_errors=True)` (eval sets it) PROPAGATES
+  an arm exception instead of swallowing it; an operational failure must abort the benchmark, not
+  score as a retrieval miss. Production keeps graceful per-arm degradation (`strict_errors=False`).
+- **hit@{1,3,6} + MRR@{top_k}, no re-retrieval.** `evaluate_retrieval` records the 1-indexed rank
+  of the first strict/related match per question and derives hit@k for `k in (1,3,6) if k<=top_k`
+  (no incoherent hit@6 at top_k=3) plus **truncated** MRR (a miss scores 0; the cutoff is labeled
+  `MRR@6` everywhere). All keys are additive — the existing hit_strict/hit_related contract and
+  tests are untouched.
+- **One shared generation pass, gated.** The generation pass runs iff
+  `(not skip_refusals) or (not skip_completeness) or judge`; `include_types` derives from the active
+  passes (refusal answers iff refusals scored; in-corpus answers iff completeness scored or judge
+  on). Both-skips + no-judge ⇒ **zero** `generate_fn` calls — a dedicated blocker test pins it,
+  protecting the offline ablation preview AND keyless Phase 11 CI (where generation would RAISE, not
+  just cost). Answers are generated once, cached by question, and reused by refusals + completeness
+  + judge (a duplicate question text raises; per-question failures become error rows, disclosed).
+  Answer passes always use the HYBRID production config; the ablation affects retrieval scoring only.
+- **Two-sided answer quality.** `evaluate_completeness` measures the answerable questions the
+  opposite way from `evaluate_refusals`: **false-refusal rate** (answerable questions that got the
+  canonical refusal) and **false-block rate** (answerable drafts the gate would withhold as
+  CITATIONS_UNVERIFIED — labeled *over-blocking pressure*, NOT proof the block was wrong), plus
+  **syntactic sentence-citation coverage** (micro-avg cited/total sentences over non-refused
+  answers; "syntactic" because a cited sentence may still carry a wrong locator — grounding is
+  separate) and **citation-grounded fraction** (micro-avg grounded/citations; "n/a" when zero
+  citations, never a silent 0/1) and the zero-filled gate-outcome distribution. The refusal table
+  is two-sided (answerable-refusal rate + near-domain-negative refusal rate); neither is called
+  "accuracy" unqualified. A heuristic `split_sentences` (masks bracketed citations, guards prose
+  abbreviations, splits newlines then `.?!`+capital) feeds coverage — it gates nothing and its
+  limitations are documented.
+- **Experimental LLM judge (`src/judge.py`).** Optional `--judge` decomposes each non-refused
+  in-corpus answer into claims and scores faithfulness = supported/n_claims (unclear counts
+  against), judged **per set**, **conditional on a non-refused answer**. Model JSON is parsed
+  strictly (fence-strip + outermost `{...}` + schema check); **API errors are counted separately
+  from parse errors**, zero-claim answers are counted, and the mean is **suppressed** when the
+  failure fraction exceeds 20%. The report states the judge is the **same model family** as the
+  generator (shared blind spots) and calls the whole thing experimental/secondary. `JUDGE_MODEL ==
+  GENERATION_MODEL`, `JUDGE_PROMPT_VERSION` pinned in provenance.
+- **Results-path guard.** With no explicit `--results/-o`, the committed `eval/results.md` is
+  written ONLY by a **canonical** run (held-out set present, all 3 modes, refusals + completeness
+  scored, top_k=6, zero generation errors); anything less writes the gitignored
+  `eval/results_partial.md`. An explicit path is honored (warned if it targets the canonical path on
+  a partial run) but **refused if it equals an input eval set** (writing a report over the set would
+  destroy it). Reports are written atomically (temp + `os.replace`), so a crash never half-clobbers
+  the committed report.
+- **D30 upheld.** The report carries only question text, section numbers, counts, rates, gate
+  outcomes, and provenance — never chunk `page_content`, generated answer text, or judge claim text.
+  Claim text lives ONLY in the gitignored `eval/judge_review.jsonl` local review dump. Canary-string
+  tests plant secrets in fake chunks/answers/claims and assert they never reach the report.
+
+**Why:** A portfolio piece whose entire point is grounded, citable answers cannot ship a headline
+that was tuned on its own questions and inflated by nesting credit. Held-out + strict + Wilson makes
+the number honest and honestly uncertain; the ablation shows what each retrieval arm contributes;
+the two-sided answer-quality view exposes both failure directions (silent over-refusal AND
+over-blocking) that a one-sided "refusal accuracy" hid; the judge is a cheap, clearly-fenced
+faithfulness sniff-test, not a claim of independent validation.
+**Rejected:** flipping `run_eval`'s default results path in place (zero-blast-radius to leave it;
+the CLI reroute closes the real footgun); a hard-error results guard (auto-redirect to the partial
+path is friendlier and equally safe); a checkpoint/resume answer cache (over-engineered for ~60
+calls, a re-run is ~$2); a code-level sha-pin of the held-out path (D33 + the report's printed
+sha256 is the cross-check); row-keyed/sha-keyed answer cache (question-text keying with a
+duplicate-raises guard is enough); reusing the ablation's per-mode retrievals for generation
+(generation is deterministic-hybrid — re-querying is equivalent and keeps `evaluate_retrieval`'s
+tested contract intact); stratified judge sampling (deterministic uniform `random.Random(seed)` is
+honest and simpler); a same-model judge presented as an independent oracle (disclosed as shared-
+family instead).
+
+## D39 — sub-chunking go/no-go, decided on the tuning set (13 Jul 2026)
+**Decision (protocol; numbers filled in from the canonical live run):** The pre-declared go/no-go
+rule for the sub-chunking experiment is evaluated **on the tuning set only** — the set sanctioned
+for making decisions (D31) — NOT on the held-out set, which appears in the ablation tables
+descriptively but must never feed a decision (that would burn its out-of-sample status, the whole
+point of D33). Rule: proceed to sub-chunking only if vector-only related@6 lags hybrid related@6 by
+more than ~10 points on the tuning set (i.e. the vector arm is leaving material recall on the table
+that finer chunks might recover); within ~10 points, hybrid retrieval is already capturing the
+signal and sub-chunking is not worth the added index complexity for v2.
+**Caveat recorded:** a mode delta cannot *prove* sub-chunking will or won't help — it is a coarse,
+pre-declared decision rule chosen to avoid post-hoc rationalization, not a causal measurement. The
+held-out ablation numbers are reported next to the tuning ones purely so a reader can see whether
+the two sets point the same way.
+**Outcome (from the canonical `eval/results.md`, git-clean run):** On the **tuning set**,
+hybrid related@6 = 0.900 vs **vector-only related@6 = 0.833** — a **6.7-point** gap, *within* the
+~10-point threshold → **NO-GO: do not sub-chunk for v2.** Hybrid retrieval already captures the
+recall the vector arm alone leaves on the table, so finer chunks are not worth the added index
+complexity. Held-out (descriptive comparison only, NOT a decision input): hybrid related@6 = 1.000
+vs vector 0.900 = a 10.0-point gap — the same direction, so both sets agree on the call.
+Notably **bm25-only related@6 equals hybrid** on both sets (tuning 0.900, held-out 1.000): the
+lexical arm carries most of the related-match signal on this decimal-numbered corpus, which is
+consistent with the exact-token nature of paragraph citations and is itself an argument against
+sub-chunking (the win, if any, would be for the vector arm, and hybrid already backstops it).
+
+## D38 addendum — canonical live-run evidence (13 Jul 2026)
+The canonical run (`eval --heldout eval/heldout_set.jsonl --judge`, all three modes, both passes,
+top_k=6, **zero generation and zero judge errors**, git-clean provenance) produced
+`eval/results.md`. Headline and answer quality, held-out set (frozen, sha256
+`601a81c0…dcfe6`, matching D33):
+- **Strict hit@6 = 20/20 = 1.000** (95% Wilson CI 0.839–1.000) — the honest, out-of-sample,
+  exact-match headline (vs the v1 90% that was *related*-matched on the *tuning* set).
+- False refusals 0/20; near-domain negatives correctly refused 8/8; false-block 0/20; sentence-
+  citation coverage 0.884 (84/95); **citation-grounded fraction 86/86 = 1.000**; gate distribution
+  20 CITATIONS_VERIFIED / 0 else. Tuning set: false refusals 2/30 (0.067), negatives 5/5, coverage
+  0.770 (201/261), grounded 209/209 = 1.000, false-block 0/30.
+- **Judge (experimental, same-family, conditional on non-refused answers):** mean faithfulness
+  0.983 held-out (20/20 parsed) / 0.982 tuning (28/28 parsed), 0 api/parse errors, not suppressed.
+  A 48-record local review dump (gitignored) was spot-checked: real atomic-claim decomposition with
+  sensible per-claim verdicts. D30 verified on the committed report: zero chunk/answer/claim text
+  (a programmatic check confirmed none of the 48 records' claim strings appear in `eval/results.md`).

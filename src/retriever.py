@@ -16,6 +16,13 @@ RRF_K = 60
 CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 
+# The three retrieval modes, single source of truth (Phase 10 ablation, D38):
+# "hybrid" runs both arms and fuses; "vector"/"bm25" run one arm only, for the
+# eval ablation that measures each arm's standalone contribution. The evaluator
+# imports this so the CLI, the matrix runner, and retrieve() can never disagree
+# on the valid mode set.
+RETRIEVAL_MODES = ("hybrid", "vector", "bm25")
+
 
 def load_retrieval_context(
     persist_directory: str = CHROMA_PERSIST_DIR,
@@ -53,6 +60,9 @@ def retrieve(
     persist_directory: str = CHROMA_PERSIST_DIR,
     vector_store: Optional[Chroma] = None,
     bm25_index: Optional[BM25Index] = None,
+    *,
+    mode: str = "hybrid",
+    strict_errors: bool = False,
 ) -> List[Dict[str, Any]]:
     """Retrieve the most relevant document chunks for a query.
 
@@ -62,6 +72,25 @@ def retrieve(
     returned. Each arm degrades independently — a failure in one doesn't
     block the other — and retrieval falls back to vector-only if no BM25
     index has been built yet (e.g. an index that predates Phase 3).
+
+    Retrieval mode (Phase 10 ablation, D38): ``mode`` is one of
+    ``RETRIEVAL_MODES``. ``"hybrid"`` (default) runs both arms and fuses;
+    ``"vector"`` runs the vector arm only and never touches the BM25 sidecar
+    (no missing-sidecar warning); ``"bm25"`` runs the BM25 arm only and never
+    opens Chroma or runs the embedding-model manifest check. The single-arm
+    modes exist so the evaluator can measure each arm's standalone hit@k. Mode
+    gates BOTH which backend is resolved (a non-injected arm the mode doesn't
+    use is never loaded) AND which arm executes (an *injected* arm the mode
+    doesn't use is ignored). ``bm25`` mode with no sidecar warns and returns
+    ``[]`` (fail-visible), rather than silently degrading to the other arm.
+
+    Error handling (``strict_errors``): by default an arm that raises is logged
+    and treated as contributing no candidates — production retrieval degrades
+    rather than 500s. Eval runs pass ``strict_errors=True`` so an operational
+    failure (a corrupt store, an OOM) PROPAGATES instead of being silently
+    scored as a retrieval miss, which would corrupt the benchmark. A *missing*
+    BM25 sidecar is not an error and is unaffected by this flag (bm25 mode still
+    warns + returns []; hybrid still degrades to vector-only).
 
     Phase 9 (load-once retrieval): ``vector_store`` and ``bm25_index`` can be
     injected by a caller that builds them once and reuses them across many
@@ -88,24 +117,44 @@ def retrieve(
             instead of opening one at ``persist_directory``.
         bm25_index: Optional pre-loaded BM25 index to search directly, instead
             of loading one from ``persist_directory``.
+        mode: Retrieval mode, one of ``RETRIEVAL_MODES``
+            (``"hybrid"``/``"vector"``/``"bm25"``); see the mode note above.
+            An unknown mode raises ``ValueError`` before any IO.
+        strict_errors: When True, an arm exception propagates instead of being
+            swallowed and scored as no candidates; see the error-handling note
+            above.
 
     Returns:
         List of dicts with keys: document, score (fused RRF score), metadata.
+
+    Raises:
+        ValueError: If ``mode`` is not one of ``RETRIEVAL_MODES``.
     """
-    # Resolve the backing objects for the two arms (load-once injection, D37).
-    # Neither injected: build both once via the blessed helper (which also runs
-    # the embedding-model manifest check). Otherwise fill only whichever arm was
-    # left un-injected, preserving the per-arm skip semantics injecting callers
-    # rely on (e.g. a store injected without a bm25_index still loads the
-    # sidecar from disk exactly once, and never re-opens the store).
-    if vector_store is None and bm25_index is None:
-        vector_store, bm25_index = load_retrieval_context(persist_directory)
-    else:
-        if vector_store is None:
-            assert_embedding_model(persist_directory)
-            vector_store = get_vector_store(persist_directory=persist_directory)
-        if bm25_index is None:
-            bm25_index = load_bm25_index(persist_directory)
+    if mode not in RETRIEVAL_MODES:
+        # Validate before any IO so a typo'd mode fails fast and cheap, never
+        # after opening the store or unpickling the sidecar.
+        raise ValueError(
+            f"Unknown retrieval mode {mode!r}; expected one of {RETRIEVAL_MODES}"
+        )
+
+    # Which arms this mode uses. Mode gates resolution AND execution: a
+    # non-injected arm the mode doesn't use is never loaded (vector mode never
+    # unpickles the BM25 sidecar; bm25 mode never opens Chroma or runs the
+    # manifest check), and an *injected* arm the mode doesn't use is ignored.
+    use_vector = mode in ("hybrid", "vector")
+    use_bm25 = mode in ("hybrid", "bm25")
+
+    # Resolve the backing objects for only the arm(s) this mode uses (load-once
+    # injection, D37). Fill whichever used arm was left un-injected, preserving
+    # the per-arm skip semantics injecting callers rely on (a store injected
+    # without a bm25_index still loads the sidecar from disk exactly once, and
+    # never re-opens the store). Threading mode through here is what keeps
+    # single-arm eval runs from paying — or crashing on — the other arm's IO.
+    if use_vector and vector_store is None:
+        assert_embedding_model(persist_directory)
+        vector_store = get_vector_store(persist_directory=persist_directory)
+    if use_bm25 and bm25_index is None:
+        bm25_index = load_bm25_index(persist_directory)
 
     candidate_k = max(CANDIDATE_POOL, top_k)
     filter_dict = {"document_type": document_type} if document_type else None
@@ -113,38 +162,50 @@ def retrieve(
     id_to_doc: Dict[str, Document] = {}
 
     vector_ranked_ids: List[str] = []
-    try:
-        vector_results = vector_store.similarity_search_with_relevance_scores(
-            query, k=candidate_k, filter=filter_dict
-        )
-        for doc, _score in vector_results:
-            if doc.id is None:
-                continue
-            vector_ranked_ids.append(doc.id)
-            id_to_doc[doc.id] = doc
-    except Exception as e:
-        logger.error("Error during vector retrieval: %s", e)
+    if use_vector:
+        try:
+            vector_results = vector_store.similarity_search_with_relevance_scores(
+                query, k=candidate_k, filter=filter_dict
+            )
+            for doc, _score in vector_results:
+                if doc.id is None:
+                    continue
+                vector_ranked_ids.append(doc.id)
+                id_to_doc[doc.id] = doc
+        except Exception as e:
+            if strict_errors:
+                raise
+            logger.error("Error during vector retrieval: %s", e)
 
     bm25_ranked_ids: List[str] = []
-    if bm25_index is not None:
-        try:
-            for doc_id, doc, _score in search_bm25(
-                bm25_index, query, candidate_k, document_type
-            ):
-                # BM25-sidecar Documents are stored without .id; attach the
-                # store id here so downstream consumers (audit log) never have
-                # to re-derive it by re-hashing the chunk text.
-                if doc.id is None:
-                    doc.id = doc_id
-                bm25_ranked_ids.append(doc_id)
-                id_to_doc.setdefault(doc_id, doc)
-        except Exception as e:
-            logger.error("Error during BM25 retrieval: %s", e)
-    else:
-        logger.warning(
-            "No BM25 index found at %s; falling back to vector-only retrieval",
-            persist_directory,
-        )
+    if use_bm25:
+        if bm25_index is not None:
+            try:
+                for doc_id, doc, _score in search_bm25(
+                    bm25_index, query, candidate_k, document_type
+                ):
+                    # BM25-sidecar Documents are stored without .id; attach the
+                    # store id here so downstream consumers (audit log) never
+                    # have to re-derive it by re-hashing the chunk text.
+                    if doc.id is None:
+                        doc.id = doc_id
+                    bm25_ranked_ids.append(doc_id)
+                    id_to_doc.setdefault(doc_id, doc)
+            except Exception as e:
+                if strict_errors:
+                    raise
+                logger.error("Error during BM25 retrieval: %s", e)
+        else:
+            # A missing sidecar is not an operational error (unaffected by
+            # strict_errors): hybrid degrades to vector-only, bm25 mode returns
+            # [] below. Either way, say so rather than failing silently.
+            logger.warning(
+                "No BM25 index found at %s; %s",
+                persist_directory,
+                "returning no results for bm25-only mode"
+                if mode == "bm25"
+                else "falling back to vector-only retrieval",
+            )
 
     if not vector_ranked_ids and not bm25_ranked_ids:
         return []

@@ -40,7 +40,12 @@ from src.ingest import (
     load_html_from_url,
     load_pdf,
 )
-from src.retriever import DEFAULT_TOP_K, load_retrieval_context, retrieve
+from src.retriever import (
+    DEFAULT_TOP_K,
+    RETRIEVAL_MODES,
+    load_retrieval_context,
+    retrieve,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -607,25 +612,74 @@ Examples:
         help=f"Vector-store directory to query (default: {CHROMA_PERSIST_DIR})",
     )
 
-    # Eval subcommand
+    # Eval subcommand (Phase 10 matrix: sets × retrieval modes, held-out
+    # headline, completeness + optional judge). NOTE: with neither
+    # --skip-refusals nor --skip-completeness, this makes LIVE Claude API calls
+    # (one generation per answerable + refusal question); --judge adds one call
+    # per non-refused in-corpus answer. Offline/CI runs must pass BOTH
+    # --skip-refusals and --skip-completeness (and omit --judge).
     eval_parser = subparsers.add_parser(
-        "eval", help="Evaluate retrieval hit@k and refusal accuracy against a golden set"
+        "eval",
+        help="Evaluate retrieval ablation, refusal accuracy, and completeness "
+        "against a golden set (Phase 10 matrix)",
     )
     eval_parser.add_argument(
         "--golden",
         default="eval/golden_set.jsonl",
-        help="Path to the golden-set JSONL file (default: eval/golden_set.jsonl)",
+        help="Path to the tuning golden-set JSONL (default: eval/golden_set.jsonl)",
+    )
+    eval_parser.add_argument(
+        "--heldout",
+        default=None,
+        help="Path to the frozen held-out set JSONL; add it for the canonical, "
+        "held-out-headline run (e.g. eval/heldout_set.jsonl)",
+    )
+    eval_parser.add_argument(
+        "--mode",
+        choices=[*RETRIEVAL_MODES, "all"],
+        default="all",
+        help="Retrieval mode(s) to ablate: hybrid/vector/bm25, or 'all' three "
+        "(default: all). Answer passes always use hybrid (the production config).",
     )
     eval_parser.add_argument(
         "--top-k",
         type=int,
         default=DEFAULT_TOP_K,
-        help=f"Number of chunks to retrieve per question (default: {DEFAULT_TOP_K})",
+        help=f"Number of chunks to retrieve per question (default: {DEFAULT_TOP_K}); "
+        "the canonical committed report requires top_k=6",
     )
     eval_parser.add_argument(
         "--skip-refusals",
         action="store_true",
-        help="Skip the refusal-accuracy pass (avoids live API calls)",
+        help="Skip the refusal-accuracy pass (part of going offline/API-free)",
+    )
+    eval_parser.add_argument(
+        "--skip-completeness",
+        action="store_true",
+        help="Skip the answer-quality (completeness) pass (part of going "
+        "offline/API-free)",
+    )
+    eval_parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="Run the experimental LLM-as-judge faithfulness pass (extra live "
+        "API calls; conditional on non-refused in-corpus answers)",
+    )
+    eval_parser.add_argument(
+        "--judge-sample",
+        type=int,
+        default=None,
+        help="Judge only a deterministic random sample of this many answers per "
+        "set (default: judge all)",
+    )
+    eval_parser.add_argument(
+        "--results",
+        "-o",
+        dest="results_path",
+        default=None,
+        help="Explicit report path; refused if it equals an eval set. Without "
+        "it, only a canonical run writes eval/results.md (else the gitignored "
+        "eval/results_partial.md)",
     )
     eval_parser.add_argument(
         "--persist-dir",
@@ -659,12 +713,31 @@ Examples:
             persist_directory=args.persist_directory,
         )
     elif args.command == "eval":
-        from src.evaluator import run_eval
+        from src.evaluator import RETRIEVAL_MODES as _MODES
+        from src.evaluator import run_eval_matrix
 
-        run_eval(
-            args.golden,
+        # Build the (label, path) set list. The default golden path is the
+        # tuning set (used to select D31 fusion constants) — label it so the
+        # report can honestly flag it as NOT held-out; a non-default --golden
+        # is just "golden". The held-out set, when given, is appended.
+        set_specs = [
+            ("tuning" if args.golden == "eval/golden_set.jsonl" else "golden", args.golden)
+        ]
+        if args.heldout:
+            set_specs.append(("held-out", args.heldout))
+
+        modes = list(_MODES) if args.mode == "all" else [args.mode]
+
+        run_eval_matrix(
+            set_specs,
+            modes=modes,
             top_k=args.top_k,
             skip_refusals=args.skip_refusals,
+            skip_completeness=args.skip_completeness,
+            judge=args.judge,
+            judge_sample=args.judge_sample,
+            results_path=args.results_path,
+            judge_dump_path="eval/judge_review.jsonl" if args.judge else None,
             persist_directory=args.persist_directory,
         )
 
