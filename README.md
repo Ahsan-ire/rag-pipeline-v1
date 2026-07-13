@@ -196,8 +196,9 @@ python -m pytest tests/ -q
 
 - **Now (v2):** fail-closed grounding gate, appendix citations, per-source re-indexing, audit log,
   held-out evaluation, keyless CI, synthetic sample corpus — all landed (Phases 7–11).
-- **Next:** a final gate and a same-set, same-index v1-vs-v2 head-to-head, then the submission
-  decision (Phase 12 of `IMPLEMENTATION_PLAN.md`).
+- **Done (Phase 12):** final gate passed and the same-set, same-index v1-vs-v2 head-to-head ran —
+  measurement parity on retrieval and refusals; v2 selected on the feature/verifiability record
+  ([`docs/v1-v2-comparison.md`](docs/v1-v2-comparison.md), decision D42).
 - **Beyond submission:** matter-scoped deployment (per-transaction corpora), a larger held-out set to
   tighten the confidence interval, and multi-document indexing (the per-source sync already supports
   it).

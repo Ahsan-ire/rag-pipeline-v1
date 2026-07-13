@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 11 — portfolio surface (sample corpus, CI, LICENSE, README)**
+**Current phase: 12 — final gate + v1-vs-v2 decision (D42: v2 selected)**
 
 ---
 
@@ -1214,3 +1214,29 @@ sample is original synthetic text authored for this project, so MIT can and does
 **Rejected:** a bare "code only" note that would leave the sample corpus's licence status ambiguous;
 any dual-licence or corpus-carve-out language that could be misread as granting rights over the real
 handbook.
+
+## D42 — v2 is the submission artifact; v1.0-baseline stays the fallback (13 Jul 2026)
+**Decision:** v2 is selected for submission, to be tagged `v2.0` on main; `v1.0-baseline` remains the
+tagged fallback (`git checkout v1.0-baseline`). Grounds: the Phase 12 readiness gate passed (400-test
+suite green; pressure-tester PASS on all six checkable claims including proven keylessness; a
+high-effort code review of `v1.0-baseline..HEAD` surfaced ten findings, none primary-path correctness
+or data-leak, all recorded in the gate report; hygiene greps clean), and the same-set, same-index
+head-to-head (`docs/v1-v2-comparison.md`; frozen held-out set sha256 `601a81c0…dcfe6`; same
+1,470-chunk store, valid per D39's re-chunking no-go) measured **parity** on every shared cell —
+strict/related hit@{1,3,6} of 0.900/0.950/1.000 for both, negatives 8/8 both, false refusals 0/20
+both (v1's cell via a driver replaying v1's own answer path, 20/20 successful generations).
+A user-approved GitHub release is published from the `v2.0` tag (an addition beyond the Phase 12
+spec's "tag; push" — the most visible surface for reviewers browsing the repo).
+**Why:** the head-to-head is measurement, not narrative — same questions, same index, each version
+driven by its own evaluator. Parity on retrieval was the *expected* result (D39 deliberately deferred
+re-chunking), so the decision rests on what v2 adds around the answer: the fail-closed grounding gate,
+appendix citations, per-source index lifecycle, audit log, report provenance, the honest held-out
+strict-headline methodology, keyless CI, and the MIT licence — plus answer-quality evidence v1 cannot
+measure (grounded citations 89/89, false-block 0/20, judged faithfulness 0.995 experimental). The
+critique → production-hardening → honest-metrics arc is itself the portfolio story.
+**Rejected:** submitting `v1.0-baseline` (it measures no worse, but ships no gate, no audit trail, no
+CI, no licence, and a headline methodology the 11 Jul critique already dismantled); treating v1's
+tuning-set related 0.900 as comparable to v2's held-out strict headline (different set AND basis —
+kept in the comparison doc under "narrative, NOT head-to-head"); delaying the tag until after the
+fellowship deadline for further hardening (the remaining review findings are recorded and none are
+blocking).
