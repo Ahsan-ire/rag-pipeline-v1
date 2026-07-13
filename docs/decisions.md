@@ -1140,5 +1140,30 @@ signal and sub-chunking is not worth the added index complexity for v2.
 pre-declared decision rule chosen to avoid post-hoc rationalization, not a causal measurement. The
 held-out ablation numbers are reported next to the tuning ones purely so a reader can see whether
 the two sets point the same way.
-**Outcome:** _[to be filled from `eval/results.md`: tuning vector-vs-hybrid related@6 delta, the
-resulting go/no-go call, and the held-out delta for comparison]_.
+**Outcome (from the canonical `eval/results.md`, git-clean run):** On the **tuning set**,
+hybrid related@6 = 0.900 vs **vector-only related@6 = 0.833** — a **6.7-point** gap, *within* the
+~10-point threshold → **NO-GO: do not sub-chunk for v2.** Hybrid retrieval already captures the
+recall the vector arm alone leaves on the table, so finer chunks are not worth the added index
+complexity. Held-out (descriptive comparison only, NOT a decision input): hybrid related@6 = 1.000
+vs vector 0.900 = a 10.0-point gap — the same direction, so both sets agree on the call.
+Notably **bm25-only related@6 equals hybrid** on both sets (tuning 0.900, held-out 1.000): the
+lexical arm carries most of the related-match signal on this decimal-numbered corpus, which is
+consistent with the exact-token nature of paragraph citations and is itself an argument against
+sub-chunking (the win, if any, would be for the vector arm, and hybrid already backstops it).
+
+## D38 addendum — canonical live-run evidence (13 Jul 2026)
+The canonical run (`eval --heldout eval/heldout_set.jsonl --judge`, all three modes, both passes,
+top_k=6, **zero generation and zero judge errors**, git-clean provenance) produced
+`eval/results.md`. Headline and answer quality, held-out set (frozen, sha256
+`601a81c0…dcfe6`, matching D33):
+- **Strict hit@6 = 20/20 = 1.000** (95% Wilson CI 0.839–1.000) — the honest, out-of-sample,
+  exact-match headline (vs the v1 90% that was *related*-matched on the *tuning* set).
+- False refusals 0/20; near-domain negatives correctly refused 8/8; false-block 0/20; sentence-
+  citation coverage 0.884 (84/95); **citation-grounded fraction 86/86 = 1.000**; gate distribution
+  20 CITATIONS_VERIFIED / 0 else. Tuning set: false refusals 2/30 (0.067), negatives 5/5, coverage
+  0.770 (201/261), grounded 209/209 = 1.000, false-block 0/30.
+- **Judge (experimental, same-family, conditional on non-refused answers):** mean faithfulness
+  0.983 held-out (20/20 parsed) / 0.982 tuning (28/28 parsed), 0 api/parse errors, not suppressed.
+  A 48-record local review dump (gitignored) was spot-checked: real atomic-claim decomposition with
+  sensible per-claim verdicts. D30 verified on the committed report: zero chunk/answer/claim text
+  (a programmatic check confirmed none of the 48 records' claim strings appear in `eval/results.md`).
