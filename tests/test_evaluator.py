@@ -2025,41 +2025,71 @@ class TestRunEvalMatrix:
         assert len(logs["vector"]) == 1
         assert len(logs["assert"]) == 1
 
-    def test_results_path_alias_of_set_refused(self, tmp_path, monkeypatch):
-        """An absolute/relative alias of an input set path is refused too, not
-        just an identical spelling (codex finding 3)."""
+    def test_results_path_symlink_alias_of_set_refused(self, tmp_path, monkeypatch):
+        """A SYMLINK that resolves to an input set path is refused — a case
+        normpath would miss but realpath catches, so this genuinely pins the
+        realpath guard (codex finding: the '.'-alias test was normpath-catchable)."""
         self._patch_paths(monkeypatch, tmp_path)
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
-        # gp is absolute; pass a path that realpath-resolves to the same file
-        # via a redundant '.' segment — a different string, same file.
-        alias = os.path.join(os.path.dirname(gp), ".", os.path.basename(gp))
-        assert alias != gp
+        alias = tmp_path / "alias_to_set.jsonl"
+        os.symlink(gp, alias)  # different path string, same underlying file
+        assert os.path.normpath(str(alias)) != os.path.normpath(gp)  # normpath misses it
+        assert os.path.realpath(str(alias)) == os.path.realpath(gp)  # realpath catches it
 
         with pytest.raises(ValueError, match="eval-set"):
             run_eval_matrix(
                 [("held-out", gp)],
-                results_path=alias,
+                results_path=str(alias),
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]),
                 provenance_fn=self._prov,
             )
 
-    def test_negative_top_k_and_judge_sample_rejected(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("bad_top_k", [-1, 0])
+    def test_invalid_top_k_rejected(self, tmp_path, monkeypatch, bad_top_k):
+        """top_k must be >= 1: both 0 and negatives are rejected (0 would make
+        an incoherent zero-cutoff matrix)."""
         self._patch_paths(monkeypatch, tmp_path)
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
-
         with pytest.raises(ValueError, match="top_k"):
             run_eval_matrix(
-                [("held-out", gp)], top_k=-1,
+                [("held-out", gp)], top_k=bad_top_k,
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]), provenance_fn=self._prov,
             )
+
+    def test_negative_judge_sample_rejected(self, tmp_path, monkeypatch):
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
         with pytest.raises(ValueError, match="judge_sample"):
             run_eval_matrix(
                 [("held-out", gp)], judge_sample=-1,
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]), provenance_fn=self._prov,
             )
+
+    def test_empty_heldout_set_is_not_canonical(self, tmp_path, monkeypatch):
+        """A held-out set with no answerable question (empty or refusal-only)
+        must NOT be canonical — else it would overwrite eval/results.md with a
+        meaningless 0/0 headline (codex finding)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        # Refusal-only held-out set: zero answerable retrieval questions.
+        refusal_only = [
+            {"question": "R1", "type": "refusal", "expected_sections": []},
+            {"question": "R2", "type": "refusal", "expected_sections": []},
+        ]
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", refusal_only)
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["sets"][0]["retrieval"]["hybrid"]["total"] == 0
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
 
     # --- report rendering --------------------------------------------------
     def test_two_set_report_rendering(self, tmp_path, monkeypatch):

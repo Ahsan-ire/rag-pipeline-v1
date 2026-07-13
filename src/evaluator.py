@@ -1552,11 +1552,22 @@ def run_eval_matrix(
             }
         )
 
-    # Canonical only if EVERY condition holds (Design 5).
-    has_heldout = any(HELDOUT_LABEL_TOKEN in label for label, _ in set_specs)
+    # Canonical only if EVERY condition holds (Design 5). Beyond a held-out
+    # label, the held-out set must actually have >=1 answerable question scored
+    # under hybrid — otherwise an empty or refusal-only --heldout file would
+    # sail through as canonical and overwrite eval/results.md with a
+    # meaningless "strict hit@6 = 0/0" headline.
+    heldout_set = next(
+        (s for s in sets if HELDOUT_LABEL_TOKEN in s["label"]), None
+    )
+    heldout_has_answerable = (
+        heldout_set is not None
+        and "hybrid" in heldout_set["retrieval"]
+        and heldout_set["retrieval"]["hybrid"]["total"] > 0
+    )
     all_modes = set(modes) == set(RETRIEVAL_MODES)
     is_canonical = (
-        has_heldout
+        heldout_has_answerable
         and all_modes
         and (not skip_refusals)
         and (not skip_completeness)
