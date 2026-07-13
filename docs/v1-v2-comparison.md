@@ -69,7 +69,7 @@ everything *around* the answer, below.
 
 | Capability | v1.0-baseline | v2 |
 | --- | --- | --- |
-| Grounding gate | absent — ungrounded answers shown with a warning | fail-closed gate; answers withheld unless every citation verifies (`src/grounding.py`, D35/D36) |
+| Grounding gate | absent — ungrounded answers shown with a warning | fail-closed gate: a draft with zero verifiable citations is withheld; a partially verified answer is shown with a warning naming each citation it could not verify (`src/grounding.py`, D35/D36) |
 | Appendix citations | absent — appendix locators unciteable | first-class citation grammar across chunker/generator/validator (D34) |
 | Index lifecycle | full-reset re-index only | source-scoped IDs + per-source `sync_documents` add/update/delete (D37) |
 | Audit trail | none | JSONL event log with per-query provenance (`src/audit.py`, D36) |
@@ -79,6 +79,7 @@ everything *around* the answer, below.
 | CI | none | keyless GitHub Actions: 400-test suite + synthetic-sample retrieval smoke (D40) |
 | License | none | MIT, covering code and the synthetic sample corpus (D41) |
 | Sample corpus / fresh-clone demo | none — corpus required | wholly synthetic sample handbook + keyless quickstart (D40) |
+| README | minimal (~97 lines) | full portfolio README: quickstart, keyless demo, evaluation with provenance, data handling, deployment notes, limitations, troubleshooting |
 
 v2 also measures answer quality that v1's harness cannot (held-out, from `eval/results.md`,
 **not comparable** — v1 has no completeness or judge pass): citation-grounded fraction
@@ -92,7 +93,9 @@ These numbers use a different set or basis and sit here for history, not compari
 - v1's advertised headline was **0.900** — a *related*-match rate on the *tuning* set (n=30),
   i.e. the set used to select the fusion constants. The 11 Jul external critique called this
   out, and rebuilding the eval around it is what the v2 track was for (D38).
-- v2's tuning-set numbers under the honest metric: strict hit@6 0.800, related 0.900 (n=30).
+- v2's tuning-set numbers under the honest metric: strict hit@6 0.800, related 0.900 (n=30 —
+  the 30 answerable retrieval questions of the 35-question tuning set; the other 5 are refusal
+  probes, which is why the README cites the set as n=35).
 - Only the two tables above are same-set, same-basis measurements. Comparing v1's tuning-set
   related 0.900 against v2's held-out strict 1.000 would repeat the original sin in reverse;
   with n=20 the held-out headline's CI (0.839–1.000) spans several questions' worth of rate.

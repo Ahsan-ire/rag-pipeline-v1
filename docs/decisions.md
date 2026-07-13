@@ -1225,10 +1225,11 @@ head-to-head (`docs/v1-v2-comparison.md`; frozen held-out set sha256 `601a81c0�
 1,470-chunk store, valid per D39's re-chunking no-go) measured **parity** on every shared cell —
 strict/related hit@{1,3,6} of 0.900/0.950/1.000 for both, negatives 8/8 both, false refusals 0/20
 both (v1's cell via a driver replaying v1's own answer path, 20/20 successful generations).
-A user-approved GitHub release is published from the `v2.0` tag (an addition beyond the Phase 12
+Also approved: publishing a GitHub release from the `v2.0` tag (an addition beyond the Phase 12
 spec's "tag; push" — the most visible surface for reviewers browsing the repo).
 **Why:** the head-to-head is measurement, not narrative — same questions, same index, each version
-driven by its own evaluator. Parity on retrieval was the *expected* result (D39 deliberately deferred
+driven by its own evaluator (with the one disclosed exception above: v1's false-refusal cell, a
+metric v1's harness lacks, came from a driver replaying v1's own answer path). Parity on retrieval was the *expected* result (D39 deliberately deferred
 re-chunking), so the decision rests on what v2 adds around the answer: the fail-closed grounding gate,
 appendix citations, per-source index lifecycle, audit log, report provenance, the honest held-out
 strict-headline methodology, keyless CI, and the MIT licence — plus answer-quality evidence v1 cannot
