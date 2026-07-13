@@ -166,7 +166,12 @@ deterministic.
   (custom `--golden`, no held-out set, or `--skip-*`). The committed `eval/results.md` is only
   overwritten by a full canonical run.
 - **No API key** — affects only `query` and the live passes of `eval`; indexing, retrieval-only eval,
-  and the whole test suite run without one.
+  and the whole test suite run without one. On a fresh clone with no `ANTHROPIC_API_KEY` set, a run
+  that *needs* a key fails cleanly with a "copy `.env.example` to `.env`" message, not a crash.
+- **Guaranteeing zero API calls** — pass **both** `--skip-refusals` *and* `--skip-completeness` to
+  `eval`; either alone still runs a generation pass. Note that `eval` (and `query`) load a local
+  `.env` via `load_dotenv()`, so on a machine that has one, an unqualified `env -u ANTHROPIC_API_KEY`
+  does *not* make the run keyless — the twin `--skip` flags do.
 
 ## Demo (≈2 minutes, needs an API key)
 
