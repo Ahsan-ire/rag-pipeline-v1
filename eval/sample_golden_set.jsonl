@@ -1,0 +1,7 @@
+{"question": "What is the Meridian Folio and what does each of its parts record?", "expected_sections": ["1.2"], "type": "direct"}
+{"question": "What assurance does a solicitor give under the Kestrel Undertaking?", "expected_sections": ["1.4"], "type": "direct"}
+{"question": "What is the Halcyon Release condition for paying out escrow funds?", "expected_sections": ["2.2.1.1"], "type": "direct"}
+{"question": "How is a Windlass Charge created and registered against the folio?", "expected_sections": ["3.2"], "type": "direct"}
+{"question": "When must a purchaser serve Form VX-9 in the sale process?", "expected_sections": ["2.3"], "type": "exact_token"}
+{"question": "What does Fenwick Priority determine between competing charges?", "expected_sections": ["3.2.1"], "type": "exact_token"}
+{"question": "What do the Blackthorn Conditions of Sale in the appendix cover?", "expected_sections": ["APPENDIX 3.1"], "type": "exact_token"}

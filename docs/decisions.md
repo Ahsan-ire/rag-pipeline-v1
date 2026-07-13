@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 10 — eval v2 (honest, held-out, ablated)**
+**Current phase: 11 — portfolio surface (sample corpus, CI, LICENSE, README)**
 
 ---
 
@@ -1167,3 +1167,45 @@ top_k=6, **zero generation and zero judge errors**, git-clean provenance) produc
   A 48-record local review dump (gitignored) was spot-checked: real atomic-claim decomposition with
   sensible per-claim verdicts. D30 verified on the committed report: zero chunk/answer/claim text
   (a programmatic check confirmed none of the 48 records' claim strings appear in `eval/results.md`).
+
+## D40 — synthetic sample corpus enters at the text seam, not as a PDF (13 Jul 2026)
+**Decision:** ship a wholly synthetic ~15-page handbook (`scripts/sample_corpus.py`) and a builder
+(`scripts/build_sample_index.py`) that indexes it into a gitignored `./sample_chroma_db/`, so a fresh
+clone of this public repo can run the pipeline end-to-end without the copyrighted corpus. The corpus
+enters at the **post-extraction seam**: `build_sample_corpus()` hand-builds the exact
+`(clean_text, page_map, metadata)` triple `ingest.extract_pdf` produces and feeds it straight to
+`chunk_handbook`. It is a standalone adaptation of the `_handbook`/`_body` fixtures in
+`tests/test_chunker_handbook.py` (copied, with cross-reference comments both ways, not shared — a
+script must never import from the test tree; the chunker tests keep their fixtures self-contained).
+The new `tests/test_sample_corpus.py` *does* import its subject under test (`scripts.sample_corpus`,
+`scripts.build_sample_index`) — that is normal and resolves under `python -m pytest` because the repo
+root is on `sys.path`; it is not the prohibited direction.
+**Determinism mechanism (the CI smoke depends on it):** two authoring invariants hold for *every*
+surviving section, not just golden-cited ones — (a) body ≥ 600 chars so no runt merges it away
+(`RUNT_CHAR_THRESHOLD`; an under-600 parent absorbs its child and the section vanishes), and (b) every
+post-merge segment ≤ ~3,500 chars so nothing re-splits into duplicate section metadata
+(`OVERSIZE_CHAR_THRESHOLD = 4000`, measured on the whole segment incl. heading). Section 2.4.1 is a
+deliberate sub-600 trailing runt (the merge-into-2.4 demonstration) and is never cited. Every golden
+question embeds its section's unique fictional token (e.g. "Form VX-9", "Blackthorn Conditions") so
+**BM25 alone** — pure Python, platform-deterministic — ranks the right chunk #1; a unit test asserts
+BM25 top-3 for all 7 questions, which is the floor under the CI hybrid `7/7` assertion. The builder
+**refuses to write into the real `./chroma_db/`** (realpath compare + a casefolded `chroma_db`
+basename check, run before any model loads) so a demo can never clobber or contaminate the real index.
+**Rejected:** generating a real PDF (a PDF-writing library would be a new dependency for no benefit,
+per the CLAUDE.md no-new-deps rule — the text seam is the same code path the real PDF reaches after
+extraction); importing the chunker-test helpers into the script; pinning the HuggingFace model
+revision to harden cross-platform floats (needs a `src/embedder.py` change, out of Phase 11 scope —
+the fixed-key CI HF cache freezes one snapshot and the BM25 floor covers the residual, recorded as an
+accepted risk).
+
+## D41 — MIT LICENSE, code-and-sample scope (13 Jul 2026)
+**Decision:** add an MIT `LICENSE` (© 2026 Ahsan Malik). The README states the licence covers
+**everything in this repository, including the wholly synthetic sample corpus**; the real,
+copyrighted handbook is never distributed here and no rights over it are granted. This one wording is
+used identically in `LICENSE` context, the README licence section, and here. It reconciles the Phase 11
+spec's "MIT covers code only" with the fact that the synthetic sample now lives in the repo: the
+sample is original synthetic text authored for this project, so MIT can and does cover it; the phrase
+"code only" in the spec was shorthand for "not the corpus", which remains true.
+**Rejected:** a bare "code only" note that would leave the sample corpus's licence status ambiguous;
+any dual-licence or corpus-carve-out language that could be misread as granting rights over the real
+handbook.
