@@ -16,13 +16,12 @@ to fail visibly rather than fabricate.
 It was built and validated against **one handbook**, and the chunker assumes that book's own
 structural grammar: `CHAPTER N` markers, decimal-numbered paragraphs (`3.2`, `3.2.1`, up to four
 levels deep), and an `APPENDIX N.N` scheme. A similarly-formatted manual is a plausible target for
-this chunker; an arbitrary PDF is not — there is no "corpus-agnostic, bring your own manual" claim
-here.
+this chunker; but an arbitrary PDF will not suffice.  
 
 ## Architecture
 
 ```
-  your handbook PDF  (local only — copyrighted, never committed)
+  your handbook PDF  (local only — copyrighted)
         │
         ▼  src/ingest.py      extract + clean the OCR text layer   →  (clean_text, page_map)
         │                     strip running headers/footers, repair hyphenation, keep offsets
