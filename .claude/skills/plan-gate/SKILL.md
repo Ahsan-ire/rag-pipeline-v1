@@ -25,7 +25,7 @@ brief them on intent, history, or "what we meant". Pointers only.
 
 3. **Second critique — Codex, second vendor.** Use the `codex` MCP tool if
    present, otherwise Bash:
-   `codex exec --sandbox read-only "Adversarially review <plan file> against IMPLEMENTATION_PLAN.md and CLAUDE.md: real bugs, missing steps, spec divergence, weak acceptance criteria. Cite file:line. Do NOT read data/, chroma_db/, or held-out eval files."`
+   `codex exec --sandbox read-only "Adversarially review <plan file> against IMPLEMENTATION_PLAN.md and CLAUDE.md: real bugs, missing steps, spec divergence, weak acceptance criteria. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, or held-out eval files."`
    Pointers only — NEVER paste corpus text, chunk contents, or held-out
    questions into the prompt (CLAUDE.md hard rule). If the codex CLI is not
    installed, record "second-vendor leg SKIPPED — codex unavailable" in the

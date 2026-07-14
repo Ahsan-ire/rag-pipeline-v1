@@ -65,9 +65,11 @@ it *pointers* (file paths, branch names), not pasted content.
   of the diff vs main; fix findings forward or rebut them explicitly in the
   PR description.
 - Canonical call:
-  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Do NOT read data/, chroma_db/, or held-out eval files."`
+  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, or held-out eval files."`
 - Treat Codex findings like pressure-tester findings: verify each against
-  the code before acting; it can be wrong or out of scope.
+  the code before acting; it can be wrong or out of scope. Proposed diffs
+  are suggestions, not patches: verify and apply them yourself — Codex
+  never writes to the tree.
 - NEVER paste corpus text (handbook extracts, chunk contents, held-out eval
   questions) into a Codex prompt, and always include the do-not-read clause
   above — the corpus is copyrighted and must not be shipped to a third-party
