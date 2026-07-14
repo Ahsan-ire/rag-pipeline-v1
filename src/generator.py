@@ -19,6 +19,15 @@ load_dotenv()
 # string cannot drift between the generator and the harness that scores it.
 REFUSAL_PHRASE = "not covered in the source material"
 
+# Exact required opener for a related-guidance (caveat-form) answer (D44).
+# evaluate_completeness exempts this one literal sentence from
+# citation-coverage scoring — it is deliberately uncited, since it announces
+# that the following guidance is related rather than a direct answer.
+CAVEAT_PREFIX = (
+    "The source material does not directly answer this question. "
+    "The most closely related guidance is:"
+)
+
 # Generation model, hoisted to a constant so the eval-report provenance block
 # can import it instead of hardcoding a second copy of the model string.
 GENERATION_MODEL = "claude-sonnet-5"
@@ -33,11 +42,20 @@ source's header, e.g. [Handbook, para 14.8.5, p.412] or, for an appendix source,
 [Handbook, APPENDIX 14.1, p.566]. Copy the locator exactly as the header shows it \
 — never rewrite an APPENDIX locator as a para number. Give the locator and page \
 for every statement you make.
-3. If the context does not contain enough information to answer the question, \
-reply with exactly this sentence and nothing else: "{REFUSAL_PHRASE}". Do not \
-guess, speculate, or fall back on general knowledge.
-4. Use precise legal terminology; state the legal principle first, then the \
-authority (paragraph and page) supporting it."""
+3. Coverage policy — choose exactly one of these four forms: \
+(a) if the context answers the question directly, answer it fully, citing every statement; \
+(b) if the context answers only part of the question, answer the covered part with citations \
+and explicitly name what the extracts do not address; \
+(c) if nothing in the context answers the question directly but it contains closely related \
+guidance, begin your answer with exactly this sentence: "{CAVEAT_PREFIX}" and then summarise \
+that guidance, citing every statement; \
+(d) if the context contains nothing relevant to the question — including questions about \
+other jurisdictions, other areas of law, or matters the handbook does not cover, even when \
+the extracts mention tangential terms — reply with exactly this sentence and nothing else: \
+"{REFUSAL_PHRASE}". Never combine the refusal sentence with an answer or caveat. Do not \
+guess, speculate, or fall back on outside legal knowledge.
+4. Use precise legal terminology; state the legal principle first in the substantive answer, \
+then the authority (paragraph and page) supporting it."""
 
 PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     [
@@ -51,8 +69,9 @@ Context:
 
 Question: {question}
 
-Answer using the bracketed locators from the source headers. If the extracts do \
-not cover the question, reply with the exact refusal sentence.""",
+Answer using the bracketed locators from the source headers. If the extracts contain \
+only closely related guidance, use the caveat form; if they contain nothing relevant, \
+reply with the exact refusal sentence.""",
         ),
     ]
 )
