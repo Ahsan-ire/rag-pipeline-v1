@@ -4,6 +4,20 @@ import pytest
 from langchain_core.documents import Document
 
 
+@pytest.fixture(autouse=True)
+def _no_live_api_key(monkeypatch):
+    """Scrub any real API key for every test (D46 plan-gate hardening).
+
+    `load_dotenv()` runs at import in src.generator (and src.query_rewrite),
+    so on a keyed dev box os.environ carries a live ANTHROPIC_API_KEY even
+    though CI is keyless — an unpatched live seam would silently make a real
+    API call locally while passing green in CI. Deleting the key at test
+    setup makes such a seam fail loudly instead (get_llm/get_rewrite_llm
+    raise ValueError). Tests that need a key set a fake one explicitly.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 @pytest.fixture
 def sample_document():
     """A sample legal document for testing."""

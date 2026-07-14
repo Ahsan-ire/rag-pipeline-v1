@@ -514,3 +514,197 @@ class TestRetrieveModes:
                 persist_directory=str(tmp_path),
                 strict_errors=True,
             )
+
+
+class TestRewrites:
+    """Phase 13 (D43): ``rewrites`` runs each used arm once per sub-query
+    (original query first, then deduped rewrites) and fuses one ranked-ID
+    list per (arm, sub-query), weighting rewrite-derived lists at
+    ``REWRITE_LIST_WEIGHT``. The identity proof (rewrites=None/omitted must
+    be byte-identical to pre-Phase-13 retrieve) matters as much as the new
+    behavior — the whole existing test suite above re-validates it too, since
+    none of those calls pass ``rewrites`` at all."""
+
+    def test_rewrites_none_and_omitted_are_identical(self, seeded_store):
+        """rewrites=None and omitting the keyword entirely must produce the
+        same documents in the same order with the same fused scores."""
+        store, persist_dir = seeded_store
+
+        with patch("src.retriever.get_vector_store", return_value=store):
+            omitted = retrieve("making a will", top_k=2, persist_directory=persist_dir)
+            explicit_none = retrieve(
+                "making a will", top_k=2, persist_directory=persist_dir, rewrites=None
+            )
+
+        assert len(omitted) == len(explicit_none) > 0
+        for a, b in zip(omitted, explicit_none):
+            assert a["document"].id == b["document"].id
+            assert a["score"] == b["score"]
+
+    def test_casefold_dedup_behaves_like_no_rewrites(self, seeded_store):
+        """A rewrite list of [QUERY.upper(), "  ", query] must all be dropped
+        (casefold-duplicate of the original, whitespace-only, exact duplicate
+        of the original) — the fused result must be identical to passing no
+        rewrites at all."""
+        store, persist_dir = seeded_store
+        query = "making a will"
+
+        with patch("src.retriever.get_vector_store", return_value=store):
+            baseline = retrieve(query, top_k=2, persist_directory=persist_dir)
+            deduped = retrieve(
+                query,
+                top_k=2,
+                persist_directory=persist_dir,
+                rewrites=[query.upper(), "  ", query],
+            )
+
+        assert len(baseline) == len(deduped) > 0
+        for a, b in zip(baseline, deduped):
+            assert a["document"].id == b["document"].id
+            assert a["score"] == b["score"]
+
+    def test_rewrite_only_document_enters_fused_top_k(self):
+        """A document the original query's own ranked list never returns at
+        all (the fake store below has nothing on file for that query text)
+        still enters the fused top-k once a rewrite's own ranked list finds
+        it — proving the rewrite's sub-query genuinely runs its own search
+        rather than being accepted and ignored. A control call without the
+        rewrite never sees the document, confirming it isn't a fixture
+        accident."""
+
+        original_hit = Document(
+            id="doc_original", page_content="original hit", metadata={"section_number": "1"}
+        )
+        rewrite_only_hit = Document(
+            id="doc_rewrite_only", page_content="rewrite hit", metadata={"section_number": "2"}
+        )
+
+        class DispatchingStore:
+            """Returns a canned ranked list keyed on the exact sub-query
+            text, so each sub-query in the loop can be driven independently."""
+
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "vague original phrasing":
+                    return [(original_hit, 0.9)]
+                if query == "distinctive rewrite phrasing":
+                    return [(rewrite_only_hit, 0.9)]
+                return []
+
+        results = retrieve(
+            "vague original phrasing",
+            top_k=2,
+            mode="vector",
+            vector_store=DispatchingStore(),
+            rewrites=["distinctive rewrite phrasing"],
+        )
+        assert "doc_rewrite_only" in [r["document"].id for r in results]
+
+        control = retrieve(
+            "vague original phrasing", top_k=2, mode="vector", vector_store=DispatchingStore()
+        )
+        assert "doc_rewrite_only" not in [r["document"].id for r in control]
+
+    def test_rewrite_only_doc_resolves_to_full_result_dict(self):
+        """id_to_doc is one dict shared across every (arm, sub-query) list:
+        a doc_id contributed ONLY by a rewrite's ranked list must still
+        resolve to a full result — document (with its page_content) and
+        metadata both present — not just a bare id with missing fields."""
+
+        rewrite_only_hit = Document(
+            id="doc_rw", page_content="rewrite hit content", metadata={"section_number": "9"}
+        )
+
+        class DispatchingStore:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "distinctive rewrite phrasing":
+                    return [(rewrite_only_hit, 0.9)]
+                return []
+
+        results = retrieve(
+            "vague original phrasing",
+            top_k=2,
+            mode="vector",
+            vector_store=DispatchingStore(),
+            rewrites=["distinctive rewrite phrasing"],
+        )
+
+        match = next(r for r in results if r["document"].id == "doc_rw")
+        assert match["document"].page_content == "rewrite hit content"
+        assert match["metadata"] == {"section_number": "9"}
+
+
+class TestPerSubQueryStrictErrors:
+    """Phase 13 (D43): the strict_errors/swallow contract applies per
+    sub-query, not just per arm — an exception on a rewrite's search must be
+    isolated from the original query's own result, exactly as an exception on
+    one arm is already isolated from the other arm today."""
+
+    def test_strict_errors_per_subquery(self):
+        good_doc = Document(id="doc_good", page_content="ok", metadata={})
+
+        class RaisesOnRewriteStore:
+            """Raises only when searched with the rewrite's exact text; the
+            original sub-query's search succeeds normally."""
+
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "bad rewrite":
+                    raise RuntimeError("boom")
+                return [(good_doc, 0.9)]
+
+        # Default: the rewrite sub-query's exception is logged and swallowed;
+        # the original sub-query's result still comes through untouched.
+        results = retrieve(
+            "original query",
+            top_k=2,
+            mode="vector",
+            vector_store=RaisesOnRewriteStore(),
+            rewrites=["bad rewrite"],
+        )
+        assert [r["document"].id for r in results] == ["doc_good"]
+
+        # strict_errors=True: the same exception now propagates instead.
+        with pytest.raises(RuntimeError):
+            retrieve(
+                "original query",
+                top_k=2,
+                mode="vector",
+                vector_store=RaisesOnRewriteStore(),
+                rewrites=["bad rewrite"],
+                strict_errors=True,
+            )
+
+
+class TestWeightedReciprocalRankFusion:
+    """Phase 13 (D43): ``_reciprocal_rank_fusion`` gains optional per-list
+    ``weights`` so rewrite-derived lists can be counted at less than an
+    original-query list."""
+
+    def test_correlated_rewrite_lists_cannot_outvote_original_arms(self):
+        """The adversarial case D43 names directly: three rewrite-derived
+        lists (weight 0.5) all ranking generic chunk "x" first
+        (3*0.5/(60+1)) must not outrank two original-query lists (weight
+        1.0) both ranking the actually-right chunk "y" first
+        (2*1.0/(60+1))."""
+        rewrite_lists = [["x"], ["x"], ["x"]]
+        original_lists = [["y"], ["y"]]
+        weights = [0.5, 0.5, 0.5, 1.0, 1.0]
+
+        fused = _reciprocal_rank_fusion(*rewrite_lists, *original_lists, weights=weights)
+
+        assert fused[0][0] == "y"
+
+    def test_weights_none_equals_explicit_all_ones(self):
+        """weights=None must be exactly equivalent to passing 1.0 for every
+        list — backward compatible with every existing direct caller."""
+        lists = [["a", "b"], ["b", "a"]]
+
+        assert _reciprocal_rank_fusion(*lists) == _reciprocal_rank_fusion(
+            *lists, weights=[1.0, 1.0]
+        )
+
+    def test_mismatched_weights_length_raises(self):
+        """A weights list whose length doesn't match the number of ranked-ID
+        lists is a caller bug — raise loudly rather than silently
+        mis-weighting or index-erroring."""
+        with pytest.raises(ValueError):
+            _reciprocal_rank_fusion(["a"], ["b"], weights=[1.0])
