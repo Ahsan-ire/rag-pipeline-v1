@@ -1,0 +1,21 @@
+{"question": "Can you do a transfer based on the deed of assignment (lease) if you've given 15 years of consideration? This is for unregistered land", "expected_sections": ["4.8.1.1", "4.7.4.3"], "type": "direct"}
+{"question": "Can you do a transfer based on the deed of assignment? And can you explain what 15 years of consideration refers to?", "expected_sections": ["4.8.1.1", "4.5.1"], "type": "direct"}
+{"question": "Can you explain the progress for registering unregistered land?", "expected_sections": ["13.3", "13.1"], "type": "direct"}
+{"question": "Can you explain what unregistered land means?", "expected_sections": ["1.7", "1.8"], "type": "direct"}
+{"question": "How far back do the title documents need to go when we're buying? Someone said 15 years is enough?", "expected_sections": ["4.5.1"], "type": "direct"}
+{"question": "Which office do I check to find out who owns a property - the Land Registry or the other one?", "expected_sections": ["1.8", "1.7"], "type": "direct"}
+{"question": "Husband owns the house and the wife isn't on the deeds - can he sell it without telling her?", "expected_sections": ["7.2", "7.2.9"], "type": "direct"}
+{"question": "Two brothers own a farm together and one of them died - does his half go to the other brother automatically?", "expected_sections": ["5.8"], "type": "direct"}
+{"question": "Client is buying a house and the seller is leaving the appliances and furniture - is there tax on that stuff too?", "expected_sections": ["16.4.5"], "type": "direct"}
+{"question": "The neighbour has been using our client's field for years and now claims it's his - the previous fella did the same before him. Do their times count together?", "expected_sections": ["13.4.8"], "type": "direct"}
+{"question": "Why do deeds say the seller received the money - isn't that obvious?", "expected_sections": ["8.2.5.7"], "type": "direct"}
+{"question": "There's a court judgment against our client and the creditor wants to put it against his registered land - how do they actually register that? Is there a form?", "expected_sections": ["14.15"], "type": "exact_token"}
+{"question": "What happens to the buyer's deposit if the sale falls through?", "expected_sections": ["6.9.2", "6.9.4"], "type": "direct"}
+{"question": "We're acting for both the buyer and their bank on the same purchase - is that allowed?", "expected_sections": ["9.7.2", "9.8"], "type": "direct"}
+{"question": "Client keeps asking what happens next after going sale agreed - what are the steps on each side, in order?", "expected_sections": ["2.9", "2.1"], "type": "direct"}
+{"question": "Our vendor died after contracts were signed but before completion - what is the procedure now?", "expected_sections": [], "type": "refusal"}
+{"question": "What are the conveyancing steps for buying a house in Northern Ireland?", "expected_sections": [], "type": "refusal"}
+{"question": "How much does a solicitor typically charge for a residential purchase?", "expected_sections": [], "type": "refusal"}
+{"question": "Can a landlord evict a tenant who is behind on rent?", "expected_sections": [], "type": "refusal"}
+{"question": "What are the requirements for making a valid will in Ireland?", "expected_sections": [], "type": "refusal"}
+{"question": "Do I need planning permission to build an extension to my house?", "expected_sections": [], "type": "refusal"}
