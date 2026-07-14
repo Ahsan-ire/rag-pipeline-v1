@@ -1,5 +1,6 @@
 """Tests for the pipeline orchestration module."""
 
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +14,26 @@ from src.grounding import (
     REFUSAL,
 )
 from src.pipeline import index_documents, query
+from src.query_rewrite import Expansion, REWRITE_MODEL, STATUS_DISABLED, STATUS_LIVE
+
+
+@pytest.fixture(autouse=True)
+def _stub_expand_query(monkeypatch):
+    """File-level autouse: every test in this module gets a disabled-stub
+    ``Expansion`` from ``src.pipeline.expand_query`` unless the test itself
+    overrides the patch. Without this, any pipeline test that reaches the
+    real ``expand_query`` (none of them mock it, since query expansion
+    predates most of these tests) would try to construct a live rewrite LLM
+    — this stub is what keeps the whole file at zero API calls. Individual
+    tests that need to assert on the expansion call, or exercise a non-empty
+    rewrite list, re-patch ``src.pipeline.expand_query`` themselves inside
+    the test body (patch context managers nest inside this fixture's
+    monkeypatch and are restored before it is)."""
+
+    def _stub(question, *, enabled=True):
+        return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
+
+    monkeypatch.setattr("src.pipeline.expand_query", _stub)
 
 
 class TestIndexDocuments:
@@ -936,6 +957,191 @@ class TestQuery:
         assert result["answer"] == "The rule is X [Handbook, para 3.2, p.10]."
         assert "audit log write failed" in out
 
+    # --- Query expansion wiring (Phase 13, D43) ----------------------------
+
+    def test_no_rewrite_true_disables_expansion(self):
+        """no_rewrite=True must reach expand_query as enabled=False."""
+        stub = Expansion("Some question", (), REWRITE_MODEL, STATUS_DISABLED)
+        with patch("src.pipeline.expand_query", return_value=stub) as m_expand, \
+             patch("src.pipeline.retrieve", return_value=[]):
+            query("Some question", no_rewrite=True)
+
+        m_expand.assert_called_once_with("Some question", enabled=False)
+
+    def test_no_rewrite_default_false_enables_expansion(self):
+        """The default (no_rewrite unset) must reach expand_query as
+        enabled=True — expansion is on by default."""
+        stub = Expansion("Some question", (), REWRITE_MODEL, STATUS_DISABLED)
+        with patch("src.pipeline.expand_query", return_value=stub) as m_expand, \
+             patch("src.pipeline.retrieve", return_value=[]):
+            query("Some question")
+
+        m_expand.assert_called_once_with("Some question", enabled=True)
+
+    def test_expansion_rewrites_forwarded_to_retrieve(self):
+        """Effective rewrites from expand_query are forwarded to retrieve()
+        as the rewrites= keyword, as a plain list."""
+        stub = Expansion("q", ("rewrite one", "rewrite two"), REWRITE_MODEL, STATUS_LIVE)
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=[]) as m_retrieve:
+            query("q")
+
+        assert m_retrieve.call_args.kwargs["rewrites"] == ["rewrite one", "rewrite two"]
+
+    def test_no_rewrites_forwards_none_to_retrieve(self):
+        """An empty rewrites tuple forwards rewrites=None (not an empty
+        list) — the retriever's own byte-identical-when-empty contract
+        (D43) expects None, not []."""
+        stub = Expansion("q", (), REWRITE_MODEL, STATUS_DISABLED)
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=[]) as m_retrieve:
+            query("q")
+
+        assert m_retrieve.call_args.kwargs["rewrites"] is None
+
+    def test_verbose_prints_expansion_status_and_rewrites(self, capsys):
+        """--verbose prints the expansion status/count line, then each
+        rewrite indented, before the RRF chunk table."""
+        stub = Expansion("q", ("rewrite one", "rewrite two"), REWRITE_MODEL, STATUS_LIVE)
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="x",
+                    metadata={"section_number": "3.2", "page_start": 10},
+                ),
+                "score": 0.01,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer text.",
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("q", verbose=True)
+
+        out = capsys.readouterr().out
+        assert f"Query expansion [{STATUS_LIVE}]: 2 rewrite(s)" in out
+        assert "rewrite one" in out
+        assert "rewrite two" in out
+        # Expansion line precedes the RRF chunk table, per spec.
+        assert out.index("Query expansion") < out.index("Retrieved chunks")
+
+    def test_no_expansion_line_without_verbose(self, capsys):
+        """The expansion line is verbose-only, like the RRF chunk table."""
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="x",
+                    metadata={"section_number": "3.2", "page_start": 10},
+                ),
+                "score": 0.01,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer text.",
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated):
+            query("q")  # verbose defaults to False
+
+        out = capsys.readouterr().out
+        assert "Query expansion" not in out
+
+    def _mock_results_and_generated(self):
+        mock_results = [
+            {
+                "document": Document(
+                    page_content="x",
+                    metadata={"section_number": "3.2", "page_start": 10},
+                ),
+                "score": 0.01,
+                "metadata": {"section_number": "3.2"},
+            }
+        ]
+        mock_generated = {
+            "answer": "Answer text.",
+            "citations": [],
+            "sources": [],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": CITATIONS_VERIFIED,
+        }
+        return mock_results, mock_generated
+
+    def test_audit_event_carries_rewrite_fields_without_raw_text_by_default(
+        self, monkeypatch
+    ):
+        """The audit event carries rewrite_status/rewrite_count/
+        rewrite_sha256s whenever an expansion ran, but NOT rewrite_texts
+        unless AUDIT_LOG_RAW_QUERIES=1 is set."""
+        monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)
+        mock_results, mock_generated = self._mock_results_and_generated()
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert event["rewrite_status"] == STATUS_LIVE
+        assert event["rewrite_count"] == 1
+        assert event["rewrite_sha256s"] == [
+            hashlib.sha256("rewrite one".encode("utf-8")).hexdigest()
+        ]
+        assert "rewrite_texts" not in event
+
+    def test_audit_event_carries_raw_rewrite_texts_when_env_opted_in(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AUDIT_LOG_RAW_QUERIES", "1")
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)
+        mock_results, mock_generated = self._mock_results_and_generated()
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert event["rewrite_texts"] == ["rewrite one"]
+
+    def test_no_results_path_also_carries_expansion(self, monkeypatch):
+        """Expansion runs before retrieval, so the no-results early-return
+        path logs the rewrite fields too, not just the main path."""
+        monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=[]), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert event["action"] == "no_results"
+        assert event["rewrite_status"] == STATUS_LIVE
+        assert event["rewrite_count"] == 1
+
 
 class TestEvalCli:
     """The Phase 10 `eval` subcommand parses its flags and dispatches to
@@ -962,7 +1168,7 @@ class TestEvalCli:
     def test_default_dispatch_shape(self, monkeypatch):
         c = self._dispatch(monkeypatch, [])
         assert c["set_specs"] == [("tuning", "eval/golden_set.jsonl")]
-        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25"]
+        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25", "hybrid+rewrite"]
         assert c["kwargs"]["skip_refusals"] is False
         assert c["kwargs"]["skip_completeness"] is False
         assert c["kwargs"]["judge"] is False
@@ -1007,6 +1213,55 @@ class TestEvalCli:
         c = self._dispatch(monkeypatch, ["--golden", "eval/custom.jsonl"])
         assert c["set_specs"] == [("golden", "eval/custom.jsonl")]
 
-    def test_mode_all_expands_to_three(self, monkeypatch):
+    def test_mode_all_expands_to_four(self, monkeypatch):
         c = self._dispatch(monkeypatch, ["--mode", "all"])
-        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25"]
+        assert c["kwargs"]["modes"] == ["hybrid", "vector", "bm25", "hybrid+rewrite"]
+
+    def test_mode_hybrid_rewrite_accepted(self, monkeypatch):
+        """The hybrid+rewrite mode is a valid single --mode choice (D46)."""
+        c = self._dispatch(monkeypatch, ["--mode", "hybrid+rewrite"])
+        assert c["kwargs"]["modes"] == ["hybrid+rewrite"]
+
+    def test_realistic_appends_realistic_set_spec(self, monkeypatch):
+        """--realistic appends a ('realistic', path) set after the held-out
+        append, so a canonical run can carry both slices (D46)."""
+        c = self._dispatch(
+            monkeypatch,
+            [
+                "--heldout", "eval/heldout_set.jsonl",
+                "--realistic", "eval/realistic_set.jsonl",
+            ],
+        )
+        assert c["set_specs"] == [
+            ("tuning", "eval/golden_set.jsonl"),
+            ("held-out", "eval/heldout_set.jsonl"),
+            ("realistic", "eval/realistic_set.jsonl"),
+        ]
+
+
+class TestQueryCli:
+    """The `query` subcommand's --no-rewrite flag parses and dispatches by
+    keyword to query(), mirroring TestEvalCli's dispatch-spy style. query()
+    itself is replaced with a spy, so no store/API/expansion is touched."""
+
+    def _dispatch(self, monkeypatch, argv):
+        import src.pipeline
+
+        captured = {}
+
+        def spy(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        monkeypatch.setattr("src.pipeline.query", spy)
+        monkeypatch.setattr("sys.argv", ["prog", "query", *argv])
+        src.pipeline.main()
+        return captured
+
+    def test_no_rewrite_flag_forwarded_by_keyword(self, monkeypatch):
+        c = self._dispatch(monkeypatch, ["What is a priority entry?", "--no-rewrite"])
+        assert c["kwargs"]["no_rewrite"] is True
+
+    def test_no_rewrite_defaults_false(self, monkeypatch):
+        c = self._dispatch(monkeypatch, ["What is a priority entry?"])
+        assert c["kwargs"]["no_rewrite"] is False

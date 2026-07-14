@@ -52,6 +52,14 @@ from src.grounding import (
     PARTIALLY_VERIFIED,
     REFUSAL,
 )
+from src.query_rewrite import (
+    REWRITE_MODE,
+    REWRITE_MODEL,
+    STATUS_DISABLED,
+    STATUS_LIVE,
+    Expansion,
+    expand_query,
+)
 from src.retriever import (
     RETRIEVAL_MODES,
     format_context,
@@ -86,6 +94,19 @@ IN_CORPUS_TYPES = ("direct", "exact_token")
 # A set whose label contains this token is treated as the frozen held-out set
 # for the canonical-run check and the report headline (D38 / D33).
 HELDOUT_LABEL_TOKEN = "held-out"
+# A set whose label contains this token is the realistic dev/regression slice
+# (messy staff phrasing + near-domain negatives, D46). Required — alongside
+# the held-out set — for a canonical run; it is authored during remediation,
+# so the report brands it as dev/regression evidence, NOT held-out proof.
+REALISTIC_LABEL_TOKEN = "realistic"
+
+# The eval-mode set (Phase 13, D46): the three retrieval-only ablation arms
+# PLUS the production ``hybrid+rewrite`` mode. ``RETRIEVAL_MODES`` stays
+# 3-valued — ``retrieve()`` only knows those three — so ``hybrid+rewrite`` is
+# an EVALUATOR-level mode that runs hybrid retrieval with the query-expansion
+# rewrites threaded in. Single source of truth so the CLI, the matrix runner,
+# and the canonical check can never disagree on the valid eval-mode set.
+EVAL_MODES = (*RETRIEVAL_MODES, REWRITE_MODE)
 
 # The retrieval cut-offs reported by ``evaluate_retrieval``: hit@1, hit@3, hit@6.
 # Only the ks with ``k <= top_k`` are actually reported (a hit@6 cell is
@@ -859,9 +880,10 @@ def _resolve_results_path(
 
     - An explicit ``--results/-o`` is always honored, EXCEPT it is refused
       (``ValueError``) if it equals any input set path — writing a report over
-      an eval set would destroy the set. If it targets the canonical
-      ``eval/results.md`` on a non-canonical run, it is honored but a warning is
-      returned (the caller prints it).
+      an eval set would destroy the set. It is ALSO refused (``ValueError``) if
+      it targets the canonical ``eval/results.md`` on a non-canonical run: the
+      committed report must never be written by a non-canonical run, even when
+      explicitly targeted (D46 fail-closed, tightened from the old warning).
     - With no explicit path, a fully canonical run writes ``eval/results.md``;
       anything less writes the gitignored ``eval/results_partial.md`` (with a
       note), so a partial run can never silently clobber the committed report.
@@ -876,7 +898,9 @@ def _resolve_results_path(
         strings for the caller to surface on stderr.
 
     Raises:
-        ValueError: If ``explicit_path`` equals an input set path.
+        ValueError: If ``explicit_path`` equals an input set path, OR targets
+            the canonical report ``eval/results.md`` on a non-canonical run
+            (D46 fail-closed).
     """
     warnings: List[str] = []
     if explicit_path is not None:
@@ -891,9 +915,14 @@ def _resolve_results_path(
                     f"eval-set path; refusing to overwrite the eval set with a report"
                 )
         if not is_canonical and real == os.path.realpath(DEFAULT_RESULTS_PATH):
-            warnings.append(
-                f"Writing a NON-canonical run to the canonical path "
-                f"{DEFAULT_RESULTS_PATH} (explicitly requested via --results)."
+            # D46 fail-closed: an explicit --results at the committed canonical
+            # path on a NON-canonical run now RAISES rather than warning — the
+            # committed report must never be writable by a non-canonical run.
+            raise ValueError(
+                f"--results path {explicit_path!r} resolves to the canonical "
+                f"report {DEFAULT_RESULTS_PATH}, but this run is not canonical; "
+                f"refusing to overwrite the committed report with a "
+                f"non-canonical run"
             )
         return explicit_path, warnings
 
@@ -1173,7 +1202,7 @@ def run_eval(
     golden_path: str,
     top_k: int = 6,
     skip_refusals: bool = False,
-    results_path: str = "eval/results.md",
+    results_path: str = PARTIAL_RESULTS_PATH,
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     answer_fn: Optional[Callable[[str], str]] = None,
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
@@ -1184,10 +1213,12 @@ def run_eval(
     Superseded at the CLI by ``run_eval_matrix`` (Phase 10): the ``eval``
     subcommand now dispatches to the matrix runner, which adds the retrieval-
     mode ablation, hit@{1,3,6}+MRR, held-out headline, completeness, judge, and
-    the results-path guard. ``run_eval`` is retained unchanged (its default
-    ``results_path`` still ALWAYS overwrites — that footgun is exactly why the
-    CLI no longer calls it) for any programmatic caller relying on the Phase 5/6
-    single-set contract and its existing test coverage.
+    the results-path guard. ``run_eval`` is retained for any programmatic
+    caller relying on the Phase 5/6 single-set contract and its existing test
+    coverage. Its default ``results_path`` is now the gitignored
+    ``PARTIAL_RESULTS_PATH`` (D46): the canonical committed ``eval/results.md``
+    is written ONLY by ``run_eval_matrix``'s guarded path, so this single-set
+    runner can no longer overwrite the committed report by default.
 
     Loads the golden set, always scores retrieval hit@k (strict and related),
     and (unless ``skip_refusals``) scores refusal accuracy — the latter makes
@@ -1199,7 +1230,9 @@ def run_eval(
         top_k: Number of chunks to retrieve per question.
         skip_refusals: If True, skip the (API-calling) refusal pass.
         results_path: Where to write the Markdown report; parent directory
-            is created if missing.
+            is created if missing. Defaults to the gitignored
+            ``PARTIAL_RESULTS_PATH`` — the canonical ``eval/results.md`` is
+            matrix-runner-only now (D46).
         retrieve_fn: Optional override for retrieval (see
             ``evaluate_retrieval``); mainly for tests.
         answer_fn: Optional override for answer generation (see
@@ -1302,7 +1335,7 @@ def _atomic_write(path: str, content: str) -> None:
 
 def run_eval_matrix(
     set_specs: List[Tuple[str, str]],
-    modes: Sequence[str] = RETRIEVAL_MODES,
+    modes: Sequence[str] = EVAL_MODES,
     top_k: int = 6,
     skip_refusals: bool = False,
     skip_completeness: bool = False,
@@ -1332,11 +1365,14 @@ def run_eval_matrix(
     generated iff refusals are scored; in-corpus answers iff completeness is
     scored or the judge is on.
 
-    Canonical guard (Design 5): with no explicit ``results_path``, the committed
-    ``eval/results.md`` is written ONLY by a fully canonical run — a held-out set
-    present, all three modes, refusals AND completeness scored, ``top_k == 6``,
-    and zero generation errors. Anything less writes the gitignored
-    ``eval/results_partial.md``. The report is written atomically.
+    Canonical guard (Design 5 / D46 v3): with no explicit ``results_path``, the
+    committed ``eval/results.md`` is written ONLY by a fully canonical run — a
+    held-out set AND a realistic set both present with answerable hybrid
+    results, all four ``EVAL_MODES``, distinct realpaths across every input set,
+    refusals AND completeness scored, ``top_k == 6``, zero generation errors,
+    and query expansion actually attempted (>=1) with zero fallbacks. Anything
+    less writes the gitignored ``eval/results_partial.md``. The report is
+    written atomically.
 
     Args:
         set_specs: ``[(label, path), ...]`` — one entry per question set. A label
@@ -1371,9 +1407,9 @@ def run_eval_matrix(
         raise ValueError("run_eval_matrix requires at least one (label, path) set")
     modes = list(modes)
     for mode in modes:
-        if mode not in RETRIEVAL_MODES:
+        if mode not in EVAL_MODES:
             raise ValueError(
-                f"Unknown retrieval mode {mode!r}; expected from {RETRIEVAL_MODES}"
+                f"Unknown retrieval mode {mode!r}; expected from {EVAL_MODES}"
             )
     if top_k < 1:
         raise ValueError(f"top_k must be >= 1, got {top_k}")
@@ -1401,6 +1437,39 @@ def run_eval_matrix(
     if (not skip_completeness) or judge:
         include_types.extend(IN_CORPUS_TYPES)
 
+    # Query-expansion accounting is EVALUATOR-OWNED — independent of any
+    # injected retrieve_fn_factory/generate_fn — so the canonical check stays
+    # reachable even in tests that inject fakes: those fakes never touch this,
+    # yet expansion is still attempted and counted. ``expansion_enabled`` is
+    # gated by the documented offline contract: passing BOTH --skip flags (the
+    # "zero API calls" form — see the NOTE above the eval subparser in
+    # pipeline.py and CLAUDE.md) disables expansion OUTRIGHT, so the contract
+    # stays true even on a keyed dev box and the hybrid+rewrite row renders as
+    # the raw-hybrid fallback.
+    expansion_enabled = REWRITE_MODE in modes and not (
+        skip_refusals and skip_completeness
+    )
+    # One expansion per unique question text, shared across ALL sets, the
+    # hybrid+rewrite ablation, AND the default generation pass (a question is
+    # expanded at most once for the whole run). Entries land here ONLY when
+    # expansion is enabled, so ``len(expansion_cache)`` is exactly the number
+    # of live-enabled attempts.
+    expansion_cache: Dict[str, Expansion] = {}
+
+    def _expand(question: str) -> Expansion:
+        """Expand ``question`` once, reusing the shared cache (Phase 13, D46).
+
+        When expansion is disabled (the both-skips offline contract) this
+        returns a disabled ``Expansion`` WITHOUT calling ``expand_query`` at
+        all — keeping keyless/offline runs at zero rewrite calls — and never
+        populates the cache, so ``rewrite_attempts`` stays 0.
+        """
+        if not expansion_enabled:
+            return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
+        if question not in expansion_cache:
+            expansion_cache[question] = expand_query(question, enabled=True)
+        return expansion_cache[question]
+
     # Load each backend at most once, and ONLY when a mode that uses it actually
     # runs — so a vector-only matrix never unpickles the BM25 sidecar and a
     # bm25-only matrix never opens Chroma or runs the embedding-model manifest
@@ -1425,8 +1494,27 @@ def run_eval_matrix(
 
         def retrieve_fn_factory(mode: str) -> Callable[..., List[Dict[str, Any]]]:
             def _fn(question: str, top_k: int = top_k) -> List[Dict[str, Any]]:
-                # Inject only the arm this mode uses; retrieve()'s mode gating
-                # then never touches (or loads) the other arm.
+                if mode == REWRITE_MODE:
+                    # hybrid+rewrite (the production config, D46): hybrid
+                    # retrieval — BOTH arms — with the shared query-expansion
+                    # rewrites threaded in. retrieve() runs on mode="hybrid";
+                    # the rewrites are what distinguish this row from raw hybrid.
+                    exp = _expand(question)
+                    return retrieve(
+                        question,
+                        top_k=top_k,
+                        persist_directory=persist_directory,
+                        vector_store=_get_vector(),
+                        bm25_index=_get_bm25(),
+                        mode="hybrid",
+                        strict_errors=True,
+                        rewrites=list(exp.rewrites) or None,
+                    )
+                # The three raw retrieval modes are UNCHANGED from before Phase
+                # 13 (raw-query rows must stay byte-identical — CI greps depend
+                # on them): inject only the arm this mode uses; retrieve()'s
+                # mode gating then never touches (or loads) the other arm, and
+                # no rewrites are passed.
                 vs = _get_vector() if mode in ("hybrid", "vector") else None
                 bm = _get_bm25() if mode in ("hybrid", "bm25") else None
                 return retrieve(
@@ -1444,6 +1532,10 @@ def run_eval_matrix(
     if generate_fn is None:
 
         def generate_fn(question: str) -> Dict[str, Any]:
+            # Answer passes measure the PRODUCTION config: hybrid retrieval with
+            # the shared query-expansion rewrites (same ``_expand`` cache as the
+            # hybrid+rewrite ablation, so a question is expanded at most once).
+            exp = _expand(question)
             results = retrieve(
                 question,
                 top_k=top_k,
@@ -1452,6 +1544,7 @@ def run_eval_matrix(
                 bm25_index=_get_bm25(),
                 mode="hybrid",
                 strict_errors=True,
+                rewrites=list(exp.rewrites) or None,
             )
             return generate_with_sources(question, results)
 
@@ -1464,6 +1557,18 @@ def run_eval_matrix(
         counts: Dict[str, int] = {}
         for entry in golden:
             counts[entry["type"]] = counts.get(entry["type"], 0) + 1
+
+        # Evaluator-owned expansion accounting (Phase 13, D46): expand every
+        # question ONCE here, independent of the (possibly injected)
+        # retrieve_fn_factory/generate_fn — so rewrite_attempts/fallbacks and
+        # the canonical gate stay reachable even when those fns are faked in
+        # tests. The shared cache means the default hybrid+rewrite ablation and
+        # the default generation pass reuse these expansions (dedup across all
+        # sets), so expand_query is still called at most once per unique
+        # question. When expansion is disabled this is a no-op — _expand returns
+        # a disabled Expansion without calling expand_query or caching.
+        for entry in golden:
+            _expand(entry["question"])
 
         # Retrieval ablation: one evaluate_retrieval per mode, each with its
         # mode-specific retrieve_fn (single-arm modes never touch the other arm).
@@ -1552,11 +1657,27 @@ def run_eval_matrix(
             }
         )
 
-    # Canonical only if EVERY condition holds (Design 5). Beyond a held-out
-    # label, the held-out set must actually have >=1 answerable question scored
-    # under hybrid — otherwise an empty or refusal-only --heldout file would
-    # sail through as canonical and overwrite eval/results.md with a
-    # meaningless "strict hit@6 = 0/0" headline.
+    # Expansion counters derived from the shared cache (populated ONLY when
+    # expansion was enabled). ``rewrite_attempts`` = unique questions expanded
+    # live; ``rewrite_fallbacks`` = those whose status is not STATUS_LIVE or
+    # that yielded zero usable rewrites (a degenerate expansion).
+    rewrite_attempts = len(expansion_cache)
+    rewrite_fallbacks = sum(
+        1
+        for exp in expansion_cache.values()
+        if exp.status != STATUS_LIVE or len(exp.rewrites) == 0
+    )
+
+    # Canonical (D46 v3) only if EVERY condition holds. Beyond a held-out label,
+    # the held-out set must actually have >=1 answerable question scored under
+    # hybrid — otherwise an empty or refusal-only --heldout file would sail
+    # through as canonical and overwrite eval/results.md with a meaningless
+    # "strict hit@6 = 0/0" headline. D46 adds: (i) a realistic slice with
+    # answerable hybrid results (the same answerable guard, mirrored); (ii) all
+    # four EVAL_MODES; (iii) distinct realpaths across every input set, so
+    # relabeling ONE file as both --heldout and --realistic cannot satisfy both
+    # clauses; and (iv) expansion actually attempted (>=1) with zero fallbacks,
+    # so an inert/misconfigured rewrite model can never be vacuously canonical.
     heldout_set = next(
         (s for s in sets if HELDOUT_LABEL_TOKEN in s["label"]), None
     )
@@ -1565,14 +1686,32 @@ def run_eval_matrix(
         and "hybrid" in heldout_set["retrieval"]
         and heldout_set["retrieval"]["hybrid"]["total"] > 0
     )
-    all_modes = set(modes) == set(RETRIEVAL_MODES)
+    realistic_set = next(
+        (s for s in sets if REALISTIC_LABEL_TOKEN in s["label"]), None
+    )
+    realistic_has_answerable = (
+        realistic_set is not None
+        and "hybrid" in realistic_set["retrieval"]
+        and realistic_set["retrieval"]["hybrid"]["total"] > 0
+    )
+    all_modes = set(modes) == set(EVAL_MODES)
+    # Distinct realpaths, not distinct labels: passing ONE file as both
+    # --heldout and --realistic collapses to a single realpath, so the count
+    # falls below len(set_paths) and the run is non-canonical (D46).
+    distinct_set_paths = (
+        len({os.path.realpath(p) for p in set_paths}) == len(set_paths)
+    )
     is_canonical = (
         heldout_has_answerable
+        and realistic_has_answerable
         and all_modes
+        and distinct_set_paths
         and (not skip_refusals)
         and (not skip_completeness)
         and top_k == 6
         and total_generation_errors == 0
+        and rewrite_attempts > 0
+        and rewrite_fallbacks == 0
     )
 
     resolved_path, warnings = _resolve_results_path(
@@ -1601,6 +1740,9 @@ def run_eval_matrix(
         "generation_ran": generation_ran,
         "include_types": include_types,
         "generation_errors": total_generation_errors,
+        "expansion_enabled": expansion_enabled,
+        "rewrite_attempts": rewrite_attempts,
+        "rewrite_fallbacks": rewrite_fallbacks,
     }
 
     report = _format_matrix_report(result)
@@ -1669,10 +1811,25 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
     )
     passes.append("judge" if result["judge"] else "judge off")
     lines.append(f"- passes: {', '.join(passes)}")
+    # Which retrieval config the answer passes actually used: the production
+    # hybrid+rewrite when expansion ran, else raw hybrid on an offline run.
+    if result["expansion_enabled"]:
+        answer_config = (
+            f"the {REWRITE_MODE} production retrieval config (query expansion on)"
+        )
+    else:
+        answer_config = "hybrid (expansion disabled — offline run)"
     lines.append(
-        "- answer passes (refusals/completeness/judge) use the HYBRID production "
-        "retrieval config; the mode ablation affects retrieval scoring only."
+        f"- answer passes (refusals/completeness/judge) use {answer_config}; "
+        "the mode ablation affects retrieval scoring only."
     )
+    if result["expansion_enabled"]:
+        lines.append(
+            f"- query expansion: {REWRITE_MODEL}, {result['rewrite_attempts']} "
+            f"expanded, {result['rewrite_fallbacks']} fallback(s)"
+        )
+    else:
+        lines.append("- query expansion: disabled (offline run)")
     if result["generation_errors"]:
         lines.append(
             f"- generation errors: {result['generation_errors']} "
@@ -1686,6 +1843,12 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             note = "held-out (never tuned — out-of-sample)"
         elif "tuning" in s["label"]:
             note = "tuning (used to select fusion constants, D31 — NOT held-out)"
+        elif REALISTIC_LABEL_TOKEN in s["label"]:
+            note = (
+                "realistic (messy staff phrasing + near-domain negatives; "
+                "authored during Phase 13 remediation — dev/regression slice, "
+                "not held-out)"
+            )
         else:
             note = "supplementary set"
         lines.append(f"- {s['label']}: {note}")
@@ -1865,16 +2028,20 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
 
     # ---- Per-question detail (D30-safe: no answer/chunk/claim text) ----------
     for s in sets:
-        lines.append(f"## {s['label']} — per-question detail (hybrid)")
+        # Show the detail beside the retrieval that PRODUCED the gate outcomes:
+        # the hybrid+rewrite result when that mode ran (the production config
+        # the answer passes used), else raw hybrid (D46).
+        detail_mode = REWRITE_MODE if REWRITE_MODE in s["retrieval"] else "hybrid"
+        lines.append(f"## {s['label']} — per-question detail ({detail_mode})")
         lines.append("")
-        hybrid = s["retrieval"].get("hybrid")
+        detail = s["retrieval"].get(detail_mode)
         # Gate outcome per question from the completeness pass, if it ran.
         gate_by_q: Dict[str, Any] = {}
         if s["completeness"] is not None:
             for row in s["completeness"]["per_question"]:
                 gate_by_q[row["question"]] = row
-        if hybrid is not None:
-            for q in hybrid["per_question"]:
+        if detail is not None:
+            for q in detail["per_question"]:
                 strict = "HIT" if q["hit_strict"] else "MISS"
                 related = "HIT" if q["hit_related"] else "MISS"
                 extra = ""

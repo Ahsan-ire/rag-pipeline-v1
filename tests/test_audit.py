@@ -346,6 +346,99 @@ class TestQueryHashing:
         assert record["query_text"] == question
 
 
+class TestBuildEventRewrites:
+    """Phase 13 (D43): build_event's keyword-only rewrites/rewrite_status."""
+
+    def test_omitted_when_both_rewrite_args_are_none(
+        self, results, citation_check, citations
+    ):
+        """Backward compat: passing neither rewrites nor rewrite_status
+        produces a byte-identical event to before this feature existed — the
+        three new fields are entirely absent, not present-with-None."""
+        record = build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome="CITATIONS_VERIFIED",
+            action="shown",
+            citation_check=citation_check,
+            citations=citations,
+            answer="a",
+        )
+        assert set(record.keys()) == EXPECTED_KEYS
+        assert "rewrite_status" not in record
+        assert "rewrite_count" not in record
+        assert "rewrite_sha256s" not in record
+        assert "rewrite_texts" not in record
+
+    def test_rewrite_fields_present_with_correct_hashes_no_raw_text(
+        self, monkeypatch, results, citation_check, citations
+    ):
+        monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+        rewrites = ["formal rephrasing", "keyword variant"]
+        record = build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome="CITATIONS_VERIFIED",
+            action="shown",
+            citation_check=citation_check,
+            citations=citations,
+            answer="a",
+            rewrites=rewrites,
+            rewrite_status="live",
+        )
+        assert record["rewrite_status"] == "live"
+        assert record["rewrite_count"] == 2
+        assert record["rewrite_sha256s"] == [
+            hashlib.sha256(r.encode("utf-8")).hexdigest() for r in rewrites
+        ]
+        assert "rewrite_texts" not in record
+
+    def test_rewrite_status_alone_still_populates_all_three_fields(
+        self, results, citation_check, citations
+    ):
+        """rewrite_status given with rewrites omitted (None) still adds all
+        three fields — the omit rule is "both None", not "either None"."""
+        record = build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome=None,
+            action="no_results",
+            citation_check=citation_check,
+            citations=citations,
+            answer="",
+            rewrite_status="disabled",
+        )
+        assert record["rewrite_status"] == "disabled"
+        assert record["rewrite_count"] == 0
+        assert record["rewrite_sha256s"] == []
+
+    def test_raw_rewrite_texts_included_only_with_env_opt_in(
+        self, monkeypatch, results, citation_check, citations
+    ):
+        monkeypatch.setenv("AUDIT_LOG_RAW_QUERIES", "1")
+        rewrites = ["formal rephrasing", "keyword variant"]
+        record = build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome="CITATIONS_VERIFIED",
+            action="shown",
+            citation_check=citation_check,
+            citations=citations,
+            answer="a",
+            rewrites=rewrites,
+            rewrite_status="live",
+        )
+        assert record["rewrite_texts"] == rewrites
+
+
 class TestNoLeakedText:
     def test_answer_and_chunk_text_absent_from_serialized_record(
         self, results, citation_check, citations, without_id_doc
