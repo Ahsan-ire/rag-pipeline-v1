@@ -11,6 +11,16 @@ merge), v2 remediation target 13 July, fellowship deadline 17 July.
 Working spec lives in IMPLEMENTATION_PLAN.md. Design rationale lives in
 docs/decisions.md. Current phase is stated at the top of decisions.md.
 
+## Harness
+The workflow itself (gates, critics, bake-offs) is documented in
+docs/harness.md — read it before changing how work gets done here.
+Fresh-context critics live in .claude/agents/ (plan-auditor,
+pressure-tester); gates and the design tournament in .claude/skills/
+(plan-gate, phase-gate, bake-off). Designs too big for a decisions.md
+entry, and all bake-off briefs, are artifacts in docs/designs/ (see its
+README). Bake-offs are judged by eval/golden_set.jsonl — never by a
+model's opinion, never on the held-out set.
+
 ## Commands
 - Run tests: `python -m pytest tests/ -q`  (must pass before any commit)
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
