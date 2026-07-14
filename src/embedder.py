@@ -13,12 +13,47 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 from src.bm25_index import BM25_FILENAME, build_bm25_index, save_bm25_index
 
+try:
+    from huggingface_hub.errors import LocalEntryNotFoundError
+except ImportError:  # pragma: no cover - defensive against older huggingface_hub
+    LocalEntryNotFoundError = None
+
 logger = logging.getLogger(__name__)
 
 CHROMA_PERSIST_DIR = "./chroma_db"
 COLLECTION_NAME = "legal_documents"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_MODEL_MANIFEST = "embedding_model.txt"
+
+# Substrings (checked case-insensitively) that mark an OSError as a local
+# cache miss rather than some other filesystem failure (D47).
+_CACHE_MISS_MARKERS = ("local_files_only", "offline", "cache")
+
+
+def _is_local_cache_miss(exc: Exception) -> bool:
+    """True iff ``exc`` is the local-cache-miss family, not an unrelated failure.
+
+    Verified against the installed versions (huggingface_hub 1.22.0,
+    transformers 5.13.0, sentence_transformers 5.6.0): a cold cache with
+    ``local_files_only=True`` actually surfaces from ``SentenceTransformer``
+    as a plain ``OSError`` — ``transformers.utils.hub.cached_file`` catches
+    huggingface_hub's own ``LocalEntryNotFoundError`` and re-raises it as
+    ``OSError("...couldn't find them in the cached files...offline
+    mode...")``. The direct ``isinstance(exc, LocalEntryNotFoundError)``
+    check is kept too, since other huggingface_hub/sentence_transformers
+    call paths (e.g. ``sentence_transformers.util.file_io.load_file_path``)
+    raise it directly rather than wrapping it.
+
+    Anything else (a plain ``ValueError``, an auth or permission error, ...)
+    is NOT a cache miss and must propagate immediately (D47, plan-gate
+    finding M12) instead of silently triggering a network-enabled retry.
+    """
+    if LocalEntryNotFoundError is not None and isinstance(exc, LocalEntryNotFoundError):
+        return True
+    if isinstance(exc, OSError):
+        message = str(exc).lower()
+        return any(marker in message for marker in _CACHE_MISS_MARKERS)
+    return False
 
 
 @functools.lru_cache(maxsize=1)
@@ -31,12 +66,29 @@ def get_embedding_function() -> HuggingFaceEmbeddings:
     because the object is stateless configuration and the function takes no
     arguments; callers that need a different embedding function (tests use
     FakeEmbeddings) already pass it explicitly and never hit this path.
+
+    Local-first (D47): tries ``local_files_only=True`` first, so a warm
+    cache never makes the ~25 HuggingFace HEAD requests per CLI run that
+    re-validate an already-cached model. Only a recognised cache-miss
+    failure (:func:`_is_local_cache_miss`) falls back to one network-enabled
+    retry, logged once; any other exception propagates immediately instead
+    of silently falling back to the network.
     """
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    try:
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu", "local_files_only": True},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except Exception as exc:
+        if not _is_local_cache_miss(exc):
+            raise
+        logger.info("Local model cache miss for %s; downloading once", EMBEDDING_MODEL)
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
 
 
 def get_vector_store(
