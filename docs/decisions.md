@@ -1269,6 +1269,14 @@ text but costs a larger generation and is harder to audit); static synonym maps 
 against an 800-page corpus); putting expansion only in `pipeline.query()` (eval would measure a
 pipeline nobody ships).
 
+**Gate fixes (14 Jul 2026):** the diff review showed the flat 0.5 per-list weight fails in the
+production two-arm shape (3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 > the original's 2.0); the
+weight is now REWRITE_LIST_WEIGHT / n_rewrites per list, capping the whole rewrite bundle at half
+the original's full-agreement score for any arm/rewrite count. expand_query's construction-failure
+handling was tightened (explicit missing-key check → no_key; any other constructor failure →
+api_error) and marker-only/no-alpha model output now counts as parse_error, so a degenerate
+expansion can never satisfy the canonical zero-fallback gate.
+
 ## D44 — Graded related-guidance answer policy; REFUSAL_PHRASE frozen (14 Jul 2026)
 **Decision:** replace SYSTEM_PROMPT rule 3's binary answer-or-refuse with a four-tier coverage
 policy: (a) direct answer; (b) partial answer that names what the extracts do not address;

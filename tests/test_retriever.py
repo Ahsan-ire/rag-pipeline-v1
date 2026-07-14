@@ -8,7 +8,14 @@ import pytest
 from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index
-from src.retriever import RETRIEVAL_MODES, _reciprocal_rank_fusion, format_context, retrieve
+from src.retriever import (
+    RETRIEVAL_MODES,
+    REWRITE_LIST_WEIGHT,
+    RRF_K,
+    _reciprocal_rank_fusion,
+    format_context,
+    retrieve,
+)
 from tests.test_embedder import FakeEmbeddings
 
 
@@ -632,6 +639,64 @@ class TestRewrites:
         assert match["document"].page_content == "rewrite hit content"
         assert match["metadata"] == {"section_number": "9"}
 
+    def test_full_production_shape_rewrite_bundle_cannot_outvote_original(self, monkeypatch):
+        """The exact production shape the flat-0.5 weight broke (gate fix): a
+        HYBRID retrieve with 3 rewrites — 2 arms × 3 rewrites = 6 rewrite-derived
+        lists — all ranking a noise doc first, while both original-query arms
+        rank the right doc first. With the per-rewrite-budget weight (0.5/3 per
+        list) the whole rewrite bundle contributes 6 × (0.5/3)/(k+1) = 1.0/(k+1),
+        capped at half the original's 2.0/(k+1), so the RIGHT doc wins. Under the
+        old flat 0.5 the bundle was 6 × 0.5 = 3.0 > 2.0 and noise would have won."""
+        right = Document(id="right", page_content="right", metadata={"section_number": "1"})
+        noise = Document(id="noise", page_content="noise", metadata={"section_number": "2"})
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                # Original query ranks the right doc; every rewrite ranks noise.
+                return [(right, 0.9)] if query == "orig" else [(noise, 0.9)]
+
+        def fake_search_bm25(index, query, k, document_type=None):
+            return [("right", right, 5.0)] if query == "orig" else [("noise", noise, 5.0)]
+
+        monkeypatch.setattr("src.retriever.search_bm25", fake_search_bm25)
+
+        results = retrieve(
+            "orig",
+            top_k=2,
+            mode="hybrid",
+            vector_store=Store(),
+            bm25_index=object(),  # non-None so the bm25 arm runs; search is faked
+            rewrites=["rw one", "rw two", "rw three"],
+        )
+
+        assert results[0]["document"].id == "right"
+        # And confirm the numbers: right = 2/(k+1); noise = 1/(k+1).
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["right"] == pytest.approx(2.0 / (RRF_K + 1))
+        assert by_id["noise"] == pytest.approx(1.0 / (RRF_K + 1))
+
+    def test_single_rewrite_keeps_weight_half(self):
+        """With exactly ONE effective rewrite, its per-list weight is
+        REWRITE_LIST_WEIGHT / max(1, 1) = 0.5 — unchanged from before the gate
+        fix: a rewrite-only doc scores exactly 0.5/(k+1) against the original's
+        1.0/(k+1)."""
+        doc_a = Document(id="a", page_content="a", metadata={})
+        doc_b = Document(id="b", page_content="b", metadata={})
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(doc_a, 0.9)]
+                if query == "rw":
+                    return [(doc_b, 0.9)]
+                return []
+
+        results = retrieve("orig", top_k=2, mode="vector", vector_store=Store(), rewrites=["rw"])
+
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["a"] == pytest.approx(1.0 / (RRF_K + 1))
+        assert by_id["b"] == pytest.approx(REWRITE_LIST_WEIGHT / (RRF_K + 1))
+
 
 class TestPerSubQueryStrictErrors:
     """Phase 13 (D43): the strict_errors/swallow contract applies per
@@ -680,14 +745,17 @@ class TestWeightedReciprocalRankFusion:
     original-query list."""
 
     def test_correlated_rewrite_lists_cannot_outvote_original_arms(self):
-        """The adversarial case D43 names directly: three rewrite-derived
-        lists (weight 0.5) all ranking generic chunk "x" first
-        (3*0.5/(60+1)) must not outrank two original-query lists (weight
-        1.0) both ranking the actually-right chunk "y" first
-        (2*1.0/(60+1))."""
+        """The adversarial case D43 names directly, at the PRODUCTION per-list
+        weight (gate fix): three rewrite-derived lists each weighted
+        ``REWRITE_LIST_WEIGHT / n_rewrites`` (0.5/3) all ranking generic chunk
+        "x" first (3 × (0.5/3)/(60+1) = 0.5/(60+1)) must not outrank two
+        original-query lists (weight 1.0) both ranking the actually-right chunk
+        "y" first (2 × 1.0/(60+1)). The whole rewrite bundle now caps at half a
+        single original arm, so this holds with margin to spare."""
         rewrite_lists = [["x"], ["x"], ["x"]]
         original_lists = [["y"], ["y"]]
-        weights = [0.5, 0.5, 0.5, 1.0, 1.0]
+        per_rewrite = REWRITE_LIST_WEIGHT / 3  # the production per-list weight
+        weights = [per_rewrite, per_rewrite, per_rewrite, 1.0, 1.0]
 
         fused = _reciprocal_rank_fusion(*rewrite_lists, *original_lists, weights=weights)
 

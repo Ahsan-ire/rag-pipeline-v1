@@ -112,6 +112,12 @@ REWRITE_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
 # convention: structural markers anchor to line starts, no IGNORECASE).
 _REWRITE_LINE_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*(.+)$")
 
+# The leading list-marker alone (no captured content) — stripped from a
+# FALLBACK candidate (the no-marked-line-in-response path) so a marker-only
+# line like "1." or "-" reduces to "" and is dropped rather than harvested
+# verbatim as a rewrite. Same marker alternation as _REWRITE_LINE_RE.
+_LEADING_MARKER_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*")
+
 # One layer of wrapping quotes to strip from a parsed rewrite (straight and
 # curly pairs) — mirrors the quote-stripping list in generator.is_refusal.
 _QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
@@ -169,9 +175,13 @@ def parse_rewrites(text: str) -> List[str]:
     ahead of a numbered list is correctly discarded rather than harvested.
 
     Each candidate is stripped, has one layer of wrapping quotes removed,
-    and is then dropped if it is empty, longer than ``MAX_REWRITE_CHARS``, or
-    a casefold-duplicate of an earlier surviving candidate. The result is
-    capped at ``MAX_REWRITES``.
+    and is then dropped if it is empty, longer than ``MAX_REWRITE_CHARS``,
+    carries NO alphabetic character (marker-only noise like ``1.`` or ``-`` is
+    not a usable search query), or is a casefold-duplicate of an earlier
+    surviving candidate. Fallback (no-marked-line) candidates additionally have
+    any leading list-marker stripped first, so a degenerate ``1.\\n2.\\n3.``
+    response reduces to zero rewrites rather than the literal markers. The
+    result is capped at ``MAX_REWRITES``.
     """
     if not text:
         return []
@@ -183,13 +193,26 @@ def parse_rewrites(text: str) -> List[str]:
     if has_marker:
         candidates = [m.group(1) for m in matches if m is not None]
     else:
-        candidates = [line for line in lines if line.strip()]
+        # Defensive fallback: no line carries a marker+content, so every
+        # non-blank line is a candidate — but strip any leading list-marker it
+        # DOES carry (a lone "1." / "-" that _REWRITE_LINE_RE rejected because
+        # nothing followed the marker) so a marker-only line becomes "" and is
+        # dropped below, not harvested verbatim.
+        candidates = [
+            _LEADING_MARKER_RE.sub("", line) for line in lines if line.strip()
+        ]
 
     rewrites: List[str] = []
     seen = set()
     for candidate in candidates:
         cleaned = _strip_wrapping_quotes(candidate.strip()).strip()
         if not cleaned or len(cleaned) > MAX_REWRITE_CHARS:
+            continue
+        # Drop any candidate with NO alphabetic character (all digits/
+        # punctuation): a marker-only "1." or a numbered line whose content is
+        # bare digits is not a usable search query, and letting it through would
+        # count a degenerate response as live rewrites.
+        if not any(ch.isalpha() for ch in cleaned):
             continue
         key = cleaned.casefold()
         if key in seen:
@@ -223,11 +246,24 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
         return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
 
     if llm is None:
-        try:
-            llm = get_rewrite_llm()
-        except ValueError:
+        # Decide the missing-key case EXPLICITLY, reading the env var exactly as
+        # get_rewrite_llm's own guard does, BEFORE touching the constructor. This
+        # keeps the two failure modes cleanly separated: a genuinely absent or
+        # placeholder key degrades to STATUS_NO_KEY, while ANY other failure
+        # raised while building the client — an unrelated ValueError, a
+        # RuntimeError from the SDK, a dependency breakage — degrades to
+        # STATUS_API_ERROR. Previously only ValueError was caught, so a
+        # RuntimeError escaped (breaking the never-raises contract) and an
+        # unrelated constructor ValueError was mislabeled STATUS_NO_KEY.
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key or api_key == "your-api-key-here":
             logger.warning("Query expansion skipped: no ANTHROPIC_API_KEY set.")
             return Expansion(question, (), REWRITE_MODEL, STATUS_NO_KEY)
+        try:
+            llm = get_rewrite_llm()
+        except Exception:  # noqa: BLE001 — any construction failure degrades, never raises
+            logger.warning("Query expansion failed: the rewrite LLM could not be built.")
+            return Expansion(question, (), REWRITE_MODEL, STATUS_API_ERROR)
 
     try:
         raw = _invoke_rewrite(llm, question)

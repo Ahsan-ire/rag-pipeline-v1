@@ -96,6 +96,25 @@ class TestParseRewrites:
         )
         assert len(parse_rewrites(text)) == MAX_REWRITES
 
+    def test_marker_only_lines_yield_no_rewrites(self):
+        """Fallback path (gate fix): a degenerate "1.\\n2.\\n3." response is
+        markers with no content — no line matches the marker+content regex, so
+        the fallback strips each leading marker to "" and drops it. The result
+        is ZERO rewrites, NOT the three literal "1." strings the old
+        no-marked-line fallback harvested."""
+        assert parse_rewrites("1.\n2.\n3.") == []
+
+    def test_bullet_only_lines_yield_no_rewrites(self):
+        """Same fallback path with bulleted markers: "-\\n*\\n•" → zero rewrites."""
+        assert parse_rewrites("-\n*\n•") == []
+
+    def test_no_alpha_numbered_candidate_dropped(self):
+        """Numbered path (gate fix): a numbered line whose content carries NO
+        alphabetic character (bare digits) is dropped — it is not a usable
+        search query — while a real rewrite alongside it survives."""
+        text = "1. 2024\n2. registration of unregistered land"
+        assert parse_rewrites(text) == ["registration of unregistered land"]
+
 
 class TestExpandQuery:
     def test_disabled_skips_llm_entirely(self, monkeypatch):
@@ -176,6 +195,49 @@ class TestExpandQuery:
             result = expand_query("What is a priority entry?", llm=object())
 
         assert result.status == STATUS_PARSE_ERROR
+        assert result.rewrites == ()
+
+    def test_marker_only_response_is_parse_error(self):
+        """Marker-only model output ("1.\\n2.\\n3.") yields zero effective
+        rewrites, so expand_query degrades to STATUS_PARSE_ERROR — never
+        STATUS_LIVE. A degenerate expansion that read as "live" would satisfy
+        the canonical eval's zero-fallback gate with no real rewrites (D46)."""
+        with patch("src.query_rewrite._invoke_rewrite", return_value="1.\n2.\n3."):
+            result = expand_query("What is a priority entry?", llm=object())
+
+        assert result.status == STATUS_PARSE_ERROR
+        assert result.rewrites == ()
+
+    def test_constructor_runtimeerror_is_api_error(self, monkeypatch):
+        """A RuntimeError raised while BUILDING the client (llm=None path) must
+        degrade to STATUS_API_ERROR, never escape — the never-raises contract
+        covers construction failures, not only ValueError. A key is set so the
+        explicit missing-key check passes and control reaches the constructor."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake")
+
+        def boom():
+            raise RuntimeError("client construction blew up")
+
+        monkeypatch.setattr("src.query_rewrite.get_rewrite_llm", boom)
+        result = expand_query("What is a priority entry?", llm=None)
+
+        assert result.status == STATUS_API_ERROR
+        assert result.rewrites == ()
+
+    def test_key_present_but_constructor_valueerror_is_api_error(self, monkeypatch):
+        """With a key set, an UNRELATED ValueError from the constructor must be
+        STATUS_API_ERROR, not STATUS_NO_KEY: the no-key case is decided by an
+        explicit env check BEFORE construction, so a constructor ValueError can
+        no longer be mislabeled as a missing key."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake")
+
+        def boom():
+            raise ValueError("some unrelated config problem, not the key")
+
+        monkeypatch.setattr("src.query_rewrite.get_rewrite_llm", boom)
+        result = expand_query("What is a priority entry?", llm=None)
+
+        assert result.status == STATUS_API_ERROR
         assert result.rewrites == ()
 
     def test_expansion_is_frozen(self):

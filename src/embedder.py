@@ -25,9 +25,11 @@ COLLECTION_NAME = "legal_documents"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_MODEL_MANIFEST = "embedding_model.txt"
 
-# Substrings (checked case-insensitively) that mark an OSError as a local
-# cache miss rather than some other filesystem failure (D47).
-_CACHE_MISS_MARKERS = ("local_files_only", "offline", "cache")
+# A "can't find it" phrase must appear TOGETHER WITH "cache" in an OSError
+# message for it to read as a cold-cache miss (D47; gate fix 14 Jul 2026) —
+# requiring both keeps an unrelated cache-mentioning failure (e.g. "Permission
+# denied writing cache directory") from being mistaken for a miss.
+_NOT_FOUND_PHRASES = ("cannot find", "couldn't find", "not found")
 
 
 def _is_local_cache_miss(exc: Exception) -> bool:
@@ -37,22 +39,40 @@ def _is_local_cache_miss(exc: Exception) -> bool:
     transformers 5.13.0, sentence_transformers 5.6.0): a cold cache with
     ``local_files_only=True`` actually surfaces from ``SentenceTransformer``
     as a plain ``OSError`` — ``transformers.utils.hub.cached_file`` catches
-    huggingface_hub's own ``LocalEntryNotFoundError`` and re-raises it as
-    ``OSError("...couldn't find them in the cached files...offline
-    mode...")``. The direct ``isinstance(exc, LocalEntryNotFoundError)``
-    check is kept too, since other huggingface_hub/sentence_transformers
-    call paths (e.g. ``sentence_transformers.util.file_io.load_file_path``)
-    raise it directly rather than wrapping it.
+    huggingface_hub's own ``LocalEntryNotFoundError`` and re-raises it as an
+    ``OSError`` whose message pairs a "couldn't find them" phrase with the
+    word "cache" (the installed transformers text is: "We couldn't connect to
+    '<endpoint>' to load the files, and couldn't find them in the cached
+    files. Check your internet connection or see how to run the library in
+    offline mode ..."). The direct ``isinstance(exc, LocalEntryNotFoundError)``
+    check is kept too, since other huggingface_hub/sentence_transformers call
+    paths (e.g. ``sentence_transformers.util.file_io.load_file_path``) raise it
+    directly rather than wrapping it.
 
-    Anything else (a plain ``ValueError``, an auth or permission error, ...)
-    is NOT a cache miss and must propagate immediately (D47, plan-gate
-    finding M12) instead of silently triggering a network-enabled retry.
+    Narrowness matters (gate fix 14 Jul 2026): a ``PermissionError`` or
+    ``IsADirectoryError`` is a filesystem/config fault, NOT a cold cache — a
+    network-enabled retry would neither help nor be safe — so those are
+    excluded even though they are ``OSError`` subclasses whose messages may
+    mention "cache" (e.g. "Permission denied writing cache directory"). For any
+    other ``OSError`` we require message evidence of the actual cold-cache
+    shape: the literal ``local_files_only`` flag, OR a "can't find it" phrase
+    together with "cache". Anything else (a plain ``ValueError``, an auth
+    error, ...) is NOT a cache miss and must propagate immediately (D47,
+    plan-gate finding M12) instead of silently triggering a download retry.
     """
     if LocalEntryNotFoundError is not None and isinstance(exc, LocalEntryNotFoundError):
         return True
+    # PermissionError / IsADirectoryError are OSError subclasses but are never a
+    # cold-cache miss — exclude them BEFORE the generic OSError branch so a
+    # "cache"-mentioning permission failure can't trigger a network retry.
+    if isinstance(exc, (PermissionError, IsADirectoryError)):
+        return False
     if isinstance(exc, OSError):
         message = str(exc).lower()
-        return any(marker in message for marker in _CACHE_MISS_MARKERS)
+        if "local_files_only" in message:
+            return True
+        not_found = any(phrase in message for phrase in _NOT_FOUND_PHRASES)
+        return not_found and "cache" in message
     return False
 
 

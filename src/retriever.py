@@ -13,11 +13,16 @@ from src.embedder import CHROMA_PERSIST_DIR, assert_embedding_model, get_vector_
 logger = logging.getLogger(__name__)
 
 RRF_K = 60
-# Rewrite-derived ranked lists count at half weight (Phase 13, D43): three
-# correlated rewrites agreeing on a generic chunk contribute 3*0.5/(60+1) to
-# its fused score, which stays below the 2*1.0/(60+1) the original query's
-# two arms (vector + BM25) contribute when THEY agree on the right chunk —
-# so noisy rewrite consensus cannot outvote real original-query agreement.
+# Total weight BUDGET for the whole rewrite bundle, relative to one original
+# arm (Phase 13, D43; gate fix 14 Jul 2026). Each rewrite-derived ranked list
+# is weighted REWRITE_LIST_WEIGHT / n_rewrites (n_rewrites = number of
+# effective rewrite sub-queries), so across ANY arm count A and ANY rewrite
+# count N the whole rewrite bundle contributes at most REWRITE_LIST_WEIGHT ×
+# the original query's full-agreement score: A arms × N rewrites ×
+# (0.5/N)/(60+r) = 0.5 × A/(60+r), i.e. half of the original's A×1.0/(60+r).
+# A FLAT 0.5 per list (the pre-fix value) failed the real production shape:
+# 3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 outvoted the original's 2.0 (D43's
+# stated invariant). The per-budget form closes that hole for every A and N.
 REWRITE_LIST_WEIGHT = 0.5
 CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
@@ -88,9 +93,12 @@ def retrieve(
     rewrite even when the original phrasing's own vector/BM25 rankings miss
     the right chunk entirely. Every (arm, sub-query) pair contributes its own
     ranked-ID list to the fusion, weighted 1.0 for lists derived from the
-    original query and ``REWRITE_LIST_WEIGHT`` (0.5) for lists derived from a
-    rewrite, so N correlated rewrites agreeing on a generic chunk cannot
-    outvote the original query's two arms agreeing on the right one (D43).
+    original query and ``REWRITE_LIST_WEIGHT / n_rewrites`` for each
+    rewrite-derived list, so the WHOLE rewrite bundle — N rewrites across every
+    arm — contributes at most ``REWRITE_LIST_WEIGHT`` (0.5) × the original
+    query's full-agreement score for ANY arm count and ANY N: N correlated
+    rewrites agreeing on a generic chunk cannot outvote the original query's
+    arms agreeing on the right one (D43).
     ``CANDIDATE_POOL``/``RRF_K``/``DEFAULT_TOP_K`` are unchanged — D45
     rescinded pool widening; recall breadth comes from more queries, not
     deeper per-query candidate lists. Dedup: a rewrite is dropped if it is
@@ -204,6 +212,16 @@ def retrieve(
             seen.add(candidate.casefold())
             sub_queries.append(candidate)
 
+    # Per-rewrite-list weight (Phase 13, D43; gate fix): split the fixed
+    # REWRITE_LIST_WEIGHT budget evenly across the N EFFECTIVE rewrite
+    # sub-queries, so the whole rewrite bundle (N rewrites × every arm) can
+    # contribute at most REWRITE_LIST_WEIGHT × an original arm's full agreement
+    # for ANY arm count and ANY N — see REWRITE_LIST_WEIGHT's comment.
+    # ``max(1, ...)`` guards the no-rewrite case (n_rewrites == 0), though the
+    # weight is then never consulted (only sub_queries[0] runs).
+    n_rewrites = len(sub_queries) - 1
+    per_rewrite_weight = REWRITE_LIST_WEIGHT / max(1, n_rewrites)
+
     id_to_doc: Dict[str, Document] = {}
     # One ranked-ID list per (arm × sub-query), with a parallel per-list
     # weight (1.0 for the original query's lists, REWRITE_LIST_WEIGHT for a
@@ -228,7 +246,7 @@ def retrieve(
                     raise
                 logger.error("Error during vector retrieval: %s", e)
             ranked_lists.append(vector_ranked_ids)
-            list_weights.append(1.0 if i == 0 else REWRITE_LIST_WEIGHT)
+            list_weights.append(1.0 if i == 0 else per_rewrite_weight)
 
     if use_bm25:
         if bm25_index is not None:
@@ -250,7 +268,7 @@ def retrieve(
                         raise
                     logger.error("Error during BM25 retrieval: %s", e)
                 ranked_lists.append(bm25_ranked_ids)
-                list_weights.append(1.0 if i == 0 else REWRITE_LIST_WEIGHT)
+                list_weights.append(1.0 if i == 0 else per_rewrite_weight)
         else:
             # A missing sidecar is not an operational error (unaffected by
             # strict_errors): hybrid degrades to vector-only, bm25 mode returns

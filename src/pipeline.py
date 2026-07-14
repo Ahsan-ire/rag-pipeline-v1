@@ -301,6 +301,7 @@ def query(
     verbose: bool = False,
     show_unverified: bool = False,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
     no_rewrite: bool = False,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
@@ -320,9 +321,9 @@ def query(
         persist_directory: Vector-store directory to query; the BM25 sidecar and
             embedding-model manifest are read from beside it.
         no_rewrite: If True, skip the LLM query-expansion stage (Phase 13,
-            D43) — retrieval sees only the raw question. Appended after
-            ``persist_directory`` rather than inserted earlier so any caller
-            passing later positional args stays positional-shift-safe.
+            D43) — retrieval sees only the raw question. Keyword-only (after the
+            bare ``*``) so it can never be set by a positional-argument shift;
+            ``main()`` already passes it by keyword.
 
     Returns:
         Dict with answer, citations, sources, source_documents,

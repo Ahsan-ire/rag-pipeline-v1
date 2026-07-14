@@ -653,3 +653,24 @@ class TestGetEmbeddingFunction:
             get_embedding_function()
 
         assert len(calls) == 1
+
+    def test_permission_error_mentioning_cache_is_not_a_miss(self, monkeypatch):
+        """Gate fix: a PermissionError is a filesystem/config fault, NOT a cold
+        cache — even when its message mentions "cache" (e.g. a read-only cache
+        dir). It must propagate on the FIRST construction, never triggering a
+        network-enabled download retry (the old broad substring match treated
+        any "cache"-mentioning OSError as a miss). PermissionError is an OSError
+        subclass, so this pins the explicit exclusion."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                raise PermissionError("Permission denied writing cache directory")
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        with pytest.raises(PermissionError, match="Permission denied"):
+            get_embedding_function()
+
+        assert len(calls) == 1  # single construction, no download retry
