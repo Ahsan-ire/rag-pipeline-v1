@@ -444,12 +444,116 @@ decision; chosen artifact tagged + pushed.
 
 ---
 
+## Phase 13 — query robustness: rewrite + graded answers (Tue 14 Jul, ~1 day) — `phase-13-query-robustness`
+
+(Post-v2.0 remediation. 14 Jul field-testing showed natural staff phrasing gets the refusal
+sentence from the model itself — audit log: six queries, all `gate_outcome: REFUSAL`, gate never
+fired — because (a) vague phrasing retrieves disjoint BM25/vector rankings and the right chunks
+miss top-6, and (b) prompt rule 3 is binary answer-or-refuse, refusing even with the correct
+chunk at rank 1. The AI-generated eval sets masked this: they share the corpus vocabulary, so
+held-out strict hit@6 read 20/20. Diagnosis + design: docs/decisions.md D43–D47.)
+
+1. **Multi-query weighted retrieval (D43, D45):** `retrieve()` gains keyword-only
+   `rewrites: Optional[Sequence[str]]` — each used arm runs once per sub-query (original
+   question always first; casefold dedup), one ranked-ID list per (arm × sub-query),
+   `id_to_doc` unioned, all lists fused by `_reciprocal_rank_fusion`, which gains optional
+   per-list weights (original lists 1.0, rewrite lists 0.5 — correlated-rewrite noise cannot
+   outvote original-arm agreement). `CANDIDATE_POOL`/`RRF_K`/`DEFAULT_TOP_K` unchanged
+   (12/60/6 — D31 upheld, pool widening rescinded at plan gate). `rewrites=None` is
+   byte-identical to today.
+2. **Expansion stage (D43):** new `src/query_rewrite.py` — `REWRITE_MODEL="claude-haiku-4-5"`,
+   `get_rewrite_llm()` (sibling of `get_llm`, same key guard), `parse_rewrites()` (pure,
+   defensive), `expand_query(question, *, llm=None) -> Expansion` (original; effective
+   rewrites deduped & original-excluded; model; status `live|no_key|api_error|parse_error|
+   disabled`) — never raises; any failure → zero rewrites + status. `pipeline.query()` calls
+   it between context-load and retrieve (keyword-only `no_rewrite: bool = False`, passed by
+   keyword from `main()`); new `--no-rewrite` CLI flag; rewrites print under `--verbose`.
+3. **Audit fields (D43):** `build_event()` gains keyword-only `rewrites=None` + expansion
+   status; always logs `rewrite_count`, `rewrite_sha256s`, `rewrite_status`; raw rewrite text
+   only under the existing `AUDIT_LOG_RAW_QUERIES=1` gate (same client-matter sensitivity as
+   the query).
+4. **Graded answer policy (D44):** `CAVEAT_PREFIX` constant; SYSTEM_PROMPT rule 3 → four-tier
+   coverage policy (direct / partial-with-named-gaps / caveat-form related guidance, every
+   statement cited / exact refusal, alone, for genuinely out-of-corpus); rule 4 reworded
+   ("legal principle first in the substantive answer"); PROMPT_TEMPLATE human closing updated
+   in lockstep (old binary-only wording must be gone). `REFUSAL_PHRASE`, `is_refusal`,
+   `CITATION_RE`, the grounding gate: all byte-unchanged (byte-canary test added).
+   `evaluate_completeness` strips the one literal `CAVEAT_PREFIX` sentence before
+   sentence-splitting (reported metric only; gates nothing).
+5. **Eval (D46):** `EVAL_MODES = (hybrid, vector, bm25, hybrid+rewrite)` — swap ALL coupled
+   sites: `run_eval_matrix` default `modes` + mode guard (evaluator.py:1305, :1374), CLI
+   choices AND `all`-expansion + import (pipeline.py:637-643, :716, :729); shared per-run
+   expansion cache (one attempt per unique question feeds retrieval AND generation) +
+   `rewrite_fallbacks`/`rewrite_attempts` counters; default `retrieve_fn_factory` handles
+   `hybrid+rewrite`; default `generate_fn` expands too (answer passes measure the production
+   config); per-question detail keys to the `hybrid+rewrite` row when it ran; `--realistic
+   <path>` third set; **both `--skip-*` flags also disable expansion** (the documented
+   "both skips = zero API calls" contract stays true on keyed boxes); canonical v3 = existing
+   conditions + realistic set answerable + distinct realpaths across sets + all EVAL_MODES +
+   expansion attempted with zero fallbacks; explicit `--results` at the canonical path now
+   raises on a non-canonical run (was warning); legacy `run_eval` default output moves to the
+   partial path; report captions + provenance line (rewrite model, live vs fallback); ci.yml
+   gains a third grep asserting the `hybrid+rewrite` row exists (existing two greps
+   byte-unchanged).
+6. **Embedder (D47):** local-first model load; ONLY cache-miss failures trigger the one
+   logged download retry; unrelated failures re-raise.
+7. **Realistic set (D46):** `eval/realistic_set.jsonl` (~22 q: real failing queries as seeds,
+   messy paraphrases, vocabulary-shifted new questions, ~4 near-domain negatives) +
+   `eval/realistic_candidate_review.md` (curation evidence, mirrors the held-out review doc).
+   Drafted → **user reviews/refines → freeze** → only then step 8. Existing sets byte-identical.
+8. **Canonical re-run (live API, user-approved):** full matrix incl. realistic set + judge;
+   `is_canonical=True` writes eval/results.md; README metrics + architecture + limitations
+   re-synced.
+
+**Tests:** rewrites=None identity; rewrite-doc enters top-k; weighted fusion — correlated
+rewrite lists (0.5) cannot outvote original-arm agreement (adversarial test); id_to_doc union;
+parse_rewrites matrix; expand_query degrade paths (no key / API error / parse failure → status,
+zero rewrites); suite-wide autouse conftest fixture scrubbing ANTHROPIC_API_KEY (keyed dev box
+can never leak a live call through an unpatched seam) plus autouse `expand_query` patches at
+BOTH seams (`src.pipeline`, `src.evaluator`); --no-rewrite skips expansion; audit rewrite
+fields present/absent + status + env-gated text; CAVEAT_PREFIX in prompt; REFUSAL_PHRASE byte
+canary (`== b"not covered in the source material"`); old binary wording absent from the human
+template; is_refusal(caveat answer) False; grounding caveat+cited → CITATIONS_VERIFIED;
+completeness caveat-prefix exemption; evaluator canonical v3 routing (realistic absent /
+duplicate realpaths / fallbacks>0 / zero attempts → partial); one-expansion-per-question cache
+count across retrieval+generation; hybrid+rewrite factory passes rewrites; `--realistic` and
+`--mode hybrid+rewrite` CLI dispatch; explicit-canonical-path refusal on non-canonical runs;
+embedder local-first (local hit / cache-miss retry / unrelated error no-retry). All offline.
+**decisions.md:** D43, D44, D45, D46, D47.
+**Acceptance:** full suite green; the two named failing queries ("what does unregistered land
+mean", "process for registering unregistered land") answered with verified citations in live
+spot-checks; near-domain negatives still refuse — criterion amended 15 Jul at the canonical
+run: the graded policy (D44) deliberately answers negatives for which the corpus holds
+genuinely related transactional guidance, under the explicit caveat sentence with verified
+citations. Outcome after the budgeted calibration iteration (D44 addendum): 11/14 exact
+refusals (held-out 7/8, realistic 4/6; tuning 5/5); the three residuals (fees, planning,
+mortgage-arrears) are all subjects the corpus covers from the transactional angle — live
+spot-checks (fees, planning) show caveat-form answers with gate-verified citations, while the
+committed report records only the refusal boolean for negative rows (refusal-row detail
+reporting is a Phase 14 evaluator addition) — documented in D44 + README rather than
+prompt-tuned away (dev-set overfit). Binary 14/14 was a pre-graded-policy criterion;
+tier-choice grading is the Phase 14/15 fix that makes this measurable properly; canonical
+eval/results.md written with the realistic slice present; keyless CI
+green with the two existing smoke greps byte-intact plus the new hybrid+rewrite row grep;
+README numbers match the new results.md; CLAUDE.md Commands block updated (canonical command
+now includes `--realistic`; both-skips offline contract restated).
+
+---
+
 ## Cut list (v2)
 
-**Cut order if behind:** judge pass → MRR/hit@1,3 → CI smoke job → completeness metric → demo
-polish.
+**Cut order if behind (Phases 6–12 only; superseded for Phase 13 below):** judge pass →
+MRR/hit@1,3 → CI smoke job → completeness metric → demo polish.
 **Never cut:** fail-closed gate, appendix support, per-source replace (with BM25 rebuild), held-out
 set, strict labeling + provenance, honest README, `v1.0-baseline` tag.
+**Phase 13 cuts:** cross-encoder reranker (deliberately cut — no new dep needed via
+sentence-transformers, but adds a second model download + latency days before the deadline);
+per-sub-query pool widening (rescinded at plan gate per D31's measured regression — revisit
+post-submission with eval evidence if the realistic slice shows recall still short); tier/
+relevance machine-grading of graded answers (judge measures claim support only — known
+limitation). Phase 13 cut order if behind: report-callout polish → D-entry prose → README demo
+tweaks. Phase 13 never-cut: gate behaviour, exact REFUSAL_PHRASE, canonical guard (incl. the
+judge pass in the WS8 canonical run), keyless CI.
 
 ## Two-track git strategy
 

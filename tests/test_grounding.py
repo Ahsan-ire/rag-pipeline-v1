@@ -6,7 +6,7 @@ it imports lazily (``src.generator.is_refusal``) is exercised through the real
 string, not a mock.
 """
 
-from src.generator import REFUSAL_PHRASE
+from src.generator import CAVEAT_PREFIX, REFUSAL_PHRASE
 from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
@@ -93,3 +93,31 @@ class TestClassifyVerification:
             {"grounded": [_APPENDIX], "ungrounded": []},
         )
         assert outcome == CITATIONS_VERIFIED
+
+
+class TestClassifyCaveatForm:
+    """D44: a caveat-form answer opens with the uncited CAVEAT_PREFIX sentence
+    and then summarises related guidance with citations. ``classify`` only
+    ever sees the extracted citations/citation_check dicts — the uncited
+    opener contributes no citation of its own — so a cited body still
+    verifies cleanly, and a body with no citations at all still fails closed."""
+
+    def test_caveat_answer_with_a_grounded_citation_is_verified(self):
+        answer = (
+            f"{CAVEAT_PREFIX} Requisitions must be raised within the agreed "
+            "period [Handbook, para 14.8.5, p.412]."
+        )
+        outcome = classify(
+            answer, [_PARA], {"grounded": [_PARA], "ungrounded": []}
+        )
+        assert outcome == CITATIONS_VERIFIED
+
+    def test_caveat_answer_with_zero_citations_is_unverified(self):
+        """The caveat opener alone, with no cited body at all, still fails
+        closed — the uncited opener does not exempt the rest of the answer
+        from needing at least one grounded citation."""
+        answer = f"{CAVEAT_PREFIX} Requisitions must generally be raised promptly."
+        outcome = classify(
+            answer, [], {"grounded": [], "ungrounded": []}
+        )
+        assert outcome == CITATIONS_UNVERIFIED

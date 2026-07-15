@@ -68,17 +68,17 @@ as extra attack surface when the winner is implemented.
   grading two others at n=1 per task, with no ground truth, no blinding, and
   the judge related to a contestant, is not measurement — and its conclusions
   go stale with every model release. The eval set already is the scoreboard,
-  with ground truth. (D43)
+  with ground truth. (D48)
 - **Per-agent containers, a multi-plane broker service, one repo per
   concern.** For a solo operator this is a second project with no portfolio
   value. Claude Code subagents already give fresh-context isolation;
   git worktrees give filesystem isolation; `--sandbox read-only` gives the
-  second vendor read-only access. Zero infrastructure. (D43)
+  second vendor read-only access. Zero infrastructure. (D48)
 - **Autonomous third-party agents with real-world reach near client data.**
   Prompt-injection surface plus unvetted skill/plugin ecosystems is not a
   risk profile that belongs on a machine holding live conveyancing files —
   that is privilege and GDPR exposure, not workflow optimization. Anything
-  in that class stays off machines with client data, full stop. (D43)
+  in that class stays off machines with client data, full stop. (D48)
 
 ## Porting this harness to a new project
 

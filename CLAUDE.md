@@ -26,15 +26,20 @@ model's opinion, never on the held-out set.
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
 - Query: `python -m src.pipeline query "..." --top-k 6`
 - Extraction QA: `python scripts/extraction_qa.py ./data/Conveyancing_Handbook.pdf`
-- Eval (canonical v2, held-out headline; **makes live API calls**):
-  `python -m src.pipeline eval --heldout eval/heldout_set.jsonl --judge`
+- Eval (canonical v3, held-out headline; **makes live API calls** incl. Haiku
+  query expansion):
+  `python -m src.pipeline eval --heldout eval/heldout_set.jsonl --realistic eval/realistic_set.jsonl --judge`
   — writes the committed `eval/results.md` only on a canonical run (held-out
-  set, all 3 modes, refusals+completeness, top_k=6, no errors); else the
-  gitignored `eval/results_partial.md`.
+  set AND realistic set at distinct paths, all 4 modes incl. hybrid+rewrite,
+  refusals+completeness, top_k=6, no generation errors, expansion attempted
+  with zero fallbacks); else the gitignored `eval/results_partial.md`.
 - Eval offline / CI (no API key, retrieval ablation only):
   `python -m src.pipeline eval --skip-refusals --skip-completeness` — both
-  skips are required to make ZERO generation calls (generation would otherwise
-  need `ANTHROPIC_API_KEY`).
+  skips are required to make ZERO API calls: they suppress generation AND
+  disable Haiku query expansion (the hybrid+rewrite row then renders as the
+  disabled fallback, equal to raw hybrid).
+- Query without expansion (debug/offline): add `--no-rewrite` to the query
+  command.
 
 ## Hard rules
 - NEVER commit anything in `data/`, any `*.pdf`, `.env`, or `chroma_db/`.

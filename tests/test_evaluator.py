@@ -16,8 +16,12 @@ from langchain_core.documents import Document
 from src.evaluator import (
     CHROMA_PERSIST_DIR,
     DEFAULT_RESULTS_PATH,
+    EVAL_MODES,
     HIT_KS,
     PARTIAL_RESULTS_PATH,
+    REALISTIC_LABEL_TOKEN,
+    RETRIEVAL_MODES,
+    REWRITE_MODE,
     _resolve_results_path,
     _sha256_file,
     _wilson_ci,
@@ -31,7 +35,14 @@ from src.evaluator import (
     run_eval_matrix,
     split_sentences,
 )
-from src.generator import REFUSAL_PHRASE
+from src.generator import CAVEAT_PREFIX, REFUSAL_PHRASE
+from src.query_rewrite import (
+    REWRITE_MODEL,
+    STATUS_API_ERROR,
+    STATUS_LIVE,
+    STATUS_NO_KEY,
+    Expansion,
+)
 from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
@@ -706,6 +717,98 @@ class TestEvaluateCompleteness:
         assert err_row["error"] == "api boom"
         assert err_row["gate_outcome"] is None
 
+    # --- CAVEAT_PREFIX coverage exemption (D44 / F3) -----------------------
+    def test_caveat_prefix_exempt_from_coverage(self):
+        """A related-guidance answer opening with the exact literal CAVEAT_PREFIX
+        (deliberately uncited) plus one cited guidance sentence scores coverage
+        1/1: the uncited prefix is stripped before sentence-splitting, so it does
+        not depress sentence_citation_coverage."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["3.2"]}]
+        answers = {
+            "Q1": _answer_entry(
+                f"{CAVEAT_PREFIX} Related guidance applies [Handbook, para 3.2, p.5].",
+                citations=[_cite("3.2", 5)],
+                grounded=[_cite("3.2", 5)],
+                gate_outcome=CITATIONS_VERIFIED,
+            )
+        }
+
+        report = evaluate_completeness(golden, answers)
+
+        assert report["sum_sentences"] == 1
+        assert report["sum_cited_sentences"] == 1
+        assert report["sentence_citation_coverage"] == pytest.approx(1.0)
+
+    def test_caveat_prefix_mid_answer_not_stripped(self):
+        """The exemption is leading-only: a CAVEAT_PREFIX occurrence in the
+        MIDDLE of an answer is NOT stripped and counts as (uncited) sentences,
+        so a cited opener followed by the prefix scores below 1.0."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["3.2"]}]
+        answers = {
+            "Q1": _answer_entry(
+                f"A cited claim [Handbook, para 3.2, p.5]. {CAVEAT_PREFIX} Tail.",
+                citations=[_cite("3.2", 5)],
+                grounded=[_cite("3.2", 5)],
+                gate_outcome=CITATIONS_VERIFIED,
+            )
+        }
+
+        report = evaluate_completeness(golden, answers)
+
+        # Prefix is two sentences + the "Tail." fragment; none stripped, only the
+        # leading cited sentence carries a citation -> coverage < 1.0.
+        assert report["sum_cited_sentences"] == 1
+        assert report["sum_sentences"] > 1
+        assert report["sentence_citation_coverage"] < 1.0
+
+    def test_caveat_prefix_twice_at_start_only_first_stripped(self):
+        """Exactly ONE leading occurrence is stripped: a doubled prefix leaves
+        the second copy in place, so its (uncited) sentences are counted."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["3.2"]}]
+        doubled = _answer_entry(
+            f"{CAVEAT_PREFIX} {CAVEAT_PREFIX} Guidance [Handbook, para 3.2, p.5].",
+            citations=[_cite("3.2", 5)],
+            grounded=[_cite("3.2", 5)],
+            gate_outcome=CITATIONS_VERIFIED,
+        )
+        single = _answer_entry(
+            f"{CAVEAT_PREFIX} Guidance [Handbook, para 3.2, p.5].",
+            citations=[_cite("3.2", 5)],
+            grounded=[_cite("3.2", 5)],
+            gate_outcome=CITATIONS_VERIFIED,
+        )
+
+        doubled_report = evaluate_completeness(golden, {"Q1": doubled})
+        single_report = evaluate_completeness(golden, {"Q1": single})
+
+        # Single: only the one cited guidance sentence remains -> 1/1.
+        assert single_report["sum_sentences"] == 1
+        # Doubled: the second prefix survives as extra uncited sentences.
+        assert doubled_report["sum_sentences"] > single_report["sum_sentences"]
+        assert doubled_report["sum_cited_sentences"] == 1
+        assert doubled_report["sentence_citation_coverage"] < 1.0
+
+    def test_caveat_near_match_one_char_off_not_stripped(self):
+        """A near-match one character off the literal prefix is NOT stripped
+        (exact-literal startswith), so its uncited opener is counted."""
+        golden = [{"question": "Q1", "type": "direct", "expected_sections": ["3.2"]}]
+        near = CAVEAT_PREFIX[:-1] + "?"  # swap the trailing ':' for '?'
+        answers = {
+            "Q1": _answer_entry(
+                f"{near} Guidance [Handbook, para 3.2, p.5].",
+                citations=[_cite("3.2", 5)],
+                grounded=[_cite("3.2", 5)],
+                gate_outcome=CITATIONS_VERIFIED,
+            )
+        }
+
+        report = evaluate_completeness(golden, answers)
+
+        # The near-match opener remains -> more than one sentence, only one cited.
+        assert report["sum_sentences"] > 1
+        assert report["sum_cited_sentences"] == 1
+        assert report["sentence_citation_coverage"] < 1.0
+
 
 class TestGenerateAnswers:
     """One generation per in-scope question, cached and keyed by question text,
@@ -833,12 +936,14 @@ class TestResolveResultsPath:
                 "eval/golden_set.jsonl", is_canonical=True, set_paths=["eval/golden_set.jsonl"]
             )
 
-    def test_explicit_default_on_noncanonical_honored_with_warning(self):
-        path, warnings = _resolve_results_path(
-            DEFAULT_RESULTS_PATH, is_canonical=False, set_paths=["eval/golden_set.jsonl"]
-        )
-        assert path == DEFAULT_RESULTS_PATH
-        assert warnings and "NON-canonical" in warnings[0]
+    def test_explicit_default_on_noncanonical_raises(self):
+        """D46 fail-closed: explicitly targeting the canonical report on a
+        non-canonical run now RAISES (was previously honored with a warning) —
+        the committed report must never be written by a non-canonical run."""
+        with pytest.raises(ValueError, match="not canonical"):
+            _resolve_results_path(
+                DEFAULT_RESULTS_PATH, is_canonical=False, set_paths=["eval/golden_set.jsonl"]
+            )
 
     def test_explicit_other_path_honored_no_warning(self):
         path, warnings = _resolve_results_path(
@@ -846,6 +951,33 @@ class TestResolveResultsPath:
         )
         assert path == "eval/scratch.md"
         assert warnings == []
+
+    def test_case_variant_of_canonical_path_refused_on_noncanonical(self, tmp_path, monkeypatch):
+        """F1: on a case-INSENSITIVE filesystem a case-variant spelling of the
+        canonical report is the SAME file (os.path.samefile), so an explicit
+        --results at that alias on a non-canonical run is refused. A realpath
+        STRING compare would miss it (realpath preserves the as-typed casing on
+        a case-insensitive FS). Skipped where the FS is case-sensitive (the two
+        names are then genuinely different files)."""
+        canonical = tmp_path / "results.md"
+        canonical.write_text("real canonical report\n", encoding="utf-8")
+        variant = tmp_path / "RESULTS.md"
+        if not variant.exists():
+            pytest.skip("case-sensitive filesystem; case-variant alias not applicable")
+
+        monkeypatch.setattr("src.evaluator.DEFAULT_RESULTS_PATH", str(canonical))
+        with pytest.raises(ValueError, match="not canonical"):
+            _resolve_results_path(str(variant), is_canonical=False, set_paths=[])
+
+    def test_symlink_alias_of_input_set_is_refused(self, tmp_path):
+        """F1: a --results path that is a SYMLINK to an input eval set is the
+        same file by identity and must be refused (destroying the set)."""
+        real_set = tmp_path / "heldout_set.jsonl"
+        real_set.write_text('{"question":"Q","type":"refusal","expected_sections":[]}\n')
+        alias = tmp_path / "alias.jsonl"
+        alias.symlink_to(real_set)
+        with pytest.raises(ValueError, match="eval-set"):
+            _resolve_results_path(str(alias), is_canonical=True, set_paths=[str(real_set)])
 
 
 class TestSplitSentences:
@@ -946,6 +1078,14 @@ class TestWilsonCi:
     def test_hit_ks_constant_is_1_3_6(self):
         """The reported cut-offs are fixed at 1, 3, 6 (headline is strict@6)."""
         assert HIT_KS == (1, 3, 6)
+
+    def test_eval_modes_constant_is_three_raw_plus_rewrite(self):
+        """EVAL_MODES (Phase 13, D46) = the three retrieval-only ablation arms
+        PLUS hybrid+rewrite; RETRIEVAL_MODES stays 3-valued (retrieve() only
+        knows those three)."""
+        assert EVAL_MODES == ("hybrid", "vector", "bm25", "hybrid+rewrite")
+        assert REWRITE_MODE == "hybrid+rewrite"
+        assert RETRIEVAL_MODES == ("hybrid", "vector", "bm25")
 
 
 class TestLoadOnceDefaultRetrieveFn:
@@ -1212,6 +1352,26 @@ class TestRunEval:
         assert context_calls == [CHROMA_PERSIST_DIR]  # built once, default dir
         assert result["retrieval"]["hits_strict"] == 1
         assert result["refusals"]["refused"] == 1
+
+    def test_run_eval_refuses_writing_canonical_report(self, monkeypatch, tmp_path):
+        """F2: legacy run_eval must never write the committed canonical report —
+        that report is matrix-runner-only (D46). A results_path that IS the
+        canonical path (by file identity) raises up front, before any retrieval
+        or generation, so nothing real is touched (DEFAULT_RESULTS_PATH is
+        monkeypatched to a tmp path and results_path points at that same path)."""
+        canonical = str(tmp_path / "results.md")
+        monkeypatch.setattr("src.evaluator.DEFAULT_RESULTS_PATH", canonical)
+
+        with pytest.raises(ValueError, match="matrix runner"):
+            run_eval(
+                str(tmp_path / "ignored_golden.jsonl"),
+                results_path=canonical,
+                provenance_fn=_fake_provenance,
+            )
+
+        # Fail-fast: the guard fired before load_golden_set, so neither the
+        # (nonexistent) golden path nor the canonical file was ever touched.
+        assert not (tmp_path / "results.md").exists()
 
 
 class TestTopKForwarding:
@@ -1660,6 +1820,32 @@ class TestRunEvalMatrix:
         monkeypatch.setattr("src.evaluator.PARTIAL_RESULTS_PATH", partial)
         return default, partial
 
+    def _patch_expand(self, monkeypatch, expansion_for=None):
+        """Spy-patch src.evaluator.expand_query so expansion is counted without
+        any live call (conftest scrubs the key anyway). By default returns a
+        healthy live Expansion (one rewrite) => attempts>0, fallbacks==0.
+        ``expansion_for`` lets a test return a per-question Expansion (e.g. a
+        fallback status). Returns the list of questions expand_query was asked
+        to expand, so a test can pin the one-call-per-unique-question dedup."""
+        calls = []
+
+        def fake_expand(question, *, llm=None, enabled=True):
+            calls.append(question)
+            if expansion_for is not None:
+                return expansion_for(question)
+            return Expansion(question, ("q rewrite",), REWRITE_MODEL, STATUS_LIVE)
+
+        monkeypatch.setattr("src.evaluator.expand_query", fake_expand)
+        return calls
+
+    def _canonical_sets(self, tmp_path):
+        """Two DISTINCT set files (held-out + realistic), both with answerable
+        questions the fake retrieve resolves — the shape a canonical run needs
+        (D46: held-out AND realistic, distinct realpaths)."""
+        heldout = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        realistic = _matrix_golden(tmp_path, "realistic_set.jsonl", self._golden_entries())
+        return heldout, realistic
+
     # --- the blocker test --------------------------------------------------
     def test_blocker_zero_generate_calls_when_both_skipped_no_judge(self, tmp_path, monkeypatch):
         """Both passes skipped + judge off => the generation pass does not run,
@@ -1684,6 +1870,34 @@ class TestRunEvalMatrix:
         assert result["include_types"] == []
         # Not canonical (skipped passes) -> partial path.
         assert result["results_path"].endswith("results_partial.md")
+
+    def test_matrix_report_disambiguates_report_only_dirty(self, tmp_path, monkeypatch):
+        """Merge-gate finding #4 (15 Jul): the matrix formatter must render the
+        git_dirty_other disambiguation like the legacy formatter, not a bare
+        boolean — a committed canonical report saying 'dirty: True' when the
+        only dirty path was the superseded report itself misleads reviewers."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        def prov():
+            p = self._prov()
+            p["git_dirty"] = True
+            p["git_dirty_other"] = 0
+            return p
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+        with open(result["results_path"], encoding="utf-8") as fh:
+            content = fh.read()
+        assert "clean apart from this generated report" in content
+        assert "dirty: True" not in content
 
     # --- include_types gating ---------------------------------------------
     def test_refusals_only_generates_refusal_type(self, tmp_path, monkeypatch):
@@ -1767,11 +1981,15 @@ class TestRunEvalMatrix:
 
     # --- canonical truth table --------------------------------------------
     def test_canonical_full_run_writes_default(self, tmp_path, monkeypatch):
+        """A fully canonical D46 v3 run: held-out AND realistic sets (distinct
+        realpaths), all four EVAL_MODES (the default), both answer passes, and
+        expansion attempted with zero fallbacks -> writes the committed report."""
         default, _partial = self._patch_paths(monkeypatch, tmp_path)
-        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
 
         result = run_eval_matrix(
-            [("held-out", gp)],
+            [("held-out", heldout), ("realistic", realistic)],
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
@@ -1780,22 +1998,29 @@ class TestRunEvalMatrix:
         assert result["is_canonical"] is True
         assert result["results_path"] == default
         assert os.path.exists(default)
+        assert result["expansion_enabled"] is True
+        assert result["rewrite_attempts"] > 0
+        assert result["rewrite_fallbacks"] == 0
 
     @pytest.mark.parametrize(
         "kwargs,label",
         [
-            ({"modes": ["hybrid"]}, "not all 3 modes"),
+            ({"modes": ["hybrid"]}, "not all 4 modes"),
             ({"skip_refusals": True}, "refusals skipped"),
             ({"skip_completeness": True}, "completeness skipped"),
             ({"top_k": 3}, "top_k != 6"),
         ],
     )
     def test_noncanonical_conditions_route_to_partial(self, tmp_path, monkeypatch, kwargs, label):
+        """Each single deviation from an OTHERWISE-canonical run flips it
+        non-canonical (the base carries held-out + realistic sets, four modes,
+        and a healthy expansion, so each param isolates its one condition)."""
         _default, partial = self._patch_paths(monkeypatch, tmp_path)
-        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
 
         result = run_eval_matrix(
-            [("held-out", gp)],
+            [("held-out", heldout), ("realistic", realistic)],
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
@@ -1806,11 +2031,15 @@ class TestRunEvalMatrix:
         assert result["results_path"] == partial, label
 
     def test_missing_heldout_label_is_noncanonical(self, tmp_path, monkeypatch):
+        """No held-out label -> non-canonical even with everything else (a
+        realistic set, four modes, healthy expansion) in place."""
         _default, partial = self._patch_paths(monkeypatch, tmp_path)
-        gp = _matrix_golden(tmp_path, "golden_set.jsonl", self._golden_entries())
+        self._patch_expand(monkeypatch)
+        tuning = _matrix_golden(tmp_path, "golden_set.jsonl", self._golden_entries())
+        realistic = _matrix_golden(tmp_path, "realistic_set.jsonl", self._golden_entries())
 
         result = run_eval_matrix(
-            [("tuning", gp)],  # no held-out set
+            [("tuning", tuning), ("realistic", realistic)],  # no held-out set
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
@@ -1820,8 +2049,18 @@ class TestRunEvalMatrix:
         assert result["results_path"] == partial
 
     def test_generation_error_makes_run_noncanonical(self, tmp_path, monkeypatch):
+        """A single generation error flips an OTHERWISE-canonical run (held-out
+        + clean realistic set, four modes, healthy expansion) non-canonical."""
         _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        # A clean realistic set whose one answerable question never errors, so
+        # the ONLY generation error is the held-out set's D1 below.
+        realistic = _matrix_golden(
+            tmp_path,
+            "realistic_set.jsonl",
+            [{"question": "E1", "type": "direct", "expected_sections": ["5.1"]}],
+        )
 
         def flaky_gen(question):
             if question == "D1":
@@ -1837,7 +2076,7 @@ class TestRunEvalMatrix:
                     "gate_outcome": CITATIONS_VERIFIED}
 
         result = run_eval_matrix(
-            [("held-out", gp)],
+            [("held-out", gp), ("realistic", realistic)],
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=flaky_gen,
             provenance_fn=self._prov,
@@ -1866,22 +2105,22 @@ class TestRunEvalMatrix:
 
         assert open(default, encoding="utf-8").read() == original
 
-    def test_explicit_default_on_partial_run_warns(self, tmp_path, monkeypatch, capsys):
+    def test_explicit_default_on_partial_run_raises(self, tmp_path, monkeypatch):
+        """D46 fail-closed: an explicit --results at the canonical path on a
+        NON-canonical run RAISES (was previously honored with a warning) — the
+        committed report must never be written by a non-canonical run."""
         default, _partial = self._patch_paths(monkeypatch, tmp_path)
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
 
-        result = run_eval_matrix(
-            [("held-out", gp)],
-            results_path=default,  # explicit -> honored even though non-canonical
-            retrieve_fn_factory=self._retrieve_factory(),
-            generate_fn=self._generate_fn([]),
-            provenance_fn=self._prov,
-            skip_completeness=True,
-        )
-
-        assert result["results_path"] == default
-        err = capsys.readouterr().err
-        assert "NON-canonical" in err
+        with pytest.raises(ValueError, match="not canonical"):
+            run_eval_matrix(
+                [("held-out", gp)],
+                results_path=default,  # canonical path on a non-canonical run
+                retrieve_fn_factory=self._retrieve_factory(),
+                generate_fn=self._generate_fn([]),
+                provenance_fn=self._prov,
+                skip_completeness=True,
+            )
 
     def test_results_path_equal_to_set_path_refused(self, tmp_path, monkeypatch):
         self._patch_paths(monkeypatch, tmp_path)
@@ -1940,9 +2179,9 @@ class TestRunEvalMatrix:
         )
 
         def fake_retrieve(question, top_k=6, persist_directory=None, vector_store=None,
-                          bm25_index=None, mode="hybrid", strict_errors=False):
+                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None):
             retrieve_calls.append({"mode": mode, "store": vector_store, "bm25": bm25_index,
-                                   "strict": strict_errors})
+                                   "strict": strict_errors, "rewrites": rewrites})
             return [{"document": _matrix_doc("3.2"), "score": 1.0, "metadata": _matrix_doc("3.2").metadata}]
 
         monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
@@ -2073,15 +2312,19 @@ class TestRunEvalMatrix:
         must NOT be canonical — else it would overwrite eval/results.md with a
         meaningless 0/0 headline (codex finding)."""
         _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
         # Refusal-only held-out set: zero answerable retrieval questions.
         refusal_only = [
             {"question": "R1", "type": "refusal", "expected_sections": []},
             {"question": "R2", "type": "refusal", "expected_sections": []},
         ]
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", refusal_only)
+        # A clean answerable realistic set, so the ONLY canonical-blocker is the
+        # held-out set having no answerable question.
+        realistic = _matrix_golden(tmp_path, "realistic_set.jsonl", self._golden_entries())
 
         result = run_eval_matrix(
-            [("held-out", gp)],
+            [("held-out", gp), ("realistic", realistic)],
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
@@ -2090,6 +2333,288 @@ class TestRunEvalMatrix:
         assert result["sets"][0]["retrieval"]["hybrid"]["total"] == 0
         assert result["is_canonical"] is False
         assert result["results_path"] == partial
+
+    # --- D46: realistic slice + expansion canonical clauses ----------------
+    def test_realistic_absent_is_noncanonical(self, tmp_path, monkeypatch):
+        """Held-out present + everything else canonical, but NO realistic slice
+        -> non-canonical (D46 requires BOTH slices)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_duplicate_realpath_across_sets_is_noncanonical(self, tmp_path, monkeypatch):
+        """Relabeling ONE file as both --heldout and --realistic must not
+        satisfy both clauses: duplicate realpaths -> non-canonical (D46)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        gp = _matrix_golden(tmp_path, "shared_set.jsonl", self._golden_entries())
+
+        result = run_eval_matrix(
+            [("held-out", gp), ("realistic", gp)],  # same file, two labels
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_expansion_fallback_makes_run_noncanonical(self, tmp_path, monkeypatch):
+        """An expansion that falls back (status != live) on any question flips
+        an otherwise-canonical run non-canonical, and the count surfaces in the
+        result dict (D46: canonical needs zero fallbacks)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+
+        def per_q(question):
+            # D1 falls back (no key); every other question expands live.
+            if question == "D1":
+                return Expansion(question, (), REWRITE_MODEL, STATUS_NO_KEY)
+            return Expansion(question, ("q rewrite",), REWRITE_MODEL, STATUS_LIVE)
+
+        self._patch_expand(monkeypatch, expansion_for=per_q)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["rewrite_fallbacks"] > 0
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_symlink_aliased_sets_are_not_distinct_noncanonical(self, tmp_path, monkeypatch):
+        """F1: two set paths that are the SAME file via a symlink alias are not
+        distinct by file identity, so passing one as --heldout and its symlink
+        as --realistic is non-canonical. Deterministic on ANY filesystem —
+        os.path.samefile follows the link to a single inode (a realpath-string
+        set would too here, but the pairwise samefile check is what also catches
+        the case-variant alias a string compare misses)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        real = _matrix_golden(tmp_path, "shared_set.jsonl", self._golden_entries())
+        alias = tmp_path / "alias_set.jsonl"
+        alias.symlink_to(real)
+
+        result = run_eval_matrix(
+            [("held-out", real), ("realistic", str(alias))],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_fallback_counted_on_bad_status_with_rewrites(self, tmp_path, monkeypatch):
+        """F10 OR-semantics: a NON-live status counts as a fallback even when the
+        Expansion carries rewrites (status != live is sufficient) — this
+        disentangles the two fallback conditions from the existing test that
+        conflates non-live AND zero-rewrites."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(
+            monkeypatch,
+            expansion_for=lambda q: Expansion(q, ("x",), REWRITE_MODEL, STATUS_API_ERROR),
+        )
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        # Every attempt fell back on status alone, despite non-empty rewrites.
+        assert result["rewrite_attempts"] > 0
+        assert result["rewrite_fallbacks"] == result["rewrite_attempts"]
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_fallback_counted_on_live_status_zero_rewrites(self, tmp_path, monkeypatch):
+        """F10 OR-semantics: a LIVE status that nonetheless yielded ZERO effective
+        rewrites still counts as a fallback (len(rewrites) == 0 is sufficient) —
+        the other half of the OR that the conflated test never isolated."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(
+            monkeypatch,
+            expansion_for=lambda q: Expansion(q, (), REWRITE_MODEL, STATUS_LIVE),
+        )
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["rewrite_attempts"] > 0
+        assert result["rewrite_fallbacks"] == result["rewrite_attempts"]
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    def test_both_skips_disable_expansion_row_still_renders(self, tmp_path, monkeypatch):
+        """Both --skip flags disable expansion OUTRIGHT: expand_query is NEVER
+        called (spy), yet the hybrid+rewrite ablation row still renders as the
+        disabled-expansion fallback, and the run is non-canonical."""
+        self._patch_paths(monkeypatch, tmp_path)
+        spy = self._patch_expand(monkeypatch)  # would record ANY call
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            skip_refusals=True,
+            skip_completeness=True,
+        )
+
+        assert result["expansion_enabled"] is False
+        assert spy == []  # expand_query NEVER called on the offline contract
+        assert result["rewrite_attempts"] == 0
+        assert result["is_canonical"] is False
+        # The fourth ablation arm still renders (disabled-expansion fallback).
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert f"| {REWRITE_MODE} |" in report
+        # F11: a disabled run keeps the explicit disabled provenance wording.
+        assert "query expansion: disabled (offline run)" in report
+
+    def test_expand_query_called_once_per_unique_question(self, tmp_path, monkeypatch):
+        """A question is expanded at most once for the WHOLE run: the shared
+        cache is reused by the default hybrid+rewrite ablation AND the default
+        generation pass, and deduped across sets — despite both consuming it."""
+        self._patch_paths(monkeypatch, tmp_path)
+        spy = self._patch_expand(monkeypatch)
+        # Use the DEFAULT retrieve_fn_factory + generate_fn (not injected) so
+        # BOTH the ablation and generation call _expand; patch retrieve, the
+        # backend loaders, and generate_with_sources to stay IO-free.
+        self._patch_backends(monkeypatch)
+        monkeypatch.setattr(
+            "src.evaluator.generate_with_sources",
+            lambda q, results: {
+                "answer": "A [Handbook, para 3.2, p.5].",
+                "citations": [], "sources": [], "source_documents": [],
+                "citation_check": {"grounded": [], "ungrounded": []},
+                "gate_outcome": CITATIONS_VERIFIED,
+            },
+        )
+        heldout = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        realistic = _matrix_golden(
+            tmp_path,
+            "realistic_set.jsonl",
+            [
+                {"question": "D1", "type": "direct", "expected_sections": ["3.2"]},
+                {"question": "E2", "type": "exact_token", "expected_sections": ["5.1"]},
+                {"question": "R2", "type": "refusal", "expected_sections": []},
+            ],
+        )
+
+        run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            provenance_fn=self._prov,
+        )
+
+        # Unique question texts across BOTH sets: D1, E1, R1, E2, R2.
+        assert sorted(set(spy)) == ["D1", "E1", "E2", "R1", "R2"]
+        assert len(spy) == len(set(spy))  # no question expanded twice
+
+    def test_default_factory_rewrite_mode_threads_rewrites(self, tmp_path, monkeypatch):
+        """The default hybrid+rewrite factory passes ``rewrites=`` to retrieve;
+        the raw hybrid factory passes none (rewrites stays None). Both call
+        retrieve on mode='hybrid', so they are told apart by the rewrites kwarg."""
+        self._patch_paths(monkeypatch, tmp_path)
+        logs = self._patch_backends(monkeypatch)
+        self._patch_expand(monkeypatch)  # live: one rewrite "q rewrite"
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        run_eval_matrix(
+            [("held-out", gp)],
+            modes=["hybrid", REWRITE_MODE],
+            generate_fn=self._generate_fn([]),  # injected: isolate ablation retrieves
+            provenance_fn=self._prov,
+            skip_refusals=True,       # expansion still enabled (only ONE skip)
+            skip_completeness=False,
+        )
+
+        rewrites_seen = [c["rewrites"] for c in logs["retrieve"]]
+        # 2 non-refusal questions (D1, E1) × 2 modes = 4 ablation retrieves.
+        assert rewrites_seen.count(["q rewrite"]) == 2  # the hybrid+rewrite arm
+        assert rewrites_seen.count(None) == 2            # the raw hybrid arm
+        # Every retrieve ran on mode='hybrid' (the rewrite arm reuses hybrid).
+        assert all(c["mode"] == "hybrid" for c in logs["retrieve"])
+
+    def test_modes_without_rewrite_still_expands_but_is_noncanonical(self, tmp_path, monkeypatch):
+        """F4: dropping hybrid+rewrite from the modes is non-canonical because
+        the all-four-modes clause fails — but expansion is NO LONGER coupled to
+        the mode set. With no --skip flags, ``expansion_enabled`` is True and the
+        evaluator-owned accounting still attempts expansion (>0), because the
+        answer passes measure the production (hybrid + expansion) config
+        regardless of which retrieval modes are ablated. Only the hybrid+rewrite
+        ABLATION ROW is gated on the mode, not the answer-pass expansion."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            modes=list(RETRIEVAL_MODES),  # the three raw modes, no hybrid+rewrite
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        assert result["expansion_enabled"] is True   # decoupled from the mode set (F4)
+        assert result["rewrite_attempts"] > 0
+        assert result["is_canonical"] is False        # still non-canonical: not all 4 modes
+        assert result["results_path"] == partial
+
+    def test_mode_hybrid_answer_pass_still_uses_expansion(self, tmp_path, monkeypatch):
+        """F4: with modes=['hybrid'] (no hybrid+rewrite ablation row) and no
+        skips, the DEFAULT generation pass still measures the production config —
+        expansion is enabled and its rewrites reach retrieve() on the answer
+        pass (production parity), even though the ablation itself is raw-hybrid.
+        Uses the DEFAULT retrieve_fn_factory + generate_fn so both call _expand;
+        backends + generate_with_sources are faked to stay IO-free."""
+        self._patch_paths(monkeypatch, tmp_path)
+        logs = self._patch_backends(monkeypatch)
+        self._patch_expand(monkeypatch)  # live: one rewrite "q rewrite"
+        monkeypatch.setattr(
+            "src.evaluator.generate_with_sources",
+            lambda q, results: {
+                "answer": "A [Handbook, para 3.2, p.5].",
+                "citations": [], "sources": [], "source_documents": [],
+                "citation_check": {"grounded": [], "ungrounded": []},
+                "gate_outcome": CITATIONS_VERIFIED,
+            },
+        )
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            modes=["hybrid"],
+            provenance_fn=self._prov,
+        )
+
+        assert result["expansion_enabled"] is True
+        assert result["rewrite_attempts"] > 0
+        # The default generation pass threaded the rewrites into retrieve() —
+        # production parity even without the hybrid+rewrite ablation row present.
+        gen_rewrites = [c["rewrites"] for c in logs["retrieve"] if c["rewrites"] is not None]
+        assert ["q rewrite"] in gen_rewrites
 
     # --- report rendering --------------------------------------------------
     def test_two_set_report_rendering(self, tmp_path, monkeypatch):
@@ -2121,6 +2646,30 @@ class TestRunEvalMatrix:
         assert report.count("| bm25 |") == 2
         # Judge section rendered (not the "not run" variant).
         assert "mean faithfulness" in report
+
+    def test_report_title_and_expansion_wording(self, tmp_path, monkeypatch):
+        """F11: the report title is the v3 (held-out + realistic, ablated) form,
+        and the expansion provenance line reports attempted / live / fallbacks
+        distinctly (not a single "N expanded, M fallbacks"). A canonical run has
+        live == attempted and zero fallbacks."""
+        self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)  # live: one rewrite per question, zero fallbacks
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+        )
+
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert "# Legal RAG Evaluation Report v3 (held-out + realistic, ablated)" in report
+        attempts = result["rewrite_attempts"]
+        assert (
+            f"query expansion: {REWRITE_MODEL} — attempted {attempts}, "
+            f"live {attempts}, fallbacks 0"
+        ) in report
 
     def test_judge_off_renders_not_run(self, tmp_path, monkeypatch):
         self._patch_paths(monkeypatch, tmp_path)

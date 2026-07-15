@@ -18,6 +18,11 @@ logged:
   environment variable ``AUDIT_LOG_RAW_QUERIES=1`` to opt into logging the
   raw question text (local debugging only) — this is read at call time,
   not import time, so it can be toggled per-process without reimporting.
+- The same treatment applies to LLM-generated query rewrites (Phase 13,
+  D43): each rewrite's SHA-256 and the rewrite count are always recorded,
+  but the raw rewrite text is included only under that same
+  ``AUDIT_LOG_RAW_QUERIES=1`` gate — a rewrite is derived from the query and
+  carries the same client-matter sensitivity.
 """
 
 import functools
@@ -83,6 +88,8 @@ def build_event(
     citation_check: Dict[str, List[Dict[str, str]]],
     citations: List[Dict[str, str]],
     answer: str,
+    rewrites: Optional[List[str]] = None,
+    rewrite_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build one audit record for a single query/answer cycle.
 
@@ -104,11 +111,22 @@ def build_event(
             string), grounded and ungrounded together.
         answer: The generated answer text. Used only for its length —
             never stored (see module docstring).
+        rewrites: Effective query rewrites for this query (Phase 13, D43,
+            ``Expansion.rewrites``), or ``None`` when the caller predates
+            query expansion. Never stored verbatim unless
+            ``AUDIT_LOG_RAW_QUERIES=1`` — see module docstring.
+        rewrite_status: The ``Expansion.status`` for this query's rewrite
+            attempt, or ``None`` alongside a ``None`` ``rewrites``.
 
     Returns:
         A JSON-serializable dict with exactly the keys documented in the
         module's Phase 8 contract. Answer text and chunk text are excluded
         always; raw query text is excluded unless opted in via env var.
+        When ``rewrites`` and ``rewrite_status`` are BOTH ``None`` (every
+        caller that predates Phase 13), the returned dict is byte-identical
+        to before this feature existed — the three rewrite fields
+        (``rewrite_status``, ``rewrite_count``, ``rewrite_sha256s``) are
+        added only when at least one of the two arguments is given.
 
     This function never raises: git SHA resolution failures degrade to
     ``None`` (both inside ``_git_sha`` itself, and again here in case a
@@ -168,6 +186,23 @@ def build_event(
 
     if os.environ.get("AUDIT_LOG_RAW_QUERIES") == "1":
         record["query_text"] = question
+
+    # Phase 13 (D43) rewrite fields. Omitted entirely when the caller passes
+    # neither `rewrites` nor `rewrite_status` — every pre-Phase-13 caller
+    # (and every existing test's key-set expectation) gets a byte-identical
+    # event to before this feature existed.
+    if rewrites is not None or rewrite_status is not None:
+        record["rewrite_status"] = rewrite_status
+        record["rewrite_count"] = len(rewrites or [])
+        # Same hash recipe as query_sha256 above, applied per rewrite.
+        record["rewrite_sha256s"] = [
+            hashlib.sha256(r.encode("utf-8")).hexdigest() for r in (rewrites or [])
+        ]
+        if os.environ.get("AUDIT_LOG_RAW_QUERIES") == "1":
+            # Raw rewrite text, gated exactly like query_text above: a
+            # rewrite is derived from the query and carries the same
+            # client-matter sensitivity (see module docstring).
+            record["rewrite_texts"] = list(rewrites or [])
 
     return record
 

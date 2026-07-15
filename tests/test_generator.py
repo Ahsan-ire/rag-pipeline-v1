@@ -7,7 +7,9 @@ import pytest
 from langchain_core.documents import Document
 
 from src.generator import (
+    CAVEAT_PREFIX,
     GENERATION_MODEL,
+    PROMPT_TEMPLATE,
     REFUSAL_PHRASE,
     SYSTEM_PROMPT,
     _sections_related,
@@ -188,6 +190,32 @@ class TestRefusal:
         refusal instruction and the detector cannot drift apart."""
         assert REFUSAL_PHRASE in SYSTEM_PROMPT
 
+    def test_system_prompt_embeds_caveat_prefix(self):
+        """D44: the caveat-form opener must live in the system prompt too, so
+        the instruction and whatever scores/detects it cannot drift apart."""
+        assert CAVEAT_PREFIX in SYSTEM_PROMPT
+
+    def test_system_prompt_pins_subject_gate_calibration(self):
+        """D44 addendum (15 Jul calibration, merge-gate finding #2): the
+        subject-gate-first structure and its due-diligence-vs-underlying-matter
+        distinction are the measured refusal calibration. Pin the two load-
+        bearing clauses so an innocent prompt edit cannot silently undo them —
+        re-calibration requires a canonical eval re-run, not just green tests."""
+        assert "classify the question's own subject" in SYSTEM_PROMPT
+        assert "transactional due-diligence angle" in SYSTEM_PROMPT
+
+    def test_human_template_pins_subject_gate_closing(self):
+        """The human-turn closing must mirror the subject gate (kept in
+        lockstep with rule 3 — same calibration, same canary treatment)."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "not conveyancing practice" in human_template
+
+    def test_refusal_phrase_byte_value_is_unchanged(self):
+        """Plan-gate finding M14: pin the literal bytes, not constant-vs-constant
+        — a change to REFUSAL_PHRASE itself would silently pass a
+        self-referential assertion but must fail this one."""
+        assert REFUSAL_PHRASE.encode() == b"not covered in the source material"
+
     def test_is_refusal_detects_the_exact_phrase(self):
         assert is_refusal(REFUSAL_PHRASE)
 
@@ -263,6 +291,33 @@ class TestRefusal:
 
     def test_empty_string_is_not_a_refusal(self):
         assert not is_refusal("")
+
+    def test_caveat_form_answer_is_not_a_refusal(self):
+        """A caveat-form answer (D44) is a real, if hedged, answer — not the
+        canonical refusal sentence — so it must not be classified as one."""
+        caveat_answer = (
+            f"{CAVEAT_PREFIX} Requisitions must be raised within the agreed "
+            "period [Handbook, para 15.2, p.520]."
+        )
+        assert not is_refusal(caveat_answer)
+
+    def test_refusal_phrase_is_still_a_refusal_alongside_the_caveat_form(self):
+        """The plain refusal sentence must keep classifying as a refusal even
+        now that the caveat form exists as a separate, non-refusal outcome."""
+        assert is_refusal(REFUSAL_PHRASE)
+
+
+class TestPromptTemplateHumanMessage:
+    def test_old_binary_closing_sentence_is_gone(self):
+        """D44 replaced the old two-way (answer-or-refuse) closing instruction
+        with a three-way one that also names the caveat form; the old sentence
+        must not linger anywhere in the human template."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "If the extracts do not cover the question" not in human_template
+
+    def test_closing_sentence_names_the_caveat_form(self):
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "caveat form" in human_template
 
 
 class TestValidateCitations:

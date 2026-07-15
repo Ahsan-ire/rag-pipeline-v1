@@ -1,7 +1,7 @@
 """Hybrid (BM25 + vector) retrieval module, fused by reciprocal rank fusion (D6)."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -13,6 +13,17 @@ from src.embedder import CHROMA_PERSIST_DIR, assert_embedding_model, get_vector_
 logger = logging.getLogger(__name__)
 
 RRF_K = 60
+# Total weight BUDGET for the whole rewrite bundle, relative to one original
+# arm (Phase 13, D43; gate fix 14 Jul 2026). Each rewrite-derived ranked list
+# is weighted REWRITE_LIST_WEIGHT / n_rewrites (n_rewrites = number of
+# effective rewrite sub-queries), so across ANY arm count A and ANY rewrite
+# count N the whole rewrite bundle contributes at most REWRITE_LIST_WEIGHT ×
+# the original query's full-agreement score: A arms × N rewrites ×
+# (0.5/N)/(60+r) = 0.5 × A/(60+r), i.e. half of the original's A×1.0/(60+r).
+# A FLAT 0.5 per list (the pre-fix value) failed the real production shape:
+# 3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 outvoted the original's 2.0 (D43's
+# stated invariant). The per-budget form closes that hole for every A and N.
+REWRITE_LIST_WEIGHT = 0.5
 CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 
@@ -63,15 +74,38 @@ def retrieve(
     *,
     mode: str = "hybrid",
     strict_errors: bool = False,
+    rewrites: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Retrieve the most relevant document chunks for a query.
 
     Hybrid retrieval (D6): BM25 and vector search each contribute a ranked
     candidate list (~max(12, top_k) each); results are fused by reciprocal
-    rank fusion (score = sum(1 / (60 + rank))) and the top_k fused results are
-    returned. Each arm degrades independently — a failure in one doesn't
-    block the other — and retrieval falls back to vector-only if no BM25
-    index has been built yet (e.g. an index that predates Phase 3).
+    rank fusion (score = sum(weight / (60 + rank))) and the top_k fused
+    results are returned. Each arm degrades independently — a failure in one
+    doesn't block the other — and retrieval falls back to vector-only if no
+    BM25 index has been built yet (e.g. an index that predates Phase 3).
+
+    Multi-query weighted retrieval (Phase 13, D43/D45): ``rewrites`` is an
+    optional list of LLM-generated alternative phrasings of ``query``. Each
+    used arm runs once per sub-query — ``query`` itself, then every rewrite
+    that survives dedup — instead of once per arm, so a vocabulary mismatch
+    between staff phrasing and the corpus's register can be caught by a
+    rewrite even when the original phrasing's own vector/BM25 rankings miss
+    the right chunk entirely. Every (arm, sub-query) pair contributes its own
+    ranked-ID list to the fusion, weighted 1.0 for lists derived from the
+    original query and ``REWRITE_LIST_WEIGHT / n_rewrites`` for each
+    rewrite-derived list, so the WHOLE rewrite bundle — N rewrites across every
+    arm — contributes at most ``REWRITE_LIST_WEIGHT`` (0.5) × the original
+    query's full-agreement score for ANY arm count and ANY N: N correlated
+    rewrites agreeing on a generic chunk cannot outvote the original query's
+    arms agreeing on the right one (D43).
+    ``CANDIDATE_POOL``/``RRF_K``/``DEFAULT_TOP_K`` are unchanged — D45
+    rescinded pool widening; recall breadth comes from more queries, not
+    deeper per-query candidate lists. Dedup: a rewrite is dropped if it is
+    empty after ``str.strip()``, or is a casefold-duplicate of ``query`` or
+    of an earlier surviving rewrite. ``rewrites=None`` or empty ⇒
+    ``sub_queries == [query]``, so every arm runs exactly the single call it
+    always did — byte-identical to retrieval before Phase 13.
 
     Retrieval mode (Phase 10 ablation, D38): ``mode`` is one of
     ``RETRIEVAL_MODES``. ``"hybrid"`` (default) runs both arms and fuses;
@@ -85,12 +119,13 @@ def retrieve(
     ``[]`` (fail-visible), rather than silently degrading to the other arm.
 
     Error handling (``strict_errors``): by default an arm that raises is logged
-    and treated as contributing no candidates — production retrieval degrades
-    rather than 500s. Eval runs pass ``strict_errors=True`` so an operational
-    failure (a corrupt store, an OOM) PROPAGATES instead of being silently
-    scored as a retrieval miss, which would corrupt the benchmark. A *missing*
-    BM25 sidecar is not an error and is unaffected by this flag (bm25 mode still
-    warns + returns []; hybrid still degrades to vector-only).
+    and treated as contributing no candidates for that sub-query — production
+    retrieval degrades rather than 500s. Eval runs pass ``strict_errors=True``
+    so an operational failure (a corrupt store, an OOM) on ANY sub-query
+    PROPAGATES instead of being silently scored as a retrieval miss, which
+    would corrupt the benchmark. A *missing* BM25 sidecar is not an error and
+    is unaffected by this flag (bm25 mode still warns + returns []; hybrid
+    still degrades to vector-only).
 
     Phase 9 (load-once retrieval): ``vector_store`` and ``bm25_index`` can be
     injected by a caller that builds them once and reuses them across many
@@ -120,9 +155,11 @@ def retrieve(
         mode: Retrieval mode, one of ``RETRIEVAL_MODES``
             (``"hybrid"``/``"vector"``/``"bm25"``); see the mode note above.
             An unknown mode raises ``ValueError`` before any IO.
-        strict_errors: When True, an arm exception propagates instead of being
-            swallowed and scored as no candidates; see the error-handling note
-            above.
+        strict_errors: When True, an arm exception on any sub-query propagates
+            instead of being swallowed and scored as no candidates; see the
+            error-handling note above.
+        rewrites: Optional alternative phrasings of ``query`` (Phase 13,
+            D43); see the multi-query weighted retrieval note above.
 
     Returns:
         List of dicts with keys: document, score (fused RRF score), metadata.
@@ -159,42 +196,79 @@ def retrieve(
     candidate_k = max(CANDIDATE_POOL, top_k)
     filter_dict = {"document_type": document_type} if document_type else None
 
+    # Sub-queries actually searched (Phase 13, D43): the original query
+    # first, then each rewrite that is non-empty after strip() and not a
+    # casefold-duplicate of the original or of an earlier surviving rewrite.
+    # rewrites=None/empty leaves sub_queries == [query], so every arm below
+    # makes exactly the one call it always made — byte-identical to
+    # pre-Phase-13 retrieve().
+    sub_queries: List[str] = [query]
+    if rewrites:
+        seen = {query.casefold()}
+        for rewrite in rewrites:
+            candidate = rewrite.strip()
+            if not candidate or candidate.casefold() in seen:
+                continue
+            seen.add(candidate.casefold())
+            sub_queries.append(candidate)
+
+    # Per-rewrite-list weight (Phase 13, D43; gate fix): split the fixed
+    # REWRITE_LIST_WEIGHT budget evenly across the N EFFECTIVE rewrite
+    # sub-queries, so the whole rewrite bundle (N rewrites × every arm) can
+    # contribute at most REWRITE_LIST_WEIGHT × an original arm's full agreement
+    # for ANY arm count and ANY N — see REWRITE_LIST_WEIGHT's comment.
+    # ``max(1, ...)`` guards the no-rewrite case (n_rewrites == 0), though the
+    # weight is then never consulted (only sub_queries[0] runs).
+    n_rewrites = len(sub_queries) - 1
+    per_rewrite_weight = REWRITE_LIST_WEIGHT / max(1, n_rewrites)
+
     id_to_doc: Dict[str, Document] = {}
+    # One ranked-ID list per (arm × sub-query), with a parallel per-list
+    # weight (1.0 for the original query's lists, REWRITE_LIST_WEIGHT for a
+    # rewrite's) — fused together below instead of one list per arm.
+    ranked_lists: List[List[str]] = []
+    list_weights: List[float] = []
 
-    vector_ranked_ids: List[str] = []
     if use_vector:
-        try:
-            vector_results = vector_store.similarity_search_with_relevance_scores(
-                query, k=candidate_k, filter=filter_dict
-            )
-            for doc, _score in vector_results:
-                if doc.id is None:
-                    continue
-                vector_ranked_ids.append(doc.id)
-                id_to_doc[doc.id] = doc
-        except Exception as e:
-            if strict_errors:
-                raise
-            logger.error("Error during vector retrieval: %s", e)
-
-    bm25_ranked_ids: List[str] = []
-    if use_bm25:
-        if bm25_index is not None:
+        for i, sub_q in enumerate(sub_queries):
+            vector_ranked_ids: List[str] = []
             try:
-                for doc_id, doc, _score in search_bm25(
-                    bm25_index, query, candidate_k, document_type
-                ):
-                    # BM25-sidecar Documents are stored without .id; attach the
-                    # store id here so downstream consumers (audit log) never
-                    # have to re-derive it by re-hashing the chunk text.
+                vector_results = vector_store.similarity_search_with_relevance_scores(
+                    sub_q, k=candidate_k, filter=filter_dict
+                )
+                for doc, _score in vector_results:
                     if doc.id is None:
-                        doc.id = doc_id
-                    bm25_ranked_ids.append(doc_id)
-                    id_to_doc.setdefault(doc_id, doc)
+                        continue
+                    vector_ranked_ids.append(doc.id)
+                    id_to_doc[doc.id] = doc
             except Exception as e:
                 if strict_errors:
                     raise
-                logger.error("Error during BM25 retrieval: %s", e)
+                logger.error("Error during vector retrieval: %s", e)
+            ranked_lists.append(vector_ranked_ids)
+            list_weights.append(1.0 if i == 0 else per_rewrite_weight)
+
+    if use_bm25:
+        if bm25_index is not None:
+            for i, sub_q in enumerate(sub_queries):
+                bm25_ranked_ids: List[str] = []
+                try:
+                    for doc_id, doc, _score in search_bm25(
+                        bm25_index, sub_q, candidate_k, document_type
+                    ):
+                        # BM25-sidecar Documents are stored without .id; attach the
+                        # store id here so downstream consumers (audit log) never
+                        # have to re-derive it by re-hashing the chunk text.
+                        if doc.id is None:
+                            doc.id = doc_id
+                        bm25_ranked_ids.append(doc_id)
+                        id_to_doc.setdefault(doc_id, doc)
+                except Exception as e:
+                    if strict_errors:
+                        raise
+                    logger.error("Error during BM25 retrieval: %s", e)
+                ranked_lists.append(bm25_ranked_ids)
+                list_weights.append(1.0 if i == 0 else per_rewrite_weight)
         else:
             # A missing sidecar is not an operational error (unaffected by
             # strict_errors): hybrid degrades to vector-only, bm25 mode returns
@@ -207,10 +281,10 @@ def retrieve(
                 else "falling back to vector-only retrieval",
             )
 
-    if not vector_ranked_ids and not bm25_ranked_ids:
+    if not any(ranked_lists):
         return []
 
-    fused = _reciprocal_rank_fusion(vector_ranked_ids, bm25_ranked_ids)
+    fused = _reciprocal_rank_fusion(*ranked_lists, weights=list_weights)
 
     return [
         {
@@ -223,19 +297,39 @@ def retrieve(
 
 
 def _reciprocal_rank_fusion(
-    *ranked_id_lists: List[str], k: int = RRF_K
+    *ranked_id_lists: List[str],
+    k: int = RRF_K,
+    weights: Optional[Sequence[float]] = None,
 ) -> List[Tuple[str, float]]:
-    """Fuse ranked ID lists by reciprocal rank: score = sum(1 / (k + rank)).
+    """Fuse ranked ID lists by weighted reciprocal rank: score = sum(weight / (k + rank)).
 
     Fusing on rank rather than raw score sidesteps the two arms having
     incomparable score scales (BM25 scores are unbounded; Chroma's relevance
     scores are not reliably normalised to [0, 1] — see the fake-embeddings
     warning in the test suite).
+
+    ``weights`` (Phase 13, D43) assigns a per-list multiplier — e.g. 1.0 for
+    an original-query list and ``REWRITE_LIST_WEIGHT`` for a rewrite-derived
+    one, so several correlated rewrite lists agreeing on a generic chunk
+    cannot outvote two original-query arms agreeing on the right one.
+    ``weights=None`` weights every list 1.0 (today's behavior, unchanged).
+    ``weights``, when given, must have exactly one entry per entry in
+    ``ranked_id_lists``.
+
+    Raises:
+        ValueError: If ``weights`` is given and its length does not match
+            the number of ``ranked_id_lists``.
     """
+    if weights is not None and len(weights) != len(ranked_id_lists):
+        raise ValueError(
+            f"weights must have exactly one entry per ranked_id_lists "
+            f"({len(ranked_id_lists)}); got {len(weights)}"
+        )
     scores: Dict[str, float] = {}
-    for ranked_ids in ranked_id_lists:
+    for i, ranked_ids in enumerate(ranked_id_lists):
+        weight = 1.0 if weights is None else weights[i]
         for rank, doc_id in enumerate(ranked_ids, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+            scores[doc_id] = scores.get(doc_id, 0.0) + weight / (k + rank)
     return sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
 
 

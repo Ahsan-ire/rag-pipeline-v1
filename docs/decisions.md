@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 12 — final gate + v1-vs-v2 decision (D42: v2 selected)**
+**Current phase: 13 — query robustness: rewrite + graded answers (post-v2.0 remediation)**
 
 ---
 
@@ -1242,7 +1242,171 @@ kept in the comparison doc under "narrative, NOT head-to-head"); delaying the ta
 fellowship deadline for further hardening (the remaining review findings are recorded and none are
 blocking).
 
-## D43 — Harness codified: fresh-context critics checked in, eval-judged bake-offs, no model scoreboard (14 Jul 2026)
+## D43 — Haiku query expansion, weighted multi-query RRF inside retrieve() (14 Jul 2026)
+**Decision:** add a pre-retrieval LLM expansion stage: `src/query_rewrite.py` calls
+`claude-haiku-4-5` (max_tokens 300) once per query to produce ≤3 rewrites (handbook-register
+rephrasing, keyword variant, plain paraphrase). `expand_query()` returns a structured
+`Expansion` (original; effective rewrites — deduped, original excluded; model; and a status:
+`live | no_key | api_error | parse_error | disabled`) and never raises: any failure degrades to
+zero rewrites with the status recording why, so keyless CI and offline paths make zero API
+calls by construction and the audit log can tell "expansion off" from "expansion broke"
+(plan-gate finding). `retrieve()` gains keyword-only `rewrites`; each used arm runs once per
+sub-query (original always first) and ALL ranked lists fuse via `_reciprocal_rank_fusion`,
+which gains optional per-list weights: **original-query lists weight 1.0, rewrite-derived
+lists 0.5** — three correlated rewrites agreeing on a generic chunk (3×0.5/61) can no longer
+outvote the original's two arms agreeing on the right one (2×1.0/61); covered by an
+adversarial correlated-noise test (plan-gate finding). The same expansion path is used by
+`pipeline.query()` and by the evaluator (eval mode `hybrid+rewrite`), so the production config
+is the measured config. **This function is also the designated future seam for chat-style
+question condensation (history in, standalone question out) — decided, not built.**
+**Why:** the 14 Jul failure analysis showed natural staff phrasing produces disjoint BM25/vector
+rankings (all fused scores were single-arm 1/(60+r) values) while handbook-phrased eval questions
+retrieve perfectly — a vocabulary-mismatch problem that neither arm can fix alone: BM25 has no
+stemming and down-weights common words; MiniLM is weak on out-of-register legal paraphrase.
+**Rejected:** cross-encoder reranker (→ cut list: no new dep needed but adds a second model
+download, latency, and moving parts days before the deadline); HyDE (generates corpus-register
+text but costs a larger generation and is harder to audit); static synonym maps (unmaintainable
+against an 800-page corpus); putting expansion only in `pipeline.query()` (eval would measure a
+pipeline nobody ships).
+
+**Gate fixes (14 Jul 2026):** the diff review showed the flat 0.5 per-list weight fails in the
+production two-arm shape (3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 > the original's 2.0); the
+weight is now REWRITE_LIST_WEIGHT / n_rewrites per list, capping the whole rewrite bundle at half
+the original's full-agreement score for any arm/rewrite count. expand_query's construction-failure
+handling was tightened (explicit missing-key check → no_key; any other constructor failure →
+api_error) and marker-only/no-alpha model output now counts as parse_error, so a degenerate
+expansion can never satisfy the canonical zero-fallback gate.
+
+## D44 — Graded related-guidance answer policy; REFUSAL_PHRASE frozen (14 Jul 2026)
+**Decision:** replace SYSTEM_PROMPT rule 3's binary answer-or-refuse with a four-tier coverage
+policy: (a) direct answer; (b) partial answer that names what the extracts do not address;
+(c) related-guidance answer opening with the exact new `CAVEAT_PREFIX` constant ("The source
+material does not directly answer this question. The most closely related guidance is:"), every
+statement cited; (d) exact `REFUSAL_PHRASE`, alone, for questions the extracts say nothing
+relevant about — other jurisdictions, other areas of law, tangential-term mentions included.
+Graded output is an ANSWER: it must carry locator citations and passes through the unchanged
+grounding gate; `REFUSAL_PHRASE` stays byte-identical and exact-match-only, now pinned by a
+literal byte-canary test (constant-vs-constant assertions can't catch a coordinated rewording —
+plan-gate finding). Plan-gate adjustments: rule 4 is reworded to require the legal principle
+first *in the substantive answer* (so it cannot conflict with the caveat opener); the human
+message's binary closing instruction is updated in lockstep with rule 3 and a test asserts the
+old binary-only wording is gone; and `evaluate_completeness` strips the one literal
+`CAVEAT_PREFIX` sentence before sentence-splitting so the uncited preface does not depress
+`sentence_citation_coverage` (a reported metric — it gates nothing).
+**Why:** the audit log proved the model itself emitted the refusal sentence on all six failing
+real-world queries (gate never fired) — including one where the correct chunk was retrieved at
+rank 1 (para 13.3.11). The binary rule gave the model no permitted middle path. The gate was
+exonerated and remains the **citation-grounding guarantee** (every shown citation resolves to a
+retrieved passage — it certifies citation honesty, not semantic entailment): a caveat-form
+answer with zero citations is correctly blocked (fail-closed working as designed).
+**Rejected:** any second refusal wording (is_refusal is exact-match and coupled to grounding
+classify, evaluator refusal+completeness scoring, and two test files — a softer refusal variant
+would silently zero every refusal metric); loosening the gate for uncited related guidance;
+keeping binary refusal and fixing only retrieval (disproven by the rank-1 refusal case);
+machine-grading which tier (direct/partial/caveat) the model chose (judge measures claim
+support, not tier choice — recorded as a known limitation, revisit post-submission).
+**Addendum (calibration iteration, 15 Jul 2026):** the first canonical v3 run showed the
+graded policy over-extending tier (c) to near-domain negatives whose subject is only
+transactionally adjacent (7/14 exact refusals; failures were all property-adjacent subjects:
+landlord-tenant, CPO compensation, rent review, MARP, fees, planning). Repeat probes showed
+the tier choice was also unstable run-to-run — Sonnet 5 rejects a non-default temperature, so
+boundary robustness must come from prompt structure, not sampling config. Two-step iteration
+(budgeted in the Phase 13 plan's risk register; tuned only on tuning-set + realistic-slice
+failures, never on held-out specifics): (1) rule 3 restructured subject-gate-first — classify
+the question's own subject before considering the extracts; outside-subject questions refuse
+regardless of adjacent material; (2) the subject test distinguishes the transactional
+due-diligence angle (what a conveyancer checks — in scope) from advice on the underlying
+matter (what things cost, whether to seek permissions, how disputes are resolved — refuse).
+Spot-checks post-iteration: eviction/divorce/planning refuse stably (2/2 runs each); graded
+positives unregressed (unregistered-land caveat answer, deposit direct answer, family-home
+direct answer); vendor-died still refuses. Known residual: the solicitor-fees negative stays
+caveat-form stably — the model classifies conveyancing fees as in-subject and cites the s.150
+LSRA 2015 fee-disclosure duty as related guidance. Judged defensible product behaviour
+(honest caveat + verified citation to genuinely fee-related guidance); forcing it would
+require naming fees in the prompt (dev-set overfit). Accepted with this written
+justification; proper fix is tier-choice grading (Phase 14/15 roadmap).
+**Final canonical outcome (run #2, 15 Jul, merge-gate correction):** 11/14 exact refusals
+(tuning 5/5, held-out 7/8, realistic 4/6). Fees stayed caveat-form as predicted; planning
+and mortgage-arrears ALSO came back caveat-form in this sample despite planning refusing 2/2
+in spot-checks — the boundary is sampling-sensitive (fixed default temperature; rewrites
+resampled per run), so residual counts carry ±1–2 rows of run-to-run variance. All three
+residual subjects have transactional-angle corpus coverage; caveat/gate detail for negative
+rows is not yet recorded in the committed report (Phase 14 evaluator addition) — until then
+the caveat-form characterization rests on live spot-checks (fees, planning), stated as such
+wherever claimed. One cost: 1/20 held-out false refusal (a capacity-law question the
+handbook covers from the conveyancing angle — the subject gate read it as underlying-matter
+advice); accepted and canaried (prompt-clause pin tests) rather than re-tuned against a
+held-out specific.
+
+## D45 — CANDIDATE_POOL stays 12; recall breadth comes from expansion, not pool widening (14 Jul 2026)
+**Decision:** `CANDIDATE_POOL`, `RRF_K`, and `DEFAULT_TOP_K` are all unchanged (12 / 60 / 6).
+The Phase 13 draft plan proposed widening the pool to 30; the plan-gate Codex critique cited
+D31 against it and the draft was rescinded before implementation.
+**Why:** D31's grid search already measured pool 30 on the real index: hit@6 fell 27/30 → 26/30
+at every RRF_K, because a wider pool feeds RRF's consensus bias — moderately-ranked double-dip
+chunks accumulate fused score and push single-arm exact hits out of the top 6. That evidence
+stands. The recall problem Phase 13 actually diagnosed is vocabulary mismatch, and the fix is
+more *queries* (D43's rewrites, which put the right chunks near the top of their own ranked
+lists) rather than deeper lists per query. top_k=6 untouched keeps prompt size, gate behaviour,
+hit@6 comparability, and the canonical top_k=6 definition.
+**Rejected:** pool 30 globally (contradicts D31's measured regression); a rewrite-only wider
+pool (untested premise; adds a second fusion regime for no demonstrated need — revisit with
+eval evidence if the realistic slice shows recall still short); raising top_k (prompt bloat;
+breaks metric comparability).
+
+## D46 — "realistic" eval slice as a set label; canonical definition v3 (14 Jul 2026)
+**Decision:** add `eval/realistic_set.jsonl` (~22 questions: real failing staff queries as
+seeds, messy paraphrases, vocabulary-shifted new questions, near-domain negatives) wired via a
+new `--realistic` CLI arg as a third set labeled `realistic`; questions use only the existing
+`direct`/`exact_token`/`refusal` types. Eval gains mode `hybrid+rewrite` (evaluator-level
+`EVAL_MODES`; `RETRIEVAL_MODES` stays 3-valued). Canonical (v3) now ALSO requires: a
+realistic-labeled set with answerable hybrid results; **distinct realpaths across all input
+sets** (so `--heldout X --realistic X` cannot satisfy both clauses by relabeling — plan-gate
+finding); all four `EVAL_MODES`; **expansion actually attempted** (≥1 live expansion, so an
+inert/misconfigured rewrite model cannot be vacuously canonical — plan-gate finding) with zero
+fallbacks. Two hardening fixes ride along (plan-gate findings): an explicit `--results` equal
+to the canonical path now **raises** on a non-canonical run instead of warning, and legacy
+`run_eval`'s default output moves off the canonical path. Offline contract preserved: passing
+BOTH `--skip-refusals --skip-completeness` also disables expansion, keeping the documented
+"both skips = zero API calls" invariant true even on a keyed dev box; the `hybrid+rewrite` row
+then renders as an explicit fallback. Per-question report detail keys to the `hybrid+rewrite`
+row when it ran (gate outcomes must sit beside the retrieval that produced them). Golden/
+held-out sets stay byte-identical (easy slice + refusal calibration). **Honesty label:** this
+slice is authored during remediation and used to iterate the prompt — the report and README
+present it as dev/regression evidence, not held-out proof; an independently authored realistic
+held-out slice (real staff questions) is the roadmap follow-up.
+**Why:** the AI-generated sets share the corpus's vocabulary, so they measured near-self-
+retrieval — held-out strict hit@6 20/20 while every natural-phrasing query failed. Refusal
+accuracy rewarded refusing, tuning the operating point toward "answer handbook-phrased
+questions, refuse everything else". The committed report must never again be writable without
+the hard slice. `VALID_TYPES` is a hard allowlist and extra JSONL keys are silently dropped, so
+a label (not a new type) is the only schema-safe shape.
+**Rejected:** a new question `type` (load_golden_set would reject it; IN_CORPUS_TYPES ripple);
+a separate recall@k metric (expected_sections are OR-alternatives — hit@k/MRR already carry the
+signal; new columns would churn the CI greps for zero information); discarding the existing
+sets; blocking Phase 13 on an independently authored second slice (deadline; roadmap instead).
+**Addendum (freeze, 15 Jul 2026):** user review complete; frozen at 23 questions (17
+answerable, 6 refusal), sha256 in eval/realistic_candidate_review.md. Two comparison/synthesis
+rows added at user direction after a 15 Jul field test exposed an intent-reading gap (rewrites
+re-word but don't re-frame: "purchase vs sale conveyance" never reached the Ch.2 vendor-vs-
+purchaser material a probe showed was retrievable with the right vocabulary). S5 is expected
+to strict-miss under Phase 13 behaviour — it is the deliberate measuring stick for Phase 14's
+intent-level rewriting. R1 stays a refusal row with its trade-off documented in the review doc.
+
+## D47 — Local-first embedding-model load with cache-miss-only download fallback (14 Jul 2026)
+**Decision:** `get_embedding_function()` first constructs HuggingFaceEmbeddings with
+`local_files_only=True`; ONLY a recognised cache-miss failure (huggingface_hub's local-entry-
+not-found family / the corresponding OSError message shape) triggers one logged retry without
+the flag, downloading once. Unrelated construction failures (OOM, bad kwargs, dependency
+breakage) re-raise immediately — no pointless network-enabled retry (plan-gate finding).
+**Why:** every CLI run made ~25 HuggingFace HEAD requests re-validating a cached model — pure
+latency and an offline/demo fragility (a HF outage would take the pipeline down). Fresh clones
+still work via the fallback.
+**Rejected:** documenting `HF_HUB_OFFLINE=1` only (fragile for a live demo — depends on the
+operator's shell); pinning revision hashes (couples requirements to HF repo internals);
+retry-on-any-exception (turns unrelated failures into network attempts).
+
+## D48 — Harness codified: fresh-context critics checked in, eval-judged bake-offs, no model scoreboard (14 Jul 2026; renumbered from D43 at the 15 Jul Phase 13 merge — D43–D47 were independently claimed by the Phase 13 entries on a parallel branch)
 **Decision:** codify the development workflow as portable, checked-in files (documented in
 `docs/harness.md`): the `pressure-tester` and `plan-auditor` subagents — previously referenced by the
 phase/plan gates but defined nowhere in the repo — now live in `.claude/agents/`; a `plan-gate` skill

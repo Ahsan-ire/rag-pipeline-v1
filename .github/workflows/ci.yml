@@ -65,3 +65,9 @@ jobs:
       # intentionally NOT asserted: its floats vary across platforms (see D40).
       - name: Assert the BM25 arm is a clean sweep
         run: grep -E "^\| bm25 \| 1.000 \| 1.000 \| 1.000 \|" eval/results_partial.md
+      # The fourth EVAL_MODES arm (Phase 13, D46). In keyless CI both --skip
+      # flags disable query expansion, so this row is the disabled-expansion
+      # fallback — equal to raw hybrid — and the grep only pins the row's
+      # PRESENCE (that the arm renders), not its floats (which track hybrid's).
+      - name: Assert the hybrid+rewrite ablation row renders
+        run: grep -E "^\| hybrid\+rewrite \|" eval/results_partial.md

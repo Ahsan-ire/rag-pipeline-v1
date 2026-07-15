@@ -27,6 +27,7 @@ from src.embedder import (
     rebuild_bm25_index,
     sync_documents,
 )
+from src.evaluator import EVAL_MODES
 from src.generator import generate_with_sources, is_refusal
 from src.grounding import (
     CITATIONS_UNVERIFIED,
@@ -40,9 +41,9 @@ from src.ingest import (
     load_html_from_url,
     load_pdf,
 )
+from src.query_rewrite import Expansion, expand_query
 from src.retriever import (
     DEFAULT_TOP_K,
-    RETRIEVAL_MODES,
     load_retrieval_context,
     retrieve,
 )
@@ -216,6 +217,7 @@ def _write_audit(
     citation_check: Dict[str, Any],
     citations: list,
     answer: str,
+    expansion: Optional[Expansion] = None,
 ) -> None:
     """Build and append exactly one audit event, tolerating log failures.
 
@@ -225,21 +227,29 @@ def _write_audit(
     knows the audit trail has a hole. ``build_event`` records only
     ``len(answer)`` (see src/audit.py), so passing the real draft answer here
     never persists corpus text.
+
+    ``expansion`` (Phase 13, D43), when given, forwards its effective
+    rewrites and status to ``build_event`` so the record carries
+    ``rewrite_status``/``rewrite_count``/``rewrite_sha256s``. Omitted
+    (``None``) reproduces today's event shape exactly — see
+    ``build_event``'s own omit-when-both-None contract.
     """
     try:
-        log_event(
-            build_event(
-                question=question,
-                top_k=top_k,
-                document_type=document_type,
-                results=results,
-                gate_outcome=gate_outcome,
-                action=action,
-                citation_check=citation_check,
-                citations=citations,
-                answer=answer,
-            )
+        event_kwargs: Dict[str, Any] = dict(
+            question=question,
+            top_k=top_k,
+            document_type=document_type,
+            results=results,
+            gate_outcome=gate_outcome,
+            action=action,
+            citation_check=citation_check,
+            citations=citations,
+            answer=answer,
         )
+        if expansion is not None:
+            event_kwargs["rewrites"] = list(expansion.rewrites)
+            event_kwargs["rewrite_status"] = expansion.status
+        log_event(build_event(**event_kwargs))
     except Exception as e:  # noqa: BLE001 — an audit hiccup must not fail a query
         print(f"⚠ audit log write failed: {e}")
 
@@ -291,6 +301,8 @@ def query(
     verbose: bool = False,
     show_unverified: bool = False,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
+    no_rewrite: bool = False,
 ) -> Dict[str, Any]:
     """Query the RAG pipeline with a legal question.
 
@@ -308,6 +320,10 @@ def query(
             block notice. Has no effect on any other gate outcome.
         persist_directory: Vector-store directory to query; the BM25 sidecar and
             embedding-model manifest are read from beside it.
+        no_rewrite: If True, skip the LLM query-expansion stage (Phase 13,
+            D43) — retrieval sees only the raw question. Keyword-only (after the
+            bare ``*``) so it can never be set by a positional-argument shift;
+            ``main()`` already passes it by keyword.
 
     Returns:
         Dict with answer, citations, sources, source_documents,
@@ -324,6 +340,9 @@ def query(
     # retrieve() skips its per-call construction when injected, and the shared
     # helper owns the embedding-model manifest check.
     vector_store, bm25_index = load_retrieval_context(persist_directory)
+    # Pre-retrieval query expansion (Phase 13, D43) runs before retrieve() so
+    # both the no-results early-return and the main path below can log it.
+    expansion = expand_query(question, enabled=not no_rewrite)
     results = retrieve(
         question,
         top_k=top_k,
@@ -331,6 +350,7 @@ def query(
         persist_directory=persist_directory,
         vector_store=vector_store,
         bm25_index=bm25_index,
+        rewrites=list(expansion.rewrites) or None,
     )
 
     if not results:
@@ -351,6 +371,7 @@ def query(
             # length of this UI notice, so log analysis can't mistake
             # no_results rows for real answers.
             answer="",
+            expansion=expansion,
         )
         return {
             "answer": msg,
@@ -365,6 +386,12 @@ def query(
     logger.info("Retrieved %d relevant chunks", len(results))
 
     if verbose:
+        print(
+            f"\nQuery expansion [{expansion.status}]: "
+            f"{len(expansion.rewrites)} rewrite(s)"
+        )
+        for rewrite in expansion.rewrites:
+            print(f"  - {rewrite}")
         print("\nRetrieved chunks (by fused RRF score):")
         for rank, r in enumerate(results, 1):
             meta = r["document"].metadata
@@ -511,6 +538,7 @@ def query(
         citation_check=citation_check,
         citations=citations,
         answer=draft_answer,
+        expansion=expansion,
     )
 
     # Uniform return shape: every path carries answer_chars (the generated
@@ -606,6 +634,15 @@ Examples:
         ),
     )
     query_parser.add_argument(
+        "--no-rewrite",
+        dest="no_rewrite",
+        action="store_true",
+        help=(
+            "Skip the LLM query-expansion stage (debug/offline; retrieval sees "
+            "the raw question only)"
+        ),
+    )
+    query_parser.add_argument(
         "--persist-dir",
         dest="persist_directory",
         default=CHROMA_PERSIST_DIR,
@@ -617,7 +654,11 @@ Examples:
     # --skip-refusals nor --skip-completeness, this makes LIVE Claude API calls
     # (one generation per answerable + refusal question); --judge adds one call
     # per non-refused in-corpus answer. Offline/CI runs must pass BOTH
-    # --skip-refusals and --skip-completeness (and omit --judge).
+    # --skip-refusals and --skip-completeness (and omit --judge) — that pair
+    # ALSO disables query expansion outright, so it stays the documented
+    # zero-API-call contract even on a keyed dev box (Phase 13, D46). A
+    # canonical committed run now additionally requires --realistic, all four
+    # EVAL_MODES, and zero query-expansion fallbacks (see run_eval_matrix).
     eval_parser = subparsers.add_parser(
         "eval",
         help="Evaluate retrieval ablation, refusal accuracy, and completeness "
@@ -635,11 +676,19 @@ Examples:
         "held-out-headline run (e.g. eval/heldout_set.jsonl)",
     )
     eval_parser.add_argument(
+        "--realistic",
+        default=None,
+        help="Path to the realistic-slice JSONL (messy staff phrasing + "
+        "near-domain negatives); required for a canonical run "
+        "(e.g. eval/realistic_set.jsonl)",
+    )
+    eval_parser.add_argument(
         "--mode",
-        choices=[*RETRIEVAL_MODES, "all"],
+        choices=[*EVAL_MODES, "all"],
         default="all",
-        help="Retrieval mode(s) to ablate: hybrid/vector/bm25, or 'all' three "
-        "(default: all). Answer passes always use hybrid (the production config).",
+        help="Retrieval mode(s) to ablate: hybrid/vector/bm25/hybrid+rewrite, "
+        "or 'all' four (default: all). Answer passes use the hybrid+rewrite "
+        "production config (raw hybrid when expansion is disabled offline).",
     )
     eval_parser.add_argument(
         "--top-k",
@@ -711,22 +760,25 @@ Examples:
             args.verbose,
             args.show_unverified,
             persist_directory=args.persist_directory,
+            no_rewrite=args.no_rewrite,
         )
     elif args.command == "eval":
-        from src.evaluator import RETRIEVAL_MODES as _MODES
         from src.evaluator import run_eval_matrix
 
         # Build the (label, path) set list. The default golden path is the
         # tuning set (used to select D31 fusion constants) — label it so the
         # report can honestly flag it as NOT held-out; a non-default --golden
-        # is just "golden". The held-out set, when given, is appended.
+        # is just "golden". The held-out set, then the realistic slice, are
+        # appended when given — a canonical run needs BOTH (D46).
         set_specs = [
             ("tuning" if args.golden == "eval/golden_set.jsonl" else "golden", args.golden)
         ]
         if args.heldout:
             set_specs.append(("held-out", args.heldout))
+        if args.realistic:
+            set_specs.append(("realistic", args.realistic))
 
-        modes = list(_MODES) if args.mode == "all" else [args.mode]
+        modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
 
         run_eval_matrix(
             set_specs,

@@ -12,6 +12,7 @@ from src.embedder import (
     assert_embedding_model,
     clear_store,
     compute_chunk_id,
+    get_embedding_function,
     get_vector_store,
     rebuild_bm25_index,
     sync_documents,
@@ -546,3 +547,130 @@ class TestSyncDocuments:
         rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
         assert (tmp_path / "chroma" / "bm25_index.pkl").exists()
         assert set(load_bm25_index(persist_dir).ids) == {compute_chunk_id("A.pdf", "alpha unique")}
+
+
+class TestGetEmbeddingFunction:
+    """D47: local-first construction. A warm HuggingFace cache must not make
+    the ~25 network HEAD requests per CLI run that re-validate an
+    already-cached model, but an unrelated failure must never trigger a
+    network-enabled retry (plan-gate finding M12)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        """get_embedding_function is lru_cached for the process lifetime;
+        clear it around each test (same pattern as src.audit._git_sha in
+        test_audit.py) so the patched HuggingFaceEmbeddings recorder below is
+        actually consulted instead of a value cached by an earlier test, and
+        so this module's own cached instance doesn't leak into later tests."""
+        get_embedding_function.cache_clear()
+        yield
+        get_embedding_function.cache_clear()
+
+    def test_local_hit_constructs_once_with_local_files_only(self, monkeypatch):
+        """A cache-warm construction succeeds first try: exactly one
+        HuggingFaceEmbeddings call, with local_files_only=True."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        result = get_embedding_function()
+
+        assert len(calls) == 1
+        assert calls[0]["model_kwargs"]["local_files_only"] is True
+        assert isinstance(result, RecorderEmbeddings)
+
+    def test_cache_miss_os_error_retries_without_local_files_only(self, monkeypatch):
+        """The failure mode actually verified against the installed stack
+        (huggingface_hub 1.22.0 / transformers 5.13.0 / sentence_transformers
+        5.6.0): transformers' cached_file catches huggingface_hub's
+        LocalEntryNotFoundError and re-raises a plain OSError whose message
+        mentions the cached-files / offline-mode fallback. That must trigger
+        exactly one retry, without local_files_only, and return its result."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise OSError(
+                        "We couldn't connect to 'https://huggingface.co' to load "
+                        "the files, and couldn't find them in the cached files. "
+                        "Check your internet connection or see how to run the "
+                        "library in offline mode."
+                    )
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        result = get_embedding_function()
+
+        assert len(calls) == 2
+        assert calls[0]["model_kwargs"].get("local_files_only") is True
+        assert "local_files_only" not in calls[1]["model_kwargs"]
+        assert isinstance(result, RecorderEmbeddings)
+
+    def test_cache_miss_local_entry_not_found_error_retries(self, monkeypatch):
+        """Defensive isinstance path: some huggingface_hub/sentence_transformers
+        call sites raise LocalEntryNotFoundError directly rather than
+        wrapping it in an OSError. A message with none of the OSError
+        substring markers isolates this to the isinstance branch."""
+        from huggingface_hub.errors import LocalEntryNotFoundError
+
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise LocalEntryNotFoundError("no matching entry found")
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        result = get_embedding_function()
+
+        assert len(calls) == 2
+        assert calls[0]["model_kwargs"].get("local_files_only") is True
+        assert "local_files_only" not in calls[1]["model_kwargs"]
+        assert isinstance(result, RecorderEmbeddings)
+
+    def test_unrelated_failure_propagates_without_retry(self, monkeypatch):
+        """M12: a failure unrelated to the local cache (auth error, bad
+        argument, ...) must propagate immediately rather than silently
+        falling back to a network-enabled retry."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                raise ValueError("boom")
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        with pytest.raises(ValueError, match="boom"):
+            get_embedding_function()
+
+        assert len(calls) == 1
+
+    def test_permission_error_mentioning_cache_is_not_a_miss(self, monkeypatch):
+        """Gate fix: a PermissionError is a filesystem/config fault, NOT a cold
+        cache — even when its message mentions "cache" (e.g. a read-only cache
+        dir). It must propagate on the FIRST construction, never triggering a
+        network-enabled download retry (the old broad substring match treated
+        any "cache"-mentioning OSError as a miss). PermissionError is an OSError
+        subclass, so this pins the explicit exclusion."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                raise PermissionError("Permission denied writing cache directory")
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        with pytest.raises(PermissionError, match="Permission denied"):
+            get_embedding_function()
+
+        assert len(calls) == 1  # single construction, no download retry
