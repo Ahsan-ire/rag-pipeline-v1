@@ -1871,6 +1871,34 @@ class TestRunEvalMatrix:
         # Not canonical (skipped passes) -> partial path.
         assert result["results_path"].endswith("results_partial.md")
 
+    def test_matrix_report_disambiguates_report_only_dirty(self, tmp_path, monkeypatch):
+        """Merge-gate finding #4 (15 Jul): the matrix formatter must render the
+        git_dirty_other disambiguation like the legacy formatter, not a bare
+        boolean — a committed canonical report saying 'dirty: True' when the
+        only dirty path was the superseded report itself misleads reviewers."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        def prov():
+            p = self._prov()
+            p["git_dirty"] = True
+            p["git_dirty_other"] = 0
+            return p
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+        with open(result["results_path"], encoding="utf-8") as fh:
+            content = fh.read()
+        assert "clean apart from this generated report" in content
+        assert "dirty: True" not in content
+
     # --- include_types gating ---------------------------------------------
     def test_refusals_only_generates_refusal_type(self, tmp_path, monkeypatch):
         self._patch_paths(monkeypatch, tmp_path)

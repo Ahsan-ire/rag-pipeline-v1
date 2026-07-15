@@ -195,6 +195,21 @@ class TestRefusal:
         the instruction and whatever scores/detects it cannot drift apart."""
         assert CAVEAT_PREFIX in SYSTEM_PROMPT
 
+    def test_system_prompt_pins_subject_gate_calibration(self):
+        """D44 addendum (15 Jul calibration, merge-gate finding #2): the
+        subject-gate-first structure and its due-diligence-vs-underlying-matter
+        distinction are the measured refusal calibration. Pin the two load-
+        bearing clauses so an innocent prompt edit cannot silently undo them —
+        re-calibration requires a canonical eval re-run, not just green tests."""
+        assert "classify the question's own subject" in SYSTEM_PROMPT
+        assert "transactional due-diligence angle" in SYSTEM_PROMPT
+
+    def test_human_template_pins_subject_gate_closing(self):
+        """The human-turn closing must mirror the subject gate (kept in
+        lockstep with rule 3 — same calibration, same canary treatment)."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "not conveyancing practice" in human_template
+
     def test_refusal_phrase_byte_value_is_unchanged(self):
         """Plan-gate finding M14: pin the literal bytes, not constant-vs-constant
         — a change to REFUSAL_PHRASE itself would silently pass a

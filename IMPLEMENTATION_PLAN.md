@@ -527,8 +527,11 @@ run: the graded policy (D44) deliberately answers negatives for which the corpus
 genuinely related transactional guidance, under the explicit caveat sentence with verified
 citations. Outcome after the budgeted calibration iteration (D44 addendum): 11/14 exact
 refusals (held-out 7/8, realistic 4/6; tuning 5/5); the three residuals (fees, planning,
-mortgage-arrears) each cite real related guidance and are documented in D44 + README rather
-than prompt-tuned away (dev-set overfit). Binary 14/14 was a pre-graded-policy criterion;
+mortgage-arrears) are all subjects the corpus covers from the transactional angle — live
+spot-checks (fees, planning) show caveat-form answers with gate-verified citations, while the
+committed report records only the refusal boolean for negative rows (refusal-row detail
+reporting is a Phase 14 evaluator addition) — documented in D44 + README rather than
+prompt-tuned away (dev-set overfit). Binary 14/14 was a pre-graded-policy criterion;
 tier-choice grading is the Phase 14/15 fix that makes this measurable properly; canonical
 eval/results.md written with the realistic slice present; keyless CI
 green with the two existing smoke greps byte-intact plus the new hybrid+rewrite row grep;

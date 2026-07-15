@@ -132,13 +132,16 @@ Answer quality (generation through the production hybrid+rewrite config):
 
 The refusal rows changed with the graded policy and are reported with their reasoning, not hidden:
 the three negatives that answer instead of refusing (solicitor fees, planning permission, mortgage
-arrears process) are questions where the corpus genuinely contains transactionally related guidance
-— the model returns it under the explicit "does not directly answer this question" caveat with
-verified citations, which is defensible behaviour under the related-guidance policy even though the
-binary metric scores it as a miss (D44 addendum records the calibration and this residual). The
-three false refusals are retrieval misses or subject-boundary edge cases on the hardest questions;
-per-question detail is in the report. Tier choice is not yet machine-graded — that is a recorded
-limitation with a Phase 14/15 roadmap fix.
+arrears process) are all questions where the corpus genuinely contains transactionally related
+guidance, so answering under the explicit caveat is consistent with the related-guidance policy
+even though the binary metric scores it as a miss (D44 addendum records the calibration and this
+residual). Evidence status, stated precisely: live spot-checks of the fees and planning questions
+returned caveat-form answers with gate-verified citations (the fees answer cites the statutory
+duty to disclose the fee basis); the committed report records only a refused/answered boolean for
+negative rows, so per-row caveat/gate detail is not yet part of the canonical artifact — adding it
+(caveat flag, gate outcome, citation counts; never answer text) is a Phase 14 evaluator change,
+alongside tier-choice grading. The three false refusals are retrieval misses or subject-boundary
+edge cases on the hardest questions; per-question detail is in the report.
 
 Provenance for these numbers (from `eval/results.md`): git `b627ff2`, 1470 indexed chunks, embedding
 `all-MiniLM-L6-v2`, generation `claude-sonnet-5`, query expansion `claude-haiku-4-5` (86/86 live,

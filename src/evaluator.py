@@ -1092,6 +1092,34 @@ def collect_provenance(
     }
 
 
+def _dirty_provenance_str(provenance: Dict[str, Any]) -> str:
+    """Render git_dirty + git_dirty_other as one unambiguous provenance string.
+
+    git_dirty is a bool on success but the string "unavailable" on failure.
+    When dirty, git_dirty_other (also bool-guarded against "unavailable")
+    disambiguates "only the report we're about to overwrite is dirty" from
+    "something else changed too" — see collect_provenance's exclude_paths.
+    Shared by the legacy and matrix report formatters so a committed canonical
+    report can never render an ambiguous bare "dirty: True" (merge-gate
+    finding, 15 Jul).
+    """
+    dirty = provenance.get("git_dirty")
+    dirty_other = provenance.get("git_dirty_other")
+    if not isinstance(dirty, bool):
+        # git_dirty itself is "unavailable" (or some other non-bool) — degrade
+        # gracefully: render whatever string we have, never raise.
+        return str(dirty)
+    if not dirty:
+        return "clean"
+    if isinstance(dirty_other, int) and dirty_other == 0:
+        return "clean apart from this generated report"
+    if isinstance(dirty_other, int):
+        return f"dirty: {dirty_other} file(s) beyond this report"
+    # dirty is True but git_dirty_other didn't come back as an int (e.g.
+    # "unavailable") — fall back to the old plain "dirty", never raise.
+    return "dirty"
+
+
 def _format_report(
     golden_path: str,
     top_k: int,
@@ -1123,26 +1151,7 @@ def _format_report(
         type_counts[entry["type"]] = type_counts.get(entry["type"], 0) + 1
     counts_str = ", ".join(f"{t}={type_counts[t]}" for t in sorted(type_counts))
 
-    # git_dirty is a bool on success but the string "unavailable" on failure.
-    # When dirty, git_dirty_other (also bool-guarded against "unavailable")
-    # disambiguates "only the report we're about to overwrite is dirty" from
-    # "something else changed too" — see collect_provenance's exclude_paths.
-    dirty = provenance.get("git_dirty")
-    dirty_other = provenance.get("git_dirty_other")
-    if not isinstance(dirty, bool):
-        # git_dirty itself is "unavailable" (or some other non-bool) — degrade
-        # gracefully: render whatever string we have, never raise.
-        dirty_str = str(dirty)
-    elif not dirty:
-        dirty_str = "clean"
-    elif isinstance(dirty_other, int) and dirty_other == 0:
-        dirty_str = "clean apart from this generated report"
-    elif isinstance(dirty_other, int):
-        dirty_str = f"dirty: {dirty_other} file(s) beyond this report"
-    else:
-        # dirty is True but git_dirty_other didn't come back as an int (e.g.
-        # "unavailable") — fall back to the old plain "dirty", never raise.
-        dirty_str = "dirty"
+    dirty_str = _dirty_provenance_str(provenance)
 
     lines: List[str] = []
     lines.append("# Legal RAG Evaluation Report")
@@ -1858,7 +1867,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
     # ---- Provenance ---------------------------------------------------------
     lines.append("## Provenance")
     lines.append("")
-    lines.append(f"- git sha: {prov_get('git_sha')} (dirty: {prov_get('git_dirty')})")
+    lines.append(f"- git sha: {prov_get('git_sha')} ({_dirty_provenance_str(provenance)})")
     lines.append(f"- indexed chunk count: {prov_get('chunk_count')}")
     lines.append(f"- embedding model: {prov_get('embedding_model')}")
     lines.append(f"- generation model: {prov_get('generation_model')}")

@@ -1325,6 +1325,18 @@ LSRA 2015 fee-disclosure duty as related guidance. Judged defensible product beh
 (honest caveat + verified citation to genuinely fee-related guidance); forcing it would
 require naming fees in the prompt (dev-set overfit). Accepted with this written
 justification; proper fix is tier-choice grading (Phase 14/15 roadmap).
+**Final canonical outcome (run #2, 15 Jul, merge-gate correction):** 11/14 exact refusals
+(tuning 5/5, held-out 7/8, realistic 4/6). Fees stayed caveat-form as predicted; planning
+and mortgage-arrears ALSO came back caveat-form in this sample despite planning refusing 2/2
+in spot-checks — the boundary is sampling-sensitive (fixed default temperature; rewrites
+resampled per run), so residual counts carry ±1–2 rows of run-to-run variance. All three
+residual subjects have transactional-angle corpus coverage; caveat/gate detail for negative
+rows is not yet recorded in the committed report (Phase 14 evaluator addition) — until then
+the caveat-form characterization rests on live spot-checks (fees, planning), stated as such
+wherever claimed. One cost: 1/20 held-out false refusal (a capacity-law question the
+handbook covers from the conveyancing angle — the subject gate read it as underlying-matter
+advice); accepted and canaried (prompt-clause pin tests) rather than re-tuned against a
+held-out specific.
 
 ## D45 — CANDIDATE_POOL stays 12; recall breadth comes from expansion, not pool widening (14 Jul 2026)
 **Decision:** `CANDIDATE_POOL`, `RRF_K`, and `DEFAULT_TOP_K` are all unchanged (12 / 60 / 6).
