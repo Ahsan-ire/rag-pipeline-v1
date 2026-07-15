@@ -1305,6 +1305,26 @@ would silently zero every refusal metric); loosening the gate for uncited relate
 keeping binary refusal and fixing only retrieval (disproven by the rank-1 refusal case);
 machine-grading which tier (direct/partial/caveat) the model chose (judge measures claim
 support, not tier choice — recorded as a known limitation, revisit post-submission).
+**Addendum (calibration iteration, 15 Jul 2026):** the first canonical v3 run showed the
+graded policy over-extending tier (c) to near-domain negatives whose subject is only
+transactionally adjacent (7/14 exact refusals; failures were all property-adjacent subjects:
+landlord-tenant, CPO compensation, rent review, MARP, fees, planning). Repeat probes showed
+the tier choice was also unstable run-to-run — Sonnet 5 rejects a non-default temperature, so
+boundary robustness must come from prompt structure, not sampling config. Two-step iteration
+(budgeted in the Phase 13 plan's risk register; tuned only on tuning-set + realistic-slice
+failures, never on held-out specifics): (1) rule 3 restructured subject-gate-first — classify
+the question's own subject before considering the extracts; outside-subject questions refuse
+regardless of adjacent material; (2) the subject test distinguishes the transactional
+due-diligence angle (what a conveyancer checks — in scope) from advice on the underlying
+matter (what things cost, whether to seek permissions, how disputes are resolved — refuse).
+Spot-checks post-iteration: eviction/divorce/planning refuse stably (2/2 runs each); graded
+positives unregressed (unregistered-land caveat answer, deposit direct answer, family-home
+direct answer); vendor-died still refuses. Known residual: the solicitor-fees negative stays
+caveat-form stably — the model classifies conveyancing fees as in-subject and cites the s.150
+LSRA 2015 fee-disclosure duty as related guidance. Judged defensible product behaviour
+(honest caveat + verified citation to genuinely fee-related guidance); forcing it would
+require naming fees in the prompt (dev-set overfit). Accepted with this written
+justification; proper fix is tier-choice grading (Phase 14/15 roadmap).
 
 ## D45 — CANDIDATE_POOL stays 12; recall breadth comes from expansion, not pool widening (14 Jul 2026)
 **Decision:** `CANDIDATE_POOL`, `RRF_K`, and `DEFAULT_TOP_K` are all unchanged (12 / 60 / 6).
