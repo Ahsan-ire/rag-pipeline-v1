@@ -211,5 +211,7 @@ here and no rights over it are granted.
 ## More detail
 
 - `IMPLEMENTATION_PLAN.md` — phase-by-phase build plan and acceptance criteria.
-- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D42).
+- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D43).
 - `eval/results.md` — the canonical held-out evaluation report with full provenance.
+- `docs/harness.md` — the development workflow itself (gates, fresh-context critics, eval-judged
+  bake-offs) and how to port it to a new project.

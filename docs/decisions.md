@@ -1241,3 +1241,26 @@ tuning-set related 0.900 as comparable to v2's held-out strict headline (differe
 kept in the comparison doc under "narrative, NOT head-to-head"); delaying the tag until after the
 fellowship deadline for further hardening (the remaining review findings are recorded and none are
 blocking).
+
+## D43 — Harness codified: fresh-context critics checked in, eval-judged bake-offs, no model scoreboard (14 Jul 2026)
+**Decision:** codify the development workflow as portable, checked-in files (documented in
+`docs/harness.md`): the `pressure-tester` and `plan-auditor` subagents — previously referenced by the
+phase/plan gates but defined nowhere in the repo — now live in `.claude/agents/`; a `plan-gate` skill
+formalizes the pre-implementation gate CLAUDE.md already mandated (design becomes an artifact, then
+two independent fresh-context critiques, reconciled); a `bake-off` skill encodes a design tournament
+for expensive-to-reverse decisions — independent candidates from a shared brief, cross-critique, and
+the **tuning set** (`eval/golden_set.jsonl`) as judge, with the losing design fed to the
+pressure-tester as attack surface during implementation; `docs/designs/` holds design artifacts and
+bake-off briefs. Prompted by an external multi-agent workflow (tournament + scoreboard + per-agent
+containers) reviewed on 14 Jul: the adopted ideas are the ones whose active ingredient is
+**context independence of the critic**, not infrastructure.
+**Rejected:** a model-graded scoreboard routing work between models (n=1 grading, no ground truth, no
+blinding, judge related to a contestant — a vibes ledger, and stale within weeks; the eval set is the
+scoreboard); per-agent containers / broker service / multi-repo topology (subagents + git worktrees +
+`--sandbox read-only` already provide the isolation at zero infrastructure); any autonomous
+third-party agent layer with real-world reach on machines near client data (prompt-injection surface
+and unvetted skill ecosystems are GDPR/privilege exposure, not workflow); using the held-out set to
+judge bake-offs (selection on it burns the headline metric).
+**Consequence:** the gates are now reproducible from a fresh clone and portable to future projects via
+the checklist in `docs/harness.md`; the v3 re-chunking decision deferred by D39 is the natural first
+`/bake-off` candidate.
