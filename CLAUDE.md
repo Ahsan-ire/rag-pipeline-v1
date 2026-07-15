@@ -11,6 +11,16 @@ merge), v2 remediation target 13 July, fellowship deadline 17 July.
 Working spec lives in IMPLEMENTATION_PLAN.md. Design rationale lives in
 docs/decisions.md. Current phase is stated at the top of decisions.md.
 
+## Harness
+The workflow itself (gates, critics, bake-offs) is documented in
+docs/harness.md — read it before changing how work gets done here.
+Fresh-context critics live in .claude/agents/ (plan-auditor,
+pressure-tester); gates and the design tournament in .claude/skills/
+(plan-gate, phase-gate, bake-off). Designs too big for a decisions.md
+entry, and all bake-off briefs, are artifacts in docs/designs/ (see its
+README). Bake-offs are judged by eval/golden_set.jsonl — never by a
+model's opinion, never on the held-out set.
+
 ## Commands
 - Run tests: `python -m pytest tests/ -q`  (must pass before any commit)
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
@@ -60,9 +70,11 @@ it *pointers* (file paths, branch names), not pasted content.
   of the diff vs main; fix findings forward or rebut them explicitly in the
   PR description.
 - Canonical call:
-  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Do NOT read data/, chroma_db/, or held-out eval files."`
+  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, or held-out eval files."`
 - Treat Codex findings like pressure-tester findings: verify each against
-  the code before acting; it can be wrong or out of scope.
+  the code before acting; it can be wrong or out of scope. Proposed diffs
+  are suggestions, not patches: verify and apply them yourself — Codex
+  never writes to the tree.
 - NEVER paste corpus text (handbook extracts, chunk contents, held-out eval
   questions) into a Codex prompt, and always include the do-not-read clause
   above — the corpus is copyrighted and must not be shipped to a third-party

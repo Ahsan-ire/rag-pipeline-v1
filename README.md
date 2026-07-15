@@ -18,13 +18,12 @@ to fail visibly rather than fabricate.
 It was built and validated against **one handbook**, and the chunker assumes that book's own
 structural grammar: `CHAPTER N` markers, decimal-numbered paragraphs (`3.2`, `3.2.1`, up to four
 levels deep), and an `APPENDIX N.N` scheme. A similarly-formatted manual is a plausible target for
-this chunker; an arbitrary PDF is not — there is no "corpus-agnostic, bring your own manual" claim
-here.
+this chunker; but an arbitrary PDF will not suffice.  
 
 ## Architecture
 
 ```
-  your handbook PDF  (local only — copyrighted, never committed)
+  your handbook PDF  (local only — copyrighted)
         │
         ▼  src/ingest.py      extract + clean the OCR text layer   →  (clean_text, page_map)
         │                     strip running headers/footers, repair hyphenation, keep offsets
@@ -268,5 +267,7 @@ here and no rights over it are granted.
 ## More detail
 
 - `IMPLEMENTATION_PLAN.md` — phase-by-phase build plan and acceptance criteria.
-- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D47).
+- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D48).
 - `eval/results.md` — the canonical held-out evaluation report with full provenance.
+- `docs/harness.md` — the development workflow itself (gates, fresh-context critics, eval-judged
+  bake-offs) and how to port it to a new project.
