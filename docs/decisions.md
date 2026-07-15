@@ -1353,6 +1353,13 @@ a label (not a new type) is the only schema-safe shape.
 a separate recall@k metric (expected_sections are OR-alternatives — hit@k/MRR already carry the
 signal; new columns would churn the CI greps for zero information); discarding the existing
 sets; blocking Phase 13 on an independently authored second slice (deadline; roadmap instead).
+**Addendum (freeze, 15 Jul 2026):** user review complete; frozen at 23 questions (17
+answerable, 6 refusal), sha256 in eval/realistic_candidate_review.md. Two comparison/synthesis
+rows added at user direction after a 15 Jul field test exposed an intent-reading gap (rewrites
+re-word but don't re-frame: "purchase vs sale conveyance" never reached the Ch.2 vendor-vs-
+purchaser material a probe showed was retrievable with the right vocabulary). S5 is expected
+to strict-miss under Phase 13 behaviour — it is the deliberate measuring stick for Phase 14's
+intent-level rewriting. R1 stays a refusal row with its trade-off documented in the review doc.
 
 ## D47 — Local-first embedding-model load with cache-miss-only download fallback (14 Jul 2026)
 **Decision:** `get_embedding_function()` first constructs HuggingFaceEmbeddings with

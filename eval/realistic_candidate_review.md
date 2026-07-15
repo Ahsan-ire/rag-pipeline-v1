@@ -1,12 +1,11 @@
 # Realistic-slice candidate review — Phase 13 (D46)
 
-**STATUS: DRAFT — pending user review. Do not run the canonical eval against this set until
-the freeze block at the bottom is filled in.**
+**STATUS: FROZEN 15 Jul 2026 — user review complete (see Review resolution below).**
 
 ## What this slice is (and is not)
 
-21 questions in natural staff phrasing: vague wording, colloquial register, embedded
-misconceptions, and near-domain negatives. It exists because the golden/held-out sets are
+23 questions in natural staff phrasing: vague wording, colloquial register, embedded
+misconceptions, comparison/synthesis asks, and near-domain negatives. It exists because the golden/held-out sets are
 AI-generated from the corpus and share its vocabulary — they measured near-self-retrieval
 (held-out strict hit@6 20/20) while every real-world query failed on 14 Jul.
 
@@ -16,8 +15,9 @@ authored realistic slice (real staff questions, collected blind) is the roadmap 
 
 ## Method
 
-- Candidate questions drafted from three sources: (1) the four real failing queries from the
-  14 Jul field test, kept verbatim including natural wording slips; (2) messy paraphrases of
+- Candidate questions drafted from three sources: (1) real field-test queries — the four
+  failing queries from 14 Jul plus one comparison question from 15 Jul — kept verbatim
+  including natural wording slips; (2) messy paraphrases of
   **golden (tuning) set questions only — never held-out questions**, so prompt iteration on
   this slice cannot contaminate the held-out headline's independence; (3) new
   vocabulary-shifted questions and near-domain negatives.
@@ -30,7 +30,7 @@ authored realistic slice (real staff questions, collected blind) is the roadmap 
   are OR-alternatives. No question duplicates any golden/held-out question text
   (`generate_answers` raises on duplicates within a run).
 
-## Answerable questions (15)
+## Answerable questions (17)
 
 | # | Question (abridged) | Expected | Pages | Conf. | Evidence (paraphrased) |
 |---|---|---|---|---|---|
@@ -38,6 +38,7 @@ authored realistic slice (real staff questions, collected blind) is the roadmap 
 | S2 | Same, plus "what does 15 years of consideration refer to?" — verbatim seed | 4.8.1.1, 4.5.1 | 62–68 | High | As S1; 4.5.1 supplies the general 15-year open-contract root period (s.56, LCLRA 2009) the phrase garbles. |
 | S3 | "progress for registering unregistered land" — verbatim seed (sic) | 13.3, 13.1 | 434–442 | High | 13.3 = first-registration procedure (statement of title, Form 1/2, root rules); 13.1 = chapter scope/intro. |
 | S4 | "what unregistered land means" — verbatim seed | 1.7, 1.8 | 7–15 | High | 1.7 explains the two registration systems; 1.8 is the direct side-by-side contrast. |
+| S5 | "difference between a purchase and sale conveyance" — verbatim seed (15 Jul field test) | 2.2.1, 2.2.2, 2.9 | 20–38 | High | The intended comparison is vendor-side vs purchaser-side duties: 2.2.1 enumerates the vendor's solicitor's tasks, 2.2.2 the purchaser's solicitor's, 2.9 is a side-by-side flowchart of both. Retrieval probe (15 Jul) confirmed rewrites currently stay in the "conveyance types" framing and surface 8.2 deed-naming material instead — this row is deliberately expected to strict-miss today and is the Phase 14 intent-rewriting measuring stick. 1.5/8.2 deliberately excluded from expected: counting them would mark the observed unsatisfying behaviour as a pass. |
 | P1 | How far back must title documents go; "15 years is enough?" | 4.5.1 | 62–63 | High | 15-year open-contract root period. Paraphrase of golden Q7. |
 | P2 | Which office to check for ownership — "Land Registry or the other one?" | 1.8, 1.7 | 7–15 | High | Registry contrast. Paraphrase of golden Q3/Q8 territory. |
 | P3 | Husband sole owner, wife not on deeds — sell without telling her? | 7.2, 7.2.9 | 178–191 | High | FHPA 1976 s.3(1): conveyance without the non-owning spouse's prior written consent is void; 7.2.9 = the practice verification (statutory declaration). Paraphrase of golden Q12/Q13. |
@@ -49,6 +50,7 @@ authored realistic slice (real staff questions, collected blind) is the roadmap 
 | N1 | Buyer's deposit if the sale falls through? | 6.9.2, 6.9.4 | 147–148 | High | Forfeiture-and-resale on purchaser default vs full refund on rescission — outcome depends on why it fell through; both listed as alternatives. |
 | N2 | Acting for both buyer and their bank — allowed? | 9.7.2, 9.8 | 258–267 | High | Certificate-of-title system: solicitor acts solely for the borrower while giving the lender an undertaking; 9.8 = when lenders instruct their own solicitor. Not a flat yes/no — good graded-answer test. |
 | N3 | What happens in what order after sale agreed? | 2.9, 2.1 | 20, 37–38 | High | 2.9 = side-by-side vendor/purchaser step flow; 2.1 = three-stage framework. Deliberately drops "how long does it take" — the corpus contains no typical-duration guidance (verified absent), so a duration question would be unanswerable. |
+| N4 | Seller's solicitor vs buyer's solicitor — what does each actually do? | 2.2.1, 2.2.2, 2.9 | 20–38 | High | Same targets as S5, phrased with role vocabulary ("seller's/buyer's solicitor") one hop from the corpus's vendor/purchaser terms. A probe with vendor/purchaser phrasing put all three targets in the top 5 — this row tests whether rewrites bridge that one vocabulary hop. Comparison/synthesis capability row. |
 
 ## Near-domain negatives (6, `type: refusal`)
 
@@ -63,7 +65,23 @@ All verified absent. Search terms recorded per question.
 | R5 | Requirements for making a valid will in Ireland? | High | valid will; execution of a will; testamentary capacity; s.78 Succession Act; two witnesses; attestation | Corpus is dense with probate/assent/devolution language but never covers will-validity formalities — a strong adversarial negative. |
 | R6 | Planning permission for a house extension? | Med-High | planning permission for an extension; apply for planning permission; planning application process | Ch.11 covers exempted-development checks retrospectively for a sale (and expressly delegates the exemption call to an architect/engineer); no forward-looking application guidance. |
 
-## Flags for user review
+## Review resolution (15 Jul 2026)
+
+User reviewed via the 14–15 Jul field-test discussion and gave the merge go. Resolutions:
+
+1. **R1 kept as `refusal`.** The eval schema is binary and the exact refusal is the currently
+   committed contract for verified-absent content. If the canonical run shows a caveat-form
+   answer here, the lower refusal score is reported honestly (not hidden) and the row is
+   revisited in Phase 14 alongside the graded-policy iteration — see flag 1 below for the
+   original trade-off.
+2. **S1/S2 strict difficulty accepted** — they stay in the headline as-is.
+3. **Wording unchanged**; two rows added at user direction after the 15 Jul field test
+   exposed the comparison/synthesis gap: S5 (the user's verbatim "purchase vs sale
+   conveyance" question — expected to strict-miss today; the Phase 14 intent-rewriting
+   measuring stick) and N4 (same targets with role vocabulary one hop from the corpus's
+   terms). Evidence rows in the answerable table above.
+
+## Flags for user review (as put — resolutions above)
 
 1. **R1 (vendor dies mid-transaction) is deliberately borderline.** Under the new graded
    policy, is the *desired* behaviour the exact refusal, or a caveat-form answer pointing at
@@ -88,10 +106,12 @@ All verified absent. Search terms recorded per question.
 - A "how long does a purchase take" candidate was cut: step ordering is covered (2.9) but
   typical duration is verified absent — a half-answerable question makes a bad eval row.
 
-## Freeze block (fill at freeze — after user review)
+## Freeze block
 
-- Frozen: <date>
-- Line count: <n> (answerable <n>, refusal <n>)
-- sha256: <hash of eval/realistic_set.jsonl at freeze>
+- Frozen: 2026-07-15
+- Line count: 23 (answerable 17, refusal 6)
+- sha256: d68a427a86095797bcb3ff1b3799b73a42c91e233d8726cc6beab73c46ca3f65
+- Uniqueness verified at freeze: no duplicate question text within the set or against
+  golden/held-out sets.
 - Post-freeze rule: same as the held-out set — wording and expected sections do not change
   after freeze; corrections require a new dated entry here and a re-run.

@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 
 @pytest.fixture(autouse=True)
 def _no_live_api_key(monkeypatch):
-    """Scrub any real API key for every test (D46 plan-gate hardening).
+    """Scrub environment leaked from a developer's .env for every test.
 
     `load_dotenv()` runs at import in src.generator (and src.query_rewrite),
     so on a keyed dev box os.environ carries a live ANTHROPIC_API_KEY even
@@ -14,8 +14,14 @@ def _no_live_api_key(monkeypatch):
     API call locally while passing green in CI. Deleting the key at test
     setup makes such a seam fail loudly instead (get_llm/get_rewrite_llm
     raise ValueError). Tests that need a key set a fake one explicitly.
+
+    AUDIT_LOG_RAW_QUERIES is scrubbed for the same reason: it is a
+    behaviour-changing opt-in that a dev box may set in .env (field-test
+    query capture), and tests assert the default (off) audit event shape.
+    Tests that exercise the opt-in set it explicitly via monkeypatch.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
 
 
 @pytest.fixture

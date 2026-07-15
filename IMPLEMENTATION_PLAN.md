@@ -522,7 +522,7 @@ embedder local-first (local hit / cache-miss retry / unrelated error no-retry). 
 **decisions.md:** D43, D44, D45, D46, D47.
 **Acceptance:** full suite green; the two named failing queries ("what does unregistered land
 mean", "process for registering unregistered land") answered with verified citations in live
-spot-checks; near-domain negatives still refuse (14/14 = 8 held-out + 6 realistic (draft count — confirm at freeze) in the
+spot-checks; near-domain negatives still refuse (14/14 = 8 held-out + 6 realistic (confirmed at freeze, 15 Jul) in the
 canonical run); canonical eval/results.md written with the realistic slice present; keyless CI
 green with the two existing smoke greps byte-intact plus the new hybrid+rewrite row grep;
 README numbers match the new results.md; CLAUDE.md Commands block updated (canonical command
