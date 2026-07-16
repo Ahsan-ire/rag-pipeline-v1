@@ -107,6 +107,13 @@ def _write_jsonl(path, lines):
     return str(path)
 
 
+def _raise_judge_api_error(prompt_vars):
+    """A judge llm_fn that always raises — judge_answer maps any llm_fn
+    exception to an ``api`` error, so this drives the api-error branch of the
+    judge-required canonical guard (WS3.2)."""
+    raise RuntimeError("judge api boom")
+
+
 def _result(section_number):
     """Build one fake retrieve() result carrying only a section_number."""
     doc = Document(page_content="", metadata={"section_number": section_number})
@@ -1813,6 +1820,13 @@ class TestRunEvalMatrix:
 
         return gen
 
+    def _clean_judge_fn(self):
+        """A judge llm_fn returning one supported claim — zero api/parse errors,
+        the shape a canonical run's judge pass must produce (WS3 / D50). Canonical
+        now REQUIRES the judge pass to have run clean, so an otherwise-canonical
+        base run must thread this in to actually reach ``is_canonical`` True."""
+        return lambda v: json.dumps({"claims": [{"claim": "c", "verdict": "supported"}]})
+
     def _patch_paths(self, monkeypatch, tmp_path):
         default = str(tmp_path / "results.md")
         partial = str(tmp_path / "results_partial.md")
@@ -1993,6 +2007,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["is_canonical"] is True
@@ -2024,6 +2040,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
             **kwargs,
         )
 
@@ -2043,6 +2061,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["is_canonical"] is False
@@ -2080,6 +2100,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=flaky_gen,
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["generation_errors"] == 1
@@ -2328,6 +2350,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["sets"][0]["retrieval"]["hybrid"]["total"] == 0
@@ -2347,6 +2371,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["is_canonical"] is False
@@ -2364,6 +2390,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["is_canonical"] is False
@@ -2389,6 +2417,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["rewrite_fallbacks"] > 0
@@ -2413,6 +2443,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["is_canonical"] is False
@@ -2435,6 +2467,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         # Every attempt fell back on status alone, despite non-empty rewrites.
@@ -2459,6 +2493,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["rewrite_attempts"] > 0
@@ -2575,6 +2611,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         assert result["expansion_enabled"] is True   # decoupled from the mode set (F4)
@@ -2661,6 +2699,8 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2731,3 +2771,277 @@ class TestRunEvalMatrix:
         assert "SECRET-CLAIM-TEXT" not in report
         # The claim text is captured in the gitignored dump for local review.
         assert "SECRET-CLAIM-TEXT" in open(dump, encoding="utf-8").read()
+
+    # --- WS3.1: BM25-loaded canonical guard + ownership flags -------------
+    def _patch_default_backends(self, monkeypatch, bm25_value):
+        """Patch every seam the DEFAULT retrieve factory AND default generate_fn
+        touch, so a default-PATH run is fully IO-free. ``bm25_value`` is exactly
+        what ``load_bm25_index`` returns: ``None`` models a missing/failed
+        sidecar, a sentinel object models a loaded one. Both default paths
+        resolve their BM25 arm via the lazy ``_get_bm25`` (which appends this
+        value to ``bm25_cache``), which is what the guard inspects."""
+        monkeypatch.setattr("src.evaluator.assert_embedding_model", lambda pd: None)
+        monkeypatch.setattr(
+            "src.evaluator.get_vector_store", lambda persist_directory=None: object()
+        )
+        monkeypatch.setattr("src.evaluator.load_bm25_index", lambda pd: bm25_value)
+
+        def fake_retrieve(question, top_k=6, persist_directory=None, vector_store=None,
+                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None):
+            sec = "3.2" if question == "D1" else "5.1"
+            doc = _matrix_doc(sec)
+            return [{"document": doc, "score": 1.0, "metadata": doc.metadata}]
+
+        monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
+
+        def fake_gen(question, results):
+            if question == "R1":
+                return {"answer": REFUSAL_PHRASE, "citations": [], "sources": [],
+                        "source_documents": [], "citation_check": {"grounded": [], "ungrounded": []},
+                        "gate_outcome": REFUSAL}
+            sec = "3.2" if question == "D1" else "5.1"
+            doc = _matrix_doc(sec)
+            cite = _cite(sec, 5)
+            return {"answer": f"A [Handbook, para {sec}, p.5].", "citations": [cite],
+                    "sources": [], "source_documents": [doc],
+                    "citation_check": {"grounded": [cite], "ungrounded": []},
+                    "gate_outcome": CITATIONS_VERIFIED}
+
+        monkeypatch.setattr("src.evaluator.generate_with_sources", fake_gen)
+
+    def test_default_factory_missing_bm25_is_noncanonical_and_disclosed(self, tmp_path, monkeypatch):
+        """A default-path run whose BM25 sidecar failed to load is NON-canonical
+        (it silently degraded to vector-only), and the report DISCLOSES the
+        failing guard: bm25_loaded=False with a default path in play (WS3.1)."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        self._patch_default_backends(monkeypatch, bm25_value=None)  # missing sidecar
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        # DEFAULT retrieve_fn_factory AND generate_fn (both omitted -> None): a
+        # default path resolves the BM25 arm, but the sidecar is missing.
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+        )
+
+        assert result["using_default_retrieve_factory"] is True
+        assert result["using_default_generate_fn"] is True
+        assert result["bm25_default_path_in_play"] is True
+        assert result["bm25_loaded"] is False
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert "BM25 sidecar loaded: False" in report
+        assert "canonical guard FAILED" in report
+
+    def test_default_factory_with_loaded_bm25_is_canonical(self, tmp_path, monkeypatch):
+        """The guard blocks a MISSING sidecar, not the default path itself: with
+        the sidecar LOADED, the same default-factory run is canonical again."""
+        default, _partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        self._patch_default_backends(monkeypatch, bm25_value=object())  # loaded
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+        )
+
+        assert result["bm25_default_path_in_play"] is True
+        assert result["bm25_loaded"] is True
+        assert result["is_canonical"] is True
+        assert result["results_path"] == default
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert "BM25 sidecar loaded: True" in report
+
+    @pytest.mark.parametrize(
+        "default_retrieve,default_generate,expected_canonical",
+        [
+            (True, True, False),    # both default -> BM25 required, sidecar missing
+            (True, False, False),   # default retrieve in play -> required, missing
+            (False, True, False),   # default generate in play -> required, missing
+            (False, False, True),   # FULLY injected -> no BM25 requirement
+        ],
+    )
+    def test_bm25_ownership_rule_four_combinations(
+        self, tmp_path, monkeypatch, default_retrieve, default_generate, expected_canonical
+    ):
+        """With the BM25 sidecar MISSING, canonical is blocked whenever a DEFAULT
+        path (the retrieve factory OR the generate_fn) could have used it; a
+        fully-injected fixture owns its own retrieval and stays canonical-
+        eligible without any BM25 requirement (WS3.1 / Codex #8)."""
+        default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        self._patch_default_backends(monkeypatch, bm25_value=None)  # missing sidecar
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        kwargs = {}
+        if not default_retrieve:
+            kwargs["retrieve_fn_factory"] = self._retrieve_factory()
+        if not default_generate:
+            kwargs["generate_fn"] = self._generate_fn([])
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+            **kwargs,
+        )
+
+        assert result["using_default_retrieve_factory"] is default_retrieve
+        assert result["using_default_generate_fn"] is default_generate
+        assert result["is_canonical"] is expected_canonical
+        assert result["results_path"] == (default if expected_canonical else partial)
+
+    # --- WS3.2: judge required for canonical ------------------------------
+    def test_no_judge_run_is_noncanonical(self, tmp_path, monkeypatch):
+        """Canonical now REQUIRES the judge pass (Codex #13, D50): an otherwise-
+        canonical run with judge OFF is non-canonical."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=False,  # the ONLY deviation from canonical
+        )
+
+        assert result["judge_ran_clean"] is False
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+
+    @pytest.mark.parametrize(
+        "judge_fn,label",
+        [
+            (_raise_judge_api_error, "api error"),
+            (lambda v: "not json at all — no braces here", "parse error"),
+        ],
+    )
+    def test_judge_errors_make_run_noncanonical(self, tmp_path, monkeypatch, judge_fn, label):
+        """A judge pass that RAN but produced an API or parse error on any set
+        flips an otherwise-canonical run non-canonical (WS3.2): the judge must
+        run CLEAN, not merely run."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=judge_fn,
+        )
+
+        assert result["judge_ran_clean"] is False, label
+        assert result["is_canonical"] is False, label
+        assert result["results_path"] == partial, label
+
+    def test_clean_judge_run_is_canonical(self, tmp_path, monkeypatch):
+        """The positive control for the judge guard: an otherwise-canonical run
+        with a judge pass that ran with zero api/parse errors IS canonical."""
+        default, _partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+        )
+
+        assert result["judge_ran_clean"] is True
+        assert result["is_canonical"] is True
+        assert result["results_path"] == default
+
+    # --- WS3.4: refusal-row detail in the committed report ----------------
+    def test_refusal_row_detail_rendered_without_answer_text(self, tmp_path, monkeypatch):
+        """Negative/refusal rows carry the caveat flag, gate outcome, and
+        grounded/citation counts in the report — substantiating each graded-
+        negative verdict — but NEVER the answer text (D30). (Phase 13 merge-gate
+        finding #1 / WS3.4.)"""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        secret = "SECRET-REFUSAL-ANSWER-PROSE"
+
+        def gen(question):
+            if question == "R1":
+                # A caveat-form (related-guidance) answer to a near-domain
+                # negative, carrying a grounded citation — opens with the literal
+                # CAVEAT_PREFIX so is_caveat is True; the secret prose must stay
+                # out of the artifact.
+                return {
+                    "answer": f"{CAVEAT_PREFIX} {secret} [Handbook, para 9.9, p.5].",
+                    "citations": [_cite("9.9", 5)],
+                    "sources": [],
+                    "source_documents": [_matrix_doc("9.9")],
+                    "citation_check": {"grounded": [_cite("9.9", 5)], "ungrounded": []},
+                    "gate_outcome": PARTIALLY_VERIFIED,
+                }
+            sec = "3.2" if question == "D1" else "5.1"
+            doc = _matrix_doc(sec)
+            cite = _cite(sec, 5)
+            return {"answer": f"A [Handbook, para {sec}, p.5].", "citations": [cite],
+                    "sources": [], "source_documents": [doc],
+                    "citation_check": {"grounded": [cite], "ungrounded": []},
+                    "gate_outcome": CITATIONS_VERIFIED}
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=gen,
+            provenance_fn=self._prov,
+            skip_completeness=True,  # focus on the refusal pass (also -> partial)
+        )
+
+        # The per-set detail dict carries only flags/counts (D30-safe).
+        detail = result["sets"][0]["refusal_detail"]["R1"]
+        assert detail["is_caveat"] is True
+        assert detail["gate_outcome"] == PARTIALLY_VERIFIED
+        assert detail["n_grounded"] == 1
+        assert detail["n_citations"] == 1
+
+        report = open(result["results_path"], encoding="utf-8").read()
+        # Rendered on the refusal row...
+        assert "caveat=True" in report
+        assert f"gate={PARTIALLY_VERIFIED}" in report
+        assert "grounded=1/1" in report
+        # ...but the answer prose itself never leaks into the artifact.
+        assert secret not in report
+
+    def test_refusal_row_detail_for_canonical_refusal(self, tmp_path, monkeypatch):
+        """A cleanly-refused negative (the canonical phrase, uncited) renders as
+        caveat=False, gate=<refusal>, grounded=0/0 — the substantiating shape for
+        a correct refusal."""
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),  # R1 -> REFUSAL_PHRASE, gate REFUSAL
+            provenance_fn=self._prov,
+            skip_completeness=True,
+        )
+
+        detail = result["sets"][0]["refusal_detail"]["R1"]
+        assert detail["is_caveat"] is False
+        assert detail["gate_outcome"] == REFUSAL
+        assert detail["n_grounded"] == 0
+        assert detail["n_citations"] == 0
+
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert f"- [refusal] refused caveat=False gate={REFUSAL} grounded=0/0 :: R1" in report

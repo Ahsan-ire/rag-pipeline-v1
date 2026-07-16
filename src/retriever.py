@@ -165,7 +165,8 @@ def retrieve(
         List of dicts with keys: document, score (fused RRF score), metadata.
 
     Raises:
-        ValueError: If ``mode`` is not one of ``RETRIEVAL_MODES``.
+        ValueError: If ``mode`` is not one of ``RETRIEVAL_MODES``, or if
+            ``top_k`` is less than 1.
     """
     if mode not in RETRIEVAL_MODES:
         # Validate before any IO so a typo'd mode fails fast and cheap, never
@@ -173,6 +174,16 @@ def retrieve(
         raise ValueError(
             f"Unknown retrieval mode {mode!r}; expected one of {RETRIEVAL_MODES}"
         )
+    if top_k < 1:
+        # top_k < 1 is meaningless (a fused[:0] would silently return nothing,
+        # and top_k=0 is the negative-slice hazard the eval matrix guards
+        # against too). Validate at THIS boundary — the single point all callers
+        # funnel through — so a bad top_k fails fast and cheap here, before any
+        # IO, rather than degrading downstream. No UPPER bound: top_k > the
+        # candidate pool is deliberately supported (candidate_k = max(
+        # CANDIDATE_POOL, top_k) widens both arms), so the blocked-answer UI can
+        # advise raising --top-k.
+        raise ValueError(f"top_k must be >= 1, got {top_k}")
 
     # Which arms this mode uses. Mode gates resolution AND execution: a
     # non-injected arm the mode doesn't use is never loaded (vector mode never

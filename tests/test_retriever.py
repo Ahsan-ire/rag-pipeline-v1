@@ -9,6 +9,7 @@ from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index
 from src.retriever import (
+    CANDIDATE_POOL,
     RETRIEVAL_MODES,
     REWRITE_LIST_WEIGHT,
     RRF_K,
@@ -521,6 +522,55 @@ class TestRetrieveModes:
                 persist_directory=str(tmp_path),
                 strict_errors=True,
             )
+
+
+class TestTopKValidation:
+    """WS3.3 (Codex #10): retrieve() validates ``top_k`` at ITS boundary — the
+    single point every caller funnels through — raising ValueError on top_k < 1
+    (the negative-slice hazard) and naming the offending value. There is NO
+    upper cap: top_k > the candidate pool is deliberately supported via
+    candidate_k = max(CANDIDATE_POOL, top_k)."""
+
+    @pytest.mark.parametrize("bad_top_k", [0, -1, -5])
+    def test_top_k_below_one_raises_before_any_io(self, bad_top_k):
+        """top_k < 1 raises ValueError naming the value, BEFORE any IO — the
+        three backend seams are patched to blow up, and getting ValueError back
+        instead proves none of them fired (fail fast and cheap)."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("no IO on bad top_k")
+
+        with patch("src.retriever.get_vector_store", side_effect=_boom), patch(
+            "src.retriever.load_bm25_index", side_effect=_boom
+        ), patch("src.retriever.assert_embedding_model", side_effect=_boom):
+            with pytest.raises(ValueError) as exc_info:
+                retrieve("q", top_k=bad_top_k)
+
+        message = str(exc_info.value)
+        assert "top_k" in message
+        assert str(bad_top_k) in message  # the offending value is named
+
+    def test_top_k_one_is_valid(self, seeded_store):
+        """top_k=1 is the smallest legal value: it returns at most one result and
+        never raises."""
+        store, persist_dir = seeded_store
+
+        results = retrieve("making a will", top_k=1, persist_directory=persist_dir)
+
+        assert len(results) <= 1
+
+    def test_top_k_larger_than_candidate_pool_is_uncapped(self, seeded_store):
+        """A top_k well ABOVE CANDIDATE_POOL is honored, not capped: retrieval
+        widens candidate_k = max(CANDIDATE_POOL, top_k) and returns whatever the
+        store holds (2 seeded docs here) without raising."""
+        store, persist_dir = seeded_store
+        big_top_k = CANDIDATE_POOL + 20
+
+        results = retrieve("will", top_k=big_top_k, persist_directory=persist_dir)
+
+        # No cap / no error: returns the store's contents (2 docs), bounded by
+        # what exists, never truncated to CANDIDATE_POOL.
+        assert 0 < len(results) <= big_top_k
 
 
 class TestRewrites:
