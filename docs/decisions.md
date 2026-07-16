@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 13 — query robustness: rewrite + graded answers (post-v2.0 remediation)**
+**Current phase: 14 — answer quality: synthesis + intent-level rewriting**
 
 ---
 
