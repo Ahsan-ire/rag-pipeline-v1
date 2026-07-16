@@ -458,7 +458,10 @@ def query(
 
     elif outcome == CITATIONS_VERIFIED:
         _print_answer_and_sources(draft_answer, result["sources"])
-        print("\n✓ All citations verified against the retrieved sources.")
+        print(
+            "\n✓ All citations resolve to a retrieved passage (locator and page "
+            "checked — this does not verify the passage supports the claim)."
+        )
         action = ACTION_SHOWN
 
     elif outcome == PARTIALLY_VERIFIED:

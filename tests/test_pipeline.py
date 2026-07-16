@@ -844,7 +844,11 @@ class TestQuery:
 
         out = capsys.readouterr().out
         assert draft in out
-        assert "verified against the retrieved sources" in out
+        # Phase 14 WS1.3 display-honesty rewording: the note now states the gate
+        # only resolves each locator to a retrieved passage, and explicitly
+        # disclaims verifying that the passage supports the claim.
+        assert "resolve to a retrieved passage" in out
+        assert "does not verify the passage supports the claim" in out
         assert spy.call_args.args[0]["action"] == "shown"
 
     def test_refusal_outcome_shows_no_warnings(self, capsys):

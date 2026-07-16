@@ -20,7 +20,12 @@ from src.generator import (
     is_refusal,
     validate_citations,
 )
-from src.grounding import CITATIONS_UNVERIFIED, PARTIALLY_VERIFIED
+from src.grounding import (
+    CITATIONS_UNVERIFIED,
+    CITATIONS_VERIFIED,
+    PARTIALLY_VERIFIED,
+    classify,
+)
 
 
 class TestGetLlm:
@@ -318,6 +323,64 @@ class TestPromptTemplateHumanMessage:
     def test_closing_sentence_names_the_caveat_form(self):
         human_template = PROMPT_TEMPLATE.messages[1].prompt.template
         assert "caveat form" in human_template
+
+
+class TestSynthesisRule:
+    """Phase 14 WS1: Rule 5 tells the model to organise the answer around the
+    question and synthesise across extracts (esp. for compare/contrast), while
+    keeping a bracketed locator on every sentence. These canaries pin the rule
+    text and the reworded human turn; the Codex #11 case pins that Rule 5 is
+    prompt guidance only — it does not change the gate's treatment of the
+    deliberately-uncited caveat opener (rule 3(c))."""
+
+    def test_system_prompt_contains_the_synthesis_rule(self):
+        """Rule-5 canary: a distinctive, stable substring of the synthesis rule
+        must live in the system prompt, so the instruction cannot silently
+        drift out."""
+        assert "state the basis of comparison, address each side" in SYSTEM_PROMPT
+
+    def test_synthesis_rule_references_rule_3b_for_unsupported_points(self):
+        """Rule 5 must route unsupported comparison points to rule 3(b) as named
+        gaps (composing with the D44 subject-gate-first rule 3), not invent
+        them — pin that cross-reference the way the prompt numbers it."""
+        assert "named as a gap under rule 3(b)" in SYSTEM_PROMPT
+
+    def test_human_turn_drops_the_old_extracts_wording(self):
+        """Old-wording absence: the pre-Phase-14 opener must be gone from the
+        human template now that it frames the task as a single coherent
+        response over source material."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "Based on the following handbook extracts" not in human_template
+
+    def test_human_turn_frames_a_single_coherent_response(self):
+        """The reworded opener and its lockstep closing both frame the task as a
+        single coherent response."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "Using the following handbook source material" in human_template
+        assert human_template.count("single coherent response") == 2
+
+    def test_uncited_caveat_opener_still_passes_gate_under_rule_5(self):
+        """Codex #11: an answer whose caveat opener (the exact CAVEAT_PREFIX
+        sentence) stays uncited must classify exactly as before Rule 5 — the
+        cited body verifies, the uncited opener contributes no citation and is
+        not penalised. Rule 5's "every sentence carries a locator" is prompt
+        guidance; the gate/grounding treatment of the caveat opener is
+        unchanged. Mirrors the caveat-gate tests in test_grounding.py."""
+        para = {"para": "14.8.5", "page": "412", "raw": "para 14.8.5, p.412"}
+        answer = (
+            f"{CAVEAT_PREFIX} Requisitions must be raised within the agreed "
+            "period [Handbook, para 14.8.5, p.412]."
+        )
+        outcome = classify(answer, [para], {"grounded": [para], "ungrounded": []})
+        assert outcome == CITATIONS_VERIFIED
+
+    def test_uncited_caveat_opener_with_no_cited_body_still_fails_closed(self):
+        """The counterpart fail-closed case, also unchanged by Rule 5: a caveat
+        opener with no grounded citation in the body is CITATIONS_UNVERIFIED —
+        the uncited opener does not exempt the body from needing a citation."""
+        answer = f"{CAVEAT_PREFIX} Requisitions must generally be raised promptly."
+        outcome = classify(answer, [], {"grounded": [], "ungrounded": []})
+        assert outcome == CITATIONS_UNVERIFIED
 
 
 class TestValidateCitations:
