@@ -13,6 +13,7 @@ import pytest
 
 from src.query_rewrite import (
     Expansion,
+    MAX_INTENT_CHARS,
     MAX_REWRITE_CHARS,
     MAX_REWRITES,
     REWRITE_MODEL,
@@ -22,6 +23,7 @@ from src.query_rewrite import (
     STATUS_NO_KEY,
     STATUS_PARSE_ERROR,
     expand_query,
+    extract_intent,
     parse_rewrites,
 )
 
@@ -244,3 +246,210 @@ class TestExpandQuery:
         exp = Expansion("q", (), REWRITE_MODEL, STATUS_DISABLED)
         with pytest.raises(dataclasses.FrozenInstanceError):
             exp.status = STATUS_LIVE
+
+    def test_positional_construction_without_intent_defaults_none(self):
+        """Phase 14 (D50): the 4-field positional construction every failure
+        return in expand_query and the evaluator use stays valid and defaults
+        intent_rewrite to None."""
+        exp = Expansion("q", (), REWRITE_MODEL, STATUS_DISABLED)
+        assert exp.intent_rewrite is None
+
+
+class TestExtractIntent:
+    """Phase 14 (D50) pre-pass: peel the INTENT-tagged line off BEFORE
+    parse_rewrites. First match wins; the matched line is removed; a
+    missing/malformed/overlong tag yields None."""
+
+    def test_intent_on_the_fourth_line(self):
+        text = (
+            "1) formal rephrasing\n"
+            "2) keyword variant\n"
+            "3) plain paraphrase\n"
+            "4) INTENT: the underlying comparison of A and B"
+        )
+        intent, remaining = extract_intent(text)
+        assert intent == "the underlying comparison of A and B"
+        assert "INTENT" not in remaining
+        # The three surface lines are untouched and still parse to three.
+        assert parse_rewrites(remaining) == [
+            "formal rephrasing",
+            "keyword variant",
+            "plain paraphrase",
+        ]
+
+    def test_intent_on_a_reordered_line_still_extracted(self):
+        """The tag need not be on line 4: a reordered response (intent first)
+        is still extracted, and that line — wherever it sits — is removed."""
+        text = (
+            "INTENT: the underlying information need\n"
+            "1) formal rephrasing\n"
+            "2) keyword variant\n"
+            "3) plain paraphrase"
+        )
+        intent, remaining = extract_intent(text)
+        assert intent == "the underlying information need"
+        assert "INTENT" not in remaining
+        assert parse_rewrites(remaining) == [
+            "formal rephrasing",
+            "keyword variant",
+            "plain paraphrase",
+        ]
+
+    def test_duplicate_intent_lines_first_wins(self):
+        text = (
+            "1) formal rephrasing\n"
+            "INTENT: first intent wins\n"
+            "INTENT: second intent ignored"
+        )
+        intent, remaining = extract_intent(text)
+        assert intent == "first intent wins"
+        # Only the FIRST tagged line is removed; the second stays in the text.
+        assert "second intent ignored" in remaining
+        assert "first intent wins" not in remaining
+
+    def test_unknown_tag_is_not_intent(self):
+        """A different tag (PURPOSE:) is not the case-sensitive INTENT: tag, so
+        no intent is extracted and NO line is removed."""
+        text = (
+            "1) formal rephrasing\n"
+            "2) keyword variant\n"
+            "3) plain paraphrase\n"
+            "4) PURPOSE: not the intent tag"
+        )
+        intent, remaining = extract_intent(text)
+        assert intent is None
+        assert remaining == text  # nothing removed
+
+    def test_lowercase_tag_is_not_matched(self):
+        """The tag is case-sensitive: a lowercase 'intent:' is not the tag."""
+        text = "1) formal rephrasing\n4) intent: lowercase is not the tag"
+        intent, remaining = extract_intent(text)
+        assert intent is None
+        assert remaining == text
+
+    def test_missing_tag_returns_none_and_unchanged_text(self):
+        text = "1) formal rephrasing\n2) keyword variant\n3) plain paraphrase"
+        intent, remaining = extract_intent(text)
+        assert intent is None
+        assert remaining == text
+
+    def test_empty_restatement_is_malformed_but_line_removed(self):
+        """A bare 'INTENT:' with nothing after it is malformed → None, but the
+        line is still REMOVED so it can never fall through to parse_rewrites as
+        a surface rewrite."""
+        text = "1) formal rephrasing\n4) INTENT:   "
+        intent, remaining = extract_intent(text)
+        assert intent is None
+        assert "INTENT" not in remaining
+        assert remaining == "1) formal rephrasing"
+
+    def test_overlong_intent_is_none_but_line_removed(self):
+        long_intent = "x" * (MAX_INTENT_CHARS + 1)
+        text = f"1) formal rephrasing\nINTENT: {long_intent}"
+        intent, remaining = extract_intent(text)
+        assert intent is None
+        assert "INTENT" not in remaining
+
+    def test_only_intent_line_removed_leaves_empty_text(self):
+        """An only-intent response leaves parse_rewrites the empty string it
+        already handles — mirroring parse_rewrites' empty-input behavior."""
+        intent, remaining = extract_intent("INTENT: just the reframe")
+        assert intent == "just the reframe"
+        assert remaining == ""
+        assert parse_rewrites(remaining) == []
+
+    def test_empty_text_returns_none(self):
+        assert extract_intent("") == (None, "")
+
+
+class TestExpandQueryIntent:
+    """Phase 14 (D50): expand_query wires the pre-pass in, dedups the intent,
+    and carries it on the returned Expansion."""
+
+    def _run(self, question, canned):
+        with patch("src.query_rewrite._invoke_rewrite", return_value=canned):
+            return expand_query(question, llm=object())
+
+    def test_missing_intent_is_live_with_three_rewrites_and_none_intent(self):
+        """A 3-line (no INTENT) output stays STATUS_LIVE with intent None —
+        never a parse error."""
+        canned = "1) formal rephrasing\n2) keyword variant\n3) plain paraphrase"
+        result = self._run("What is a priority entry?", canned)
+        assert result.status == STATUS_LIVE
+        assert result.intent_rewrite is None
+        assert len(result.rewrites) == 3
+
+    def test_untagged_fourth_line_keeps_surface_cap_at_three(self):
+        """An untagged 4th line is NOT an intent — it stays in the surface text,
+        where parse_rewrites' MAX_REWRITES=3 cap drops it. Intent is None."""
+        canned = (
+            "1) formal rephrasing\n2) keyword variant\n"
+            "3) plain paraphrase\n4) an untagged fourth rewrite"
+        )
+        result = self._run("What is a priority entry?", canned)
+        assert result.intent_rewrite is None
+        assert len(result.rewrites) == MAX_REWRITES  # still capped at 3
+
+    def test_intent_carried_on_live_expansion(self):
+        canned = (
+            "1) formal rephrasing\n2) keyword variant\n"
+            "3) plain paraphrase\n4) INTENT: comparing procedure A with procedure B"
+        )
+        result = self._run("A vs B?", canned)
+        assert result.status == STATUS_LIVE
+        assert result.rewrites == (
+            "formal rephrasing",
+            "keyword variant",
+            "plain paraphrase",
+        )
+        assert result.intent_rewrite == "comparing procedure A with procedure B"
+
+    def test_only_intent_output_mirrors_empty_parse_but_keeps_intent(self):
+        """No surface lines → parse_rewrites empty-input behavior (zero
+        rewrites, STATUS_PARSE_ERROR), but the validly extracted intent is
+        still carried — it is an independent signal."""
+        result = self._run("A vs B?", "INTENT: the underlying comparison")
+        assert result.status == STATUS_PARSE_ERROR
+        assert result.rewrites == ()
+        assert result.intent_rewrite == "the underlying comparison"
+
+    def test_intent_equal_to_original_deduped_to_none(self):
+        question = "What is a priority entry?"
+        canned = (
+            "1) formal rephrasing\n2) keyword variant\n"
+            f"3) plain paraphrase\n4) INTENT: {question.upper()}"
+        )
+        result = self._run(question, canned)
+        assert result.status == STATUS_LIVE
+        assert result.intent_rewrite is None  # casefold-equal to the original
+
+    def test_intent_equal_to_surface_rewrite_deduped_to_none(self):
+        canned = (
+            "1) formal rephrasing\n2) keyword variant\n"
+            "3) plain paraphrase\n4) INTENT: FORMAL REPHRASING"
+        )
+        result = self._run("What is a priority entry?", canned)
+        assert result.status == STATUS_LIVE
+        assert result.intent_rewrite is None  # casefold-equal to a surface rewrite
+
+    def test_overlong_intent_expands_to_none_intent(self):
+        long_intent = "y " * 200  # well over MAX_INTENT_CHARS
+        canned = (
+            "1) formal rephrasing\n2) keyword variant\n"
+            f"3) plain paraphrase\n4) INTENT: {long_intent}"
+        )
+        result = self._run("What is a priority entry?", canned)
+        assert result.status == STATUS_LIVE
+        assert result.intent_rewrite is None
+
+    def test_strict_paths_disabled_and_no_key_carry_no_intent(self, monkeypatch):
+        """The pre-parse failure returns (disabled / no_key) never ran
+        extraction, so they carry intent None — verifying intent handling under
+        the degrade paths too."""
+        disabled = expand_query("q", enabled=False)
+        assert disabled.status == STATUS_DISABLED
+        assert disabled.intent_rewrite is None
+
+        no_key = expand_query("q", llm=None)  # conftest scrubs the key
+        assert no_key.status == STATUS_NO_KEY
+        assert no_key.intent_rewrite is None

@@ -49,6 +49,7 @@ from src.grounding import (
     PARTIALLY_VERIFIED,
     REFUSAL,
 )
+from src.retriever import INTENT_LIST_WEIGHT
 
 
 def _cite(para, page):
@@ -2201,9 +2202,11 @@ class TestRunEvalMatrix:
         )
 
         def fake_retrieve(question, top_k=6, persist_directory=None, vector_store=None,
-                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None):
+                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None,
+                          intent_rewrite=None, intent_weight=None):
             retrieve_calls.append({"mode": mode, "store": vector_store, "bm25": bm25_index,
-                                   "strict": strict_errors, "rewrites": rewrites})
+                                   "strict": strict_errors, "rewrites": rewrites,
+                                   "intent_rewrite": intent_rewrite})
             return [{"document": _matrix_doc("3.2"), "score": 1.0, "metadata": _matrix_doc("3.2").metadata}]
 
         monkeypatch.setattr("src.evaluator.retrieve", fake_retrieve)
@@ -2711,6 +2714,61 @@ class TestRunEvalMatrix:
             f"live {attempts}, fallbacks 0"
         ) in report
 
+    def test_report_shows_intent_weight_and_presence_counts(self, tmp_path, monkeypatch):
+        """WS2 (D50): the provenance block shows the intent weight in effect and
+        the intent presence/fallback counts (how many expansions carried an
+        intent vs None). Here every live expansion carries an intent."""
+        self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(
+            monkeypatch,
+            expansion_for=lambda q: Expansion(
+                q, ("q rewrite",), REWRITE_MODEL, STATUS_LIVE, "reframe of " + q
+            ),
+        )
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+        )
+
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert result["intent_weight"] == INTENT_LIST_WEIGHT
+        assert result["intent_present"] == result["rewrite_attempts"]
+        assert result["intent_absent"] == 0
+        assert (
+            f"- intent reframe: weight {INTENT_LIST_WEIGHT} — present "
+            f"{result['intent_present']}, none 0"
+        ) in report
+
+    def test_report_intent_counts_none_when_no_intent(self, tmp_path, monkeypatch):
+        """When no expansion carries an intent, the fallback count equals the
+        attempts and 'present 0' is disclosed."""
+        self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)  # default: rewrites but intent None
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+        )
+
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert result["intent_present"] == 0
+        assert result["intent_absent"] == result["rewrite_attempts"]
+        assert (
+            f"- intent reframe: weight {INTENT_LIST_WEIGHT} — present 0, "
+            f"none {result['rewrite_attempts']}"
+        ) in report
+
     def test_judge_off_renders_not_run(self, tmp_path, monkeypatch):
         self._patch_paths(monkeypatch, tmp_path)
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
@@ -2787,7 +2845,8 @@ class TestRunEvalMatrix:
         monkeypatch.setattr("src.evaluator.load_bm25_index", lambda pd: bm25_value)
 
         def fake_retrieve(question, top_k=6, persist_directory=None, vector_store=None,
-                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None):
+                          bm25_index=None, mode="hybrid", strict_errors=False, rewrites=None,
+                          intent_rewrite=None, intent_weight=None):
             sec = "3.2" if question == "D1" else "5.1"
             doc = _matrix_doc(sec)
             return [{"document": doc, "score": 1.0, "metadata": doc.metadata}]

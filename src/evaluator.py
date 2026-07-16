@@ -62,6 +62,7 @@ from src.query_rewrite import (
     expand_query,
 )
 from src.retriever import (
+    INTENT_LIST_WEIGHT,
     RETRIEVAL_MODES,
     format_context,
     load_retrieval_context,
@@ -220,6 +221,13 @@ def _build_default_retrieve_fn(
     those three things exactly ONCE and this closes over the result, so only
     the query itself varies per call.
 
+    Raw-query only: this legacy load-once path threads NEITHER the Phase-13
+    query-expansion rewrites NOR the Phase-14 intent reframe into ``retrieve``.
+    Those flow only through ``run_eval_matrix``'s own ``retrieve_fn_factory`` /
+    ``generate_fn`` (the production-config paths). The public
+    ``evaluate_retrieval`` / ``evaluate_refusals`` / ``run_eval`` entry points
+    that build this by default are therefore raw-query paths too.
+
     Args:
         top_k: Default ``top_k`` baked into the returned callable (still
             overridable per call via its own ``top_k`` keyword argument).
@@ -334,6 +342,10 @@ def evaluate_retrieval(
         All existing keys and per-question keys are unchanged.
     """
     if retrieve_fn is None:
+        # Raw-query only: the default retrieve_fn threads neither the Phase-13
+        # rewrites nor the Phase-14 intent reframe — see
+        # ``_build_default_retrieve_fn``'s docstring. The production-config
+        # expansion/intent paths live only in ``run_eval_matrix``.
         retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
     # Only report cut-offs we actually retrieved deep enough to measure: a
@@ -465,6 +477,11 @@ def evaluate_refusals(
     persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Score refusal accuracy over the refusal-type questions in ``golden``.
+
+    Raw-query only: the default ``answer_fn`` retrieves via
+    ``_build_default_retrieve_fn``, which threads neither query-expansion
+    rewrites nor the Phase-14 intent reframe — see that helper's docstring. The
+    production-config expansion/intent paths live only in ``run_eval_matrix``.
 
     Args:
         golden: Golden-set entries, as returned by ``load_golden_set``.
@@ -1263,6 +1280,10 @@ def run_eval(
     is written ONLY by ``run_eval_matrix``'s guarded path, so this single-set
     runner can no longer overwrite the committed report by default.
 
+    Raw-query only: like ``evaluate_retrieval`` / ``evaluate_refusals``, this
+    path threads neither the Phase-13 query-expansion rewrites nor the Phase-14
+    intent reframe into retrieval — those flow only through ``run_eval_matrix``.
+
     Loads the golden set, always scores retrieval hit@k (strict and related),
     and (unless ``skip_refusals``) scores refusal accuracy — the latter makes
     live Claude API calls through the default ``answer_fn``. Prints a summary
@@ -1587,6 +1608,10 @@ def run_eval_matrix(
                         mode="hybrid",
                         strict_errors=True,
                         rewrites=list(exp.rewrites) or None,
+                        # Phase 14 (D50): the intent reframe rides alongside the
+                        # surface rewrites on its own weight budget (retrieve()
+                        # uses INTENT_LIST_WEIGHT since no intent_weight is set).
+                        intent_rewrite=exp.intent_rewrite,
                     )
                 # The three raw retrieval modes are UNCHANGED from before Phase
                 # 13 (raw-query rows must stay byte-identical — CI greps depend
@@ -1623,6 +1648,9 @@ def run_eval_matrix(
                 mode="hybrid",
                 strict_errors=True,
                 rewrites=list(exp.rewrites) or None,
+                # Phase 14 (D50): production answer passes measure hybrid+rewrite
+                # WITH the intent reframe threaded in (same _expand cache).
+                intent_rewrite=exp.intent_rewrite,
             )
             return generate_with_sources(question, results)
 
@@ -1784,6 +1812,16 @@ def run_eval_matrix(
         for exp in expansion_cache.values()
         if exp.status != STATUS_LIVE or len(exp.rewrites) == 0
     )
+    # Intent-reframe accounting (Phase 14, D50): of the questions expanded live,
+    # how many carried a usable intent reframe vs None. ``intent_absent`` is the
+    # intent-level fallback count (an expansion whose intent deduped/parsed away
+    # to None). The intent weight in EFFECT is the module constant — the eval
+    # threads the intent through retrieve() without overriding intent_weight, so
+    # retrieve() uses INTENT_LIST_WEIGHT.
+    intent_present = sum(
+        1 for exp in expansion_cache.values() if exp.intent_rewrite is not None
+    )
+    intent_absent = rewrite_attempts - intent_present
 
     # Canonical (D46 v3) only if EVERY condition holds. Beyond a held-out label,
     # the held-out set must actually have >=1 answerable question scored under
@@ -1894,6 +1932,11 @@ def run_eval_matrix(
         "expansion_enabled": expansion_enabled,
         "rewrite_attempts": rewrite_attempts,
         "rewrite_fallbacks": rewrite_fallbacks,
+        # Intent-reframe provenance (WS2 / D50): the weight in effect and how
+        # many live expansions carried an intent vs fell back to None.
+        "intent_weight": INTENT_LIST_WEIGHT,
+        "intent_present": intent_present,
+        "intent_absent": intent_absent,
         # Eval-integrity provenance (WS3): the ownership flags, whether the BM25
         # sidecar actually loaded, and whether the judge pass ran clean — so a
         # non-canonical run's report can disclose WHICH canonical guard failed.
@@ -1991,6 +2034,12 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             f"- query expansion: {REWRITE_MODEL} — attempted "
             f"{result['rewrite_attempts']}, live {live}, "
             f"fallbacks {result['rewrite_fallbacks']}"
+        )
+        # Intent-reframe provenance (WS2 / D50): the weight in effect and how
+        # many expansions carried an intent vs None (the intent-level fallback).
+        lines.append(
+            f"- intent reframe: weight {result['intent_weight']} — present "
+            f"{result['intent_present']}, none {result['intent_absent']}"
         )
     else:
         lines.append("- query expansion: disabled (offline run)")

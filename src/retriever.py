@@ -24,6 +24,22 @@ RRF_K = 60
 # 3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 outvoted the original's 2.0 (D43's
 # stated invariant). The per-budget form closes that hole for every A and N.
 REWRITE_LIST_WEIGHT = 0.5
+# Per-list weight for the INTENT reframe (Phase 14, D50). PROVISIONAL — the
+# offline W sweep (WS5) picks the final value; retrieve() uses this constant
+# whenever the caller passes no explicit ``intent_weight``.
+#
+# Dominance invariant (equal-rank, hybrid): the original query's two-arm
+# agreement scores 2/(RRF_K+1); the worst-case CORRELATED noise a rewrite
+# bundle (at most 1/(RRF_K+1) across all arms) plus the intent's own pair of
+# lists (2W/(RRF_K+1)) can pile onto one generic chunk is (1+2W)/(RRF_K+1). For
+# the original to keep winning, 2/(RRF_K+1) > (1+2W)/(RRF_K+1), i.e. 2 > 1+2W,
+# i.e. **W ≤ 0.5** (at exactly 0.5 it is a tie, broken in the original's favour
+# because the original lists are fused — inserted into the score dict — first).
+# So intent weights are capped at 0.5; anything above is rejected, never
+# silently applied. (The rank-asymmetry caveat — noise at rank 1 can still beat
+# original agreement at rank 12, (1+2W)/61 vs 2/72 — is inherent to RRF and
+# true even at W=0 for the surface bundle; it is not introduced by the intent.)
+INTENT_LIST_WEIGHT = 0.5
 CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 
@@ -75,6 +91,8 @@ def retrieve(
     mode: str = "hybrid",
     strict_errors: bool = False,
     rewrites: Optional[Sequence[str]] = None,
+    intent_rewrite: Optional[str] = None,
+    intent_weight: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Retrieve the most relevant document chunks for a query.
 
@@ -106,6 +124,20 @@ def retrieve(
     of an earlier surviving rewrite. ``rewrites=None`` or empty ⇒
     ``sub_queries == [query]``, so every arm runs exactly the single call it
     always did — byte-identical to retrieval before Phase 13.
+
+    Intent reframe (Phase 14, D50): ``intent_rewrite`` is an optional
+    intent-level restatement of ``query`` (see ``query_rewrite.Expansion``). It
+    is fused as its OWN pair of ranked lists — one per arm the mode runs (hybrid
+    contributes bm25+vector, single-arm modes contribute that one arm),
+    mirroring the surface bundle's structure but on a SEPARATE weight budget:
+    each intent-derived list is weighted ``W`` (``intent_weight`` if given, else
+    the module constant ``INTENT_LIST_WEIGHT``). ``W`` is bounded to ``[0, 0.5]``
+    by the equal-rank dominance invariant documented on ``INTENT_LIST_WEIGHT`` —
+    a value above 0.5 (or below 0) raises ``ValueError`` rather than silently
+    letting a correlated intent pair outvote the original query. The intent is
+    deduped like a rewrite (dropped if empty after strip, or a casefold-dup of
+    ``query`` or of a surviving rewrite). ``intent_rewrite=None`` (or empty) adds
+    zero extra lists, so behavior is byte-identical to retrieval before Phase 14.
 
     Retrieval mode (Phase 10 ablation, D38): ``mode`` is one of
     ``RETRIEVAL_MODES``. ``"hybrid"`` (default) runs both arms and fuses;
@@ -160,13 +192,19 @@ def retrieve(
             error-handling note above.
         rewrites: Optional alternative phrasings of ``query`` (Phase 13,
             D43); see the multi-query weighted retrieval note above.
+        intent_rewrite: Optional intent-level restatement of ``query`` (Phase
+            14, D50); see the intent-reframe note above. Keyword-only.
+        intent_weight: Optional per-list weight ``W`` for the intent's ranked
+            lists; defaults to ``INTENT_LIST_WEIGHT`` when None. Must be in
+            ``[0, 0.5]`` (the dominance invariant). Keyword-only.
 
     Returns:
         List of dicts with keys: document, score (fused RRF score), metadata.
 
     Raises:
-        ValueError: If ``mode`` is not one of ``RETRIEVAL_MODES``, or if
-            ``top_k`` is less than 1.
+        ValueError: If ``mode`` is not one of ``RETRIEVAL_MODES``, if ``top_k``
+            is less than 1, or if the intent weight in effect (``intent_weight``
+            when given, else ``INTENT_LIST_WEIGHT``) falls outside ``[0, 0.5]``.
     """
     if mode not in RETRIEVAL_MODES:
         # Validate before any IO so a typo'd mode fails fast and cheap, never
@@ -184,6 +222,25 @@ def retrieve(
         # CANDIDATE_POOL, top_k) widens both arms), so the blocked-answer UI can
         # advise raising --top-k.
         raise ValueError(f"top_k must be >= 1, got {top_k}")
+
+    # Intent reframe (Phase 14, D50): resolve the intent sub-query and its
+    # per-list weight BEFORE any IO so a bad weight fails fast and cheap, like a
+    # bad mode or top_k. An empty/None intent is a no-op (byte-identical to
+    # pre-Phase-14 retrieval); only a non-empty intent triggers the weight
+    # validation, so passing a stray ``intent_weight`` with no intent stays
+    # inert. The bound is the equal-rank dominance invariant on
+    # ``INTENT_LIST_WEIGHT``: W in [0, 0.5], never above 0.5 silently.
+    intent_query = (intent_rewrite or "").strip()
+    intent_list_weight = (
+        INTENT_LIST_WEIGHT if intent_weight is None else intent_weight
+    )
+    if intent_query and not (0.0 <= intent_list_weight <= 0.5):
+        raise ValueError(
+            f"intent weight must be in [0, 0.5], got {intent_list_weight}: "
+            f"W > 0.5 would let a correlated intent pair (2W/{RRF_K + 1}) plus "
+            f"rewrite noise (1/{RRF_K + 1}) outvote the original query's two-arm "
+            f"agreement (2/{RRF_K + 1}) at equal rank (see INTENT_LIST_WEIGHT)."
+        )
 
     # Which arms this mode uses. Mode gates resolution AND execution: a
     # non-injected arm the mode doesn't use is never loaded (vector mode never
@@ -214,8 +271,13 @@ def retrieve(
     # makes exactly the one call it always made — byte-identical to
     # pre-Phase-13 retrieve().
     sub_queries: List[str] = [query]
+    # A parallel per-sub-query weight, one entry per sub_queries entry: 1.0 for
+    # the original, per_rewrite_weight for each surface rewrite, and W for the
+    # intent reframe (appended last). ``seen`` dedups every sub-query — the
+    # original, the rewrites, AND the intent — against each other by casefold.
+    sub_query_weights: List[float] = [1.0]
+    seen = {query.casefold()}
     if rewrites:
-        seen = {query.casefold()}
         for rewrite in rewrites:
             candidate = rewrite.strip()
             if not candidate or candidate.casefold() in seen:
@@ -232,6 +294,19 @@ def retrieve(
     # weight is then never consulted (only sub_queries[0] runs).
     n_rewrites = len(sub_queries) - 1
     per_rewrite_weight = REWRITE_LIST_WEIGHT / max(1, n_rewrites)
+    sub_query_weights.extend([per_rewrite_weight] * n_rewrites)
+
+    # Intent reframe (Phase 14, D50): append it as ONE MORE sub-query weighted W
+    # on its own budget — NOT part of the rewrite bundle, so per_rewrite_weight
+    # above is computed from n_rewrites alone and is unaffected. Deduped against
+    # every existing sub-query (mirroring the rewrite dedup); dropped when it
+    # collapses to a duplicate or is empty. An intent that survives runs on each
+    # used arm exactly like a rewrite, so single-arm modes contribute one intent
+    # list and hybrid contributes two — mirroring the surface bundle.
+    if intent_query and intent_query.casefold() not in seen:
+        seen.add(intent_query.casefold())
+        sub_queries.append(intent_query)
+        sub_query_weights.append(intent_list_weight)
 
     id_to_doc: Dict[str, Document] = {}
     # One ranked-ID list per (arm × sub-query), with a parallel per-list
@@ -257,7 +332,7 @@ def retrieve(
                     raise
                 logger.error("Error during vector retrieval: %s", e)
             ranked_lists.append(vector_ranked_ids)
-            list_weights.append(1.0 if i == 0 else per_rewrite_weight)
+            list_weights.append(sub_query_weights[i])
 
     if use_bm25:
         if bm25_index is not None:
@@ -279,7 +354,7 @@ def retrieve(
                         raise
                     logger.error("Error during BM25 retrieval: %s", e)
                 ranked_lists.append(bm25_ranked_ids)
-                list_weights.append(1.0 if i == 0 else per_rewrite_weight)
+                list_weights.append(sub_query_weights[i])
         else:
             # A missing sidecar is not an operational error (unaffected by
             # strict_errors): hybrid degrades to vector-only, bm25 mode returns

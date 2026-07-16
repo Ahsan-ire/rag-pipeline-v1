@@ -90,6 +90,7 @@ def build_event(
     answer: str,
     rewrites: Optional[List[str]] = None,
     rewrite_status: Optional[str] = None,
+    intent_rewrite: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build one audit record for a single query/answer cycle.
 
@@ -117,6 +118,9 @@ def build_event(
             ``AUDIT_LOG_RAW_QUERIES=1`` — see module docstring.
         rewrite_status: The ``Expansion.status`` for this query's rewrite
             attempt, or ``None`` alongside a ``None`` ``rewrites``.
+        intent_rewrite: The ``Expansion.intent_rewrite`` reframe for this query
+            (Phase 14, D50), or ``None`` when the model produced/kept none.
+            Never stored verbatim unless ``AUDIT_LOG_RAW_QUERIES=1``.
 
     Returns:
         A JSON-serializable dict with exactly the keys documented in the
@@ -203,6 +207,20 @@ def build_event(
             # rewrite is derived from the query and carries the same
             # client-matter sensitivity (see module docstring).
             record["rewrite_texts"] = list(rewrites or [])
+
+    # Phase 14 (D50) intent reframe. Independent of the rewrite fields above and
+    # added ONLY when an intent restatement exists — so an event with no intent
+    # is byte-identical to a pre-Phase-14 (rewrite-only) event, and neither
+    # intent key ever appears alone. ``intent_rewrite_sha256`` is always present
+    # when an intent exists; the raw ``intent_rewrite_text`` is gated behind
+    # AUDIT_LOG_RAW_QUERIES exactly like query_text/rewrite_texts (the intent is
+    # derived from the query and carries the same client-matter sensitivity).
+    if intent_rewrite is not None:
+        record["intent_rewrite_sha256"] = hashlib.sha256(
+            intent_rewrite.encode("utf-8")
+        ).hexdigest()
+        if os.environ.get("AUDIT_LOG_RAW_QUERIES") == "1":
+            record["intent_rewrite_text"] = intent_rewrite
 
     return record
 
