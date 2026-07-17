@@ -694,3 +694,23 @@ class TestGenerateWithSources:
         assert len(result["citation_check"]["ungrounded"]) == 1
         # One grounded + one ungrounded citation → partially verified.
         assert result["gate_outcome"] == PARTIALLY_VERIFIED
+
+
+class TestClientTimeoutCanary:
+    """D52: the no-hang contract — a client constructed without a request
+    timeout can block forever on a dead socket (two wedged canonical runs,
+    17 Jul). Pin the timeout/retry kwargs so they cannot silently drift out."""
+
+    def test_generation_client_sets_timeout_and_retries(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            llm = get_llm()
+            assert llm.default_request_timeout == 120.0
+            assert llm.max_retries == 3
+
+    def test_rewrite_client_sets_timeout_and_retries(self):
+        from src.query_rewrite import get_rewrite_llm
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            llm = get_rewrite_llm()
+            assert llm.default_request_timeout == 60.0
+            assert llm.max_retries == 3
