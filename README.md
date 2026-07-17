@@ -132,6 +132,7 @@ Answer quality (generation through the production hybrid+rewrite config):
 | Citation-grounded fraction (Σ grounded / Σ citations) | 269/269 | 113/113 | 137/137 |
 | Sentence-citation coverage | 0.935 | 0.949 | 0.848 |
 | False-block rate (answerable drafts the gate would withhold) | 0/30 | 0/20 | 0/17 |
+| LLM-judged mean faithfulness *(experimental, same-family judge)* | 0.982 | 0.995 | 0.978 |
 
 Negatives hold the Phase 13 calibration total (11/14) with the boundary rows shuffled between
 sets — the sampling sensitivity D44 documents. Since Phase 14 the answer style is synthesis-first
@@ -139,22 +140,19 @@ sets — the sampling sensitivity D44 documents. Since Phase 14 the answer style
 explicit contrast, unsupported points named as gaps — with a bracketed locator still on every
 sentence, and the ✓-display now states exactly what the gate checks (locator resolution, not
 entailment).
-| LLM-judged mean faithfulness *(experimental, same-family judge)* | 1.000 | 1.000 | 0.983 |
 
-The refusal rows changed with the graded policy and are reported with their reasoning, not hidden:
-the three negatives that answer instead of refusing (solicitor fees, planning permission, mortgage
-arrears process) are all questions where the corpus genuinely contains transactionally related
-guidance, so answering under the explicit caveat is consistent with the related-guidance policy
-even though the binary metric scores it as a miss (D44 addendum records the calibration and this
-residual). Evidence status, stated precisely: live spot-checks of the fees and planning questions
-returned caveat-form answers with gate-verified citations (the fees answer cites the statutory
-duty to disclose the fee basis); the committed report records only a refused/answered boolean for
-negative rows, so per-row caveat/gate detail is not yet part of the canonical artifact — adding it
-(caveat flag, gate outcome, citation counts; never answer text) is a Phase 14 evaluator change,
-alongside tier-choice grading. The three false refusals are retrieval misses or subject-boundary
-edge cases on the hardest questions; per-question detail is in the report.
+The refusal rows are reported with their reasoning, not hidden: the three negatives that answer
+instead of refusing in run #3 (tenancy-termination notice and compulsory-purchase compensation on
+the held-out set, solicitor fees on the realistic set) are questions where the corpus genuinely
+contains transactionally related guidance, so answering under the explicit caveat is consistent
+with the related-guidance policy even though the binary metric scores each as a miss (D44 addendum
+records the calibration and residual class). Since Phase 14 the committed report substantiates
+every negative row itself — caveat flag, gate outcome, grounded-citation counts, never answer text
+(D51) — so these claims are checkable from `eval/results.md` directly. The two false refusals
+(1/20 held-out — the canary-pinned capacity-law edge — and 1/17 realistic) are visible in the same
+per-question detail.
 
-Provenance for these numbers (from `eval/results.md`): git `b627ff2`, 1470 indexed chunks, embedding
+Provenance for these numbers (from `eval/results.md`): git `f8e66a4`, 1470 indexed chunks, embedding
 `all-MiniLM-L6-v2`, generation `claude-sonnet-5`, query expansion `claude-haiku-4-5` (86/86 live,
 zero fallbacks). Generation is sampled at the API's fixed default temperature and expansion rewrites
 vary between runs, so boundary rows can flip run to run — the report is one canonical sample, not an
@@ -249,7 +247,7 @@ python -m src.pipeline eval --golden eval/sample_golden_set.jsonl --persist-dir 
 python -m pytest tests/ -q
 ```
 
-484 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`)
+554 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`)
 — no network access, no API key required (the suite scrubs any ambient `ANTHROPIC_API_KEY` so an
 unpatched seam fails loudly rather than making a live call).
 
@@ -266,10 +264,13 @@ unpatched seam fails loudly rather than making a live call).
   multi-query fusion, the graded four-tier answer policy, the realistic eval slice, canonical-report
   hardening, local-first embedding load (D43–D47).
 - **Done (Phase 14):** the synthesis rule (comparison questions now draw an explicit, fully-cited
-  contrast — both field-test comparison questions pass a manual rubric), intent-level query
-  rewriting with an honest weighted-fusion contract (W ≤ 0.5 dominance invariant; the W sweep's
-  negative result is documented in D50 rather than shipped past its constraint), canonical-report
-  v4 guards (judge + BM25-loaded + substantiated negatives), and LLM client timeouts (D49–D52).
+  contrast — both field-test comparison questions pass all seven items of a manual rubric, recorded
+  D30-safely in [`docs/phase14-rubric-spotchecks.md`](docs/phase14-rubric-spotchecks.md)),
+  intent-level query rewriting with an honest weighted-fusion contract (W ≤ 0.5 dominance
+  invariant; the W sweep's negative result — and the S5 retrieval anchor left unmet in the
+  canonical run — are documented in the D50 addendum rather than smoothed over; sweep
+  reproducible via `scripts/w_sweep.py`), canonical-report v4 guards (judge + BM25-loaded +
+  substantiated negatives), and LLM client timeouts (D49–D52).
 - **Next (Phase 15):** token-aware chunking (the 71% truncation fix — the biggest retrieval lever
   for the realistic slice), BM25 stemming, entailment-level citation checking.
 - **Beyond submission:** a service
@@ -285,7 +286,7 @@ here and no rights over it are granted.
 ## More detail
 
 - `IMPLEMENTATION_PLAN.md` — phase-by-phase build plan and acceptance criteria.
-- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D48).
+- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D52).
 - `eval/results.md` — the canonical held-out evaluation report with full provenance.
 - `docs/harness.md` — the development workflow itself (gates, fresh-context critics, eval-judged
   bake-offs) and how to port it to a new project.

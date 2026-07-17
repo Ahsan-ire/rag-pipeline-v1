@@ -1521,3 +1521,28 @@ territory, pulled forward out of necessity), constructor-canary-tested.
 symptom, leaves production queries hangable; a restarted canonical run re-spends the full
 API budget); longer timeouts (the slowest healthy generation call is well under 60s — 120s
 already carries ample headroom).
+
+## D50 addendum — canonical run #3 outcome: the S5 acceptance anchor is NOT met (17 Jul 2026, post-run)
+**Outcome:** in canonical run #3 (eval/results.md, git f8e66a4) the S5 row is strict=MISS AND
+related=MISS at @6 — the amended acceptance's retrieval prong (S5 related@6 HIT) failed on that
+run's live expansion sample. The rubric prong passed on both field-test comparison questions,
+with the evidence now a committed artifact (docs/phase14-rubric-spotchecks.md); notably the
+S5 rubric spot-check's own sample retrieved 2.2.2.1 (a related-rule HIT), while the canonical
+sample did not — S5's retrieval outcome at W=0.25 is expansion-sample-dependent, exactly the
+knife-edge fragility the sweep diagnostics predicted. Every other criterion passed: held-out
+hybrid 20/20; tuning controls 0.867/0.967 (zero per-question strict@6 HIT→MISS flips vs run #2);
+N4 strict HIT rank 3; realistic 0.471 (exactly at threshold — zero margin); negatives 11/14
+(= calibration, rows shuffled); zero fallbacks; canonical v4 guards green. Disposition — accept
+Phase 14 with the anchor recorded as unmet (the user-visible failure form is fixed; the
+retrieval anchor waits on the Phase 15 chunking lever) or flip INTENT_LIST_WEIGHT to 0.5
+(rescues S5 in the sweep instrument at the cost of one golden-control flip) and re-run — is the
+merge decision and is presented in the PR, not made here.
+**Instrument note (measurement honesty):** the sweep numbers in D50 (golden 27/30 at W=0; S5
+related rank 2–4) come from the cached-expansion instrument, now committed for reproducibility
+(scripts/w_sweep.py + eval/w_sweep_expansions_20260717.json); the canonical run re-expands live
+and drew a different sample (golden 26/30; S5 related MISS). D50's "8/17 (= committed)" phrasing
+compared the sweep's W=0 arm to the run #3 aggregate it anticipated; the then-committed run #2
+figure was 0.412. Run-to-run expansion variance is the mechanism in both cases. The sweep's W=0
+arm ran before the intent_weight=0 no-op fix; with ≥6 non-zero-score fused docs per question
+throughout (pool 12, 2 arms, ≥4 sub-queries), zero-weight padding could not enter any top-6,
+so the W=0 arm equals the true no-intent baseline for every measured number.

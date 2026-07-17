@@ -588,6 +588,13 @@ zero expansion fallbacks; canonical v4 guards green (judge clean, bm25 loaded). 
 run #3 results: eval/results.md (this run also re-baselines golden/tuning under the 4-line
 expansion prompt).
 
+**Outcome (17 Jul, canonical run #3):** every criterion met EXCEPT the S5 retrieval prong —
+S5 is strict+related MISS in the canonical sample (rubric prong: both comparison questions
+pass all seven items, evidence in docs/phase14-rubric-spotchecks.md; the spot-check's own
+sample retrieved a related section, demonstrating the outcome is expansion-sample-dependent
+at W=0.25). Realistic 0.471 passes exactly at threshold. Full record and the accept-vs-W=0.5
+disposition: D50 addendum; the disposition is the merge decision.
+
 ---
 
 ## Cut list (v2)
