@@ -1,49 +1,41 @@
 # Legal RAG Pipeline — a first-line sweep of the conveyancing handbook
 
+[![CI](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml)
+&nbsp; **[▶ Live interactive demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — no install, runs in the browser.
+
 Ask a procedure question in plain English. Get a grounded answer with **verified
 chapter/paragraph/page citations** — or an honest refusal. Then open the handbook at the cited
 page and reach your own conclusion.
 
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
-first-line sweep our team runs before diving into an ~800-page manual. The answer orients you; the
+first-line sweep before diving into an ~800-page manual. The answer orients you; the
 **citation is the product** — every one is machine-verified against the retrieved text before you
 see it, so `[Handbook, para 6.3.2, p.214]` reliably lands you on the paragraph that actually says
 it. An answer that cannot be verified is **withheld, not shown** — the system fails closed rather
 than guessing confidently.
 
+## Why I built this, and how it's used
+
+I work with a small legal team specialising in conveyancing, and the reference for almost
+everything is one ~800-page handbook. Finding the right paragraph is rarely hard law — it's paging. A general-purpose AI
+answers instantly but leaves you wondering whether to trust it, which in legal work means you end
+up checking the book anyway. This is the middle path: an answer that arrives already pinned to
+chapter, paragraph and page, so the check takes seconds instead of a search.
+
+It has been in real use since mid-July 2026 — me mainly, colleagues occasionally on their own
+questions — always on real work questions, never as the final word. Two things in this repo came
+directly out of that use: the "realistic" evaluation slice is built
+from colleagues' actual phrasing, which failed badly against a system that scored perfectly on my
+own polished test questions (see the evaluation section), and the Phase 14 comparison-question
+work started as one colleague's complaint about one bad answer. I haven't measured time saved and
+won't invent a number; what I can say is that the failures users found became the roadmap.
+
 ## The user journey
 
-```mermaid
-flowchart LR
-    subgraph you["👤 You"]
-        Q["Ask in plain English:<br/><i>'How is the deposit held<br/>before completion?'</i>"]
-    end
-
-    subgraph engine["⚙️ RAG engine (local index + Claude)"]
-        direction TB
-        R["Finds the relevant<br/>handbook paragraphs"]
-        D["Drafts an answer,<br/>citing para + page"]
-        G{"🛡️ Grounding gate:<br/>every citation checked against<br/>the retrieved text"}
-        R --> D --> G
-    end
-
-    subgraph out["📄 What you get"]
-        A["✅ Answer + verified citations"]
-        W["⚠️ Answer + warning naming any<br/>citation it could not verify"]
-        B["⛔ Answer withheld<br/>(sources still listed)"]
-        REF["🚫 Honest refusal:<br/><i>'not covered in the source material'</i>"]
-    end
-
-    book["📖 You open the handbook at the<br/>cited page and verify it yourself"]
-
-    Q --> engine
-    G -->|all verified| A
-    G -->|partly verified| W
-    G -->|none verified| B
-    engine -->|question outside the corpus| REF
-    A --> book
-    W --> book
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/user-journey-dark.svg">
+  <img alt="User journey: your question is retrieved against the handbook, an answer is drafted with paragraph and page citations, and a grounding gate checks every citation — leading to a verified answer, a warning, a withheld answer, or an exact refusal. You verify at the cited page." src="docs/diagrams/user-journey-light.svg">
+</picture>
 
 Four possible outcomes, never a confident unchecked guess:
 
@@ -60,27 +52,10 @@ guidance under an explicit caveat, or the refusal — detailed in [`ABOUT.md`](A
 
 ## How it works, step by step
 
-```mermaid
-flowchart TB
-    subgraph index["1️⃣ Index once (offline, no API key)"]
-        direction LR
-        PDF["📕 Handbook PDF<br/>(stays on your machine)"] --> ING["Extract + clean OCR text,<br/>keep page offsets"]
-        ING --> CHUNK["Cut at the book's own structure:<br/>one chunk per numbered paragraph<br/>(CHAPTER → 3.2 → 3.2.1)"]
-        CHUNK --> IDX["Dual index:<br/>🔤 BM25 keywords + 🧭 MiniLM vectors"]
-    end
-
-    subgraph query["2️⃣ Every question"]
-        direction TB
-        UQ["Your question"] --> RW["Haiku expands it: 3 rewrites<br/>(handbook vocabulary, keywords, paraphrase)<br/>+ an intent-level reframe"]
-        RW --> HR["Hybrid retrieval: keyword + semantic<br/>search per phrasing, fused by<br/>weighted reciprocal rank"]
-        HR --> GEN["Claude Sonnet drafts a graded answer<br/>citing [Handbook, para 3.2.1, p.87]"]
-        GEN --> GATE{"🛡️ Gate: does each cited<br/>paragraph + page match a<br/>chunk that was retrieved?"}
-        GATE --> OUT["Answer / warning / withheld / refusal"]
-        OUT --> LOG["📝 Audit log<br/>(hashes only — never query,<br/>answer, or handbook text)"]
-    end
-
-    index -.->|local index| HR
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/pipeline-steps-dark.svg">
+  <img alt="Pipeline steps: index once offline (extract and clean OCR text, chunk by paragraph numbering, build a BM25 plus vector dual index); then per question — Haiku produces three rewrites plus an intent reframe, hybrid retrieval fuses ranked lists, Sonnet drafts a cited answer, the citation gate checks it, and an audit log records hashes only." src="docs/diagrams/pipeline-steps-light.svg">
+</picture>
 
 Why each step exists, in one line each:
 
@@ -97,11 +72,14 @@ Why each step exists, in one line each:
    under an explicit caveat, or an exact refusal — never a shrug dressed up as an answer.
 6. **The grounding gate** — the step that makes the citations trustworthy: every `(paragraph, page)`
    the model cites is checked against the chunks actually retrieved. Invented citations don't pass.
+   To be precise about what that proves: the locator resolves to real retrieved text. It does not
+   prove the passage legally supports the claim — that judgment is yours, which is why every answer
+   ends at the book.
 
 ## Try it — interactive demo, no install
 
-**[`Demo/demo.html`](Demo/demo.html)** is a self-contained interactive walkthrough — open it in any
-browser (download the file, or clone and double-click). It runs the pipeline's logic as a guided
+**[Open the live demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — or open
+[`Demo/demo.html`](Demo/demo.html) locally in any browser. It runs the pipeline's logic as a guided
 simulation over the **wholly synthetic sample handbook** (a fictional jurisdiction — no real corpus
 text), and shows all four outcomes above, including watching the gate catch a fabricated citation.
 
@@ -111,7 +89,7 @@ The real corpus is **copyrighted and never in this repo**, so the quickstart run
 synthetic sample handbook (`scripts/sample_corpus.py`) that exercises the identical chunker grammar:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # tested on Python 3.12
 pip install -r requirements.txt          # installs torch/sentence-transformers (heavy, one-time)
 python -m pytest tests/ -q               # full suite, offline, no key
 
@@ -135,10 +113,12 @@ python -m src.pipeline index ./data/your-handbook.pdf --type handbook   # --rese
 
 ## Does it actually work? (evaluation at a glance)
 
-- **Held-out headline: strict hit@6 = 20/20 = 1.000** (95% CI 0.839–1.000) — on questions authored
-  *after* the retrieval constants were frozen and never used for tuning. That is raw hybrid
-  retrieval; the shipped hybrid+rewrite config scores 0.950 (19/20) on the same set — one
-  expansion-sample flip, disclosed in [`ABOUT.md`](ABOUT.md).
+- **Shipped config, held-out: strict hit@6 = 19/20 = 0.950** — the production pipeline (hybrid
+  retrieval + query expansion), measured on questions authored *after* the retrieval constants
+  were frozen and never used for tuning. The raw-hybrid retrieval core scores 20/20 = 1.000
+  (95% Wilson CI 0.839–1.000) on the same set; the one-question gap is a sampled-expansion flip,
+  disclosed per-question in [`ABOUT.md`](ABOUT.md). With n=20, read both as indicative, not a
+  benchmark.
 - **Citation integrity: 519/519 citations grounded** across all three eval sets — the number that
   matters most for the "citations are the product" claim.
 - **The honest number: 0.471 strict hit@6 on messy real-staff phrasing** — a deliberately hard

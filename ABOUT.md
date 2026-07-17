@@ -51,8 +51,9 @@ never used for tuning — with **strict** matching (the retrieved section number
 the expected one). Full detail, provenance, and per-question results are in
 [`eval/results.md`](eval/results.md).
 
-> **Headline — strict hit@6 = 20/20 = 1.000** (95% Wilson CI 0.839–1.000), held-out, hybrid.
-> With n≈20 the interval spans several questions' worth of rate: read it as indicative, not a
+> **Headline — held-out strict hit@6: 0.950 (19/20) shipped hybrid+rewrite config; 1.000
+> (20/20) raw-hybrid retrieval core** (95% Wilson CI 0.839–1.000).
+> With n≈20 the interval spans several questions' worth of rate: read both as indicative, not a
 > statistically-validated architecture claim.
 
 Since Phase 13 the eval also carries a **realistic slice** (`eval/realistic_set.jsonl`, n=23):

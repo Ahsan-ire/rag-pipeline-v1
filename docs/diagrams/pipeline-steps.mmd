@@ -1,0 +1,17 @@
+flowchart TB
+    subgraph index["1 - Index once, offline"]
+        direction LR
+        PDF["Handbook PDF,<br/>local only"] --> ING["Extract + clean<br/>OCR text"]
+        ING --> CHUNK["Chunk by paragraph<br/>numbering"]
+        CHUNK --> IDX["Dual index:<br/>BM25 + vectors"]
+    end
+    subgraph query["2 - Every question"]
+        direction TB
+        UQ["Your question"] --> RW["Haiku: 3 rewrites +<br/>intent reframe"]
+        RW --> HR["Hybrid retrieval,<br/>weighted rank fusion"]
+        HR --> GEN["Sonnet drafts answer<br/>with para + page cites"]
+        GEN --> GATE{"Citation gate"}
+        GATE --> OUT["Answer / warning /<br/>withheld / refusal"]
+        OUT --> LOG["Audit log,<br/>hashes only"]
+    end
+    IDX -.->|local index| HR
