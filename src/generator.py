@@ -68,25 +68,33 @@ related; \
 sentence and nothing else: "{REFUSAL_PHRASE}". Never combine the refusal sentence with an \
 answer or caveat. Do not guess, speculate, or fall back on outside legal knowledge.
 4. Use precise legal terminology; state the legal principle first in the substantive answer, \
-then the authority (paragraph and page) supporting it."""
+then the authority (paragraph and page) supporting it.
+5. Organise your answer around the QUESTION, not around the extracts: synthesise across the \
+extracts into one coherent response rather than a string of per-extract fragments. For a \
+compare/contrast question, state the basis of comparison, address each side, and draw the \
+explicit contrast the extracts actually support. Every sentence you write — comparative and \
+summary sentences included — still carries its own bracketed locator per rule 2 (the mandatory \
+rule 3 openers aside); a comparison point the extracts do not support is named as a gap under \
+rule 3(b), never inferred."""
 
 PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM_PROMPT),
         (
             "human",
-            """Based on the following handbook extracts, answer the question.
+            """Using the following handbook source material, answer the question as a \
+single coherent response.
 
 Context:
 {context}
 
 Question: {question}
 
-Answer using the bracketed locators from the source headers. If the question's subject \
-is not conveyancing practice, reply with the exact refusal sentence regardless of what \
-the extracts touch on. If it is, and the extracts contain only closely related guidance \
-on that subject, use the caveat form; if they contain nothing relevant, reply with the \
-exact refusal sentence.""",
+Answer as a single coherent response, using the bracketed locators from the source \
+headers. If the question's subject is not conveyancing practice, reply with the exact \
+refusal sentence regardless of what the extracts touch on. If it is, and the extracts \
+contain only closely related guidance on that subject, use the caveat form; if they \
+contain nothing relevant, reply with the exact refusal sentence.""",
         ),
     ]
 )
@@ -145,6 +153,14 @@ def get_llm() -> ChatAnthropic:
         # off (it is on-by-default on Sonnet 5) to keep behaviour comparable to
         # the claude-sonnet-4-6 baseline this change was isolated from (D29).
         thinking={"type": "disabled"},
+        # A dead socket must fail loudly, not hang the caller forever: two
+        # canonical-eval runs on 17 Jul wedged for hours on a single blocked
+        # read because no client timeout was set (D52). 120s covers the
+        # slowest observed generation call with ample headroom; the SDK
+        # transparently retries timeouts/connection drops (max_retries)
+        # before raising, so a transient drop self-heals.
+        default_request_timeout=120.0,
+        max_retries=3,
     )
 
 

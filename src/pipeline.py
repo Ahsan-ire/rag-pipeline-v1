@@ -230,9 +230,12 @@ def _write_audit(
 
     ``expansion`` (Phase 13, D43), when given, forwards its effective
     rewrites and status to ``build_event`` so the record carries
-    ``rewrite_status``/``rewrite_count``/``rewrite_sha256s``. Omitted
+    ``rewrite_status``/``rewrite_count``/``rewrite_sha256s``, plus its
+    ``intent_rewrite`` (Phase 14, D50) so the record carries
+    ``intent_rewrite_sha256`` (and, under AUDIT_LOG_RAW_QUERIES=1,
+    ``intent_rewrite_text``) whenever an intent exists. Omitted
     (``None``) reproduces today's event shape exactly — see
-    ``build_event``'s own omit-when-both-None contract.
+    ``build_event``'s own omit contracts.
     """
     try:
         event_kwargs: Dict[str, Any] = dict(
@@ -249,6 +252,11 @@ def _write_audit(
         if expansion is not None:
             event_kwargs["rewrites"] = list(expansion.rewrites)
             event_kwargs["rewrite_status"] = expansion.status
+            # Phase 14 (D50): forward the intent reframe. build_event adds the
+            # intent audit keys ONLY when it is not None, so a None intent keeps
+            # the event shape byte-identical to a pre-Phase-14 (rewrite-only)
+            # record.
+            event_kwargs["intent_rewrite"] = expansion.intent_rewrite
         log_event(build_event(**event_kwargs))
     except Exception as e:  # noqa: BLE001 — an audit hiccup must not fail a query
         print(f"⚠ audit log write failed: {e}")
@@ -351,6 +359,10 @@ def query(
         vector_store=vector_store,
         bm25_index=bm25_index,
         rewrites=list(expansion.rewrites) or None,
+        # Phase 14 (D50): the intent reframe flows into retrieve() on its own
+        # weight budget. None when the model produced no usable intent, so this
+        # is byte-identical to pre-Phase-14 when there is nothing to reframe.
+        intent_rewrite=expansion.intent_rewrite,
     )
 
     if not results:
@@ -458,7 +470,10 @@ def query(
 
     elif outcome == CITATIONS_VERIFIED:
         _print_answer_and_sources(draft_answer, result["sources"])
-        print("\n✓ All citations verified against the retrieved sources.")
+        print(
+            "\n✓ All citations resolve to a retrieved passage (locator and page "
+            "checked — this does not verify the passage supports the claim)."
+        )
         action = ACTION_SHOWN
 
     elif outcome == PARTIALLY_VERIFIED:

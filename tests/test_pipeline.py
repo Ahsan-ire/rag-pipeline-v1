@@ -844,7 +844,11 @@ class TestQuery:
 
         out = capsys.readouterr().out
         assert draft in out
-        assert "verified against the retrieved sources" in out
+        # Phase 14 WS1.3 display-honesty rewording: the note now states the gate
+        # only resolves each locator to a retrieved passage, and explicitly
+        # disclaims verifying that the passage supports the claim.
+        assert "resolve to a retrieved passage" in out
+        assert "does not verify the passage supports the claim" in out
         assert spy.call_args.args[0]["action"] == "shown"
 
     def test_refusal_outcome_shows_no_warnings(self, capsys):
@@ -987,6 +991,28 @@ class TestQuery:
             query("q")
 
         assert m_retrieve.call_args.kwargs["rewrites"] == ["rewrite one", "rewrite two"]
+
+    def test_expansion_intent_forwarded_to_retrieve(self):
+        """Phase 14 (D50): the expansion's intent_rewrite is forwarded to
+        retrieve() as the intent_rewrite keyword."""
+        stub = Expansion(
+            "q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE, "the reframe"
+        )
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=[]) as m_retrieve:
+            query("q")
+
+        assert m_retrieve.call_args.kwargs["intent_rewrite"] == "the reframe"
+
+    def test_no_intent_forwards_none_to_retrieve(self):
+        """An Expansion with intent_rewrite None forwards intent_rewrite=None —
+        retrieve()'s byte-identical-when-None contract."""
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=[]) as m_retrieve:
+            query("q")
+
+        assert m_retrieve.call_args.kwargs["intent_rewrite"] is None
 
     def test_no_rewrites_forwards_none_to_retrieve(self):
         """An empty rewrites tuple forwards rewrites=None (not an empty
@@ -1141,6 +1167,60 @@ class TestQuery:
         assert event["action"] == "no_results"
         assert event["rewrite_status"] == STATUS_LIVE
         assert event["rewrite_count"] == 1
+
+    def test_audit_event_carries_intent_sha256_when_present(self, monkeypatch):
+        """Phase 14 (D50): an expansion carrying an intent forwards it through
+        _write_audit so the event records intent_rewrite_sha256 (no raw text
+        without the env flag)."""
+        monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE, "the reframe")
+        mock_results, mock_generated = self._mock_results_and_generated()
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert event["intent_rewrite_sha256"] == hashlib.sha256(
+            "the reframe".encode("utf-8")
+        ).hexdigest()
+        assert "intent_rewrite_text" not in event
+
+    def test_audit_event_carries_intent_text_when_env_opted_in(self, monkeypatch):
+        monkeypatch.setenv("AUDIT_LOG_RAW_QUERIES", "1")
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE, "the reframe")
+        mock_results, mock_generated = self._mock_results_and_generated()
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert event["intent_rewrite_text"] == "the reframe"
+
+    def test_audit_event_has_no_intent_keys_when_intent_none(self, monkeypatch):
+        """When the expansion carries no intent, NEITHER intent key appears —
+        the event shape stays byte-identical to pre-Phase-14."""
+        monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+        stub = Expansion("q", ("rewrite one",), REWRITE_MODEL, STATUS_LIVE)  # intent None
+        mock_results, mock_generated = self._mock_results_and_generated()
+
+        spy = MagicMock()
+        with patch("src.pipeline.expand_query", return_value=stub), \
+             patch("src.pipeline.retrieve", return_value=mock_results), \
+             patch("src.pipeline.generate_with_sources", return_value=mock_generated), \
+             patch("src.pipeline.log_event", spy):
+            query("q")
+
+        event = spy.call_args.args[0]
+        assert "intent_rewrite_sha256" not in event
+        assert "intent_rewrite_text" not in event
 
 
 class TestEvalCli:

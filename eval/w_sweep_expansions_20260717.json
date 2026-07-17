@@ -1,0 +1,418 @@
+{
+ "What is conveyancing?": {
+  "rewrites": [
+   "The definition and scope of conveyancing as a legal discipline governing the transfer of interests in land under Irish law and Land Registry practice.",
+   "Conveyancing definition scope legal transfer land interests Ireland.",
+   "What does the term \"conveyancing\" mean, and what does it cover in the context of Irish property law?"
+  ],
+  "status": "live",
+  "intent": "Establish the foundational meaning of conveyancing as a field of legal practice and identify its core subject matter and boundaries."
+ },
+ "How does searching on the Index of Names work in the Registry of Deeds?": {
+  "rewrites": [
+   "The methodology and procedure for conducting searches against the Index of Names maintained by the Registry of Deeds, including name entry conventions and search protocols.",
+   "Index of Names, Registry of Deeds, search procedure, name entry, search methodology, deeds registration.",
+   "What is the process for looking up names in the Registry of Deeds' Index of Names, and how does the search function operate?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What are the essential differences between the Registry of Deeds and the Land Registry systems?": {
+  "rewrites": [
+   "Registry of Deeds vs Land Registry, registration systems, legal effect, priority, conveyancing procedure, differences",
+   "How do the Registry of Deeds and the Land Registry differ in how they work, what they register, and how they affect property transactions and ownership rights?"
+  ],
+  "status": "live",
+  "intent": "Identify and explain the key operational, legal, and procedural differences between these two distinct Irish property registration regimes and their respective impacts on conveyancing practice."
+ },
+ "In what order do the steps of a typical conveyancing transaction occur?": {
+  "rewrites": [
+   "What is the sequential procedural framework for stages of a conveyancing transaction from instruction to completion and registration?",
+   "conveyancing transaction stages, procedure sequence, steps order, completion registration",
+   "What happens first, second, and third when you buy or sell a property, and what's the typical order from start to finish?"
+  ],
+  "status": "live",
+  "intent": "Identify the chronological workflow and key milestones that structure a conveyancing transaction from initial instruction through post-completion registration."
+ },
+ "What special considerations apply to voluntary deeds transferring property between family members?": {
+  "rewrites": [
+   "What are the conveyancing procedures and substantive legal considerations applicable to voluntary transfers of real property effected by deed between persons in a familial relationship?",
+   "voluntary deed transfer family members conveyancing considerations requirements",
+   "When family members transfer property to each other by deed without payment, what specific issues or steps need to be addressed in the conveyancing process?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What rules govern a solicitor giving an undertaking to a lender in a commercial property transaction?": {
+  "rewrites": [
+   "solicitor undertaking, lender, mortgagee, commercial property, professional conduct rules, enforceability, security, completion obligations.",
+   "What are the professional and legal requirements that apply when a solicitor promises a lender they will do something (like hold money or complete registration) in a commercial property deal?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "How long must a good root of title be under an open contract?": {
+  "rewrites": [
+   "What is the prescribed minimum period of title that must be evidenced by the seller under the terms of an open contract in Irish conveyancing practice?",
+   "Root of title, open contract, minimum period, seller's obligation, title deeds",
+   "When a buyer and seller have an open contract with no specific terms about title, how far back in time does the seller need to show ownership documents?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Which three registers does the Land Registry maintain?": {
+  "rewrites": [
+   "What are the three statutory registers maintained by the Land Registry under the Registration of Deeds Acts and the Land Registration Acts?",
+   "Land Registry registers: folio system, deeds registry, categories of registration",
+   "What are the names of the three different registers that the Land Registry keeps and updates?"
+  ],
+  "status": "live",
+  "intent": "Identify and name the three distinct registers (Folios Register, Register of Deeds, and Register of Ownership/Burdens) that constitute the Land Registry's recording systems."
+ },
+ "How does ownership held as tenants in common devolve on the death of one owner?": {
+  "rewrites": [
+   "Upon the death of a tenant in common, what is the position regarding devolution of that deceased tenant's share and the rights of the surviving tenant or tenants in common?",
+   "tenants in common, death, devolution, deceased tenant's share, surviving tenants, succession",
+   "When one of several owners holding property as tenants in common dies, what happens to their ownership stake and how do the remaining owners' interests change?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What form must a contract for the sale of land take in order to be enforceable?": {
+  "rewrites": [
+   "What are the statutory formalities and requirements for the constitution of a valid and enforceable contract for the sale of land under Irish law and the Law of Property Act requirements?",
+   "Contract sale land enforceable form statutory requirements formalities writing memorandum",
+   "What specific format or documentation is needed to make a land sale contract legally binding and able to be enforced in court?"
+  ],
+  "status": "live",
+  "intent": "Establish the formal prerequisites (statutory form, writing, signature, essential terms) that distinguish an enforceable land contract from an unenforceable agreement."
+ },
+ "Who holds the deposit paid under a contract for sale, and in what capacity?": {
+  "rewrites": [
+   "The legal status and fiduciary obligations of the stakeholder holding earnest money or deposit monies pursuant to a contract for the sale of land.",
+   "Deposit stakeholder, fiduciary capacity, contract for sale, earnest money, Land Registry obligations.",
+   "Which person or entity receives the buyer's deposit money when a property sale contract is signed, and what are their legal responsibilities for holding it?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What protection does the Family Home Protection Act 1976 give to a non-owning spouse?": {
+  "rewrites": [
+   "What statutory protections are afforded to a spouse who is not a legal owner of the family home under the provisions of the Family Home Protection Act 1976?",
+   "Family Home Protection Act 1976, non-owning spouse, statutory protection, rights",
+   "How does the Family Home Protection Act 1976 protect a spouse who doesn't own the family home?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "When is a spouse's prior written consent required for a conveyance of the family home?": {
+  "rewrites": [
+   "Under what circumstances must a spouse's prior written consent be obtained before completion of a conveyance affecting the family home, pursuant to the Family Home Protection Act 1976?",
+   "spouse prior written consent family home conveyance Family Home Protection Act 1976 requirements",
+   "In what situations does a spouse need to give written permission before the other spouse can sell or transfer the family home?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Why does a deed need a receipt clause?": {
+  "rewrites": [
+   "What is the purpose and legal significance of the receipt clause within a deed, and why is its inclusion required or recommended in conveyancing practice?",
+   "receipt clause, deed, legal requirement, conveyancing practice, documentation",
+   "What function does a receipt clause serve in a deed, and what is the reason it should be included?"
+  ],
+  "status": "live",
+  "intent": "Understand the practical and legal consequences of including (or omitting) a receipt clause in a deed, particularly regarding proof of payment and discharge of obligations."
+ },
+ "What is an accountable trust receipt and when is it used?": {
+  "rewrites": [
+   "What constitutes an accountable trust receipt under conveyancing practice, and in what transactional circumstances is such an instrument employed?",
+   "accountable trust receipt, definition, application, conveyancing transactions, use cases",
+   "What does an accountable trust receipt mean and in what situations do conveyancers use it?"
+  ],
+  "status": "live",
+  "intent": "Distinguish accountable trust receipts from other trust receipt mechanisms and identify the specific transactional scenarios (such as chain closings or bridging finance) where they are deployed."
+ },
+ "What searches should a purchaser's solicitor carry out before completion, and why?": {
+  "rewrites": [
+   "Pre-completion searches and enquiries required by a purchaser's solicitor in accordance with Law Society of Ireland conveyancing practice standards and the Property Registration Act 2014",
+   "Pre-completion searches, requisite enquiries, purchaser solicitor obligations, title verification, official copies",
+   "What specific searches must the buyer's lawyer do right before closing the property deal, and what is the reason for doing each one?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "When is a bankruptcy search appropriate?": {
+  "rewrites": [
+   "In what circumstances should a solicitor conduct a search of the Insolvency Register or bankruptcy records as part of pre-completion conveyancing due diligence?",
+   "bankruptcy search, insolvency register, pre-completion searches, debtor status, judgment debts",
+   "What situations call for checking whether a property seller or borrower has been declared bankrupt or is subject to insolvency proceedings?"
+  ],
+  "status": "live",
+  "intent": "Identify the conveyancing scenarios and conditions that trigger the requirement or recommendation to perform bankruptcy/insolvency searches to protect the purchaser's or lender's interests."
+ },
+ "What is the purpose of requisitions on title?": {
+  "rewrites": [
+   "What is the function and legal purpose of raising requisitions on title in the conveyancing transaction?",
+   "Requisitions on title, purpose, function, conveyancing process",
+   "Why do solicitors raise questions and requests for information about the property's ownership history and legal status?"
+  ],
+  "status": "live",
+  "intent": "The user needs to understand what role requisitions on title play in protecting the buyer and achieving satisfactory proof of the seller's right to transfer the property."
+ },
+ "What is the current standard rate of Capital Gains Tax?": {
+  "rewrites": [
+   "What is the standard rate of Capital Gains Tax applicable under current Irish tax legislation as referenced in conveyancing transactions?",
+   "Capital Gains Tax, standard rate, current, Ireland, CGT",
+   "What percentage rate of Capital Gains Tax do conveyancers need to apply to taxable gains in property transactions right now?"
+  ],
+  "status": "live",
+  "intent": "Determine the applicable CGT rate that conveyancers must consider when advising clients on the tax consequences of disposing of land or interests in land."
+ },
+ "Is stamp duty payable on house contents such as carpets and curtains?": {
+  "rewrites": [
+   "Whether chattels such as fitted carpets and soft furnishings are subject to Stamp Duty on Land Transaction Tax (SDLT) under Irish conveyancing law",
+   "Chattels, carpets, curtains, soft furnishings, SDLT exemption, apportionment",
+   "Are items like carpets and curtains in a house exempt from stamp duty, or does the buyer have to pay tax on them?"
+  ],
+  "status": "live",
+  "intent": "Determine the boundary between what constitutes a taxable interest in land versus non-taxable chattels, and whether apportionment of purchase price between the two categories affects SDLT liability"
+ },
+ "Can successive squatters add together their periods of adverse possession?": {
+  "rewrites": [
+   "Can the periods of adverse possession of successive occupiers be aggregated or tacked together to satisfy the requirements for acquiring title by adverse possession under Land Registry rules?",
+   "Adverse possession, successive occupiers, tacking, aggregation, periods, title acquisition",
+   "If one squatter leaves and another squatter takes over, can you add up both of their time periods to reach the 12-year threshold needed to claim the land?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Which wayleaves granted under the Gas Act 1976 affect registered land without registration?": {
+  "rewrites": [
+   "Gas Act 1976 wayleaves, registered land, overriding interests, unregistered interests",
+   "When a gas wayleave is granted under the Gas Act 1976, which ones will bind registered land even though they don't get registered themselves?"
+  ],
+  "status": "live",
+  "intent": "Identify which categories of Gas Act 1976 wayleaves operate as overriding interests or take effect outside the registration system while still affecting registered proprietors' titles and obligations."
+ },
+ "Why can a squatter not apply for a caution to protect their interest in registered land?": {
+  "rewrites": [
+   "Why is a person in adverse possession precluded from lodging a caution against first registration or against registered proprietorship under the Registration of Title Act 1964?",
+   "Adverse possession, caution, registered land, first registration, legal interest, squatter, statutory rights, Registration of Title Act 1964",
+   "What is the reason that someone occupying land without permission cannot file a caution to protect their claim to that land in the Land Registry system?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "How is a priority entry lodged in the Land Registry?": {
+  "rewrites": [
+   "What is the procedure for lodging a priority entry with the Land Registry of Ireland, and what documentation and requirements must be satisfied?",
+   "priority entry lodgement procedure, Land Registry, documentation requirements, application process",
+   "What steps do I need to follow to register a priority entry at the Land Registry, and what documents do I need to submit?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Which burdens affect registered land without registration under s.72?": {
+  "rewrites": [
+   "What overriding interests and burdens bind registered land notwithstanding non-registration pursuant to section 72 of the Registration of Title Act 1964?",
+   "section 72, overriding interests, burdens, registered land, non-registration, binding effect",
+   "What kinds of burdens automatically affect registered land even though they were never formally registered in the Land Registry?"
+  ],
+  "status": "live",
+  "intent": "Identify which categories of burden operate as overriding interests under s.72 and thereby create binding obligations on registered property independent of entry in the register."
+ },
+ "What is Form 60 used for?": {
+  "rewrites": [
+   "What is the purpose and application of Form 60 within the Land Registry conveyancing process?",
+   "Form 60, purpose, Land Registry, conveyancing application",
+   "What does Form 60 do, and in what situations would you need to use it?"
+  ],
+  "status": "live",
+  "intent": "Identify the specific conveyancing transaction type or procedural step for which Form 60 is the required or appropriate form."
+ },
+ "When is an application for first registration made on Form 1 rather than Form 2?": {
+  "rewrites": [
+   "first registration, Form 1, freehold estate, Form 2, leasehold estate, circumstances, application criteria",
+   "What determines whether you use the Form 1 or Form 2 when applying to register land for the first time at the Land Registry?"
+  ],
+  "status": "live",
+  "intent": "Distinguish the triggering conditions that mandate use of Form 1 (freehold) versus Form 2 (leasehold) in first registration applications, based on the legal nature of the estate being registered."
+ },
+ "What did the Registration of Deeds and Title Act 2006 change?": {
+  "rewrites": [
+   "What substantive amendments and reforms did the Registration of Deeds and Title Act 2006 introduce to the conveyancing registration regime in Ireland?",
+   "Registration Deeds Title Act 2006 amendments changes reforms conveyancing system",
+   "What were the main changes that the Registration of Deeds and Title Act 2006 made to how property deeds and titles are registered?"
+  ],
+  "status": "live",
+  "intent": "Identify the specific legislative amendments, procedural modifications, and policy shifts introduced by the 2006 Act to the existing deeds registration and title registration frameworks."
+ },
+ "What does paragraph 14.8.5 of the handbook deal with?": {
+  "rewrites": [
+   "Section 14.8.5 of the Law Society of Ireland Conveyancing Handbook \u2014 substantive content and subject matter",
+   "Paragraph 14.8.5 handbook content topic subject",
+   "What is the topic covered in section 14.8.5 of the handbook?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What does requisition 27.5 concern?": {
+  "rewrites": [
+   "What is the subject matter and scope of Requisition 27.5 as set out in the Law Society of Ireland Conveyancing Handbook?",
+   "Requisition 27.5 subject matter scope handbook",
+   "What topic or issue does Requisition 27.5 address in the conveyancing process?"
+  ],
+  "status": "live",
+  "intent": "Retrieve the specific content and requirements of a particular numbered requisition standard form used in Irish property transactions."
+ },
+ "Can you do a transfer based on the deed of assignment (lease) if you've given 15 years of consideration? This is for unregistered land": {
+  "rewrites": [
+   "May a transfer of an unregistered leasehold interest be effected by deed of assignment where the lessee has provided fifteen years of valuable consideration to the lessor?",
+   "deed of assignment, lease, unregistered land, transfer, consideration, fifteen years",
+   "Is it possible to transfer a lease on unregistered land using a deed of assignment when you've already given 15 years of payment or benefit to the landlord?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Can you do a transfer based on the deed of assignment? And can you explain what 15 years of consideration refers to?": {
+  "rewrites": [
+   "Transfer deed assignment validity; fifteen years adverse possession acquisition title prescriptive period",
+   "Is a deed of assignment sufficient to transfer land to a new owner, and what does the fifteen-year timeframe mean in property law?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Can you explain the progress for registering unregistered land?": {
+  "rewrites": [
+   "What are the procedural steps and requirements for first registration of unregistered land at the Land Registry of Ireland?",
+   "First registration, unregistered land, registration process, procedural steps, Land Registry requirements",
+   "What happens when you register land that hasn't been registered before, and what are the stages involved?"
+  ],
+  "status": "live",
+  "intent": "The user wants to understand the sequential workflow and key milestones involved in converting unregistered land into registered land at the Land Registry."
+ },
+ "Can you explain what unregistered land means?": {
+  "rewrites": [
+   "What is the legal status and conveyancing implications of land that has not been registered at the Land Registry of Ireland?",
+   "unregistered land, Land Registry, registration status, legal definition, conveyancing implications",
+   "What does it mean when land hasn't been registered, and how does that affect property transactions?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What is the difference between a purchase and sale conveyance?": {
+  "rewrites": [
+   "What are the procedural and documentary distinctions between a conveyance on sale and a conveyance on purchase in Irish property law?",
+   "Purchase conveyance, sale conveyance, difference, procedural distinctions, documentary requirements",
+   "How do the steps and documents involved in buying a property differ from those involved in selling it?"
+  ],
+  "status": "live",
+  "intent": "Clarify whether \"purchase conveyance\" and \"sale conveyance\" are distinct transaction types with separate processes, or whether they represent the same transaction from different parties' perspectives."
+ },
+ "How far back do the title documents need to go when we're buying? Someone said 15 years is enough?": {
+  "rewrites": [
+   "What is the required period of examination of title deeds and historical documentation upon acquisition of a freehold or leasehold property in Ireland?",
+   "Title examination period, historical documents, chain of ownership, freehold/leasehold requirements",
+   "How many years back into the property's document history must a buyer review when purchasing, and is 15 years the correct minimum?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Which office do I check to find out who owns a property - the Land Registry or the other one?": {
+  "rewrites": [
+   "What is the appropriate authority to consult for ascertaining the registered proprietor of a property \u2013 the Land Registry or the Registry of Deeds?",
+   "registered proprietor, Land Registry, Registry of Deeds, ownership verification",
+   "Should I look at the Land Registry or the Registry of Deeds to find out who the legal owner of a property is?"
+  ],
+  "status": "live",
+  "intent": "Distinguish between the two Irish property registration systems and identify which one holds current ownership information for a given property."
+ },
+ "Husband owns the house and the wife isn't on the deeds - can he sell it without telling her?": {
+  "rewrites": [
+   "Spousal rights, non-owning spouse, family home, sale without consent, Family Law Act, Land Registry, registered title",
+   "If only one spouse's name is on the property deed, can the other spouse stop the owner from selling the house, and must the owner tell their spouse before selling?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Two brothers own a farm together and one of them died - does his half go to the other brother automatically?": {
+  "rewrites": [
+   "Upon the death of a joint tenant holding agricultural land, does the surviving joint tenant acquire the deceased's interest by operation of law through the right of survivorship?",
+   "Joint tenancy, survivorship, agricultural property, death, automatic vesting, right of survivorship",
+   "When one brother dies and they jointly owned a farm, does his share pass directly to the living brother without needing probate or a will?"
+  ],
+  "status": "live",
+  "intent": "Determine whether the farm passes by survivorship (joint tenancy) or requires succession through the deceased's estate (whether tenancy in common or no survivorship clause exists)."
+ },
+ "Client is buying a house and the seller is leaving the appliances and furniture - is there tax on that stuff too?": {
+  "rewrites": [
+   "Whether chattels included in a conveyance of residential property are subject to Stamp Duty Land Tax, and the correct apportionment of consideration between land and moveable items.",
+   "Chattels, moveable property, apportionment, consideration, SDLT exemption, residential conveyance",
+   "When a buyer purchases a house that comes with appliances and furniture, do those personal items get taxed the same way as the property itself, or is there a different tax treatment?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "The neighbour has been using our client's field for years and now claims it's his - the previous fella did the same before him. Do their times count together?": {
+  "rewrites": [
+   "Does adverse possession by successive occupiers permit the tacking of periods of use to satisfy the statutory limitation period under the Land Registry Act 2023 and common law principles?",
+   "Adverse possession, tacking, successive occupiers, limitation period, continuous use, Land Registry requirements.",
+   "When someone uses a field without permission for years, and then someone else continues using it the same way, can they add their time together to claim ownership after the required period?"
+  ],
+  "status": "live",
+  "intent": "Clarify whether periods of adverse possession by different persons can be combined or \"tacked\" to meet the time threshold needed to establish legal title through adverse possession."
+ },
+ "Why do deeds say the seller received the money - isn't that obvious?": {
+  "rewrites": [
+   "What is the legal significance of the recital of receipt of consideration in a conveyancing deed, and why is explicit statement of payment required in deed execution?",
+   "Deed recital, receipt of consideration, conveyance requirements, legal formality, consideration clause",
+   "Why do property deeds include a statement that the seller has received payment, rather than just assuming this happened?"
+  ],
+  "status": "live",
+  "intent": "Clarify the distinct legal and evidentiary functions served by the express recital of receipt of consideration in a deed, as opposed to relying on implied or assumed payment."
+ },
+ "There's a court judgment against our client and the creditor wants to put it against his registered land - how do they actually register that? Is there a form?": {
+  "rewrites": [
+   "How does a creditor register a judgment mortgage or judgment charge against registered land under the Land Registration Rules 2012, and what Form is required for registration at the Land Registry?",
+   "Judgment mortgage, judgment charge, registered land, Form, Land Registry registration procedure",
+   "What are the steps and documentation needed for a judgment creditor to register their court judgment as a charge against the owner's registered property?"
+  ],
+  "status": "live",
+  "intent": "Identify the specific registration mechanism (judgment mortgage vs. judgment charge), the applicable Form required, and the procedure for lodging a judgment-based charge at the Land Registry."
+ },
+ "What happens to the buyer's deposit if the sale falls through?": {
+  "rewrites": [
+   "What are the circumstances under which a purchaser's deposit becomes forfeitable or returnable upon failure to complete a conveyancing transaction?",
+   "Deposit forfeiture, sale collapse, purchaser liability, completion failure, earnest money",
+   "If a property sale doesn't go through, can the buyer get their deposit back or does the seller keep it?"
+  ],
+  "status": "live",
+  "intent": "Determine the conditions and mechanisms governing whether deposit money is retained by the seller or refunded to the buyer when a conveyancing transaction terminates before completion."
+ },
+ "We're acting for both the buyer and their bank on the same purchase - is that allowed?": {
+  "rewrites": [
+   "Dual representation of purchaser and mortgagee in a single conveyancing transaction: permissibility and professional conduct implications under Law Society of Ireland practice rules",
+   "Joint retainer purchaser mortgagee lender conflict interest conveyancing ethics professional conduct",
+   "Can we lawfully act for both the person buying the property and the bank that's lending them the money in the same transaction?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "Client keeps asking what happens next after going sale agreed - what are the steps on each side, in order?": {
+  "rewrites": [
+   "What are the sequential conveyancing steps and respective obligations of the solicitor for the vendor and solicitor for the purchaser following exchange of contracts and agreement for sale?",
+   "Post-sale agreed steps, vendor solicitor duties, purchaser solicitor duties, conveyancing process sequence, contractual obligations",
+   "After a property sale is agreed, what happens in what order on both the seller's side and the buyer's side?"
+  ],
+  "status": "live",
+  "intent": null
+ },
+ "What's the difference between what the seller's solicitor and the buyer's solicitor actually do during a sale?": {
+  "rewrites": [
+   "vendor solicitor duties, purchaser solicitor duties, conveyancing roles, transaction functions, comparative responsibilities",
+   "What are the main tasks and responsibilities that each solicitor performs\u2014the seller's solicitor versus the buyer's solicitor\u2014when handling a residential or commercial property sale?"
+  ],
+  "status": "live",
+  "intent": null
+ }
+}

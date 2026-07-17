@@ -9,6 +9,8 @@ from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index
 from src.retriever import (
+    CANDIDATE_POOL,
+    INTENT_LIST_WEIGHT,
     RETRIEVAL_MODES,
     REWRITE_LIST_WEIGHT,
     RRF_K,
@@ -523,6 +525,55 @@ class TestRetrieveModes:
             )
 
 
+class TestTopKValidation:
+    """WS3.3 (Codex #10): retrieve() validates ``top_k`` at ITS boundary — the
+    single point every caller funnels through — raising ValueError on top_k < 1
+    (the negative-slice hazard) and naming the offending value. There is NO
+    upper cap: top_k > the candidate pool is deliberately supported via
+    candidate_k = max(CANDIDATE_POOL, top_k)."""
+
+    @pytest.mark.parametrize("bad_top_k", [0, -1, -5])
+    def test_top_k_below_one_raises_before_any_io(self, bad_top_k):
+        """top_k < 1 raises ValueError naming the value, BEFORE any IO — the
+        three backend seams are patched to blow up, and getting ValueError back
+        instead proves none of them fired (fail fast and cheap)."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("no IO on bad top_k")
+
+        with patch("src.retriever.get_vector_store", side_effect=_boom), patch(
+            "src.retriever.load_bm25_index", side_effect=_boom
+        ), patch("src.retriever.assert_embedding_model", side_effect=_boom):
+            with pytest.raises(ValueError) as exc_info:
+                retrieve("q", top_k=bad_top_k)
+
+        message = str(exc_info.value)
+        assert "top_k" in message
+        assert str(bad_top_k) in message  # the offending value is named
+
+    def test_top_k_one_is_valid(self, seeded_store):
+        """top_k=1 is the smallest legal value: it returns at most one result and
+        never raises."""
+        store, persist_dir = seeded_store
+
+        results = retrieve("making a will", top_k=1, persist_directory=persist_dir)
+
+        assert len(results) <= 1
+
+    def test_top_k_larger_than_candidate_pool_is_uncapped(self, seeded_store):
+        """A top_k well ABOVE CANDIDATE_POOL is honored, not capped: retrieval
+        widens candidate_k = max(CANDIDATE_POOL, top_k) and returns whatever the
+        store holds (2 seeded docs here) without raising."""
+        store, persist_dir = seeded_store
+        big_top_k = CANDIDATE_POOL + 20
+
+        results = retrieve("will", top_k=big_top_k, persist_directory=persist_dir)
+
+        # No cap / no error: returns the store's contents (2 docs), bounded by
+        # what exists, never truncated to CANDIDATE_POOL.
+        assert 0 < len(results) <= big_top_k
+
+
 class TestRewrites:
     """Phase 13 (D43): ``rewrites`` runs each used arm once per sub-query
     (original query first, then deduped rewrites) and fuses one ranked-ID
@@ -776,3 +827,321 @@ class TestWeightedReciprocalRankFusion:
         mis-weighting or index-erroring."""
         with pytest.raises(ValueError):
             _reciprocal_rank_fusion(["a"], ["b"], weights=[1.0])
+
+
+def _intent_docs():
+    """A (right, noise) pair used across the intent-fusion tests."""
+    right = Document(id="right", page_content="right", metadata={"section_number": "1"})
+    noise = Document(id="noise", page_content="noise", metadata={"section_number": "2"})
+    return right, noise
+
+
+class TestIntentReframe:
+    """Phase 14 (D50): ``intent_rewrite`` fuses as its OWN pair of ranked lists
+    (one per arm the mode runs) at weight ``W`` (``intent_weight`` or the module
+    constant ``INTENT_LIST_WEIGHT``), bounded to [0, 0.5] by the equal-rank
+    dominance invariant. ``intent_rewrite=None`` adds zero lists (byte-identical
+    to pre-Phase-14 retrieval)."""
+
+    def test_intent_none_identical_to_no_intent(self, seeded_store):
+        """intent_rewrite=None must produce the same documents, order, and fused
+        scores as omitting the keyword entirely."""
+        store, persist_dir = seeded_store
+        with patch("src.retriever.get_vector_store", return_value=store):
+            base = retrieve("making a will", top_k=2, persist_directory=persist_dir)
+            with_none = retrieve(
+                "making a will", top_k=2, persist_directory=persist_dir, intent_rewrite=None
+            )
+        assert len(base) == len(with_none) > 0
+        for a, b in zip(base, with_none):
+            assert a["document"].id == b["document"].id
+            assert a["score"] == b["score"]
+
+    def test_intent_weight_zero_is_true_noop(self, monkeypatch):
+        """Merge-gate FIX 3: ``intent_weight=0.0`` is a TRUE no-op. A zero-weight
+        intent list contributes score 0.0/(k+r) == 0 to every doc, so appending
+        it would only run an extra per-arm search AND pad a sparse pool with
+        score-0 intent-only docs. Passing ``intent_rewrite`` with
+        ``intent_weight=0.0`` must therefore be byte-identical to passing no
+        intent — same docs, order, and fused scores — AND invoke each backend arm
+        the SAME number of times (no extra intent sub-query search). ``0.0`` stays
+        a VALID weight: it does not raise, it just contributes nothing.
+
+        Without the fix this fails on BOTH counts: the intent-only ``noise`` doc
+        would enter the fused tail at score 0, and each arm would run one extra
+        search for the intent sub-query."""
+        right, noise = _intent_docs()
+
+        class CountingStore:
+            def __init__(self):
+                self.calls = []
+
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                self.calls.append(query)
+                if query == "orig":
+                    return [(right, 0.9)]
+                if query == "intent frame":  # only reached if the intent is searched
+                    return [(noise, 0.9)]
+                return []
+
+        def make_fake_bm25(sink):
+            def fake_search_bm25(index, query, k, document_type=None):
+                sink.append(query)
+                if query == "orig":
+                    return [("right", right, 5.0)]
+                if query == "intent frame":
+                    return [("noise", noise, 5.0)]
+                return []
+
+            return fake_search_bm25
+
+        # Baseline: no intent.
+        bm25_base: list = []
+        monkeypatch.setattr("src.retriever.search_bm25", make_fake_bm25(bm25_base))
+        base_store = CountingStore()
+        base = retrieve(
+            "orig", top_k=6, mode="hybrid",
+            vector_store=base_store, bm25_index=object(),
+        )
+
+        # Zero-weight intent: must be identical AND run no extra search.
+        bm25_zero: list = []
+        monkeypatch.setattr("src.retriever.search_bm25", make_fake_bm25(bm25_zero))
+        zero_store = CountingStore()
+        zero = retrieve(
+            "orig", top_k=6, mode="hybrid",
+            vector_store=zero_store, bm25_index=object(),
+            intent_rewrite="intent frame", intent_weight=0.0,
+        )
+
+        # Identical documents, order, and fused scores.
+        assert [r["document"].id for r in zero] == [r["document"].id for r in base]
+        assert {r["document"].id: r["score"] for r in zero} == {
+            r["document"].id: r["score"] for r in base
+        }
+        # The intent-only doc must NOT appear: a zero-weight intent adds no doc.
+        assert "noise" not in [r["document"].id for r in zero]
+        # Same backend call count both ways: no extra intent sub-query search
+        # was issued on either arm.
+        assert base_store.calls == ["orig"]
+        assert zero_store.calls == base_store.calls
+        assert bm25_zero == bm25_base == ["orig"]
+
+    @pytest.mark.parametrize("w", [0.25, 0.5])
+    def test_intent_pair_equal_rank_original_wins(self, monkeypatch, w):
+        """Hybrid, equal rank r=1: the original two-arm agreement (2/(K+1)) beats
+        the intent pair pushing a noise doc (2W/(K+1)) for both invariant-
+        preserving W values. The intent's own vector+bm25 lists both rank noise
+        first; the original's both rank right first."""
+        right, noise = _intent_docs()
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(right, 0.9)]
+                if query == "intent frame":
+                    return [(noise, 0.9)]
+                return []
+
+        def fake_search_bm25(index, query, k, document_type=None):
+            if query == "orig":
+                return [("right", right, 5.0)]
+            if query == "intent frame":
+                return [("noise", noise, 5.0)]
+            return []
+
+        monkeypatch.setattr("src.retriever.search_bm25", fake_search_bm25)
+
+        results = retrieve(
+            "orig",
+            top_k=2,
+            mode="hybrid",
+            vector_store=Store(),
+            bm25_index=object(),  # non-None so the bm25 arm runs; search is faked
+            intent_rewrite="intent frame",
+            intent_weight=w,
+        )
+
+        assert results[0]["document"].id == "right"
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["right"] == pytest.approx(2.0 / (RRF_K + 1))
+        assert by_id["noise"] == pytest.approx(2 * w / (RRF_K + 1))
+
+    def test_full_worst_case_tie_breaks_to_original_at_w_half(self, monkeypatch):
+        """The full (1+2W) worst case at exactly W=0.5: a surface rewrite AND the
+        intent pair all push a noise doc — noise scores (1+2W)/(K+1) = 2/(K+1),
+        an exact TIE with the original's 2/(K+1). The tie breaks in the
+        original's favour because the original lists are fused (inserted) first."""
+        right, noise = _intent_docs()
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(right, 0.9)]
+                return [(noise, 0.9)]  # both the rewrite and the intent push noise
+
+        def fake_search_bm25(index, query, k, document_type=None):
+            if query == "orig":
+                return [("right", right, 5.0)]
+            return [("noise", noise, 5.0)]
+
+        monkeypatch.setattr("src.retriever.search_bm25", fake_search_bm25)
+
+        results = retrieve(
+            "orig",
+            top_k=2,
+            mode="hybrid",
+            vector_store=Store(),
+            bm25_index=object(),
+            rewrites=["rw pushes noise"],
+            intent_rewrite="intent pushes noise",
+            intent_weight=0.5,
+        )
+
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["right"] == pytest.approx(2.0 / (RRF_K + 1))
+        assert by_id["noise"] == pytest.approx(2.0 / (RRF_K + 1))  # the tie
+        assert results[0]["document"].id == "right"  # broken in original's favour
+
+    def test_single_arm_mode_intent_contributes_one_list(self):
+        """A single-arm mode (vector) runs the intent on that ONE arm only, so
+        the intent doc scores W/(K+1), not 2W/(K+1)."""
+        right, noise = _intent_docs()
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(right, 0.9)]
+                if query == "intent frame":
+                    return [(noise, 0.9)]
+                return []
+
+        results = retrieve(
+            "orig",
+            top_k=2,
+            mode="vector",
+            vector_store=Store(),
+            intent_rewrite="intent frame",
+            intent_weight=0.5,
+        )
+
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["right"] == pytest.approx(1.0 / (RRF_K + 1))
+        assert by_id["noise"] == pytest.approx(0.5 / (RRF_K + 1))  # one list, not two
+
+    def test_intent_weight_none_uses_module_constant(self):
+        """Omitting intent_weight uses INTENT_LIST_WEIGHT (0.25, set by the
+        Phase 14 W sweep), so a vector-mode intent list scores
+        INTENT_LIST_WEIGHT/(K+1)."""
+        right, noise = _intent_docs()
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(right, 0.9)]
+                if query == "frame":
+                    return [(noise, 0.9)]
+                return []
+
+        results = retrieve(
+            "orig", top_k=2, mode="vector", vector_store=Store(), intent_rewrite="frame"
+        )
+        by_id = {r["document"].id: r["score"] for r in results}
+        assert by_id["noise"] == pytest.approx(INTENT_LIST_WEIGHT / (RRF_K + 1))
+
+    @pytest.mark.parametrize("bad_w", [-0.1, 0.75, 1.0])
+    def test_intent_weight_out_of_range_raises_before_search(self, bad_w):
+        """A weight below 0 or above 0.5 (the dominance-invariant bound) raises
+        ValueError BEFORE any arm search — the injected store is patched to blow
+        up on search, and getting ValueError back proves it never ran."""
+
+        class BoomStore:
+            def similarity_search_with_relevance_scores(self, *a, **k):
+                raise AssertionError("no search on an out-of-range intent weight")
+
+        with pytest.raises(ValueError) as exc:
+            retrieve(
+                "orig",
+                top_k=2,
+                mode="vector",
+                vector_store=BoomStore(),
+                intent_rewrite="frame",
+                intent_weight=bad_w,
+            )
+        assert "0.5" in str(exc.value)  # the invariant bound is named
+
+    def test_intent_duplicate_of_query_adds_no_list(self):
+        """An intent that casefold-duplicates the query is dropped (mirroring the
+        rewrite dedup), so the fused result is identical to passing no intent."""
+        doc = Document(id="a", page_content="a", metadata={"section_number": "1"})
+
+        class Store:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "orig":
+                    return [(doc, 0.9)]
+                return []
+
+        base = retrieve("orig", top_k=2, mode="vector", vector_store=Store())
+        with_dup = retrieve(
+            "orig", top_k=2, mode="vector", vector_store=Store(), intent_rewrite="ORIG"
+        )
+        assert {r["document"].id: r["score"] for r in base} == {
+            r["document"].id: r["score"] for r in with_dup
+        }
+
+    def test_intent_subquery_strict_errors_both_ways(self):
+        """The strict_errors/swallow contract applies to the intent sub-query
+        too: by default an intent-arm exception is isolated (the original result
+        survives); strict_errors=True propagates it."""
+        good = Document(id="good", page_content="ok", metadata={})
+
+        class RaisesOnIntentStore:
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                if query == "bad intent":
+                    raise RuntimeError("boom")
+                return [(good, 0.9)]
+
+        results = retrieve(
+            "orig",
+            top_k=2,
+            mode="vector",
+            vector_store=RaisesOnIntentStore(),
+            intent_rewrite="bad intent",
+        )
+        assert [r["document"].id for r in results] == ["good"]
+
+        with pytest.raises(RuntimeError):
+            retrieve(
+                "orig",
+                top_k=2,
+                mode="vector",
+                vector_store=RaisesOnIntentStore(),
+                intent_rewrite="bad intent",
+                strict_errors=True,
+            )
+
+
+class TestIntentRankAsymmetry:
+    """Phase 14 (D50): the equal-rank dominance invariant is EQUAL-rank only.
+    This documents the known, inherent-to-RRF rank asymmetry so it is pinned as
+    understood behavior, not mistaken for a regression."""
+
+    def test_noise_at_rank1_beats_original_agreement_deep(self):
+        """Noise correlated at rank 1 — surface bundle (weight 1.0) plus the
+        intent pair (2W) — scores (1+2W)/61 and beats original two-arm agreement
+        sitting at rank 12 (2/72), at W=0.5. True even at W=0 for the surface
+        bundle alone; inherent to RRF, NOT introduced by the intent weight."""
+        w = 0.5
+        # Original agrees on "right", but only at rank 12 in both arms.
+        orig_vec = [f"d{i}" for i in range(1, 12)] + ["right"]
+        orig_bm = [f"e{i}" for i in range(1, 12)] + ["right"]
+        # Noise at rank 1: one surface list (modeled at the full 1.0 the bundle
+        # caps at) plus the intent's own vector+bm25 lists at weight W.
+        fused = _reciprocal_rank_fusion(
+            orig_vec, orig_bm, ["noise"], ["noise"], ["noise"],
+            weights=[1.0, 1.0, 1.0, w, w],
+        )
+        by_id = dict(fused)
+        assert by_id["right"] == pytest.approx(2.0 / (RRF_K + 12))
+        assert by_id["noise"] == pytest.approx((1 + 2 * w) / (RRF_K + 1))
+        assert fused[0][0] == "noise"  # deep original loses to shallow noise

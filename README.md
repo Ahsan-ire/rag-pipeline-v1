@@ -67,7 +67,7 @@ flowchart TB
 
     subgraph query["2️⃣ Every question"]
         direction TB
-        UQ["Your question"] --> RW["Haiku rewrites it 3 ways<br/>(handbook vocabulary, keywords,<br/>plain paraphrase)"]
+        UQ["Your question"] --> RW["Haiku expands it: 3 rewrites<br/>(handbook vocabulary, keywords, paraphrase)<br/>+ an intent-level reframe"]
         RW --> HR["Hybrid retrieval: keyword + semantic<br/>search per phrasing, fused by<br/>weighted reciprocal rank"]
         HR --> GEN["Claude Sonnet drafts a graded answer<br/>citing [Handbook, para 3.2.1, p.87]"]
         GEN --> GATE{"🛡️ Gate: does each cited<br/>paragraph + page match a<br/>chunk that was retrieved?"}
@@ -87,7 +87,8 @@ Why each step exists, in one line each:
 3. **Dual (hybrid) retrieval** — legal questions hinge on exact tokens ("s.72 burdens", "Form 60");
    keyword search catches what semantic search fuzzes past, and vice versa.
 4. **Query expansion** — staff phrase questions colloquially; the handbook doesn't. Three quick
-   rewrites bridge the vocabulary gap (skippable with `--no-rewrite`).
+   rewrites plus an intent-level reframe (what is the question *really* asking?) bridge the
+   vocabulary gap (skippable with `--no-rewrite`).
 5. **Graded answers** — direct answer, partial answer that names its gaps, closest-related guidance
    under an explicit caveat, or an exact refusal — never a shrug dressed up as an answer.
 6. **The grounding gate** — the step that makes the citations trustworthy: every `(paragraph, page)`
@@ -132,11 +133,14 @@ python -m src.pipeline index ./data/your-handbook.pdf --type handbook   # --rese
 
 - **Held-out headline: strict hit@6 = 20/20 = 1.000** (95% CI 0.839–1.000) — on questions authored
   *after* the retrieval constants were frozen and never used for tuning.
-- **Citation integrity: 473/473 citations grounded** across all three eval sets — the number that
+- **Citation integrity: 519/519 citations grounded** across all three eval sets — the number that
   matters most for the "citations are the product" claim.
-- **The honest number: 0.412 strict hit@6 on messy real-staff phrasing** — a deliberately hard
-  "realistic" slice built from real field-test failures, published as the baseline the next phase
-  is measured against, not hidden.
+- **The honest number: 0.471 strict hit@6 on messy real-staff phrasing** — a deliberately hard
+  "realistic" slice built from real field-test failures (up from the 0.412 baseline after query
+  expansion gained the intent reframe; the one target question it still misses is documented in
+  D50, not hidden — token-aware chunking is the next lever).
+- **Comparison questions get real comparisons** — both field-test comparison questions pass a
+  seven-item manual rubric ([`docs/phase14-rubric-spotchecks.md`](docs/phase14-rubric-spotchecks.md)).
 
 Full ablation tables, refusal accuracy, methodology, and provenance:
 [`ABOUT.md`](ABOUT.md) and the canonical report [`eval/results.md`](eval/results.md).
@@ -154,7 +158,7 @@ of queries, not their text — legal queries can reveal client matters. Full det
 - [`ABOUT.md`](ABOUT.md) — architecture, full evaluation, deployment notes, limitations,
   troubleshooting, roadmap.
 - [`docs/decisions.md`](docs/decisions.md) — design rationale, one entry per meaningful choice,
-  append-only (D1–D48).
+  append-only (D1–D52).
 - [`docs/harness.md`](docs/harness.md) — the development workflow itself (gates, fresh-context
   critics, eval-judged bake-offs).
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — phase-by-phase build plan.

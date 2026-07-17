@@ -29,7 +29,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -47,6 +47,17 @@ REWRITE_MODEL = "claude-haiku-4-5"
 REWRITE_MAX_TOKENS = 300
 MAX_REWRITES = 3
 MAX_REWRITE_CHARS = 200
+
+# Case-sensitive tag the rewrite model puts on its 4th line to carry the
+# INTENT reframe (Phase 14, D50). Matched exactly — no IGNORECASE — like every
+# other structural marker in this module (project convention).
+INTENT_TAG = "INTENT:"
+# Per-line cap for the intent restatement. ``parse_rewrites`` HAS a per-line
+# length cap (``MAX_REWRITE_CHARS``), so the intent line MIRRORS it: a
+# restatement longer than this is treated as malformed and extracted as None.
+# (Had parse_rewrites carried no cap, this would instead be a standalone
+# 500-char guard — it does, so we mirror rather than invent a second limit.)
+MAX_INTENT_CHARS = MAX_REWRITE_CHARS
 
 # Eval mode label for this feature (Phase 13, D43/D46). Defined here as the
 # single source of truth so the evaluator can import it instead of
@@ -81,24 +92,37 @@ class Expansion:
     eval provenance) can tell "expansion off" (``disabled``/``no_key``) apart
     from "expansion broke" (``api_error``/``parse_error``), rather than
     seeing an opaque empty tuple in every case.
+
+    ``intent_rewrite`` (Phase 14, D50) is the model's INTENT reframe — a
+    restatement of what the question is fundamentally asking — or ``None`` when
+    the model produced none, produced a malformed/overlong one, or produced one
+    that merely duplicates the original question or a surface rewrite (deduped
+    away, adds no new retrieval signal). It is appended AFTER ``status`` with a
+    default so every existing positional ``Expansion(...)`` construction stays
+    valid unchanged. It travels on its OWN weight budget in the retriever (it
+    is NOT one of ``rewrites``), so it can never enter the surface bundle.
     """
 
     original: str
     rewrites: Tuple[str, ...]
     model: str
     status: str
+    intent_rewrite: Optional[str] = None
 
 
 REWRITE_SYSTEM_PROMPT = """You expand search queries for a retrieval system over the Law \
-Society of Ireland Conveyancing Handbook. Given a user question, output exactly 3 \
-alternative search queries, one per numbered line:
+Society of Ireland Conveyancing Handbook. Given a user question, output exactly 4 \
+numbered lines — three alternative search queries, then an intent restatement:
 
 1) the question rephrased in formal Irish conveyancing / Land Registry terminology, as \
 the handbook would phrase it
 2) a keyword-only variant (terms of art and key nouns, no filler words)
 3) a close plain-language paraphrase
+4) INTENT: a restatement that re-frames what the question is FUNDAMENTALLY asking — the \
+underlying information need, NOT another rephrasing. For example, re-frame a comparison \
+question to name both compared procedures explicitly.
 
-Output ONLY the 3 numbered lines, no preamble."""
+Output ONLY the 4 numbered lines, no preamble."""
 
 REWRITE_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
     [
@@ -141,6 +165,12 @@ def get_rewrite_llm() -> ChatAnthropic:
         # Haiku 4.5 runs with thinking OFF by default — unlike get_llm()'s
         # Sonnet 5, which runs adaptive thinking on by default — so no
         # `thinking` kwarg is needed here to keep it off.
+        # Same no-hang contract as get_llm (D52): expansion calls run ~2s,
+        # so 60s is generous; a blocked read times out and retries instead
+        # of wedging the caller. expand_query's never-raise contract turns
+        # an exhausted retry into STATUS_API_ERROR as before.
+        default_request_timeout=60.0,
+        max_retries=3,
     )
 
 
@@ -161,6 +191,78 @@ def _strip_wrapping_quotes(text: str) -> str:
             if text[0] == open_q and text[-1] == close_q:
                 return text[1:-1]
     return text
+
+
+def extract_intent(text: str) -> Tuple[Optional[str], str]:
+    """Split the INTENT-tagged line off a rewrite response BEFORE parse_rewrites.
+
+    Pure function — no LLM calls, no I/O. Runs as a dedicated pre-pass so the
+    intent reframe can never leak into the surface-rewrite bundle
+    (``parse_rewrites`` stays byte-unchanged and never sees the intent line):
+    no double-counting is possible by construction.
+
+    Contract (Phase 14, D50; merge-gate FIX 2): scan ``text`` line by line; for
+    each line strip any leading list-marker / numbering (the same
+    ``1.``/``1)``/``-``/``*``/``•`` markers ``parse_rewrites`` recognises) and test
+    whether the remainder begins with the case-sensitive tag ``INTENT:``. The
+    FIRST such line determines the intent value: its tag is stripped and the
+    remainder whitespace-trimmed to yield the restatement.
+
+    EVERY tagged line — the first AND any further ones — is removed from the
+    returned ``remaining`` text, never just the first. A tagged line must NEVER
+    reach ``parse_rewrites``: were a second ``INTENT:`` line left behind, the
+    literal string ``"INTENT: ..."`` would be accepted as a surface rewrite and
+    leak into the retrieval bundle. So the intent line count and the surface
+    bundle stay disjoint by construction, no matter how many tagged lines the
+    model emits.
+
+    Failure modes all yield an intent of ``None`` (the tagged lines are STILL
+    removed in every case):
+      - no line carries the tag (missing) — and NO line is removed;
+      - the (first) restatement is empty after trimming (malformed);
+      - the (first) restatement exceeds ``MAX_INTENT_CHARS`` (overlong — this
+        cap mirrors ``parse_rewrites``' own per-line ``MAX_REWRITE_CHARS`` cap).
+
+    Args:
+        text: The raw LLM rewrite response.
+
+    Returns:
+        ``(intent, remaining_text)``. ``intent`` is the trimmed restatement of
+        the FIRST tagged line, or ``None`` (missing/malformed/overlong).
+        ``remaining_text`` is ``text`` with ALL tagged lines removed (identical
+        to ``text`` when no tagged line exists), ready to hand to
+        ``parse_rewrites``.
+    """
+    if not text:
+        return None, text
+
+    lines = text.splitlines()
+    intent: Optional[str] = None
+    saw_tag = False
+    kept: List[str] = []
+    for line in lines:
+        # Anchor the tag at the (post-marker) line start — case-sensitive, like
+        # every structural marker here. A stray "the INTENT: is unclear" mid-line
+        # is NOT a tag line (it does not start with the tag after marker strip).
+        after_marker = _LEADING_MARKER_RE.sub("", line)
+        if not after_marker.startswith(INTENT_TAG):
+            kept.append(line)
+            continue
+        # A tagged line: drop it from ``kept`` (it must never reach
+        # parse_rewrites). Only the FIRST one sets the intent value; later tagged
+        # lines are still removed but otherwise ignored.
+        if not saw_tag:
+            saw_tag = True
+            restatement = after_marker[len(INTENT_TAG) :].strip()
+            if restatement and len(restatement) <= MAX_INTENT_CHARS:
+                intent = restatement
+
+    if not saw_tag:
+        # No tagged line: return ``text`` unchanged (byte-for-byte), exactly as
+        # before — the missing case removes nothing.
+        return None, text
+
+    return intent, "\n".join(kept)
 
 
 def parse_rewrites(text: str) -> List[str]:
@@ -271,18 +373,34 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
         logger.warning("Query expansion failed: the rewrite LLM call raised.")
         return Expansion(question, (), REWRITE_MODEL, STATUS_API_ERROR)
 
-    parsed = parse_rewrites(raw)
+    # Pre-pass (Phase 14, D50): peel the INTENT-tagged line off FIRST, then hand
+    # the remaining text — never the intent line — to the byte-unchanged
+    # parse_rewrites. The intent can therefore never enter the surface bundle.
+    intent, remaining = extract_intent(raw)
+    parsed = parse_rewrites(remaining)
     question_key = question.casefold()
     effective = tuple(r for r in parsed if r.casefold() != question_key)
+
+    # Dedup the intent reframe: a restatement casefold-equal to the original
+    # question, or to any surviving surface rewrite, adds no new retrieval
+    # signal (the fusion already has that list), so it collapses to None.
+    if intent is not None:
+        intent_key = intent.casefold()
+        if intent_key == question_key or any(
+            intent_key == r.casefold() for r in effective
+        ):
+            intent = None
 
     # Any degenerate expansion — zero effective rewrites, whether from an
     # unparseable non-empty response OR an empty/whitespace-only one — must
     # record STATUS_PARSE_ERROR, never STATUS_LIVE. Canonical eval accounting
     # treats a "live" expansion that carries no rewrites as a silent fallback,
     # so a live-but-empty status here would let an inert rewrite model read as
-    # a successful expansion (D46).
+    # a successful expansion (D46). A validly extracted intent is still carried
+    # on the returned Expansion — it is an independent signal, and only the
+    # surface bundle degraded here.
     if not effective:
         logger.warning("Query expansion produced no usable rewrites (parse failure).")
-        return Expansion(question, (), REWRITE_MODEL, STATUS_PARSE_ERROR)
+        return Expansion(question, (), REWRITE_MODEL, STATUS_PARSE_ERROR, intent)
 
-    return Expansion(question, effective, REWRITE_MODEL, STATUS_LIVE)
+    return Expansion(question, effective, REWRITE_MODEL, STATUS_LIVE, intent)

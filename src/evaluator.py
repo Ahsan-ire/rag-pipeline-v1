@@ -62,6 +62,7 @@ from src.query_rewrite import (
     expand_query,
 )
 from src.retriever import (
+    INTENT_LIST_WEIGHT,
     RETRIEVAL_MODES,
     format_context,
     load_retrieval_context,
@@ -220,6 +221,13 @@ def _build_default_retrieve_fn(
     those three things exactly ONCE and this closes over the result, so only
     the query itself varies per call.
 
+    Raw-query only: this legacy load-once path threads NEITHER the Phase-13
+    query-expansion rewrites NOR the Phase-14 intent reframe into ``retrieve``.
+    Those flow only through ``run_eval_matrix``'s own ``retrieve_fn_factory`` /
+    ``generate_fn`` (the production-config paths). The public
+    ``evaluate_retrieval`` / ``evaluate_refusals`` / ``run_eval`` entry points
+    that build this by default are therefore raw-query paths too.
+
     Args:
         top_k: Default ``top_k`` baked into the returned callable (still
             overridable per call via its own ``top_k`` keyword argument).
@@ -334,6 +342,10 @@ def evaluate_retrieval(
         All existing keys and per-question keys are unchanged.
     """
     if retrieve_fn is None:
+        # Raw-query only: the default retrieve_fn threads neither the Phase-13
+        # rewrites nor the Phase-14 intent reframe — see
+        # ``_build_default_retrieve_fn``'s docstring. The production-config
+        # expansion/intent paths live only in ``run_eval_matrix``.
         retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
     # Only report cut-offs we actually retrieved deep enough to measure: a
@@ -465,6 +477,11 @@ def evaluate_refusals(
     persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
     """Score refusal accuracy over the refusal-type questions in ``golden``.
+
+    Raw-query only: the default ``answer_fn`` retrieves via
+    ``_build_default_retrieve_fn``, which threads neither query-expansion
+    rewrites nor the Phase-14 intent reframe — see that helper's docstring. The
+    production-config expansion/intent paths live only in ``run_eval_matrix``.
 
     Args:
         golden: Golden-set entries, as returned by ``load_golden_set``.
@@ -1263,6 +1280,10 @@ def run_eval(
     is written ONLY by ``run_eval_matrix``'s guarded path, so this single-set
     runner can no longer overwrite the committed report by default.
 
+    Raw-query only: like ``evaluate_retrieval`` / ``evaluate_refusals``, this
+    path threads neither the Phase-13 query-expansion rewrites nor the Phase-14
+    intent reframe into retrieval — those flow only through ``run_eval_matrix``.
+
     Loads the golden set, always scores retrieval hit@k (strict and related),
     and (unless ``skip_refusals``) scores refusal accuracy — the latter makes
     live Claude API calls through the default ``answer_fn``. Prints a summary
@@ -1537,6 +1558,17 @@ def run_eval_matrix(
             expansion_cache[question] = expand_query(question, enabled=True)
         return expansion_cache[question]
 
+    # Ownership flags (Codex #8), captured BEFORE the default
+    # retrieve_fn_factory / generate_fn are substituted in below. is_canonical's
+    # BM25-loaded guard needs to know whether a DEFAULT path — one that resolves
+    # its BM25 arm through the lazy ``_get_bm25`` loader — could have run: the
+    # default retrieve factory (in its hybrid/bm25/rewrite arms) AND the default
+    # generate_fn (always hybrid) both call ``_get_bm25``. A FULLY-injected
+    # fixture (custom retrieve factory AND custom generate_fn) owns its own
+    # retrieval, never touches the loader, and so carries NO BM25 requirement.
+    using_default_retrieve_factory = retrieve_fn_factory is None
+    using_default_generate_fn = generate_fn is None
+
     # Load each backend at most once, and ONLY when a mode that uses it actually
     # runs — so a vector-only matrix never unpickles the BM25 sidecar and a
     # bm25-only matrix never opens Chroma or runs the embedding-model manifest
@@ -1576,6 +1608,10 @@ def run_eval_matrix(
                         mode="hybrid",
                         strict_errors=True,
                         rewrites=list(exp.rewrites) or None,
+                        # Phase 14 (D50): the intent reframe rides alongside the
+                        # surface rewrites on its own weight budget (retrieve()
+                        # uses INTENT_LIST_WEIGHT since no intent_weight is set).
+                        intent_rewrite=exp.intent_rewrite,
                     )
                 # The three raw retrieval modes are UNCHANGED from before Phase
                 # 13 (raw-query rows must stay byte-identical — CI greps depend
@@ -1612,6 +1648,9 @@ def run_eval_matrix(
                 mode="hybrid",
                 strict_errors=True,
                 rewrites=list(exp.rewrites) or None,
+                # Phase 14 (D50): production answer passes measure hybrid+rewrite
+                # WITH the intent reframe threaded in (same _expand cache).
+                intent_rewrite=exp.intent_rewrite,
             )
             return generate_with_sources(question, results)
 
@@ -1672,6 +1711,44 @@ def run_eval_matrix(
 
             refusals = evaluate_refusals(golden, answer_fn=_answer_fn)
 
+        # Refusal-row detail (Phase 13 merge-gate finding #1): for the
+        # graded-negative rows, capture the gate outcome, the caveat flag, and
+        # the grounded/citation counts — NEVER the answer text (D30) — so the
+        # committed report SUBSTANTIATES each negative verdict from the artifact
+        # itself instead of a live spot-check. The generation results for the
+        # refusal-type questions live in the shared ``answers`` cache (populated
+        # iff refusals were scored, since include_types then carries "refusal").
+        refusal_detail: Dict[str, Dict[str, Any]] = {}
+        if not skip_refusals:
+            for entry in golden:
+                if entry["type"] != "refusal":
+                    continue
+                cached = answers.get(entry["question"]) or {}
+                res = cached.get("result")
+                if res is None:
+                    # Generation errored (or never ran): record the error, no
+                    # gate/caveat/count detail to show.
+                    refusal_detail[entry["question"]] = {
+                        "error": cached.get("error", "no answer generated"),
+                        "is_caveat": None,
+                        "gate_outcome": None,
+                        "n_grounded": 0,
+                        "n_citations": 0,
+                    }
+                    continue
+                answer = res.get("answer", "")
+                citation_check = res.get("citation_check", {})
+                refusal_detail[entry["question"]] = {
+                    "error": None,
+                    # is_caveat: the answer opens with the exact literal
+                    # CAVEAT_PREFIX (a related-guidance answer) — a boolean
+                    # derived from the answer, never the answer text itself.
+                    "is_caveat": answer.lstrip().startswith(CAVEAT_PREFIX),
+                    "gate_outcome": res.get("gate_outcome"),
+                    "n_grounded": len(citation_check.get("grounded", [])),
+                    "n_citations": len(res.get("citations", [])),
+                }
+
         completeness = None
         if not skip_completeness:
             completeness = evaluate_completeness(golden, answers)
@@ -1718,6 +1795,7 @@ def run_eval_matrix(
                 "n_questions": len(golden),
                 "retrieval": retrieval_by_mode,
                 "refusals": refusals,
+                "refusal_detail": refusal_detail,
                 "completeness": completeness,
                 "judge": judge_result,
                 "generation_errors": generation_errors,
@@ -1734,6 +1812,16 @@ def run_eval_matrix(
         for exp in expansion_cache.values()
         if exp.status != STATUS_LIVE or len(exp.rewrites) == 0
     )
+    # Intent-reframe accounting (Phase 14, D50): of the questions expanded live,
+    # how many carried a usable intent reframe vs None. ``intent_absent`` is the
+    # intent-level fallback count (an expansion whose intent deduped/parsed away
+    # to None). The intent weight in EFFECT is the module constant — the eval
+    # threads the intent through retrieve() without overriding intent_weight, so
+    # retrieve() uses INTENT_LIST_WEIGHT.
+    intent_present = sum(
+        1 for exp in expansion_cache.values() if exp.intent_rewrite is not None
+    )
+    intent_absent = rewrite_attempts - intent_present
 
     # Canonical (D46 v3) only if EVERY condition holds. Beyond a held-out label,
     # the held-out set must actually have >=1 answerable question scored under
@@ -1774,6 +1862,36 @@ def run_eval_matrix(
         for i in range(len(set_paths))
         for j in range(i + 1, len(set_paths))
     )
+    # BM25-loaded guard (Codex #8): whenever a DEFAULT path could have used the
+    # BM25 sidecar, canonical requires the sidecar to have ACTUALLY loaded — a
+    # canonical run that silently degraded to vector-only (missing/failed
+    # sidecar) must not overwrite the committed report. Both default paths (the
+    # retrieve factory and the generate_fn) resolve their BM25 arm through the
+    # lazy ``_get_bm25``, which appends ``load_bm25_index``'s result to
+    # ``bm25_cache`` — ``None`` when no sidecar exists. So "actually loaded" =
+    # the cache was filled AND the loaded index is not ``None``. A fully-injected
+    # fixture never calls ``_get_bm25`` (the cache stays empty) and owns its own
+    # retrieval, so it carries no BM25 requirement (stays canonical-eligible).
+    bm25_default_path_in_play = (
+        using_default_retrieve_factory or using_default_generate_fn
+    )
+    bm25_loaded = bool(bm25_cache) and bm25_cache[0] is not None
+    # Judge-required guard (Codex #13, D50; merge-gate FIX 1): CLAUDE.md's
+    # canonical command runs ``--judge``; canonical now ENFORCES it. The judge
+    # pass must have ACTUALLY JUDGED something (``attempted > 0``) on every set
+    # AND produced zero judge API/parse errors — a judge that judged an EMPTY
+    # sample (e.g. ``--judge`` with judge sample 0) reports zero errors yet backs
+    # no faithfulness figure at all, so a zero-error/zero-attempted pass must NOT
+    # count as clean and let an empty run overwrite the committed report. Each set
+    # carries a ``judge_answers`` dict when ``judge`` is on; ``attempted`` is its
+    # judged count and ``api_errors``/``parse_errors`` its two failure counters.
+    judge_ran_clean = judge and all(
+        s["judge"] is not None
+        and s["judge"].get("attempted", 0) > 0
+        and s["judge"].get("api_errors", 0) == 0
+        and s["judge"].get("parse_errors", 0) == 0
+        for s in sets
+    )
     is_canonical = (
         heldout_has_answerable
         and realistic_has_answerable
@@ -1785,6 +1903,8 @@ def run_eval_matrix(
         and total_generation_errors == 0
         and rewrite_attempts > 0
         and rewrite_fallbacks == 0
+        and (bm25_loaded or not bm25_default_path_in_play)
+        and judge_ran_clean
     )
 
     resolved_path, warnings = _resolve_results_path(
@@ -1816,6 +1936,19 @@ def run_eval_matrix(
         "expansion_enabled": expansion_enabled,
         "rewrite_attempts": rewrite_attempts,
         "rewrite_fallbacks": rewrite_fallbacks,
+        # Intent-reframe provenance (WS2 / D50): the weight in effect and how
+        # many live expansions carried an intent vs fell back to None.
+        "intent_weight": INTENT_LIST_WEIGHT,
+        "intent_present": intent_present,
+        "intent_absent": intent_absent,
+        # Eval-integrity provenance (WS3): the ownership flags, whether the BM25
+        # sidecar actually loaded, and whether the judge pass ran clean — so a
+        # non-canonical run's report can disclose WHICH canonical guard failed.
+        "using_default_retrieve_factory": using_default_retrieve_factory,
+        "using_default_generate_fn": using_default_generate_fn,
+        "bm25_default_path_in_play": bm25_default_path_in_play,
+        "bm25_loaded": bm25_loaded,
+        "judge_ran_clean": judge_ran_clean,
     }
 
     report = _format_matrix_report(result)
@@ -1854,7 +1987,12 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
     prov_get = provenance.get
     lines: List[str] = []
 
-    lines.append("# Legal RAG Evaluation Report v3 (held-out + realistic, ablated)")
+    # The report-title version tracks the CANONICAL-DEFINITION version, not a
+    # free-running counter: D46 defined v3, D51 extended the canonical guards
+    # (ownership-flag disclosure, judge-attempted requirement) and bumped it to
+    # v4 (merge-gate FIX 6). Bump this string only when the canonical definition
+    # itself changes.
+    lines.append("# Legal RAG Evaluation Report v4 (held-out + realistic, ablated)")
     lines.append("")
     lines.append(f"- Date: {datetime.now().isoformat()}")
     lines.append(f"- top_k: {top_k}")
@@ -1906,8 +2044,38 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             f"{result['rewrite_attempts']}, live {live}, "
             f"fallbacks {result['rewrite_fallbacks']}"
         )
+        # Intent-reframe provenance (WS2 / D50): the weight in effect and how
+        # many expansions carried an intent vs None (the intent-level fallback).
+        lines.append(
+            f"- intent reframe: weight {result['intent_weight']} — present "
+            f"{result['intent_present']}, none {result['intent_absent']}"
+        )
     else:
         lines.append("- query expansion: disabled (offline run)")
+    # BM25-loaded disclosure (WS3 / Codex #8): surface whether the sidecar
+    # actually loaded, so a non-canonical run can be traced to this guard. When
+    # a default retrieval path was in play but the sidecar did NOT load, say so
+    # explicitly — that combination is exactly the canonical-blocking failure.
+    if result.get("bm25_default_path_in_play") and not result.get("bm25_loaded"):
+        lines.append(
+            "- BM25 sidecar loaded: False (a default retrieval path was in play "
+            "but the sidecar did not load — canonical guard FAILED)"
+        )
+    else:
+        lines.append(f"- BM25 sidecar loaded: {result.get('bm25_loaded')}")
+    # Ownership-flag disclosure (D51 / merge-gate FIX 4): D51 promises the report
+    # discloses BOTH whether the sidecar loaded AND the ownership flags that
+    # decide whether a BM25 default path was even in play — so a reader can trace
+    # exactly why the BM25 guard did or did not apply on a non-canonical run.
+    lines.append(
+        f"- using default retrieve factory: {result.get('using_default_retrieve_factory')}"
+    )
+    lines.append(
+        f"- using default generate_fn: {result.get('using_default_generate_fn')}"
+    )
+    lines.append(
+        f"- BM25 default path in play: {result.get('bm25_default_path_in_play')}"
+    )
     if result["generation_errors"]:
         lines.append(
             f"- generation errors: {result['generation_errors']} "
@@ -2132,11 +2300,25 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                     f"expected={q['expected_sections']} "
                     f"retrieved={q['retrieved_sections']}{extra} :: {q['question']}"
                 )
-        # Refusal-type per-question rows (from the refusal pass).
+        # Refusal-type per-question rows (from the refusal pass). Each carries
+        # the D30-safe detail (caveat flag, gate outcome, grounded/citation
+        # counts — NEVER answer text) so a graded-negative verdict is
+        # substantiated by the artifact (Phase 13 merge-gate finding #1).
         if s["refusals"] is not None:
+            detail_map = s.get("refusal_detail") or {}
             for q in s["refusals"]["per_question"]:
                 status = "refused" if q["refused"] else "answered"
-                lines.append(f"- [refusal] {status} :: {q['question']}")
+                d = detail_map.get(q["question"])
+                if d is None:
+                    extra = ""
+                elif d["error"] is not None:
+                    extra = " (generation error)"
+                else:
+                    extra = (
+                        f" caveat={d['is_caveat']} gate={d['gate_outcome']} "
+                        f"grounded={d['n_grounded']}/{d['n_citations']}"
+                    )
+                lines.append(f"- [refusal] {status}{extra} :: {q['question']}")
         lines.append("")
 
     return "\n".join(lines) + "\n"

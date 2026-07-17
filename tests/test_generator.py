@@ -1,5 +1,6 @@
 """Tests for the LLM response generation module."""
 
+import hashlib
 import os
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +21,12 @@ from src.generator import (
     is_refusal,
     validate_citations,
 )
-from src.grounding import CITATIONS_UNVERIFIED, PARTIALLY_VERIFIED
+from src.grounding import (
+    CITATIONS_UNVERIFIED,
+    CITATIONS_VERIFIED,
+    PARTIALLY_VERIFIED,
+    classify,
+)
 
 
 class TestGetLlm:
@@ -216,6 +222,36 @@ class TestRefusal:
         self-referential assertion but must fail this one."""
         assert REFUSAL_PHRASE.encode() == b"not covered in the source material"
 
+    def test_caveat_prefix_byte_value_is_unchanged(self):
+        """Merge-gate FIX 5(a) — strengthen the D49 byte canaries: the existing
+        CAVEAT_PREFIX check (test_system_prompt_embeds_caveat_prefix) is
+        self-referential (constant IN system prompt), so a drift in CAVEAT_PREFIX
+        itself would pass silently. Pin the LITERAL bytes here instead. The
+        literal is byte-identical to main:src/generator.py — hardcoded, NOT
+        compared against the module constant, so an edit to either side fails."""
+        assert CAVEAT_PREFIX.encode() == (
+            b"The source material does not directly answer this question. "
+            b"The most closely related guidance is:"
+        )
+
+    def test_rule_three_block_sha256_is_pinned(self):
+        """Merge-gate FIX 5(b) — the D49 canaries only substring/self-check rule
+        3, so a subtle re-calibration of the coverage policy could slip through.
+        Pin the FULL rule-3 block (from the start of rule '3.' to the start of
+        rule '4.') by sha256. The block is byte-identical to main:src/generator.py
+        (verified: `git diff main -- src/generator.py` shows no rule-3 change),
+        so re-calibrating refusal behaviour must fail this canary — that is a
+        canonical-eval decision (D44), not just a green-tests edit."""
+        start = SYSTEM_PROMPT.index("3. Coverage policy")
+        end = SYSTEM_PROMPT.index("4. Use precise")
+        rule_three_block = SYSTEM_PROMPT[start:end]
+        # Digest computed from the current tree; provenance is the D44 subject-
+        # gate-first coverage policy (byte-identical to main at this merge gate).
+        assert (
+            hashlib.sha256(rule_three_block.encode()).hexdigest()
+            == "a12ad46c6d28de408e87f0fe11a3f23734d66c706dc9f7ad5cdbdb9225f7dca9"
+        )
+
     def test_is_refusal_detects_the_exact_phrase(self):
         assert is_refusal(REFUSAL_PHRASE)
 
@@ -318,6 +354,64 @@ class TestPromptTemplateHumanMessage:
     def test_closing_sentence_names_the_caveat_form(self):
         human_template = PROMPT_TEMPLATE.messages[1].prompt.template
         assert "caveat form" in human_template
+
+
+class TestSynthesisRule:
+    """Phase 14 WS1: Rule 5 tells the model to organise the answer around the
+    question and synthesise across extracts (esp. for compare/contrast), while
+    keeping a bracketed locator on every sentence. These canaries pin the rule
+    text and the reworded human turn; the Codex #11 case pins that Rule 5 is
+    prompt guidance only — it does not change the gate's treatment of the
+    deliberately-uncited caveat opener (rule 3(c))."""
+
+    def test_system_prompt_contains_the_synthesis_rule(self):
+        """Rule-5 canary: a distinctive, stable substring of the synthesis rule
+        must live in the system prompt, so the instruction cannot silently
+        drift out."""
+        assert "state the basis of comparison, address each side" in SYSTEM_PROMPT
+
+    def test_synthesis_rule_references_rule_3b_for_unsupported_points(self):
+        """Rule 5 must route unsupported comparison points to rule 3(b) as named
+        gaps (composing with the D44 subject-gate-first rule 3), not invent
+        them — pin that cross-reference the way the prompt numbers it."""
+        assert "named as a gap under rule 3(b)" in SYSTEM_PROMPT
+
+    def test_human_turn_drops_the_old_extracts_wording(self):
+        """Old-wording absence: the pre-Phase-14 opener must be gone from the
+        human template now that it frames the task as a single coherent
+        response over source material."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "Based on the following handbook extracts" not in human_template
+
+    def test_human_turn_frames_a_single_coherent_response(self):
+        """The reworded opener and its lockstep closing both frame the task as a
+        single coherent response."""
+        human_template = PROMPT_TEMPLATE.messages[1].prompt.template
+        assert "Using the following handbook source material" in human_template
+        assert human_template.count("single coherent response") == 2
+
+    def test_uncited_caveat_opener_still_passes_gate_under_rule_5(self):
+        """Codex #11: an answer whose caveat opener (the exact CAVEAT_PREFIX
+        sentence) stays uncited must classify exactly as before Rule 5 — the
+        cited body verifies, the uncited opener contributes no citation and is
+        not penalised. Rule 5's "every sentence carries a locator" is prompt
+        guidance; the gate/grounding treatment of the caveat opener is
+        unchanged. Mirrors the caveat-gate tests in test_grounding.py."""
+        para = {"para": "14.8.5", "page": "412", "raw": "para 14.8.5, p.412"}
+        answer = (
+            f"{CAVEAT_PREFIX} Requisitions must be raised within the agreed "
+            "period [Handbook, para 14.8.5, p.412]."
+        )
+        outcome = classify(answer, [para], {"grounded": [para], "ungrounded": []})
+        assert outcome == CITATIONS_VERIFIED
+
+    def test_uncited_caveat_opener_with_no_cited_body_still_fails_closed(self):
+        """The counterpart fail-closed case, also unchanged by Rule 5: a caveat
+        opener with no grounded citation in the body is CITATIONS_UNVERIFIED —
+        the uncited opener does not exempt the body from needing a citation."""
+        answer = f"{CAVEAT_PREFIX} Requisitions must generally be raised promptly."
+        outcome = classify(answer, [], {"grounded": [], "ungrounded": []})
+        assert outcome == CITATIONS_UNVERIFIED
 
 
 class TestValidateCitations:
@@ -631,3 +725,23 @@ class TestGenerateWithSources:
         assert len(result["citation_check"]["ungrounded"]) == 1
         # One grounded + one ungrounded citation → partially verified.
         assert result["gate_outcome"] == PARTIALLY_VERIFIED
+
+
+class TestClientTimeoutCanary:
+    """D52: the no-hang contract — a client constructed without a request
+    timeout can block forever on a dead socket (two wedged canonical runs,
+    17 Jul). Pin the timeout/retry kwargs so they cannot silently drift out."""
+
+    def test_generation_client_sets_timeout_and_retries(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            llm = get_llm()
+            assert llm.default_request_timeout == 120.0
+            assert llm.max_retries == 3
+
+    def test_rewrite_client_sets_timeout_and_retries(self):
+        from src.query_rewrite import get_rewrite_llm
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            llm = get_rewrite_llm()
+            assert llm.default_request_timeout == 60.0
+            assert llm.max_retries == 3

@@ -439,6 +439,87 @@ class TestBuildEventRewrites:
         assert record["rewrite_texts"] == rewrites
 
 
+class TestBuildEventIntent:
+    """Phase 14 (D50): build_event's keyword-only ``intent_rewrite``. When
+    ``None`` neither intent key appears (byte-identical to pre-Phase-14); when
+    present, ``intent_rewrite_sha256`` is always recorded and the raw
+    ``intent_rewrite_text`` is gated behind AUDIT_LOG_RAW_QUERIES. conftest
+    scrubs that env var suite-wide, so the no-leak default needs no monkeypatch."""
+
+    def _event(self, results, citation_check, citations, **extra):
+        return build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome="CITATIONS_VERIFIED",
+            action="shown",
+            citation_check=citation_check,
+            citations=citations,
+            answer="a",
+            **extra,
+        )
+
+    def test_intent_none_adds_no_intent_keys(self, results, citation_check, citations):
+        """intent_rewrite=None (alongside the Phase-13 rewrite fields) must add
+        NEITHER intent key — the event shape is byte-identical to a pre-Phase-14
+        rewrite-only record."""
+        record = self._event(
+            results, citation_check, citations,
+            rewrites=["formal rephrasing"],
+            rewrite_status="live",
+            intent_rewrite=None,
+        )
+        assert "intent_rewrite_sha256" not in record
+        assert "intent_rewrite_text" not in record
+
+    def test_intent_sha256_present_no_raw_text_by_default(
+        self, results, citation_check, citations
+    ):
+        intent = "the underlying comparison of A and B"
+        record = self._event(
+            results, citation_check, citations,
+            rewrites=["formal rephrasing"],
+            rewrite_status="live",
+            intent_rewrite=intent,
+        )
+        assert record["intent_rewrite_sha256"] == hashlib.sha256(
+            intent.encode("utf-8")
+        ).hexdigest()
+        assert "intent_rewrite_text" not in record  # no leak without the env flag
+
+    def test_intent_raw_text_included_only_with_env_opt_in(
+        self, monkeypatch, results, citation_check, citations
+    ):
+        monkeypatch.setenv("AUDIT_LOG_RAW_QUERIES", "1")
+        intent = "the underlying comparison of A and B"
+        record = self._event(
+            results, citation_check, citations,
+            rewrites=["formal rephrasing"],
+            rewrite_status="live",
+            intent_rewrite=intent,
+        )
+        assert record["intent_rewrite_text"] == intent
+
+    def test_intent_key_absent_from_default_event_keyset(
+        self, results, citation_check, citations
+    ):
+        """With neither rewrites nor intent passed, the record carries exactly
+        the pre-Phase-13 key set — no intent keys sneak in."""
+        record = build_event(
+            question="q",
+            top_k=6,
+            document_type=None,
+            results=results,
+            gate_outcome="CITATIONS_VERIFIED",
+            action="shown",
+            citation_check=citation_check,
+            citations=citations,
+            answer="a",
+        )
+        assert set(record.keys()) == EXPECTED_KEYS
+
+
 class TestNoLeakedText:
     def test_answer_and_chunk_text_absent_from_serialized_record(
         self, results, citation_check, citations, without_id_doc
