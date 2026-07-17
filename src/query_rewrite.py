@@ -201,49 +201,68 @@ def extract_intent(text: str) -> Tuple[Optional[str], str]:
     (``parse_rewrites`` stays byte-unchanged and never sees the intent line):
     no double-counting is possible by construction.
 
-    Contract (Phase 14, D50): scan ``text`` line by line; for each line strip
-    any leading list-marker / numbering (the same ``1.``/``1)``/``-``/``*``/``•``
-    markers ``parse_rewrites`` recognises) and test whether the remainder begins
-    with the case-sensitive tag ``INTENT:``. The FIRST such line wins. Its tag
-    is stripped and the remainder whitespace-trimmed to yield the restatement.
+    Contract (Phase 14, D50; merge-gate FIX 2): scan ``text`` line by line; for
+    each line strip any leading list-marker / numbering (the same
+    ``1.``/``1)``/``-``/``*``/``•`` markers ``parse_rewrites`` recognises) and test
+    whether the remainder begins with the case-sensitive tag ``INTENT:``. The
+    FIRST such line determines the intent value: its tag is stripped and the
+    remainder whitespace-trimmed to yield the restatement.
 
-    Failure modes all yield an intent of ``None``:
+    EVERY tagged line — the first AND any further ones — is removed from the
+    returned ``remaining`` text, never just the first. A tagged line must NEVER
+    reach ``parse_rewrites``: were a second ``INTENT:`` line left behind, the
+    literal string ``"INTENT: ..."`` would be accepted as a surface rewrite and
+    leak into the retrieval bundle. So the intent line count and the surface
+    bundle stay disjoint by construction, no matter how many tagged lines the
+    model emits.
+
+    Failure modes all yield an intent of ``None`` (the tagged lines are STILL
+    removed in every case):
       - no line carries the tag (missing) — and NO line is removed;
-      - the restatement is empty after trimming (malformed);
-      - the restatement exceeds ``MAX_INTENT_CHARS`` (overlong — this cap
-        mirrors ``parse_rewrites``' own per-line ``MAX_REWRITE_CHARS`` cap).
-    Whenever a tagged line IS present it is removed from the returned text
-    REGARDLESS of whether its restatement was usable, so a malformed INTENT
-    line can never fall through into ``parse_rewrites`` as a surface rewrite.
+      - the (first) restatement is empty after trimming (malformed);
+      - the (first) restatement exceeds ``MAX_INTENT_CHARS`` (overlong — this
+        cap mirrors ``parse_rewrites``' own per-line ``MAX_REWRITE_CHARS`` cap).
 
     Args:
         text: The raw LLM rewrite response.
 
     Returns:
-        ``(intent, remaining_text)``. ``intent`` is the trimmed restatement or
-        ``None`` (missing/malformed/overlong). ``remaining_text`` is ``text``
-        with the first tagged line removed (identical to ``text`` when no tagged
-        line exists), ready to hand to ``parse_rewrites``.
+        ``(intent, remaining_text)``. ``intent`` is the trimmed restatement of
+        the FIRST tagged line, or ``None`` (missing/malformed/overlong).
+        ``remaining_text`` is ``text`` with ALL tagged lines removed (identical
+        to ``text`` when no tagged line exists), ready to hand to
+        ``parse_rewrites``.
     """
     if not text:
         return None, text
 
     lines = text.splitlines()
-    for i, line in enumerate(lines):
+    intent: Optional[str] = None
+    saw_tag = False
+    kept: List[str] = []
+    for line in lines:
         # Anchor the tag at the (post-marker) line start — case-sensitive, like
         # every structural marker here. A stray "the INTENT: is unclear" mid-line
         # is NOT a tag line (it does not start with the tag after marker strip).
         after_marker = _LEADING_MARKER_RE.sub("", line)
         if not after_marker.startswith(INTENT_TAG):
+            kept.append(line)
             continue
-        # First tagged line wins and is removed unconditionally (see docstring).
-        remaining = "\n".join(lines[:i] + lines[i + 1 :])
-        restatement = after_marker[len(INTENT_TAG) :].strip()
-        if not restatement or len(restatement) > MAX_INTENT_CHARS:
-            return None, remaining
-        return restatement, remaining
+        # A tagged line: drop it from ``kept`` (it must never reach
+        # parse_rewrites). Only the FIRST one sets the intent value; later tagged
+        # lines are still removed but otherwise ignored.
+        if not saw_tag:
+            saw_tag = True
+            restatement = after_marker[len(INTENT_TAG) :].strip()
+            if restatement and len(restatement) <= MAX_INTENT_CHARS:
+                intent = restatement
 
-    return None, text
+    if not saw_tag:
+        # No tagged line: return ``text`` unchanged (byte-for-byte), exactly as
+        # before — the missing case removes nothing.
+        return None, text
+
+    return intent, "\n".join(kept)
 
 
 def parse_rewrites(text: str) -> List[str]:

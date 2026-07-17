@@ -144,6 +144,9 @@ def retrieve(
     deduped like a rewrite (dropped if empty after strip, or a casefold-dup of
     ``query`` or of a surviving rewrite). ``intent_rewrite=None`` (or empty) adds
     zero extra lists, so behavior is byte-identical to retrieval before Phase 14.
+    ``intent_weight=0.0`` is likewise a true no-op (merge-gate FIX 3): a
+    zero-weight intent contributes score 0 to every doc, so it is not searched at
+    all — same docs, order, scores, AND per-arm backend call count as no intent.
 
     Retrieval mode (Phase 10 ablation, D38): ``mode`` is one of
     ``RETRIEVAL_MODES``. ``"hybrid"`` (default) runs both arms and fuses;
@@ -202,7 +205,8 @@ def retrieve(
             14, D50); see the intent-reframe note above. Keyword-only.
         intent_weight: Optional per-list weight ``W`` for the intent's ranked
             lists; defaults to ``INTENT_LIST_WEIGHT`` when None. Must be in
-            ``[0, 0.5]`` (the dominance invariant). Keyword-only.
+            ``[0, 0.5]`` (the dominance invariant); ``0.0`` is valid and is a
+            true no-op (the intent is not searched). Keyword-only.
 
     Returns:
         List of dicts with keys: document, score (fused RRF score), metadata.
@@ -309,7 +313,19 @@ def retrieve(
     # collapses to a duplicate or is empty. An intent that survives runs on each
     # used arm exactly like a rewrite, so single-arm modes contribute one intent
     # list and hybrid contributes two — mirroring the surface bundle.
-    if intent_query and intent_query.casefold() not in seen:
+    #
+    # W == 0.0 must be a TRUE no-op (merge-gate FIX 3): a zero-weight intent list
+    # contributes score 0.0/(k+r) == 0 to every doc, yet appending the sub-query
+    # still runs an extra per-arm search whose intent-only docs enter the fused
+    # dict at score 0 and pad the tail of a sparse pool. So skip the append
+    # entirely when the effective weight is 0 — behaviour is then byte-identical
+    # (same docs, order, scores, AND backend call count) to passing no intent.
+    # W == 0.0 stays a VALID input (validated above); it just contributes nothing.
+    if (
+        intent_query
+        and intent_list_weight > 0.0
+        and intent_query.casefold() not in seen
+    ):
         seen.add(intent_query.casefold())
         sub_queries.append(intent_query)
         sub_query_weights.append(intent_list_weight)

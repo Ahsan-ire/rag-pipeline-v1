@@ -857,6 +857,76 @@ class TestIntentReframe:
             assert a["document"].id == b["document"].id
             assert a["score"] == b["score"]
 
+    def test_intent_weight_zero_is_true_noop(self, monkeypatch):
+        """Merge-gate FIX 3: ``intent_weight=0.0`` is a TRUE no-op. A zero-weight
+        intent list contributes score 0.0/(k+r) == 0 to every doc, so appending
+        it would only run an extra per-arm search AND pad a sparse pool with
+        score-0 intent-only docs. Passing ``intent_rewrite`` with
+        ``intent_weight=0.0`` must therefore be byte-identical to passing no
+        intent — same docs, order, and fused scores — AND invoke each backend arm
+        the SAME number of times (no extra intent sub-query search). ``0.0`` stays
+        a VALID weight: it does not raise, it just contributes nothing.
+
+        Without the fix this fails on BOTH counts: the intent-only ``noise`` doc
+        would enter the fused tail at score 0, and each arm would run one extra
+        search for the intent sub-query."""
+        right, noise = _intent_docs()
+
+        class CountingStore:
+            def __init__(self):
+                self.calls = []
+
+            def similarity_search_with_relevance_scores(self, query, k=None, filter=None):
+                self.calls.append(query)
+                if query == "orig":
+                    return [(right, 0.9)]
+                if query == "intent frame":  # only reached if the intent is searched
+                    return [(noise, 0.9)]
+                return []
+
+        def make_fake_bm25(sink):
+            def fake_search_bm25(index, query, k, document_type=None):
+                sink.append(query)
+                if query == "orig":
+                    return [("right", right, 5.0)]
+                if query == "intent frame":
+                    return [("noise", noise, 5.0)]
+                return []
+
+            return fake_search_bm25
+
+        # Baseline: no intent.
+        bm25_base: list = []
+        monkeypatch.setattr("src.retriever.search_bm25", make_fake_bm25(bm25_base))
+        base_store = CountingStore()
+        base = retrieve(
+            "orig", top_k=6, mode="hybrid",
+            vector_store=base_store, bm25_index=object(),
+        )
+
+        # Zero-weight intent: must be identical AND run no extra search.
+        bm25_zero: list = []
+        monkeypatch.setattr("src.retriever.search_bm25", make_fake_bm25(bm25_zero))
+        zero_store = CountingStore()
+        zero = retrieve(
+            "orig", top_k=6, mode="hybrid",
+            vector_store=zero_store, bm25_index=object(),
+            intent_rewrite="intent frame", intent_weight=0.0,
+        )
+
+        # Identical documents, order, and fused scores.
+        assert [r["document"].id for r in zero] == [r["document"].id for r in base]
+        assert {r["document"].id: r["score"] for r in zero} == {
+            r["document"].id: r["score"] for r in base
+        }
+        # The intent-only doc must NOT appear: a zero-weight intent adds no doc.
+        assert "noise" not in [r["document"].id for r in zero]
+        # Same backend call count both ways: no extra intent sub-query search
+        # was issued on either arm.
+        assert base_store.calls == ["orig"]
+        assert zero_store.calls == base_store.calls
+        assert bm25_zero == bm25_base == ["orig"]
+
     @pytest.mark.parametrize("w", [0.25, 0.5])
     def test_intent_pair_equal_rank_original_wins(self, monkeypatch, w):
         """Hybrid, equal rank r=1: the original two-arm agreement (2/(K+1)) beats

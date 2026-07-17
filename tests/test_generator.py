@@ -1,5 +1,6 @@
 """Tests for the LLM response generation module."""
 
+import hashlib
 import os
 from unittest.mock import MagicMock, patch
 
@@ -220,6 +221,36 @@ class TestRefusal:
         — a change to REFUSAL_PHRASE itself would silently pass a
         self-referential assertion but must fail this one."""
         assert REFUSAL_PHRASE.encode() == b"not covered in the source material"
+
+    def test_caveat_prefix_byte_value_is_unchanged(self):
+        """Merge-gate FIX 5(a) — strengthen the D49 byte canaries: the existing
+        CAVEAT_PREFIX check (test_system_prompt_embeds_caveat_prefix) is
+        self-referential (constant IN system prompt), so a drift in CAVEAT_PREFIX
+        itself would pass silently. Pin the LITERAL bytes here instead. The
+        literal is byte-identical to main:src/generator.py — hardcoded, NOT
+        compared against the module constant, so an edit to either side fails."""
+        assert CAVEAT_PREFIX.encode() == (
+            b"The source material does not directly answer this question. "
+            b"The most closely related guidance is:"
+        )
+
+    def test_rule_three_block_sha256_is_pinned(self):
+        """Merge-gate FIX 5(b) — the D49 canaries only substring/self-check rule
+        3, so a subtle re-calibration of the coverage policy could slip through.
+        Pin the FULL rule-3 block (from the start of rule '3.' to the start of
+        rule '4.') by sha256. The block is byte-identical to main:src/generator.py
+        (verified: `git diff main -- src/generator.py` shows no rule-3 change),
+        so re-calibrating refusal behaviour must fail this canary — that is a
+        canonical-eval decision (D44), not just a green-tests edit."""
+        start = SYSTEM_PROMPT.index("3. Coverage policy")
+        end = SYSTEM_PROMPT.index("4. Use precise")
+        rule_three_block = SYSTEM_PROMPT[start:end]
+        # Digest computed from the current tree; provenance is the D44 subject-
+        # gate-first coverage policy (byte-identical to main at this merge gate).
+        assert (
+            hashlib.sha256(rule_three_block.encode()).hexdigest()
+            == "a12ad46c6d28de408e87f0fe11a3f23734d66c706dc9f7ad5cdbdb9225f7dca9"
+        )
 
     def test_is_refusal_detects_the_exact_phrase(self):
         assert is_refusal(REFUSAL_PHRASE)

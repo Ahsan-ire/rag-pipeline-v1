@@ -296,16 +296,25 @@ class TestExtractIntent:
         ]
 
     def test_duplicate_intent_lines_first_wins(self):
+        """Merge-gate FIX 2: the FIRST tagged line still determines the intent,
+        but ALL tagged lines are removed from ``remaining`` — a tagged line must
+        never reach parse_rewrites, where the literal ``"INTENT: ..."`` string
+        would otherwise be accepted as a surface rewrite and leak into the
+        bundle. (Previously this test PINNED the leak, asserting the second
+        tagged line stayed in ``remaining``.)"""
         text = (
             "1) formal rephrasing\n"
             "INTENT: first intent wins\n"
-            "INTENT: second intent ignored"
+            "INTENT: second intent leaks"
         )
         intent, remaining = extract_intent(text)
         assert intent == "first intent wins"
-        # Only the FIRST tagged line is removed; the second stays in the text.
-        assert "second intent ignored" in remaining
+        # NO tagged line survives: neither the winning first line nor the second.
         assert "first intent wins" not in remaining
+        assert "second intent leaks" not in remaining
+        assert "INTENT" not in remaining
+        # The remaining text hands only the surface rewrite to parse_rewrites.
+        assert parse_rewrites(remaining) == ["formal rephrasing"]
 
     def test_unknown_tag_is_not_intent(self):
         """A different tag (PURPOSE:) is not the case-sensitive INTENT: tag, so

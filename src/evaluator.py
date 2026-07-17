@@ -1876,14 +1876,18 @@ def run_eval_matrix(
         using_default_retrieve_factory or using_default_generate_fn
     )
     bm25_loaded = bool(bm25_cache) and bm25_cache[0] is not None
-    # Judge-required guard (Codex #13, D50): CLAUDE.md's canonical command runs
-    # ``--judge``; canonical now ENFORCES it. The judge pass must have run AND
-    # produced zero judge API/parse errors on every set — a judge that mostly
-    # failed cannot back a canonical faithfulness figure. Each set carries a
-    # ``judge_answers`` dict when ``judge`` is on; ``api_errors``/``parse_errors``
-    # are its two failure counters.
+    # Judge-required guard (Codex #13, D50; merge-gate FIX 1): CLAUDE.md's
+    # canonical command runs ``--judge``; canonical now ENFORCES it. The judge
+    # pass must have ACTUALLY JUDGED something (``attempted > 0``) on every set
+    # AND produced zero judge API/parse errors — a judge that judged an EMPTY
+    # sample (e.g. ``--judge`` with judge sample 0) reports zero errors yet backs
+    # no faithfulness figure at all, so a zero-error/zero-attempted pass must NOT
+    # count as clean and let an empty run overwrite the committed report. Each set
+    # carries a ``judge_answers`` dict when ``judge`` is on; ``attempted`` is its
+    # judged count and ``api_errors``/``parse_errors`` its two failure counters.
     judge_ran_clean = judge and all(
         s["judge"] is not None
+        and s["judge"].get("attempted", 0) > 0
         and s["judge"].get("api_errors", 0) == 0
         and s["judge"].get("parse_errors", 0) == 0
         for s in sets
@@ -1983,7 +1987,12 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
     prov_get = provenance.get
     lines: List[str] = []
 
-    lines.append("# Legal RAG Evaluation Report v3 (held-out + realistic, ablated)")
+    # The report-title version tracks the CANONICAL-DEFINITION version, not a
+    # free-running counter: D46 defined v3, D51 extended the canonical guards
+    # (ownership-flag disclosure, judge-attempted requirement) and bumped it to
+    # v4 (merge-gate FIX 6). Bump this string only when the canonical definition
+    # itself changes.
+    lines.append("# Legal RAG Evaluation Report v4 (held-out + realistic, ablated)")
     lines.append("")
     lines.append(f"- Date: {datetime.now().isoformat()}")
     lines.append(f"- top_k: {top_k}")
@@ -2054,6 +2063,19 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
         )
     else:
         lines.append(f"- BM25 sidecar loaded: {result.get('bm25_loaded')}")
+    # Ownership-flag disclosure (D51 / merge-gate FIX 4): D51 promises the report
+    # discloses BOTH whether the sidecar loaded AND the ownership flags that
+    # decide whether a BM25 default path was even in play — so a reader can trace
+    # exactly why the BM25 guard did or did not apply on a non-canonical run.
+    lines.append(
+        f"- using default retrieve factory: {result.get('using_default_retrieve_factory')}"
+    )
+    lines.append(
+        f"- using default generate_fn: {result.get('using_default_generate_fn')}"
+    )
+    lines.append(
+        f"- BM25 default path in play: {result.get('bm25_default_path_in_play')}"
+    )
     if result["generation_errors"]:
         lines.append(
             f"- generation errors: {result['generation_errors']} "

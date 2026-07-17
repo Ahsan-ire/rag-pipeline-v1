@@ -2689,10 +2689,11 @@ class TestRunEvalMatrix:
         assert "mean faithfulness" in report
 
     def test_report_title_and_expansion_wording(self, tmp_path, monkeypatch):
-        """F11: the report title is the v3 (held-out + realistic, ablated) form,
-        and the expansion provenance line reports attempted / live / fallbacks
-        distinctly (not a single "N expanded, M fallbacks"). A canonical run has
-        live == attempted and zero fallbacks."""
+        """F11: the report title is the v4 (held-out + realistic, ablated) form
+        (merge-gate FIX 6: the title tracks the canonical-definition version —
+        D46=v3, D51=v4), and the expansion provenance line reports attempted /
+        live / fallbacks distinctly (not a single "N expanded, M fallbacks"). A
+        canonical run has live == attempted and zero fallbacks."""
         self._patch_paths(monkeypatch, tmp_path)
         self._patch_expand(monkeypatch)  # live: one rewrite per question, zero fallbacks
         heldout, realistic = self._canonical_sets(tmp_path)
@@ -2707,7 +2708,14 @@ class TestRunEvalMatrix:
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
-        assert "# Legal RAG Evaluation Report v3 (held-out + realistic, ablated)" in report
+        assert "# Legal RAG Evaluation Report v4 (held-out + realistic, ablated)" in report
+        # The stale v3 title must be gone (merge-gate FIX 6).
+        assert "Report v3" not in report
+        # D51 / merge-gate FIX 4: with BOTH paths injected the ownership flags
+        # render False and no BM25 default path is in play (the False rendering).
+        assert "using default retrieve factory: False" in report
+        assert "using default generate_fn: False" in report
+        assert "BM25 default path in play: False" in report
         attempts = result["rewrite_attempts"]
         assert (
             f"query expansion: {REWRITE_MODEL} — attempted {attempts}, "
@@ -2917,6 +2925,11 @@ class TestRunEvalMatrix:
         assert result["results_path"] == default
         report = open(result["results_path"], encoding="utf-8").read()
         assert "BM25 sidecar loaded: True" in report
+        # D51 / merge-gate FIX 4: the ownership flags are disclosed alongside the
+        # BM25-loaded line (both default paths in play => all three render True).
+        assert "using default retrieve factory: True" in report
+        assert "using default generate_fn: True" in report
+        assert "BM25 default path in play: True" in report
 
     @pytest.mark.parametrize(
         "default_retrieve,default_generate,expected_canonical",
@@ -3025,6 +3038,36 @@ class TestRunEvalMatrix:
         assert result["judge_ran_clean"] is True
         assert result["is_canonical"] is True
         assert result["results_path"] == default
+
+    def test_judge_sample_zero_is_noncanonical(self, tmp_path, monkeypatch):
+        """Merge-gate FIX 1: ``--judge`` with judge sample 0 judges an EMPTY
+        sample — attempted == 0, zero api/parse errors — which must NOT read as a
+        clean judge pass. judge_ran_clean now also requires attempted > 0 on
+        EVERY set, so this otherwise-canonical run is non-canonical and cannot
+        overwrite the committed report. The clean-judge fixtures (judge_sample
+        defaulting to None, attempted > 0) stay canonical, unaffected."""
+        _default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn([]),
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=self._clean_judge_fn(),
+            judge_sample=0,  # the ONLY deviation from canonical: nothing judged
+        )
+
+        # Every set judged an empty sample: attempted == 0, no errors reported.
+        assert all(s["judge"]["attempted"] == 0 for s in result["sets"])
+        assert all(s["judge"]["api_errors"] == 0 for s in result["sets"])
+        assert all(s["judge"]["parse_errors"] == 0 for s in result["sets"])
+        # Zero errors, yet nothing judged -> NOT clean -> NOT canonical.
+        assert result["judge_ran_clean"] is False
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
 
     # --- WS3.4: refusal-row detail in the committed report ----------------
     def test_refusal_row_detail_rendered_without_answer_text(self, tmp_path, monkeypatch):
