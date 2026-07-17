@@ -538,6 +538,56 @@ green with the two existing smoke greps byte-intact plus the new hybrid+rewrite 
 README numbers match the new results.md; CLAUDE.md Commands block updated (canonical command
 now includes `--realistic`; both-skips offline contract restated).
 
+## Phase 14 — answer quality: synthesis + intent-level rewriting (Thu 16–Fri 17 Jul, 1.5 days) — `phase-14-answer-quality`
+
+(Provenance: the 15 Jul field test — a comparison question ("purchase vs sale conveyance")
+returned caveat-form fragments, not a comparison. Four independent read-only architecture
+audits (2 opus agents, 1 sonnet agent, Codex ultra) confirmed two mechanisms: no synthesis
+instruction anywhere in SYSTEM_PROMPT, and query expansion that re-words but never re-frames.
+Plan gated 15 Jul: plan-auditor NO-GO on the v1 fusion algebra (corrected — the intent-weight
+dominance invariant holds only for W ≤ 0.5), Codex ultra 14 findings reconciled. Full gated
+plan + reconciliation log: ~/.claude/plans/phase-14-answer-quality.md. Design record:
+docs/decisions.md D49–D51.)
+
+1. **Synthesis rule (WS1, D49):** SYSTEM_PROMPT Rule 5 — organize the answer around the
+   question; compare/contrast answers state the basis of comparison, address each side, draw
+   the explicit contrast; every sentence still carries a bracketed locator; unsupported
+   comparison points are rule-3(b) gaps. Human turn reframed to "single coherent response"
+   (opener/closing lockstep). CITATIONS_VERIFIED display note made honest (resolution, not
+   entailment). REFUSAL_PHRASE/CAVEAT_PREFIX/gate logic/D44 rule-3 text byte-frozen.
+2. **Intent-level rewrite (WS2, D50):** rewrite prompt line 4 `INTENT: <restatement>`;
+   `extract_intent` pre-pass ahead of a byte-unchanged `parse_rewrites` (no double-count by
+   construction; malformed/overlong → None, never a parse error);
+   `Expansion.intent_rewrite` appended after `status` with default; casefold dedup. retrieve()
+   fuses the intent as its own ranked-list pair on a separate weight budget, W ∈ [0, 0.5]
+   enforced by ValueError (equal-rank dominance invariant: 2/61 > (1+2W)/61 ⇔ W ≤ 0.5).
+   Threaded: pipeline.query, evaluator rewrite mode, evaluator default generate_fn; legacy
+   paths documented raw-query-only. Audit: intent sha256 always (when present), raw text only
+   under AUDIT_LOG_RAW_QUERIES=1; intent-None events byte-identical to pre-Phase-14.
+3. **Eval-integrity guards (WS3, D51 — canonical v4):** judge pass with zero API/parse errors
+   required for canonical; BM25-sidecar-actually-loaded required whenever a default path was
+   in play (ownership flags captured pre-mutation, provenance disclosure); retrieve() rejects
+   top_k < 1 (no upper cap); refusal rows in the committed report substantiated with
+   is_caveat/gate_outcome/citation counts (never answer text — D30).
+4. **Quote-snapping: CUT** at the plan gate (both reviewers) — fail-open quote matching is not
+   an entailment floor; moved to the Phase 15 backlog with its open design questions.
+5. **W sweep (D50):** cached-expansion protocol (47 questions, zero fallbacks), offline fusion
+   at W ∈ {0, 0.25, 0.5}. Result: 0.25 = zero effect (no flips, S5 not rescued); 0.5 rescues
+   S5 (strict rank 5, realistic 0.529) but relegates one golden control rank 3→7 — the
+   zero-golden-regression constraint disqualifies it. **Negative result: no W selected;
+   INTENT_LIST_WEIGHT ships at 0.25; the gated fallback acceptance (S5 related@6 HIT + live
+   comparison-rubric pass) is engaged.** The 4-line expansion prompt alone lifts golden
+   controls 25/30 → 27/30 strict@6 at W=0.
+
+Acceptance (amended per the gated fallback): held-out hybrid 20/20 strict@6 unregressed;
+golden controls unregressed vs run #2; S5 related@6 HIT AND the live S5 answer passes the
+comparison rubric (basis stated, both sides addressed, explicit contrast, gaps named, correct
+tier, citations on every sentence — checked for 2048-token truncation); N4 stays strict HIT;
+realistic strict@6 ≥ 0.471; negatives ≥ 15 Jul calibration (11/14, documented residuals);
+zero expansion fallbacks; canonical v4 guards green (judge clean, bm25 loaded). Canonical
+run #3 results: eval/results.md (this run also re-baselines golden/tuning under the 4-line
+expansion prompt).
+
 ---
 
 ## Cut list (v2)

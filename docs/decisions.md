@@ -1428,3 +1428,96 @@ judge bake-offs (selection on it burns the headline metric).
 **Consequence:** the gates are now reproducible from a fresh clone and portable to future projects via
 the checklist in `docs/harness.md`; the v3 re-chunking decision deferred by D39 is the natural first
 `/bake-off` candidate.
+
+## D49 — Generator synthesis rule: organize around the question, not the extracts (17 Jul 2026)
+**Decision:** SYSTEM_PROMPT gains Rule 5: organize the answer around the QUESTION; for
+compare/contrast questions state the basis of comparison, address each side, and draw the
+explicit contrast the extracts support; synthesize across extracts into one coherent response;
+every sentence — comparative/summary sentences included — still carries a bracketed locator
+(the mandatory rule-3 openers aside); unsupported comparison points are named as gaps under
+rule 3(b), never inferred. The human turn is reframed from "Based on the following handbook
+extracts" to "Using the following handbook source material… answer as a single coherent
+response" (opener and closing in lockstep). The CITATIONS_VERIFIED display note now states
+honestly what the gate checks: citations resolve to a retrieved passage — locator and page —
+not that the passage supports the claim (pipeline.py display only; gate logic unchanged).
+**Why:** the 15 Jul field test returned caveat-form fragments for a comparison question; the
+generation audit confirmed every SYSTEM_PROMPT cue was per-statement/per-extract with no
+organizing instruction (gen-F1, Codex-arch#7); the old display string oversold the
+locator-in-retrieved-set check as verification (gen-F3, Codex-arch#1).
+**Rejected:** rewording the rule-3 tier tie-breaks in the same phase (the 15 Jul subject-gate
+restructure just calibrated the negatives boundary; re-opening it risks re-flipping them —
+plan gate); relaxing per-sentence citation for summary sentences (grounding is the product).
+**Frozen:** REFUSAL_PHRASE, CAVEAT_PREFIX, gate fail-closed logic, grounding.classify, the
+D44 subject-gate rule-3 text — all byte-canaried.
+
+## D50 — Intent-level rewrite: INTENT-tag contract, corrected fusion algebra, W sweep negative result (17 Jul 2026)
+**Decision:** the Haiku rewrite prompt asks for a 4th numbered line `4) INTENT: <restatement>`
+re-framing the underlying information need. A dedicated pre-pass (`extract_intent`) peels the
+first case-sensitive INTENT-tagged line off the response BEFORE `parse_rewrites` (which stays
+byte-unchanged, MAX_REWRITES=3) — the intent can never enter the surface bundle, so no
+double-counting is possible by construction; malformed/missing/overlong (> MAX_REWRITE_CHARS)
+tags degrade to None, never a parse error. `Expansion.intent_rewrite: Optional[str] = None` is
+appended after `status` (all positional constructions unchanged); intents casefold-equal to
+the original or any surface rewrite dedup to None. A validly-extracted intent survives
+STATUS_PARSE_ERROR (a good reframe is not discarded because the surface lines were
+degenerate). retrieve() fuses the intent as its OWN pair of ranked lists on a separate weight
+budget W: the equal-rank dominance invariant (original two-arm agreement 2/61 > correlated
+noise (1+2W)/61) holds only for W ≤ 0.5, so weights outside [0, 0.5] raise ValueError — v1's
+"W ≤ 1.0" claim was false and is withdrawn (plan-gate blocker). Audit events carry
+intent_rewrite_sha256 (always, when an intent exists) and intent_rewrite_text (only under
+AUDIT_LOG_RAW_QUERIES=1); intent-None events are byte-identical to pre-Phase-14.
+**W sweep (17 Jul, cached-expansion protocol — one live expansion per golden+realistic
+answerable question, zero fallbacks, 25/47 with intents; offline fusion at W ∈ {0, 0.25,
+0.5}):** W=0 baseline: golden 27/30 strict@6 (the 4-line prompt alone improves controls —
+committed baseline 25/30), realistic 8/17 = 0.471 (= committed), S5 strict MISS / related
+rank 2, N4 HIT rank 3. W=0.25: aggregates identical to W=0, zero per-question flips, S5 not
+rescued. W=0.5: S5 strict HIT rank 5, realistic 9/17 = 0.529 — but one golden control
+("purpose of requisitions on title", expected 15.1) relegated rank 3→7, a HIT→MISS flip vs
+the same-expansion arm. **Selection rule (smallest W rescuing S5 subject to zero
+golden-control regressions and N4 HIT): NO W in the gated set qualifies — negative result;
+the fallback acceptance (S5 related@6 HIT + live comparison-rubric pass) is engaged.**
+INTENT_LIST_WEIGHT ships at 0.25: the smallest studied invariant-preserving weight, zero
+measured cost, mechanism stays live/audited for the Phase 15 fusion revisit. Diagnostic for
+the record: W=0.30 double-hits S5 AND the golden control, both at rank exactly 6/6 — a
+two-knife-edge configuration, too sampling-fragile to ship and outside the gated sweep set.
+**Rejected:** escalating W past 0.5 (breaks the dominance invariant); shipping W=0.5 under an
+aggregate-only reading of "unregressed" (golden 0.867 ≥ committed 0.833, but a per-question
+control flip is exactly what the constraint exists to catch); quote-snapping as an entailment
+floor (WS4 — cut entirely at the plan gate; fail-open quote matching is not entailment; moved
+to the Phase 15 backlog with its open design questions); group-level fusion normalization
+(Phase 15 if intent ever needs authority beyond 0.5).
+
+## D51 — Canonical definition v4: judge required, BM25-loaded guard, top_k boundary validation, substantiated negatives (17 Jul 2026)
+**Decision:** `is_canonical` (v3: D46) additionally requires (a) the judge pass ran with zero
+API/parse errors on every set — CLAUDE.md's canonical command always said `--judge`; the guard
+now enforces it (Codex #13); (b) whenever any DEFAULT path (retrieve factory or generate_fn —
+ownership flags captured before factory mutation, Codex #8) could have used the BM25 sidecar,
+the sidecar must have actually loaded — a run silently degraded to vector-only can never
+overwrite the committed report; fully-injected fixtures carry no BM25 requirement.
+`bm25_loaded` + both ownership flags are disclosed in report provenance so a non-canonical run
+names the guard that failed. retrieve() raises ValueError on top_k < 1 at the caller-funnel
+boundary (kills the negative-slice hazard at its root); NO upper cap — top_k > pool is
+deliberately supported (candidate_k widening). Negative rows in the committed report carry
+is_caveat / gate_outcome / grounded-citation counts — never answer text (D30) — so
+graded-negative claims are substantiated by the artifact (Phase 13 merge-gate finding #1).
+**Why:** the eval-architecture audit found is_canonical never checked the sidecar or the
+judge — a "canonical" run could have been vector-only or judge-free without any trace.
+**Rejected:** capping top_k at CANDIDATE_POOL (v1 — withdrawn per Codex #10: the blocked-answer
+UI deliberately advises raising --top-k past the pool); putting the BM25 requirement on
+injected fixtures (they own their retrieval; the guard would just break the test suite).
+
+## D52 — LLM client timeouts: dead sockets fail loudly and retry, never hang (17 Jul 2026)
+**Decision:** `get_llm()` sets `default_request_timeout=120.0`, `get_rewrite_llm()` sets
+`default_request_timeout=60.0`; both set `max_retries=3`. The Anthropic SDK transparently
+retries timeouts/connection drops before raising, so a transient dead socket self-heals;
+an exhausted retry surfaces as a normal API error (expand_query → STATUS_API_ERROR;
+generation → the eval's generation-error accounting, which already blocks canonical).
+**Why:** two canonical-eval runs on 17 Jul wedged for hours each — ~7s of CPU over 2h43m,
+one in-flight POST never returning, no timeout configured anywhere in the client stack — an
+unbounded hang on any dropped connection, in production queries as well as eval runs. Found
+completing WS5; fixed forward as a minimal ops-robustness bug fix (Phase 15 backlog item 8
+territory, pulled forward out of necessity), constructor-canary-tested.
+**Rejected:** wrapping the eval in an external kill-and-restart watchdog only (treats the
+symptom, leaves production queries hangable; a restarted canonical run re-spends the full
+API budget); longer timeouts (the slowest healthy generation call is well under 60s — 120s
+already carries ample headroom).
