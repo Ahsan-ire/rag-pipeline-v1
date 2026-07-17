@@ -1,15 +1,34 @@
 # Legal RAG Pipeline — a first-line sweep of the conveyancing handbook
 
+[![CI](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml)
+&nbsp; **[▶ Live interactive demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — no install, runs in the browser.
+
 Ask a procedure question in plain English. Get a grounded answer with **verified
 chapter/paragraph/page citations** — or an honest refusal. Then open the handbook at the cited
 page and reach your own conclusion.
 
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
-first-line sweep our team runs before diving into an ~800-page manual. The answer orients you; the
+first-line sweep before diving into an ~800-page manual. The answer orients you; the
 **citation is the product** — every one is machine-verified against the retrieved text before you
 see it, so `[Handbook, para 6.3.2, p.214]` reliably lands you on the paragraph that actually says
 it. An answer that cannot be verified is **withheld, not shown** — the system fails closed rather
 than guessing confidently.
+
+## Why I built this, and how it's used
+
+I work with a small conveyancing team, and the reference for almost everything is one ~800-page
+handbook. Finding the right paragraph is rarely hard law — it's paging. A general-purpose AI
+answers instantly but leaves you wondering whether to trust it, which in legal work means you end
+up checking the book anyway. This is the middle path: an answer that arrives already pinned to
+chapter, paragraph and page, so the check takes seconds instead of a search.
+
+It has been in real use since mid-July 2026 — me mainly, colleagues occasionally on their own
+questions — always on real work questions, never as the final word. Two things in this repo came
+directly out of that use rather than out of my head: the "realistic" evaluation slice is built
+from colleagues' actual phrasing, which failed badly against a system that scored perfectly on my
+own polished test questions (see the evaluation section), and the Phase 14 comparison-question
+work started as one colleague's complaint about one bad answer. I haven't measured time saved and
+won't invent a number; what I can say is that the failures users found became the roadmap.
 
 ## The user journey
 
@@ -97,11 +116,14 @@ Why each step exists, in one line each:
    under an explicit caveat, or an exact refusal — never a shrug dressed up as an answer.
 6. **The grounding gate** — the step that makes the citations trustworthy: every `(paragraph, page)`
    the model cites is checked against the chunks actually retrieved. Invented citations don't pass.
+   To be precise about what that proves: the locator resolves to real retrieved text. It does not
+   prove the passage legally supports the claim — that judgment is yours, which is why every answer
+   ends at the book.
 
 ## Try it — interactive demo, no install
 
-**[`Demo/demo.html`](Demo/demo.html)** is a self-contained interactive walkthrough — open it in any
-browser (download the file, or clone and double-click). It runs the pipeline's logic as a guided
+**[Open the live demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — or open
+[`Demo/demo.html`](Demo/demo.html) locally in any browser. It runs the pipeline's logic as a guided
 simulation over the **wholly synthetic sample handbook** (a fictional jurisdiction — no real corpus
 text), and shows all four outcomes above, including watching the gate catch a fabricated citation.
 
@@ -111,7 +133,7 @@ The real corpus is **copyrighted and never in this repo**, so the quickstart run
 synthetic sample handbook (`scripts/sample_corpus.py`) that exercises the identical chunker grammar:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate   # tested on Python 3.12
 pip install -r requirements.txt          # installs torch/sentence-transformers (heavy, one-time)
 python -m pytest tests/ -q               # full suite, offline, no key
 
@@ -135,10 +157,12 @@ python -m src.pipeline index ./data/your-handbook.pdf --type handbook   # --rese
 
 ## Does it actually work? (evaluation at a glance)
 
-- **Held-out headline: strict hit@6 = 20/20 = 1.000** (95% CI 0.839–1.000) — on questions authored
-  *after* the retrieval constants were frozen and never used for tuning. That is raw hybrid
-  retrieval; the shipped hybrid+rewrite config scores 0.950 (19/20) on the same set — one
-  expansion-sample flip, disclosed in [`ABOUT.md`](ABOUT.md).
+- **Shipped config, held-out: strict hit@6 = 19/20 = 0.950** — the production pipeline (hybrid
+  retrieval + query expansion), measured on questions authored *after* the retrieval constants
+  were frozen and never used for tuning. The raw-hybrid retrieval core scores 20/20 = 1.000
+  (95% Wilson CI 0.839–1.000) on the same set; the one-question gap is a sampled-expansion flip,
+  disclosed per-question in [`ABOUT.md`](ABOUT.md). With n=20, read both as indicative, not a
+  benchmark.
 - **Citation integrity: 519/519 citations grounded** across all three eval sets — the number that
   matters most for the "citations are the product" claim.
 - **The honest number: 0.471 strict hit@6 on messy real-staff phrasing** — a deliberately hard
