@@ -16,15 +16,15 @@ than guessing confidently.
 
 ## Why I built this, and how it's used
 
-I work with a small conveyancing team, and the reference for almost everything is one ~800-page
-handbook. Finding the right paragraph is rarely hard law — it's paging. A general-purpose AI
+I work with a small legal team specialising in conveyancing, and the reference for almost
+everything is one ~800-page handbook. Finding the right paragraph is rarely hard law — it's paging. A general-purpose AI
 answers instantly but leaves you wondering whether to trust it, which in legal work means you end
 up checking the book anyway. This is the middle path: an answer that arrives already pinned to
 chapter, paragraph and page, so the check takes seconds instead of a search.
 
 It has been in real use since mid-July 2026 — me mainly, colleagues occasionally on their own
 questions — always on real work questions, never as the final word. Two things in this repo came
-directly out of that use rather than out of my head: the "realistic" evaluation slice is built
+directly out of that use: the "realistic" evaluation slice is built
 from colleagues' actual phrasing, which failed badly against a system that scored perfectly on my
 own polished test questions (see the evaluation section), and the Phase 14 comparison-question
 work started as one colleague's complaint about one bad answer. I haven't measured time saved and
