@@ -1,5 +1,12 @@
 # v1 vs v2 — same-set, same-index head-to-head
 
+> **Superseded (16 Jul 2026):** this document's recommendation ("submit v2") predates Phase 13.
+> The 14 Jul field testing found natural staff phrasing was blanket-refused at the `v2.0` tag;
+> Phase 13 (query expansion, weighted multi-query fusion, the graded answer policy, the realistic
+> eval slice — D43–D47) fixed that and is merged to `main`. The submission artifact is current
+> `main` HEAD, not the `v2.0` tag. This document remains the accurate record of the v1-vs-v2
+> decision it describes (D42).
+
 The submission decision between `v1.0-baseline` and v2 (D42) is grounded in this comparison.
 Everything in the two **Head-to-head** tables is a same-set, same-basis measurement; everything
 else is labeled for what it is.

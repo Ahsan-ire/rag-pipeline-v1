@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Legal RAG Pipeline — Interactive Demo</title>
+<style>
+  /* ---------- theme ---------- */
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1a2233; --muted: #5b6575;
+    --line: #e2e6ec; --accent: #1f5eff; --accent-soft: #eaf0ff;
+    --ok: #157347; --ok-soft: #e6f4ec;
+    --warn: #9a6700; --warn-soft: #fff6e0;
+    --bad: #b42318; --bad-soft: #fdebe9;
+    --refuse: #4a4f5a; --refuse-soft: #eef0f3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141c; --panel: #171e29; --ink: #e8ecf3; --muted: #98a3b3;
+      --line: #2a3342; --accent: #6c9bff; --accent-soft: #1b2740;
+      --ok: #4ade80; --ok-soft: #12291c;
+      --warn: #fbbf24; --warn-soft: #2e2510;
+      --bad: #f87171; --bad-soft: #331512;
+      --refuse: #aab2bf; --refuse-soft: #202634;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 28px 18px 80px; }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .notice {
+    background: var(--accent-soft); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 14px; font-size: .88rem; margin-bottom: 24px;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-bottom: 18px;
+  }
+  /* ---------- question picker ---------- */
+  .qgrid { display: grid; gap: 10px; }
+  @media (min-width: 640px) { .qgrid { grid-template-columns: 1fr 1fr; } }
+  .qbtn {
+    text-align: left; padding: 12px 14px; border-radius: 10px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+    font: inherit; font-size: .93rem; transition: border-color .15s, background .15s;
+  }
+  .qbtn:hover { border-color: var(--accent); }
+  .qbtn.active { border-color: var(--accent); background: var(--accent-soft); }
+  .qbtn .tag { display: block; font-size: .74rem; color: var(--muted); margin-top: 4px; }
+  /* ---------- pipeline stepper ---------- */
+  .steps { display: none; }
+  .steps.visible { display: block; }
+  .step {
+    border-left: 3px solid var(--line); margin: 0 0 0 8px; padding: 4px 0 18px 18px;
+    position: relative; opacity: .25; transition: opacity .4s;
+  }
+  .step.on { opacity: 1; }
+  .step:last-child { padding-bottom: 4px; }
+  .step::before {
+    content: attr(data-n); position: absolute; left: -14px; top: 2px;
+    width: 24px; height: 24px; border-radius: 50%; background: var(--panel);
+    border: 2px solid var(--line); color: var(--muted);
+    font-size: .75rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  }
+  .step.on::before { border-color: var(--accent); color: var(--accent); }
+  .step h3 { margin: 0 0 8px; font-size: .95rem; }
+  .step .why { font-size: .82rem; color: var(--muted); margin: 6px 0 0; }
+  .chip {
+    display: inline-block; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 11px; margin: 2px 4px 2px 0; font-size: .82rem;
+  }
+  /* retrieval columns */
+  .arms { display: grid; gap: 10px; margin-top: 6px; }
+  @media (min-width: 640px) { .arms { grid-template-columns: 1fr 1fr; } }
+  .arm { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .arm h4 { margin: 0 0 6px; font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .arm ol { margin: 0; padding-left: 20px; font-size: .84rem; }
+  .arm li { margin: 2px 0; }
+  .fused { margin-top: 10px; }
+  .hit {
+    display: flex; justify-content: space-between; gap: 10px; align-items: baseline;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 12px; margin: 6px 0; font-size: .86rem;
+  }
+  .hit .loc { font-family: var(--mono); font-size: .8rem; color: var(--accent); white-space: nowrap; }
+  /* answer + citations */
+  .answer {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; font-size: .92rem;
+  }
+  .answer .cit { font-family: var(--mono); font-size: .78rem; color: var(--accent); white-space: nowrap; }
+  .checks { margin-top: 10px; }
+  .check {
+    display: flex; align-items: center; gap: 10px; font-size: .86rem;
+    padding: 6px 10px; border-radius: 8px; margin: 5px 0;
+    border: 1px solid var(--line); background: var(--bg);
+    opacity: 0; transform: translateY(4px); transition: opacity .35s, transform .35s;
+  }
+  .check.shown { opacity: 1; transform: none; }
+  .check .mark { font-weight: 700; width: 20px; text-align: center; }
+  .check.pass .mark { color: var(--ok); }
+  .check.fail .mark { color: var(--bad); }
+  .check .loc { font-family: var(--mono); font-size: .8rem; }
+  /* verdict */
+  .verdict {
+    border-radius: 10px; padding: 14px 16px; font-size: .95rem; margin-top: 4px;
+    border: 1px solid var(--line); display: none;
+  }
+  .verdict.shown { display: block; animation: pop .35s ease; }
+  @keyframes pop { from { transform: scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+  .verdict.v-ok      { background: var(--ok-soft); }
+  .verdict.v-warn    { background: var(--warn-soft); }
+  .verdict.v-bad     { background: var(--bad-soft); }
+  .verdict.v-refuse  { background: var(--refuse-soft); }
+  .verdict b.t-ok { color: var(--ok); } .verdict b.t-warn { color: var(--warn); }
+  .verdict b.t-bad { color: var(--bad); } .verdict b.t-refuse { color: var(--refuse); }
+  .verdict .human { margin-top: 8px; font-size: .85rem; color: var(--muted); }
+  .replay { margin-top: 14px; }
+  .replay button {
+    font: inherit; font-size: .85rem; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  .skipnote { font-size: .8rem; color: var(--muted); margin-top: 8px; }
+  footer { font-size: .8rem; color: var(--muted); margin-top: 30px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Legal RAG Pipeline — interactive demo</h1>
+  <p class="sub">A first-line sweep of a conveyancing handbook: grounded answers whose citations are
+  <b>machine-verified before you see them</b> — so the citation reliably leads you to the exact page
+  to read and judge for yourself.</p>
+
+  <div class="notice">
+    <b>What this is:</b> a guided <i>simulation</i> of the real pipeline's logic, running entirely in
+    this page. All handbook content here comes from the project's <b>wholly synthetic sample
+    handbook</b> (the fictional jurisdiction of <i>Erewhon</i>) — no real, copyrighted handbook text
+    appears anywhere in this demo or this repository. The real pipeline runs these exact stages in
+    Python; see the README quickstart to run it yourself.
+  </div>
+
+  <div class="panel">
+    <h2>1 &nbsp;Pick a question a colleague might ask</h2>
+    <div class="qgrid" id="qgrid"></div>
+  </div>
+
+  <div class="panel steps" id="steps">
+    <h2>2 &nbsp;Watch the pipeline handle it</h2>
+
+    <div class="step" data-n="1" id="st-rewrite">
+      <h3>Query expansion <span style="color:var(--muted);font-weight:400">(claude-haiku)</span></h3>
+      <div id="rewrites"></div>
+      <p class="why">Staff phrase questions colloquially; the handbook doesn't. Three quick rewrites
+      bridge the vocabulary gap. The original question always keeps the loudest vote in retrieval.</p>
+    </div>
+
+    <div class="step" data-n="2" id="st-retrieve">
+      <h3>Hybrid retrieval — keyword + semantic, fused</h3>
+      <div class="arms">
+        <div class="arm"><h4>🔤 BM25 keyword arm</h4><ol id="bm25"></ol></div>
+        <div class="arm"><h4>🧭 Vector (semantic) arm</h4><ol id="vec"></ol></div>
+      </div>
+      <div class="fused" id="fused"></div>
+      <p class="why">Legal questions hinge on exact tokens ("Form VX-9", "s.72"); keyword search
+      catches what semantic search fuzzes past — and vice versa. Reciprocal-rank fusion merges both
+      rankings.</p>
+    </div>
+
+    <div class="step" data-n="3" id="st-generate">
+      <h3>Answer drafting <span style="color:var(--muted);font-weight:400">(claude-sonnet)</span></h3>
+      <div class="answer" id="draft"></div>
+      <p class="why">The model must answer from the retrieved extracts only, citing paragraph and
+      page for every statement — or refuse with one exact sentence.</p>
+    </div>
+
+    <div class="step" data-n="4" id="st-gate">
+      <h3>🛡️ The grounding gate — every citation checked</h3>
+      <div class="checks" id="checks"></div>
+      <p class="why">Each cited (paragraph, page) must match a chunk that was <i>actually
+      retrieved</i>. This is the anti-hallucination guarantee: an invented locator has nothing to
+      match, so it cannot pass.</p>
+    </div>
+
+    <div class="verdict" id="verdict"></div>
+    <div class="replay"><button id="replay">▶ Replay this scenario</button></div>
+    <p class="skipnote" id="skipnote"></p>
+  </div>
+
+  <footer>
+    Built for the Claude Corps Fellowship · The four outcomes shown here (verified / partial /
+    withheld / refusal) are the real system's complete output vocabulary — it has no path that
+    shows an unchecked answer. Source &amp; evaluation: see <a href="../README.md">README</a> and
+    <a href="../ABOUT.md">ABOUT</a>.
+  </footer>
+</div>
+
+<script>
+/* All content below is from the project's synthetic "Erewhon" sample handbook
+   (scripts/sample_corpus.py) — fictional registers, forms, and covenants. */
+
+const SCENARIOS = [
+  {
+    id: "verified",
+    label: "How is a Windlass Charge created and does it bind a buyer?",
+    tag: "✅ expected: verified answer",
+    rewrites: [
+      "Creation and registration of a Windlass Charge against the folio",
+      "Windlass Charge registration folio priority purchaser",
+      "What are the steps to set up a Windlass Charge on registered land?"
+    ],
+    bm25: ["para 3.2 — The Windlass Charge (p.12)", "para 3.2.1 — Fenwick Priority (p.13)", "para 3.3 — Cobbleworth Discharge (p.13)"],
+    vec:  ["para 3.2 — The Windlass Charge (p.12)", "para 3.1 — The Larkspur Mortgage (p.11)", "para 3.2.1 — Fenwick Priority (p.13)"],
+    fused: [
+      { loc: "para 3.2, p.12",  head: "The Windlass Charge", note: "top of both arms" },
+      { loc: "para 3.2.1, p.13", head: "Fenwick Priority Between Charges" },
+      { loc: "para 3.1, p.11",  head: "The Larkspur Mortgage" }
+    ],
+    draft: `A Windlass Charge is created and registered against the folio so that it binds a later
+      purchaser of the land <span class="cit">[Handbook, para 3.2, p.12]</span>. Where several
+      Windlass Charges compete, Fenwick Priority ranks them by the order in which they are entered
+      on the folio <span class="cit">[Handbook, para 3.2.1, p.13]</span>.`,
+    checks: [
+      { loc: "para 3.2, p.12",   pass: true,  why: "retrieved chunk covers para 3.2 on page 12" },
+      { loc: "para 3.2.1, p.13", pass: true,  why: "retrieved chunk covers para 3.2.1 on page 13" }
+    ],
+    outcome: { cls: "v-ok", tcls: "t-ok", title: "✅ CITATIONS VERIFIED — answer shown",
+      body: "Every citation matched a retrieved chunk. The answer is displayed with its citations.",
+      human: "Your next step as the human: open the handbook at p.12, para 3.2, read the actual text, and reach your own conclusion. The tool got you there in seconds instead of a manual hunt." }
+  },
+  {
+    id: "partial",
+    label: "Where is the purchaser's deposit held before completion?",
+    tag: "⚠️ expected: partial verification",
+    rewrites: [
+      "Bramblewick Deposit stakeholder escrow pending completion",
+      "deposit escrow release completion vendor",
+      "Who holds the buyer's deposit money until the sale completes?"
+    ],
+    bm25: ["para 2.2 — The Bramblewick Deposit (p.7)", "para 2.2.1 — The Bramblewick Escrow (p.8)", "para 2.1 — The Thornwood Contract (p.6)"],
+    vec:  ["para 2.2.1 — The Bramblewick Escrow (p.8)", "para 2.2 — The Bramblewick Deposit (p.7)", "para 2.4 — Peppercorn Completion (p.10)"],
+    fused: [
+      { loc: "para 2.2, p.7",   head: "The Bramblewick Deposit", note: "top of both arms" },
+      { loc: "para 2.2.1, p.8", head: "The Bramblewick Escrow" },
+      { loc: "para 2.4, p.10",  head: "Peppercorn Completion" }
+    ],
+    draft: `The purchaser pays the Bramblewick Deposit on exchange as security for completion
+      <span class="cit">[Handbook, para 2.2, p.7]</span>. It is held in the Bramblewick Escrow, a
+      stakeholder account, pending completion or lawful forfeiture
+      <span class="cit">[Handbook, para 2.2.1, p.8]</span>. Release to the vendor requires the
+      Halcyon Release condition <span class="cit">[Handbook, para 2.2.1.1, p.9]</span>.`,
+    checks: [
+      { loc: "para 2.2, p.7",     pass: true,  why: "retrieved chunk covers para 2.2 on page 7" },
+      { loc: "para 2.2.1, p.8",   pass: true,  why: "retrieved chunk covers para 2.2.1 on page 8" },
+      { loc: "para 2.2.1.1, p.9", pass: false, why: "the section exists — but on page 8; no retrieved chunk covers it on page 9" }
+    ],
+    outcome: { cls: "v-warn", tcls: "t-warn", title: "⚠️ PARTIALLY VERIFIED — answer shown with a named warning",
+      body: "2 of 3 citations verified. The answer is shown, and the warning names the exact citation that could not be verified: <span style=\"font-family:var(--mono);font-size:.85em\">para 2.2.1.1, p.9</span> — check before relying on that statement.",
+      human: "The system never silently trims the doubtful part — it shows you precisely which citation to double-check. Here the model mis-stated a page number by one; the gate caught it." }
+  },
+  {
+    id: "blocked",
+    label: "Demo: what happens when the AI invents a citation?",
+    tag: "⛔ expected: answer withheld",
+    rewrites: [
+      "annual review requirements Verdigris Register maintenance",
+      "register audit annual certification folio",
+      "Is there a yearly audit of the register?"
+    ],
+    bm25: ["para 1.1 — The Verdigris Register (pp.2–3)", "para 1.2 — The Meridian Folio (p.3)", "para 1.3 — The Sallowfield Caution (p.4)"],
+    vec:  ["para 1.1 — The Verdigris Register (pp.2–3)", "para 1.3.1 — Renewal Endorsement (p.4)", "para 1.2 — The Meridian Folio (p.3)"],
+    fused: [
+      { loc: "para 1.1, pp.2–3", head: "The Verdigris Register", note: "top of both arms" },
+      { loc: "para 1.2, p.3",    head: "The Meridian Folio" },
+      { loc: "para 1.3, p.4",    head: "The Sallowfield Caution" }
+    ],
+    draft: `<i>(Simulated hallucination)</i> The Verdigris Register must be audited and re-certified
+      annually by the Registrar <span class="cit">[Handbook, para 9.9, p.99]</span>.`,
+    checks: [
+      { loc: "para 9.9, p.99", pass: false, why: "no retrieved chunk covers para 9.9 — this paragraph was never retrieved (it doesn't exist)" }
+    ],
+    outcome: { cls: "v-bad", tcls: "t-bad", title: "⛔ BLOCKED — CITATIONS UNVERIFIED, answer withheld",
+      body: "Zero citations verified, so the draft is <b>not shown at all</b>. You instead see the retrieved source headers (sections + pages only), a hint to rephrase, and an explicit flag to reveal the unverified draft if you insist.",
+      human: "This is the fail-closed guarantee: a confident-sounding answer with a fabricated citation never reaches a colleague who might act on it. The gate is code, not a promise in a prompt." }
+  },
+  {
+    id: "refusal",
+    label: "What is the capital gains tax rate?",
+    tag: "🚫 expected: honest refusal",
+    rewrites: [
+      "capital gains tax rate on disposal of property",
+      "CGT rate percentage disposal",
+      "How much capital gains tax is charged?"
+    ],
+    bm25: ["para 2.4 — Peppercorn Completion (p.10)", "APPENDIX 3.1 — Blackthorn Conditions (p.14)", "para 2.1 — The Thornwood Contract (p.6)"],
+    vec:  ["APPENDIX 3.1 — Blackthorn Conditions (p.14)", "para 2.4 — Peppercorn Completion (p.10)", "para 2.2 — The Bramblewick Deposit (p.7)"],
+    fused: [
+      { loc: "para 2.4, p.10",      head: "Peppercorn Completion", note: "weak match — money changes hands here" },
+      { loc: "APPENDIX 3.1, p.14",  head: "Blackthorn Conditions of Sale" },
+      { loc: "para 2.1, p.6",       head: "The Thornwood Contract" }
+    ],
+    draft: `not covered in the source material`,
+    checks: [],
+    outcome: { cls: "v-refuse", tcls: "t-refuse", title: "🚫 REFUSAL — the exact sentence, nothing more",
+      body: "The question's subject is tax law, not conveyancing procedure. Even though retrieval surfaced <i>something</i> (money-adjacent sections), the model is instructed to classify the question's own subject first and refuse with one exact, machine-checkable sentence.",
+      human: "An honest 'not here' beats a plausible guess. The refusal sentence is a constant the evaluation harness string-matches — so refusal behaviour is measured, not vibes." }
+  }
+];
+
+const $ = (id) => document.getElementById(id);
+let timers = [];
+let current = null;
+
+function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+function later(fn, ms) { timers.push(setTimeout(fn, ms)); }
+
+function renderPicker() {
+  SCENARIOS.forEach((s) => {
+    const b = document.createElement("button");
+    b.className = "qbtn"; b.id = "q-" + s.id;
+    b.innerHTML = `“${s.label}”<span class="tag">${s.tag}</span>`;
+    b.onclick = () => run(s);
+    $("qgrid").appendChild(b);
+  });
+}
+
+function run(s) {
+  current = s;
+  clearTimers();
+  document.querySelectorAll(".qbtn").forEach(b => b.classList.toggle("active", b.id === "q-" + s.id));
+  $("steps").classList.add("visible");
+  ["st-rewrite","st-retrieve","st-generate","st-gate"].forEach(id => $(id).classList.remove("on"));
+  $("verdict").className = "verdict"; $("verdict").innerHTML = "";
+  $("skipnote").textContent = "";
+
+  // Step 1 — rewrites
+  later(() => {
+    $("st-rewrite").classList.add("on");
+    $("rewrites").innerHTML = s.rewrites.map(r => `<span class="chip">${r}</span>`).join("");
+  }, 150);
+
+  // Step 2 — retrieval
+  later(() => {
+    $("st-retrieve").classList.add("on");
+    $("bm25").innerHTML = s.bm25.map(x => `<li>${x}</li>`).join("");
+    $("vec").innerHTML  = s.vec.map(x => `<li>${x}</li>`).join("");
+    $("fused").innerHTML =
+      `<h4 style="margin:8px 0 2px;font-size:.8rem;color:var(--muted);font-weight:600">⚖️ Fused top results (reciprocal rank fusion)</h4>` +
+      s.fused.map(f =>
+        `<div class="hit"><span>${f.head}${f.note ? ` <span style="color:var(--muted);font-size:.78rem">· ${f.note}</span>` : ""}</span><span class="loc">${f.loc}</span></div>`
+      ).join("");
+  }, 900);
+
+  // Step 3 — draft
+  later(() => {
+    $("st-generate").classList.add("on");
+    $("draft").innerHTML = s.draft;
+  }, 1800);
+
+  // Step 4 — gate
+  later(() => {
+    $("st-gate").classList.add("on");
+    if (s.checks.length === 0) {
+      $("checks").innerHTML =
+        `<div class="check shown"><span class="mark">—</span><span>The answer is the exact refusal sentence: the gate classifies it as a <b>REFUSAL</b>; there are no citations to check.</span></div>`;
+    } else {
+      $("checks").innerHTML = s.checks.map(c =>
+        `<div class="check ${c.pass ? "pass" : "fail"}"><span class="mark">${c.pass ? "✓" : "✗"}</span>` +
+        `<span><span class="loc">${c.loc}</span> — ${c.why}</span></div>`
+      ).join("");
+      document.querySelectorAll("#checks .check").forEach((el, i) =>
+        later(() => el.classList.add("shown"), 350 * (i + 1)));
+    }
+  }, 2600);
+
+  // Verdict
+  const verdictDelay = 2600 + Math.max(1, s.checks.length) * 350 + 500;
+  later(() => {
+    const o = s.outcome;
+    const v = $("verdict");
+    v.className = "verdict shown " + o.cls;
+    v.innerHTML = `<b class="${o.tcls}">${o.title}</b><div style="margin-top:6px">${o.body}</div><div class="human">👤 ${o.human}</div>`;
+    v.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    $("skipnote").textContent = "Try the other scenarios to see all four outcomes — the real system has no fifth path that shows an unchecked answer.";
+  }, verdictDelay);
+}
+
+$("replay").onclick = () => { if (current) run(current); };
+renderPicker();
+</script>
+</body>
+</html>
