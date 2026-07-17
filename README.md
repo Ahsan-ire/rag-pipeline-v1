@@ -54,6 +54,10 @@ Four possible outcomes, never a confident unchecked guess:
 | ⛔ **Withheld** | No citation could be verified | The draft is blocked; retrieved sources shown so you can still look |
 | 🚫 **Refusal** | The question is outside the corpus | The exact sentence "not covered in the source material" |
 
+(These are the grounding **gate's** four outcomes, which the demo below illustrates. The answer
+*text* itself is separately graded — direct answer, partial answer naming its gaps, closest-related
+guidance under an explicit caveat, or the refusal — detailed in [`ABOUT.md`](ABOUT.md).)
+
 ## How it works, step by step
 
 ```mermaid
@@ -125,20 +129,22 @@ and index your own handbook:
 
 ```bash
 python -m src.pipeline query "How is a Windlass Charge created?" --persist-dir sample_chroma_db --top-k 6
-python -m src.pipeline query "What is the capital gains tax rate?" --persist-dir sample_chroma_db   # → refusal
+python -m src.pipeline query "What are the requirements for making a valid will?" --persist-dir sample_chroma_db   # → refusal (succession law, not conveyancing)
 python -m src.pipeline index ./data/your-handbook.pdf --type handbook   # --reset to rebuild
 ```
 
 ## Does it actually work? (evaluation at a glance)
 
 - **Held-out headline: strict hit@6 = 20/20 = 1.000** (95% CI 0.839–1.000) — on questions authored
-  *after* the retrieval constants were frozen and never used for tuning.
+  *after* the retrieval constants were frozen and never used for tuning. That is raw hybrid
+  retrieval; the shipped hybrid+rewrite config scores 0.950 (19/20) on the same set — one
+  expansion-sample flip, disclosed in [`ABOUT.md`](ABOUT.md).
 - **Citation integrity: 519/519 citations grounded** across all three eval sets — the number that
   matters most for the "citations are the product" claim.
 - **The honest number: 0.471 strict hit@6 on messy real-staff phrasing** — a deliberately hard
-  "realistic" slice built from real field-test failures (up from the 0.412 baseline after query
-  expansion gained the intent reframe; the one target question it still misses is documented in
-  D50, not hidden — token-aware chunking is the next lever).
+  "realistic" slice built from real field-test failures (up from 0.353 raw hybrid in the
+  same run — the Phase 13 canonical run scored 0.412 for this config; the one target question it
+  still misses is documented in D50, not hidden — token-aware chunking is the next lever).
 - **Comparison questions get real comparisons** — both field-test comparison questions pass a
   seven-item manual rubric ([`docs/phase14-rubric-spotchecks.md`](docs/phase14-rubric-spotchecks.md)).
 

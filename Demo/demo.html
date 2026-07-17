@@ -195,8 +195,9 @@
 
   <footer>
     Built for the Claude Corps Fellowship · The four outcomes shown here (verified / partial /
-    withheld / refusal) are the real system's complete output vocabulary — it has no path that
-    shows an unchecked answer. Source &amp; evaluation: see <a href="../README.md">README</a> and
+    withheld / refusal) are the grounding gate's complete output vocabulary — it has no path that
+    shows an unchecked answer. (The answer text itself is separately graded — direct / partial /
+    caveat / refusal — see ABOUT.) Source &amp; evaluation: see <a href="../README.md">README</a> and
     <a href="../ABOUT.md">ABOUT</a>.
   </footer>
 </div>
@@ -291,24 +292,24 @@ const SCENARIOS = [
   },
   {
     id: "refusal",
-    label: "What is the capital gains tax rate?",
+    label: "What are the requirements for making a valid will?",
     tag: "🚫 expected: honest refusal",
     rewrites: [
-      "capital gains tax rate on disposal of property",
-      "CGT rate percentage disposal",
-      "How much capital gains tax is charged?"
+      "requirements for a valid will, testator capacity and witnessing",
+      "valid will execution requirements witnesses",
+      "How do you make a legally valid will?"
     ],
     bm25: ["para 2.4 — Peppercorn Completion (p.10)", "APPENDIX 3.1 — Blackthorn Conditions (p.14)", "para 2.1 — The Thornwood Contract (p.6)"],
     vec:  ["APPENDIX 3.1 — Blackthorn Conditions (p.14)", "para 2.4 — Peppercorn Completion (p.10)", "para 2.2 — The Bramblewick Deposit (p.7)"],
     fused: [
-      { loc: "para 2.4, p.10",      head: "Peppercorn Completion", note: "weak match — money changes hands here" },
+      { loc: "para 2.4, p.10",      head: "Peppercorn Completion", note: "weak match — property-transfer language overlaps" },
       { loc: "APPENDIX 3.1, p.14",  head: "Blackthorn Conditions of Sale" },
       { loc: "para 2.1, p.6",       head: "The Thornwood Contract" }
     ],
     draft: `not covered in the source material`,
     checks: [],
     outcome: { cls: "v-refuse", tcls: "t-refuse", title: "🚫 REFUSAL — the exact sentence, nothing more",
-      body: "The question's subject is tax law, not conveyancing procedure. Even though retrieval surfaced <i>something</i> (money-adjacent sections), the model is instructed to classify the question's own subject first and refuse with one exact, machine-checkable sentence.",
+      body: "The question's subject is succession law (making a will), not conveyancing procedure. Even though retrieval surfaced <i>something</i> (property-transfer-adjacent sections), the model is instructed to classify the question's own subject first and refuse with one exact, machine-checkable sentence.",
       human: "An honest 'not here' beats a plausible guess. The refusal sentence is a constant the evaluation harness string-matches — so refusal behaviour is measured, not vibes." }
   }
 ];
