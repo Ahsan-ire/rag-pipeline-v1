@@ -34,33 +34,14 @@ won't invent a number; what I can say is that the failures users found became th
 
 ```mermaid
 flowchart LR
-    subgraph you["👤 You"]
-        Q["Ask in plain English:<br/><i>'How is the deposit held<br/>before completion?'</i>"]
-    end
-
-    subgraph engine["⚙️ RAG engine (local index + Claude)"]
-        direction TB
-        R["Finds the relevant<br/>handbook paragraphs"]
-        D["Drafts an answer,<br/>citing para + page"]
-        G{"🛡️ Grounding gate:<br/>every citation checked against<br/>the retrieved text"}
-        R --> D --> G
-    end
-
-    subgraph out["📄 What you get"]
-        A["✅ Answer + verified citations"]
-        W["⚠️ Answer + warning naming any<br/>citation it could not verify"]
-        B["⛔ Answer withheld<br/>(sources still listed)"]
-        REF["🚫 Honest refusal:<br/><i>'not covered in the source material'</i>"]
-    end
-
-    book["📖 You open the handbook at the<br/>cited page and verify it yourself"]
-
-    Q --> engine
-    G -->|all verified| A
-    G -->|partly verified| W
-    G -->|none verified| B
-    engine -->|question outside the corpus| REF
-    A --> book
+    Q["👤 Your question,<br/>in plain English"] --> R["Retrieve relevant<br/>paragraphs"]
+    R --> D["Draft answer citing<br/>para + page"]
+    D --> G{"🛡️ Grounding gate:<br/>check every citation"}
+    G -->|all verified| A["✅ Answer +<br/>verified citations"]
+    G -->|partly verified| W["⚠️ Answer + warning<br/>naming unverified"]
+    G -->|none verified| B["⛔ Answer withheld,<br/>sources listed"]
+    G -->|outside corpus| REF["🚫 Exact refusal<br/>sentence"]
+    A --> book["📖 You verify at the<br/>cited page"]
     W --> book
 ```
 
@@ -81,24 +62,24 @@ guidance under an explicit caveat, or the refusal — detailed in [`ABOUT.md`](A
 
 ```mermaid
 flowchart TB
-    subgraph index["1️⃣ Index once (offline, no API key)"]
+    subgraph index["1 — Index once, offline"]
         direction LR
-        PDF["📕 Handbook PDF<br/>(stays on your machine)"] --> ING["Extract + clean OCR text,<br/>keep page offsets"]
-        ING --> CHUNK["Cut at the book's own structure:<br/>one chunk per numbered paragraph<br/>(CHAPTER → 3.2 → 3.2.1)"]
-        CHUNK --> IDX["Dual index:<br/>🔤 BM25 keywords + 🧭 MiniLM vectors"]
+        PDF["📕 Handbook PDF,<br/>local only"] --> ING["Extract + clean<br/>OCR text"]
+        ING --> CHUNK["Chunk by paragraph<br/>numbering"]
+        CHUNK --> IDX["Dual index:<br/>BM25 + vectors"]
     end
 
-    subgraph query["2️⃣ Every question"]
+    subgraph query["2 — Every question"]
         direction TB
-        UQ["Your question"] --> RW["Haiku expands it: 3 rewrites<br/>(handbook vocabulary, keywords, paraphrase)<br/>+ an intent-level reframe"]
-        RW --> HR["Hybrid retrieval: keyword + semantic<br/>search per phrasing, fused by<br/>weighted reciprocal rank"]
-        HR --> GEN["Claude Sonnet drafts a graded answer<br/>citing [Handbook, para 3.2.1, p.87]"]
-        GEN --> GATE{"🛡️ Gate: does each cited<br/>paragraph + page match a<br/>chunk that was retrieved?"}
-        GATE --> OUT["Answer / warning / withheld / refusal"]
-        OUT --> LOG["📝 Audit log<br/>(hashes only — never query,<br/>answer, or handbook text)"]
+        UQ["Your question"] --> RW["Haiku: 3 rewrites +<br/>intent reframe"]
+        RW --> HR["Hybrid retrieval,<br/>weighted rank fusion"]
+        HR --> GEN["Sonnet drafts answer<br/>with para + page cites"]
+        GEN --> GATE{"🛡️ Citation gate"}
+        GATE --> OUT["Answer / warning /<br/>withheld / refusal"]
+        OUT --> LOG["📝 Audit log,<br/>hashes only"]
     end
 
-    index -.->|local index| HR
+    IDX -.->|local index| HR
 ```
 
 Why each step exists, in one line each:
