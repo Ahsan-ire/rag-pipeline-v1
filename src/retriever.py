@@ -24,9 +24,15 @@ RRF_K = 60
 # 3 rewrites × 2 arms = 6 lists × 0.5 = 3.0 outvoted the original's 2.0 (D43's
 # stated invariant). The per-budget form closes that hole for every A and N.
 REWRITE_LIST_WEIGHT = 0.5
-# Per-list weight for the INTENT reframe (Phase 14, D50). PROVISIONAL — the
-# offline W sweep (WS5) picks the final value; retrieve() uses this constant
-# whenever the caller passes no explicit ``intent_weight``.
+# Per-list weight for the INTENT reframe (Phase 14, D50), set by the 17 Jul
+# W sweep (cached-expansion protocol, W ∈ {0, 0.25, 0.5}): 0.5 rescued the S5
+# comparison seed but relegated one golden control (expected 15.1, rank 3→7),
+# failing the zero-golden-regression selection constraint; 0.25 showed zero
+# per-question flips in either direction. Selection rule therefore chose NO
+# rescuing W (negative result recorded in D50); 0.25 ships as the smallest
+# studied invariant-preserving weight with zero measured cost, keeping the
+# intent arm live for the Phase 15 fusion revisit. retrieve() uses this
+# constant whenever the caller passes no explicit ``intent_weight``.
 #
 # Dominance invariant (equal-rank, hybrid): the original query's two-arm
 # agreement scores 2/(RRF_K+1); the worst-case CORRELATED noise a rewrite
@@ -39,7 +45,7 @@ REWRITE_LIST_WEIGHT = 0.5
 # silently applied. (The rank-asymmetry caveat — noise at rank 1 can still beat
 # original agreement at rank 12, (1+2W)/61 vs 2/72 — is inherent to RRF and
 # true even at W=0 for the surface bundle; it is not introduced by the intent.)
-INTENT_LIST_WEIGHT = 0.5
+INTENT_LIST_WEIGHT = 0.25
 CANDIDATE_POOL = 12
 DEFAULT_TOP_K = 6  # plan line 67: fuse ~12 per arm, return top-k (default 6)
 

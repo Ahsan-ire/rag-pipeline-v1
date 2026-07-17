@@ -960,8 +960,9 @@ class TestIntentReframe:
         assert by_id["noise"] == pytest.approx(0.5 / (RRF_K + 1))  # one list, not two
 
     def test_intent_weight_none_uses_module_constant(self):
-        """Omitting intent_weight uses INTENT_LIST_WEIGHT (the provisional 0.5),
-        so a vector-mode intent list scores INTENT_LIST_WEIGHT/(K+1)."""
+        """Omitting intent_weight uses INTENT_LIST_WEIGHT (0.25, set by the
+        Phase 14 W sweep), so a vector-mode intent list scores
+        INTENT_LIST_WEIGHT/(K+1)."""
         right, noise = _intent_docs()
 
         class Store:
