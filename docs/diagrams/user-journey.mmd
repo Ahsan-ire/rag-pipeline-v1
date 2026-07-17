@@ -1,0 +1,10 @@
+flowchart LR
+    Q["Your question,<br/>in plain English"] --> R["Retrieve relevant<br/>paragraphs"]
+    R --> D["Draft answer citing<br/>para + page"]
+    D --> G{"Grounding gate:<br/>check every citation"}
+    G -->|all verified| A["Answer +<br/>verified citations"]
+    G -->|partly verified| W["Answer + warning<br/>naming unverified"]
+    G -->|none verified| B["Answer withheld,<br/>sources listed"]
+    G -->|outside corpus| REF["Exact refusal<br/>sentence"]
+    A --> book["You verify at the<br/>cited page"]
+    W --> book

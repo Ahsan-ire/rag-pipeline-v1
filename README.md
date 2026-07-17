@@ -32,18 +32,10 @@ won't invent a number; what I can say is that the failures users found became th
 
 ## The user journey
 
-```mermaid
-flowchart LR
-    Q["👤 Your question,<br/>in plain English"] --> R["Retrieve relevant<br/>paragraphs"]
-    R --> D["Draft answer citing<br/>para + page"]
-    D --> G{"🛡️ Grounding gate:<br/>check every citation"}
-    G -->|all verified| A["✅ Answer +<br/>verified citations"]
-    G -->|partly verified| W["⚠️ Answer + warning<br/>naming unverified"]
-    G -->|none verified| B["⛔ Answer withheld,<br/>sources listed"]
-    G -->|outside corpus| REF["🚫 Exact refusal<br/>sentence"]
-    A --> book["📖 You verify at the<br/>cited page"]
-    W --> book
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/user-journey-dark.svg">
+  <img alt="User journey: your question is retrieved against the handbook, an answer is drafted with paragraph and page citations, and a grounding gate checks every citation — leading to a verified answer, a warning, a withheld answer, or an exact refusal. You verify at the cited page." src="docs/diagrams/user-journey-light.svg">
+</picture>
 
 Four possible outcomes, never a confident unchecked guess:
 
@@ -60,27 +52,10 @@ guidance under an explicit caveat, or the refusal — detailed in [`ABOUT.md`](A
 
 ## How it works, step by step
 
-```mermaid
-flowchart TB
-    subgraph index["1 — Index once, offline"]
-        direction LR
-        PDF["📕 Handbook PDF,<br/>local only"] --> ING["Extract + clean<br/>OCR text"]
-        ING --> CHUNK["Chunk by paragraph<br/>numbering"]
-        CHUNK --> IDX["Dual index:<br/>BM25 + vectors"]
-    end
-
-    subgraph query["2 — Every question"]
-        direction TB
-        UQ["Your question"] --> RW["Haiku: 3 rewrites +<br/>intent reframe"]
-        RW --> HR["Hybrid retrieval,<br/>weighted rank fusion"]
-        HR --> GEN["Sonnet drafts answer<br/>with para + page cites"]
-        GEN --> GATE{"🛡️ Citation gate"}
-        GATE --> OUT["Answer / warning /<br/>withheld / refusal"]
-        OUT --> LOG["📝 Audit log,<br/>hashes only"]
-    end
-
-    IDX -.->|local index| HR
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/pipeline-steps-dark.svg">
+  <img alt="Pipeline steps: index once offline (extract and clean OCR text, chunk by paragraph numbering, build a BM25 plus vector dual index); then per question — Haiku produces three rewrites plus an intent reframe, hybrid retrieval fuses ranked lists, Sonnet drafts a cited answer, the citation gate checks it, and an audit log records hashes only." src="docs/diagrams/pipeline-steps-light.svg">
+</picture>
 
 Why each step exists, in one line each:
 
