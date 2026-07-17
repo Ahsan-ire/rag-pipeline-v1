@@ -99,22 +99,26 @@ honestly labeled **dev/regression evidence, not held-out proof**: it was authore
 13 remediation and is used to iterate on it.
 
 Retrieval ablation, strict / related hit@6 (related = a retrieved parent *or* child of the expected
-section also counts). `hybrid+rewrite` = hybrid plus Haiku query expansion — the production config:
+section also counts). `hybrid+rewrite` = hybrid plus Haiku query expansion (three surface rewrites
+and, since Phase 14, an intent-level reframe fused at weight 0.25 — D50) — the production config:
 
 | Mode | Held-out S@6 / R@6 | Tuning S@6 / R@6 | Realistic S@6 / R@6 |
 | --- | --- | --- | --- |
-| **hybrid+rewrite** (production) | **1.000 / 1.000** | 0.833 / 0.933 | **0.412 / 0.588** |
+| **hybrid+rewrite** (production) | **0.950 / 0.950** | 0.867 / 0.967 | **0.471 / 0.647** |
 | hybrid (no expansion) | 1.000 / 1.000 | 0.800 / 0.900 | 0.353 / 0.588 |
 | vector only | 0.900 / 0.900 | 0.767 / 0.833 | 0.353 / 0.588 |
 | bm25 only | 1.000 / 1.000 | 0.800 / 0.900 | 0.118 / 0.412 |
 
 Two honest readings of that table. First, expansion is doing real work exactly where it was built
 to: on the realistic slice it doubles strict hit@1 (0.118 → 0.235) and lifts strict hit@6
-(0.353 → 0.412) over raw hybrid, with no cost to the held-out headline. Second, the realistic
-numbers are **low in absolute terms** — that is the point of the slice. Messy real-world phrasing
-is far harder than handbook-vocabulary questions, and this is the published baseline the Phase 14
-work (intent-level rewriting, synthesis) is measured against. BM25 collapsing on this slice
-(0.118) is the vocabulary-mismatch failure made visible.
+(0.353 → 0.471) over raw hybrid, and lifts the tuning controls (0.800 → 0.867), with the raw-hybrid
+held-out headline unchanged at 20/20. Second, the realistic numbers are **low in absolute terms** —
+that is the point of the slice. Messy real-world phrasing is far harder than handbook-vocabulary
+questions, and token-aware chunking (Phase 15) is the next lever against it. BM25 collapsing on
+this slice (0.118) is the vocabulary-mismatch failure made visible. The production row's held-out
+S@6 reads 0.950 where raw hybrid reads 1.000: one held-out question's live expansion sample pushed
+its section below the cutoff on this run — expansion-sample variance, disclosed rather than
+smoothed (the committed report carries the per-question row).
 
 The tuning set (`eval/golden_set.jsonl`, n=35) is labeled and reported separately because it *was*
 used to select the fusion constants (D31); it is not the headline.
@@ -123,11 +127,18 @@ Answer quality (generation through the production hybrid+rewrite config):
 
 | Measure | Tuning | Held-out | Realistic |
 | --- | --- | --- | --- |
-| False refusals (answerable questions wrongly refused) | 0/30 | 1/20 | 2/17 |
-| Near-domain negatives correctly refused | 5/5 | 7/8 | 4/6 |
-| Citation-grounded fraction (Σ grounded / Σ citations) | 242/242 | 108/108 | 123/123 |
-| Sentence-citation coverage | 0.880 | 0.946 | 0.715 |
+| False refusals (answerable questions wrongly refused) | 0/30 | 1/20 | 1/17 |
+| Near-domain negatives correctly refused | 5/5 | 6/8 | 5/6 |
+| Citation-grounded fraction (Σ grounded / Σ citations) | 269/269 | 113/113 | 137/137 |
+| Sentence-citation coverage | 0.935 | 0.949 | 0.848 |
 | False-block rate (answerable drafts the gate would withhold) | 0/30 | 0/20 | 0/17 |
+
+Negatives hold the Phase 13 calibration total (11/14) with the boundary rows shuffled between
+sets — the sampling sensitivity D44 documents. Since Phase 14 the answer style is synthesis-first
+(D49): comparison questions get an organized comparative answer — basis of comparison, both sides,
+explicit contrast, unsupported points named as gaps — with a bracketed locator still on every
+sentence, and the ✓-display now states exactly what the gate checks (locator resolution, not
+entailment).
 | LLM-judged mean faithfulness *(experimental, same-family judge)* | 1.000 | 1.000 | 0.983 |
 
 The refusal rows changed with the graded policy and are reported with their reasoning, not hidden:
@@ -254,10 +265,14 @@ unpatched seam fails loudly rather than making a live call).
   by AI-authored eval sets. Landed: Haiku query expansion with a zero-API-call degrade path, weighted
   multi-query fusion, the graded four-tier answer policy, the realistic eval slice, canonical-report
   hardening, local-first embedding load (D43–D47).
-- **Next (Phase 14):** intent-level query rewriting (re-frame, not just re-word) and a synthesis
-  instruction so comparison questions get organized comparative answers — measured against the
-  realistic slice baselined above.
-- **Beyond submission:** token-aware chunking (the 71% truncation fix), BM25 stemming, a service
+- **Done (Phase 14):** the synthesis rule (comparison questions now draw an explicit, fully-cited
+  contrast — both field-test comparison questions pass a manual rubric), intent-level query
+  rewriting with an honest weighted-fusion contract (W ≤ 0.5 dominance invariant; the W sweep's
+  negative result is documented in D50 rather than shipped past its constraint), canonical-report
+  v4 guards (judge + BM25-loaded + substantiated negatives), and LLM client timeouts (D49–D52).
+- **Next (Phase 15):** token-aware chunking (the 71% truncation fix — the biggest retrieval lever
+  for the realistic slice), BM25 stemming, entailment-level citation checking.
+- **Beyond submission:** a service
   layer for a staff-facing front end, entailment-level citation checking, matter-scoped deployment,
   and multi-document indexing (the per-source sync already supports it).
 
