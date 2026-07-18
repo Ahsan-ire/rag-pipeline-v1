@@ -235,7 +235,7 @@ const SCENARIOS = [
     ],
     outcome: { cls: "v-ok", tcls: "t-ok", title: "✅ CITATIONS VERIFIED — answer shown",
       body: "Every citation matched a retrieved chunk. The answer is displayed with its citations.",
-      human: "Your next step as the human: open the handbook at p.12, para 3.2, read the actual text, and reach your own conclusion. The tool got you there in seconds instead of a manual hunt." }
+      human: "Next step: open the handbook at p.12, para 3.2, read the actual text, and reach your own conclusion. The tool got you there in seconds instead of a manual hunt." }
   },
   {
     id: "partial",
@@ -265,7 +265,7 @@ const SCENARIOS = [
     ],
     outcome: { cls: "v-warn", tcls: "t-warn", title: "⚠️ PARTIALLY VERIFIED — answer shown with a named warning",
       body: "2 of 3 citations verified. The answer is shown, and the warning names the exact citation that could not be verified: <span style=\"font-family:var(--mono);font-size:.85em\">para 2.2.1.1, p.9</span> — check before relying on that statement.",
-      human: "The system never silently trims the doubtful part — it shows you precisely which citation to double-check. Here the model mis-stated a page number by one; the gate caught it." }
+      human: "The system never silently trims the doubtful part: it shows you exactly which citation to double-check. Here the model mis-stated a page number by one; the gate caught it." }
   },
   {
     id: "blocked",
@@ -312,7 +312,7 @@ const SCENARIOS = [
     checks: [],
     outcome: { cls: "v-refuse", tcls: "t-refuse", title: "🚫 REFUSAL — the exact sentence, nothing more",
       body: "The question's subject is succession law (making a will), not conveyancing procedure. Even though retrieval surfaced <i>something</i> (property-transfer-adjacent sections), the model is instructed to classify the question's own subject first and refuse with one exact, machine-checkable sentence.",
-      human: "An honest 'not here' beats a plausible guess. The refusal sentence is a constant the evaluation harness string-matches — so refusal behaviour is measured, not vibes." }
+      human: "An honest 'not here' beats a plausible guess. The refusal sentence is a constant the evaluation harness string-matches, so refusal behaviour is measured rather than assumed." }
   }
 ];
 

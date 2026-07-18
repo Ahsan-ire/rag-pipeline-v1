@@ -4,31 +4,31 @@
 &nbsp; **[▶ Live interactive demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — no install, runs in the browser.
 
 Ask a procedure question in plain English. Get a grounded answer with **verified
-chapter/paragraph/page citations** — or an honest refusal. Then open the handbook at the cited
+chapter/paragraph/page citations**, or an honest refusal. Then open the handbook at the cited
 page and reach your own conclusion.
 
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
-first-line sweep before diving into an ~800-page manual. The answer orients you; the
-**citation is the product** — every one is machine-verified against the retrieved text before you
+first-line sweep before diving into an ~800-page manual. The answer orients you. The
+**citation is the product**: every one is machine-verified against the retrieved text before you
 see it, so `[Handbook, para 6.3.2, p.214]` reliably lands you on the paragraph that actually says
-it. An answer that cannot be verified is **withheld, not shown** — the system fails closed rather
+it. An answer that cannot be verified is **withheld, not shown**. The system fails closed rather
 than guessing confidently.
 
 ## Why I built this, and how it's used
 
 I work with a small legal team specialising in conveyancing, and the reference for almost
-everything is one ~800-page handbook. Finding the right paragraph is rarely hard law — it's paging. A general-purpose AI
+everything is one ~800-page handbook. Finding the right paragraph is rarely hard law; mostly it's paging. A general-purpose AI
 answers instantly but leaves you wondering whether to trust it, which in legal work means you end
 up checking the book anyway. This is the middle path: an answer that arrives already pinned to
 chapter, paragraph and page, so the check takes seconds instead of a search.
 
-It has been in real use since mid-July 2026 — me mainly, colleagues occasionally on their own
-questions — always on real work questions, never as the final word. Two things in this repo came
+It has been in real use since mid-July 2026: mostly me, sometimes colleagues on their own
+questions, always on real work, never as the final word. Two things in this repo came
 directly out of that use: the "realistic" evaluation slice is built
 from colleagues' actual phrasing, which failed badly against a system that scored perfectly on my
 own polished test questions (see the evaluation section), and the Phase 14 comparison-question
 work started as one colleague's complaint about one bad answer. I haven't measured time saved and
-won't invent a number; what I can say is that the failures users found became the roadmap.
+won't invent a number. What I can say is that the failures users found became the roadmap.
 
 ## The user journey
 
@@ -73,14 +73,14 @@ Why each step exists, in one line each:
 6. **The grounding gate** — the step that makes the citations trustworthy: every `(paragraph, page)`
    the model cites is checked against the chunks actually retrieved. Invented citations don't pass.
    To be precise about what that proves: the locator resolves to real retrieved text. It does not
-   prove the passage legally supports the claim — that judgment is yours, which is why every answer
+   prove the passage legally supports the claim; that judgment is yours, which is why every answer
    ends at the book.
 
 ## Try it — interactive demo, no install
 
 **[Open the live demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — or open
 [`Demo/demo.html`](Demo/demo.html) locally in any browser. It runs the pipeline's logic as a guided
-simulation over the **wholly synthetic sample handbook** (a fictional jurisdiction — no real corpus
+simulation over the **wholly synthetic sample handbook** (a fictional jurisdiction, no real corpus
 text), and shows all four outcomes above, including watching the gate catch a fabricated citation.
 
 ## Try it — real pipeline, fresh clone (no API key needed)
@@ -113,19 +113,19 @@ python -m src.pipeline index ./data/your-handbook.pdf --type handbook   # --rese
 
 ## Does it actually work? (evaluation at a glance)
 
-- **Shipped config, held-out: strict hit@6 = 19/20 = 0.950** — the production pipeline (hybrid
-  retrieval + query expansion), measured on questions authored *after* the retrieval constants
-  were frozen and never used for tuning. The raw-hybrid retrieval core scores 20/20 = 1.000
+- **Shipped config, held-out: strict hit@6 = 19/20 = 0.950.** This is the production pipeline
+  (hybrid retrieval + query expansion), measured on questions authored *after* the retrieval
+  constants were frozen and never used for tuning. The raw-hybrid retrieval core scores 20/20 = 1.000
   (95% Wilson CI 0.839–1.000) on the same set; the one-question gap is a sampled-expansion flip,
   disclosed per-question in [`ABOUT.md`](ABOUT.md). With n=20, read both as indicative, not a
   benchmark.
-- **Citation integrity: 519/519 citations grounded** across all three eval sets — the number that
-  matters most for the "citations are the product" claim.
-- **The honest number: 0.471 strict hit@6 on messy real-staff phrasing** — a deliberately hard
+- **Citation integrity: 519/519 citations grounded** across all three eval sets. For a tool whose
+  whole claim is the citations, this is the number that matters most.
+- **The honest number: 0.471 strict hit@6 on messy real-staff phrasing**, a deliberately hard
   "realistic" slice built from real field-test failures (up from 0.353 raw hybrid in the
-  same run — the Phase 13 canonical run scored 0.412 for this config; the one target question it
-  still misses is documented in D50, not hidden — token-aware chunking is the next lever).
-- **Comparison questions get real comparisons** — both field-test comparison questions pass a
+  same run; the Phase 13 canonical run scored 0.412 for this config). The one question it still
+  misses is documented in D50, and token-aware chunking is the next lever.
+- **Comparison questions get real comparisons**: both field-test comparison questions pass a
   seven-item manual rubric ([`docs/phase14-rubric-spotchecks.md`](docs/phase14-rubric-spotchecks.md)).
 
 Full ablation tables, refusal accuracy, methodology, and provenance:
@@ -134,9 +134,9 @@ Full ablation tables, refusal accuracy, methodology, and provenance:
 ## Data handling, in one paragraph
 
 The handbook is copyrighted, so the PDF, the index, and all logs are gitignored and **never
-committed** — this public repo ships only code, tests, the synthetic sample, and scrubbed eval
+committed**: this public repo ships only code, tests, the synthetic sample, and scrubbed eval
 reports (questions and section numbers, never corpus text). The audit log records **SHA-256 hashes**
-of queries, not their text — legal queries can reveal client matters. Full detail in
+of queries rather than their text, because legal queries can reveal client matters. Full detail in
 [`ABOUT.md`](ABOUT.md#data-handling).
 
 ## More detail

@@ -46,9 +46,9 @@ harness; `src/judge.py` is the experimental LLM-faithfulness estimate.
 
 ## Evaluation
 
-The headline is measured on a **held-out set** authored after the retrieval constants were frozen —
-never used for tuning — with **strict** matching (the retrieved section number must *exactly* equal
-the expected one). Full detail, provenance, and per-question results are in
+The headline is measured on a **held-out set**: authored after the retrieval constants were frozen,
+never used for tuning, and scored with **strict** matching (the retrieved section number must
+*exactly* equal the expected one). Full detail, provenance, and per-question results are in
 [`eval/results.md`](eval/results.md).
 
 > **Headline — held-out strict hit@6: 0.950 (19/20) shipped hybrid+rewrite config; 1.000
@@ -65,7 +65,7 @@ honestly labeled **dev/regression evidence, not held-out proof**: it was authore
 
 Retrieval ablation, strict / related hit@6 (related = a retrieved parent *or* child of the expected
 section also counts). `hybrid+rewrite` = hybrid plus Haiku query expansion (three surface rewrites
-and, since Phase 14, an intent-level reframe fused at weight 0.25 — D50) — the production config:
+and, since Phase 14, an intent-level reframe fused at weight 0.25, D50), the production config:
 
 | Mode | Held-out S@6 / R@6 | Tuning S@6 / R@6 | Realistic S@6 / R@6 |
 | --- | --- | --- | --- |
@@ -74,16 +74,16 @@ and, since Phase 14, an intent-level reframe fused at weight 0.25 — D50) — t
 | vector only | 0.900 / 0.900 | 0.767 / 0.833 | 0.353 / 0.588 |
 | bm25 only | 1.000 / 1.000 | 0.800 / 0.900 | 0.118 / 0.412 |
 
-Two honest readings of that table. First, expansion is doing real work exactly where it was built
+Two readings of that table. First, expansion is doing real work exactly where it was built
 to: on the realistic slice it doubles strict hit@1 (0.118 → 0.235) and lifts strict hit@6
 (0.353 → 0.471) over raw hybrid, and lifts the tuning controls (0.800 → 0.867), with the raw-hybrid
-held-out headline unchanged at 20/20. Second, the realistic numbers are **low in absolute terms** —
-that is the point of the slice. Messy real-world phrasing is far harder than handbook-vocabulary
-questions, and token-aware chunking (Phase 15) is the next lever against it. BM25 collapsing on
-this slice (0.118) is the vocabulary-mismatch failure made visible. The production row's held-out
-S@6 reads 0.950 where raw hybrid reads 1.000: one held-out question's live expansion sample pushed
-its section below the cutoff on this run — expansion-sample variance, disclosed rather than
-smoothed (the committed report carries the per-question row).
+held-out headline unchanged at 20/20. Second, the realistic numbers are **low in absolute terms**,
+and the slice was built to surface exactly that. Messy real-world phrasing is far harder than
+handbook-vocabulary questions, and token-aware chunking (Phase 15) is the next lever against it.
+BM25 collapsing on this slice (0.118) shows the vocabulary-mismatch failure directly. The production
+row's held-out S@6 reads 0.950 where raw hybrid reads 1.000: on this run, one held-out question's
+live expansion sample pushed its section below the cutoff. That is expansion-sample variance, and the
+committed report carries the per-question row for it.
 
 The tuning set (`eval/golden_set.jsonl`, n=35) is labeled and reported separately because it *was*
 used to select the fusion constants (D31); it is not the headline.
@@ -99,10 +99,10 @@ Answer quality (generation through the production hybrid+rewrite config):
 | False-block rate (answerable drafts the gate would withhold) | 0/30 | 0/20 | 0/17 |
 | LLM-judged mean faithfulness *(experimental, same-family judge)* | 0.982 | 0.995 | 0.978 |
 
-Negatives hold the Phase 13 calibration total (11/14) with the boundary rows shuffled between
-sets — the sampling sensitivity D44 documents. Since Phase 14 the answer style is synthesis-first
-(D49): comparison questions get an organized comparative answer — basis of comparison, both sides,
-explicit contrast, unsupported points named as gaps — with a bracketed locator still on every
+Negatives hold the Phase 13 calibration total (11/14), with the boundary rows shuffled between
+sets (the sampling sensitivity D44 documents). Since Phase 14 the answer style is synthesis-first
+(D49): comparison questions get an organized comparative answer (basis of comparison, both sides,
+explicit contrast, unsupported points named as gaps) with a bracketed locator still on every
 sentence, and the ✓-display now states exactly what the gate checks (locator resolution, not
 entailment).
 
@@ -112,10 +112,10 @@ the held-out set, solicitor fees on the realistic set) are questions where the c
 contains transactionally related guidance, so answering under the explicit caveat is consistent
 with the related-guidance policy even though the binary metric scores each as a miss (D44 addendum
 records the calibration and residual class). Since Phase 14 the committed report substantiates
-every negative row itself — caveat flag, gate outcome, grounded-citation counts, never answer text
-(D51) — so these claims are checkable from `eval/results.md` directly. The two false refusals
-(1/20 held-out — the canary-pinned capacity-law edge — and 1/17 realistic) are visible in the same
-per-question detail.
+every negative row itself (caveat flag, gate outcome, grounded-citation counts, never answer text;
+D51), so these claims are checkable from `eval/results.md` directly. The two false refusals
+(1/20 held-out and 1/17 realistic) are visible in the same per-question detail; the held-out one is
+the canary-pinned capacity-law edge.
 
 Provenance for these numbers (from `eval/results.md`): git `f8e66a4`, 1470 indexed chunks, embedding
 `all-MiniLM-L6-v2`, generation `claude-sonnet-5`, query expansion `claude-haiku-4-5` (86/86 live,
@@ -132,13 +132,13 @@ deterministic.
 - The corpus PDF, the Chroma index, and any `.pdf`/`.env`/`logs/` are **gitignored and never
   committed** — the handbook is copyrighted and the repo is public.
 - The **sample corpus is wholly synthetic** original text authored for this project.
-- Committed eval reports carry **no chunk, answer, or claim prose** (D30) — no corpus text. They do
-  include the eval *questions* (authored, not corpus) and the retrieved section numbers and page
+- Committed eval reports carry **no chunk, answer, or claim prose** (D30), so no corpus text. They
+  do include the eval *questions* (authored, not corpus) and the retrieved section numbers and page
   ranges, alongside the aggregate metrics.
 - The audit log (`logs/`, `src/audit.py`) records **SHA-256 hashes of the query and of each
   expansion rewrite**, not their text (legal queries can reveal client matters), plus retrieval
-  IDs, gate outcome, and counts — never the answer or chunk text. Raw query/rewrite logging is
-  opt-in via `AUDIT_LOG_RAW_QUERIES=1` and belongs only on a single-user dev machine — remove it
+  IDs, gate outcome, and counts, but never the answer or chunk text. Raw query/rewrite logging is
+  opt-in via `AUDIT_LOG_RAW_QUERIES=1` and belongs only on a single-user dev machine; remove it
   before anyone else can query the system.
 - **Where corpus text does leave the machine:** a keyed `query` or a full `eval` sends the *retrieved
   chunk context* to the Anthropic API as part of the generation prompt. The keyless paths above
@@ -165,11 +165,11 @@ deterministic.
   a 15 Jul measurement found 71% of chunks exceed that window, so the vector arm never sees the
   back half of a median chunk. BM25 sees the full text (D23). Token-aware chunking is the top
   post-submission retrieval fix.
-- **Realistic-slice recall is the honest frontier.** Strict hit@6 on messy real-staff phrasing is
+- **Realistic-slice recall is the current frontier.** Strict hit@6 on messy real-staff phrasing is
   0.471 — far below the handbook-vocabulary sets. Phase 14 added intent-level rewriting, fused at
-  the weight the measurement supported (W=0.25; the W sweep's negative result — a higher weight
-  rescued the target comparison question but broke a working control — is recorded in D50 and its
-  addendum rather than shipped). The structural fix is token-aware chunking (Phase 15).
+  the weight the measurement supported (W=0.25). The W sweep's negative result, where a higher weight
+  rescued the target comparison question but broke a working control, is recorded in D50 and its
+  addendum rather than shipped. The structural fix is token-aware chunking (Phase 15).
 - **Run-to-run variance.** The generation API runs at a fixed default temperature and expansion
   rewrites are sampled, so borderline rows (refusal boundary, rank-6 hits) can flip between eval
   runs; committed numbers are one canonical sample.
@@ -195,7 +195,7 @@ deterministic.
 - **Guaranteeing zero API calls** — pass **both** `--skip-refusals` *and* `--skip-completeness` to
   `eval`; either alone still runs a generation pass. Note that `eval` (and `query`) load a local
   `.env` via `load_dotenv()`, so on a machine that has one, an unqualified `env -u ANTHROPIC_API_KEY`
-  does *not* make the run keyless — the twin `--skip` flags do.
+  does *not* make the run keyless; only the twin `--skip` flags do.
 
 ## Tests
 
@@ -203,9 +203,9 @@ deterministic.
 python -m pytest tests/ -q
 ```
 
-558 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`)
-— no network access, no API key required (the suite scrubs any ambient `ANTHROPIC_API_KEY` so an
-unpatched seam fails loudly rather than making a live call).
+558 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`),
+with no network access and no API key required (the suite scrubs any ambient `ANTHROPIC_API_KEY` so
+an unpatched seam fails loudly rather than making a live call).
 
 ## Roadmap
 
@@ -220,9 +220,9 @@ unpatched seam fails loudly rather than making a live call).
   multi-query fusion, the graded four-tier answer policy, the realistic eval slice, canonical-report
   hardening, local-first embedding load (D43–D47).
 - **Done (Phase 14):** the synthesis rule (comparison questions draw an explicit, fully-cited
-  contrast — both field-test comparison questions pass all seven items of a manual rubric,
+  contrast; both field-test comparison questions pass all seven items of a manual rubric,
   recorded D30-safely in `docs/phase14-rubric-spotchecks.md`), intent-level query rewriting with
-  an honest weighted-fusion contract (W ≤ 0.5 dominance invariant; the sweep's negative result
+  a documented weighted-fusion contract (W ≤ 0.5 dominance invariant; the sweep's negative result
   documented in D50 rather than shipped past its constraint), canonical-report v4 guards, and LLM
   client timeouts (D49–D52).
 - **Next (Phase 15):** token-aware chunking (the 71% truncation fix), BM25 stemming, a service
