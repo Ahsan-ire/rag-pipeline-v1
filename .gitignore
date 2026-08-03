@@ -23,3 +23,8 @@ eval/results_partial.md
 eval/results_ablation_preview.md
 eval/judge_review.jsonl
 sample_chroma_db/
+# Phase 15 bake-off (D53): per-arm indexes hold the full copyrighted corpus
+# text, exactly like chroma_db/. Per-arm offline eval reports are structurally
+# non-canonical (expansion disabled) and stay untracked.
+chroma_db_arm_*/
+eval/bakeoff/

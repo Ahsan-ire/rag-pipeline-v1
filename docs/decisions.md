@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 14 — answer quality: synthesis + intent-level rewriting**
+**Current phase: 15 — retrieval foundation: embedding upgrade + tokenizer-true accounting**
 
 ---
 
