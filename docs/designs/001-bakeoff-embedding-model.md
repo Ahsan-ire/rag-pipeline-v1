@@ -215,6 +215,28 @@ the measured number recorded.
 
 ## Rejected alternatives
 
+**Candidate C — Qwen/Qwen3-Embedding-0.6B: COST-DISQUALIFIED at the WS4.2 wall-clock gate
+(4 Aug, measured).** 20 real chunks took **269.0 s** on this machine's CPU → projected full
+1,470-chunk build **~330 minutes**, 3.7× over the 90-minute gate (and implying multi-second
+single-query embed latency in interactive use). Disqualified before its arm index was built,
+per the pre-approved first cut-list item. For the record, its precheck facts under the
+complete snapshot: bfloat16 weights (norm drift ~2e-3 — benign numerics), true module stack
+`Transformer + lasttoken-Pooling + Normalize`, repo query instruction verified and
+version-pinned into `MODEL_SPECS`, semantic separation healthy (cos related 0.68 vs
+unrelated 0.12). The AILAStatutes hypothesis (instruction-tuned decoders dominating
+statute-style retrieval) remains untested on this corpus — a Phase 16+ candidate only if
+GPU/ONNX acceleration changes the cost calculus.
+
+**Operational finding worth keeping (4 Aug):** two of the three candidate downloads produced
+**partial HuggingFace snapshots** (weights + tokenizer but no `modules.json` /
+`config_sentence_transformers.json` / `1_Pooling/config.json`), under which
+sentence-transformers silently falls back to its default module stack — mean pooling, no
+prompts — i.e. a *different model* that loads without error. The gte arm's first index build
+ran under this degradation and was killed and rebuilt; the precheck's module listing is what
+caught it (gte cosines changed from 0.76/0.29 to 0.80/0.38 once the true CLS-pooling stack
+loaded). The precheck now doubles as the completeness check: module stack, prompts, window,
+norms, and separation are asserted per arm before any build.
+
 Ruled out before the bracket was set (3 Aug research pass; MTEB figures recomputed from the
 official results repo, attributes read from the HF configs):
 

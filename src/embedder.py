@@ -72,9 +72,14 @@ MODEL_SPECS: Dict[str, EmbeddingModelSpec] = {
     "Qwen/Qwen3-Embedding-0.6B": EmbeddingModelSpec(
         context_window=8192,
         max_seq_length=8192,
-        # TODO(WS4 precheck): paste prompts["query"] verbatim from the model
-        # repo config
-        query_prompt=None,
+        # Verbatim from the repo's config_sentence_transformers.json
+        # prompts["query"] (WS4 precheck, 4 Aug 2026) — version-pinned here so
+        # a repo-side prompt change cannot silently alter the query contract.
+        # The document prompt in that config is the empty string: no doc prompt.
+        query_prompt=(
+            "Instruct: Given a web search query, retrieve relevant passages "
+            "that answer the query\nQuery:"
+        ),
     ),
 }
 
