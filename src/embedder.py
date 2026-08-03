@@ -3,7 +3,9 @@
 import functools
 import hashlib
 import logging
+import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -22,8 +24,150 @@ logger = logging.getLogger(__name__)
 
 CHROMA_PERSIST_DIR = "./chroma_db"
 COLLECTION_NAME = "legal_documents"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 EMBEDDING_MODEL_MANIFEST = "embedding_model.txt"
+
+
+@dataclass(frozen=True)
+class EmbeddingModelSpec:
+    """Per-model retrieval configuration (D55).
+
+    Every embedding model this pipeline can run under differs in ways that are
+    invisible at the ``HuggingFaceEmbeddings`` call site: how many tokens it
+    reads before truncating, and whether it expects an instruction prefix on
+    queries and/or documents. Keeping those facts in one frozen record — rather
+    than as scattered ``if model == ...`` branches — is what lets the model be
+    swapped by an environment variable during the bake-off.
+
+    Attributes:
+        context_window: Tokens the model actually reads. The truncation guard
+            reads this. ``None`` means "unknown" — the guard must then resolve
+            it from the tokenizer rather than assume a default.
+        max_seq_length: Value forced onto the loaded SentenceTransformer client.
+            Some repos ship a sentinel/placeholder here, so it is set
+            explicitly and read back. ``None`` leaves the repo's own value.
+        query_prompt: Instruction prefix applied to QUERIES only. ``None`` means
+            the model takes no prefix; prompts are never inherited implicitly
+            (see :func:`_apply_model_config`).
+        doc_prompt: Instruction prefix applied to DOCUMENTS only.
+    """
+
+    context_window: Optional[int] = None
+    max_seq_length: Optional[int] = None
+    query_prompt: Optional[str] = None
+    doc_prompt: Optional[str] = None
+
+
+MODEL_SPECS: Dict[str, EmbeddingModelSpec] = {
+    # MiniLM: the shipped baseline. No max_seq_length override (its repo value
+    # is already correct) and no prompts — this entry must stay behaviourally
+    # inert, which the MiniLM canary test pins.
+    DEFAULT_EMBEDDING_MODEL: EmbeddingModelSpec(context_window=256),
+    "Alibaba-NLP/gte-modernbert-base": EmbeddingModelSpec(
+        context_window=8192, max_seq_length=8192
+    ),
+    "ibm-granite/granite-embedding-small-english-r2": EmbeddingModelSpec(
+        context_window=8192, max_seq_length=8192
+    ),
+    "Qwen/Qwen3-Embedding-0.6B": EmbeddingModelSpec(
+        context_window=8192,
+        max_seq_length=8192,
+        # TODO(WS4 precheck): paste prompts["query"] verbatim from the model
+        # repo config
+        query_prompt=None,
+    ),
+}
+
+
+def _validate_model_specs(specs: Dict[str, EmbeddingModelSpec]) -> None:
+    """Raise if any spec's ``max_seq_length`` diverges from its window.
+
+    The two numbers are read by different consumers: the index-time truncation
+    guard checks chunks against ``context_window``, while the embedding client
+    truncates at ``max_seq_length``. If they diverged, provenance could report
+    "over-window = 0" — every chunk fits — while the model silently truncated
+    at the shorter length, i.e. the exact information loss the guard exists to
+    make impossible would become invisible (plan-gate finding A17).
+
+    Only specs that set BOTH are checked; a spec with one side ``None`` is
+    making no claim about the other.
+
+    Args:
+        specs: Mapping of model id to spec, e.g. :data:`MODEL_SPECS`.
+
+    Raises:
+        ValueError: If a spec sets both fields to different values.
+    """
+    for name, spec in specs.items():
+        if spec.context_window is None or spec.max_seq_length is None:
+            continue
+        if spec.max_seq_length != spec.context_window:
+            raise ValueError(
+                f"EmbeddingModelSpec for {name!r} is inconsistent: "
+                f"max_seq_length={spec.max_seq_length} but "
+                f"context_window={spec.context_window}. The truncation guard "
+                "checks chunks against context_window while the embedding "
+                "client truncates at max_seq_length, so a divergence would let "
+                "provenance claim zero over-window chunks while the model "
+                "truncated them anyway. Set both to the same number."
+            )
+
+
+# Runs at import: a bad spec is a configuration bug, and the only safe time to
+# find it is before anything has been embedded under it.
+_validate_model_specs(MODEL_SPECS)
+
+
+def resolve_embedding_model() -> str:
+    """Return the embedding model id this process should use.
+
+    Reads the ``EMBEDDING_MODEL`` **process environment variable ONLY, never
+    ``.env``**. This module is imported before ``src.generator`` calls
+    ``load_dotenv()``, so a value living in a developer's ``.env`` would take
+    effect or not depending on which module the entry point happened to import
+    first — i.e. non-deterministically per entry point, which is exactly the
+    kind of silent index/query model mismatch the D5 manifest exists to catch.
+    Export it in the shell instead::
+
+        EMBEDDING_MODEL=<model-id> python -m src.pipeline index ...
+
+    An id with no :data:`MODEL_SPECS` entry is still returned (so a bake-off
+    arm can be driven without a code change), but warns: generic defaults then
+    apply — no known context window, no ``max_seq_length`` override, no prompts.
+
+    Returns:
+        The configured model id, or :data:`DEFAULT_EMBEDDING_MODEL`.
+    """
+    name = os.environ.get("EMBEDDING_MODEL", "").strip() or DEFAULT_EMBEDDING_MODEL
+    if name not in MODEL_SPECS:
+        logger.warning(
+            "Embedding model %r has no MODEL_SPECS entry; generic defaults "
+            "apply (no known context window, no max_seq_length override, no "
+            "query/document prompts). Add a MODEL_SPECS entry to configure it.",
+            name,
+        )
+    return name
+
+
+def get_model_spec(model_name: Optional[str] = None) -> EmbeddingModelSpec:
+    """Return the :class:`EmbeddingModelSpec` for ``model_name``.
+
+    Args:
+        model_name: Model id to look up. Defaults to the configured
+            :data:`EMBEDDING_MODEL`.
+
+    Returns:
+        The registered spec, or an all-``None`` generic spec for a model id
+        :data:`MODEL_SPECS` does not know about.
+    """
+    return MODEL_SPECS.get(model_name or EMBEDDING_MODEL, EmbeddingModelSpec())
+
+
+# Module-level constant by design: evaluator.py imports it BY VALUE, and the
+# manifest write / assert_embedding_model default read it. Rebinding it after
+# import would not reach those consumers, so the env var is read exactly once,
+# here, at import time.
+EMBEDDING_MODEL = resolve_embedding_model()
 
 # A "can't find it" phrase must appear TOGETHER WITH "cache" in an OSError
 # message for it to read as a cold-cache miss (D47; gate fix 14 Jul 2026) —
@@ -36,7 +180,10 @@ def _is_local_cache_miss(exc: Exception) -> bool:
     """True iff ``exc`` is the local-cache-miss family, not an unrelated failure.
 
     Verified against the installed versions (huggingface_hub 1.22.0,
-    transformers 5.13.0, sentence_transformers 5.6.0): a cold cache with
+    transformers 5.14.1, sentence_transformers 5.6.0). The message shape below
+    was re-verified under the 5.14.1 pin (Phase 15 WS2, 3 Aug 2026) and is
+    unchanged from the 5.13.0 wording this heuristic was written against —
+    ``transformers/utils/hub.py:513-517``. A cold cache with
     ``local_files_only=True`` actually surfaces from ``SentenceTransformer``
     as a plain ``OSError`` — ``transformers.utils.hub.cached_file`` catches
     huggingface_hub's own ``LocalEntryNotFoundError`` and re-raises it as an
@@ -93,22 +240,98 @@ def get_embedding_function() -> HuggingFaceEmbeddings:
     failure (:func:`_is_local_cache_miss`) falls back to one network-enabled
     retry, logged once; any other exception propagates immediately instead
     of silently falling back to the network.
+
+    Encode kwargs come from the model's :class:`EmbeddingModelSpec` (D55), and
+    :func:`_apply_model_config` finishes the setup on the loaded client. For
+    MiniLM the spec carries neither prompts nor a ``max_seq_length`` override,
+    so both are inert and construction is byte-identical to before.
     """
+    spec = get_model_spec(EMBEDDING_MODEL)
+
+    encode_kwargs = {"normalize_embeddings": True}
+    if spec.doc_prompt:
+        encode_kwargs["prompt"] = spec.doc_prompt
+
+    # The merge is load-bearing, not stylistic. langchain-huggingface 1.2.2's
+    # embed_query REPLACES encode_kwargs with query_encode_kwargs whenever the
+    # latter is non-empty (huggingface.py:167-171 — it picks one dict, it does
+    # not merge them). So a query_encode_kwargs of just {"prompt": ...} would
+    # drop normalize_embeddings and embed QUERIES UNNORMALIZED against
+    # NORMALIZED documents — under Chroma's default L2 space that silently
+    # skews every distance by the query's magnitude. Copying the base kwargs in
+    # keeps normalization on both sides. Empty dict when there is no query
+    # prompt, so the "use encode_kwargs" branch stays in force.
+    query_encode_kwargs = (
+        {**encode_kwargs, "prompt": spec.query_prompt} if spec.query_prompt else {}
+    )
+
     try:
-        return HuggingFaceEmbeddings(
+        emb = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL,
             model_kwargs={"device": "cpu", "local_files_only": True},
-            encode_kwargs={"normalize_embeddings": True},
+            encode_kwargs=encode_kwargs,
+            query_encode_kwargs=query_encode_kwargs,
         )
     except Exception as exc:
         if not _is_local_cache_miss(exc):
             raise
         logger.info("Local model cache miss for %s; downloading once", EMBEDDING_MODEL)
-        return HuggingFaceEmbeddings(
+        emb = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL,
             model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
+            encode_kwargs=encode_kwargs,
+            query_encode_kwargs=query_encode_kwargs,
         )
+
+    _apply_model_config(emb, spec)
+    return emb
+
+
+def _apply_model_config(emb: HuggingFaceEmbeddings, spec: EmbeddingModelSpec) -> None:
+    """Force per-model settings onto the loaded SentenceTransformer client.
+
+    Two things cannot be configured through ``HuggingFaceEmbeddings``' own
+    constructor and must be set on the client after it exists:
+
+    * ``max_seq_length`` — some repos ship a placeholder/sentinel value, so it
+      is set explicitly and **read back**; a client that silently ignores the
+      assignment would truncate at its own length while the guard and
+      provenance believed the spec's window. (sentence-transformers 5.6 renamed
+      ``tokenizer_kwargs`` to ``processor_kwargs``, so threading it through
+      construction is version-fragile — post-construction assignment is not.)
+    * ``default_prompt_name`` — sentence-transformers 5.6 merges a repo's
+      ``config_sentence_transformers.json`` ``default_prompt_name`` into the
+      model when the caller did not set one (``base/model.py:1240-1250``). That
+      prompt is then applied to *every* encode call, i.e. it would silently
+      prefix DOCUMENTS too. Prompts in this pipeline are explicit in
+      :data:`MODEL_SPECS` or absent, so the inherited default is neutralized.
+
+    Args:
+        emb: The constructed embedding wrapper.
+        spec: The model's spec.
+
+    Raises:
+        ValueError: If ``max_seq_length`` does not read back as it was set.
+    """
+    client = getattr(emb, "_client", None)
+    if client is None:
+        # Test doubles (and anything not backed by a real SentenceTransformer)
+        # have no client to configure — nothing to do.
+        return
+
+    if spec.max_seq_length is not None:
+        client.max_seq_length = spec.max_seq_length
+        actual = getattr(client, "max_seq_length", None)
+        if actual != spec.max_seq_length:
+            model_name = getattr(emb, "model_name", EMBEDDING_MODEL)
+            raise ValueError(
+                f"Could not set max_seq_length on {model_name!r}: asked for "
+                f"{spec.max_seq_length}, got {actual!r} back. The model would "
+                "truncate at a length the truncation guard and provenance do "
+                "not know about."
+            )
+
+    client.default_prompt_name = None
 
 
 def get_vector_store(

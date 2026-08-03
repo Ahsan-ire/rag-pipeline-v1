@@ -1,5 +1,6 @@
 """Tests for the embedding and vector storage module."""
 
+import logging
 import shutil
 
 import pytest
@@ -7,14 +8,22 @@ from langchain_core.documents import Document
 
 from src.bm25_index import load_bm25_index, search_bm25
 from src.embedder import (
+    DEFAULT_EMBEDDING_MODEL,
+    EMBEDDING_MODEL,
+    MODEL_SPECS,
+    EmbeddingModelSpec,
+    _apply_model_config,
     _sanitize_metadata,
+    _validate_model_specs,
     add_documents,
     assert_embedding_model,
     clear_store,
     compute_chunk_id,
     get_embedding_function,
+    get_model_spec,
     get_vector_store,
     rebuild_bm25_index,
+    resolve_embedding_model,
     sync_documents,
 )
 
@@ -585,7 +594,7 @@ class TestGetEmbeddingFunction:
 
     def test_cache_miss_os_error_retries_without_local_files_only(self, monkeypatch):
         """The failure mode actually verified against the installed stack
-        (huggingface_hub 1.22.0 / transformers 5.13.0 / sentence_transformers
+        (huggingface_hub 1.22.0 / transformers 5.14.1 / sentence_transformers
         5.6.0): transformers' cached_file catches huggingface_hub's
         LocalEntryNotFoundError and re-raises a plain OSError whose message
         mentions the cached-files / offline-mode fallback. That must trigger
@@ -674,3 +683,251 @@ class TestGetEmbeddingFunction:
             get_embedding_function()
 
         assert len(calls) == 1  # single construction, no download retry
+
+
+class TestPerModelConfigSeam:
+    """D55: one env var selects the embedding model, and its MODEL_SPECS entry
+    carries everything that differs per model (window, max_seq_length,
+    prompts). The bake-off drives arms through this seam, so the seam must be
+    provably inert for MiniLM and provably correct for a prompted model."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        """Same reason as TestGetEmbeddingFunction._fresh_cache: the embedding
+        function is lru_cached for the process lifetime, so a value cached by
+        an earlier test would mask the patched recorder / patched spec here,
+        and this class's own cached instance must not leak into later tests."""
+        get_embedding_function.cache_clear()
+        yield
+        get_embedding_function.cache_clear()
+
+    # --- env resolution -------------------------------------------------
+
+    def test_unset_env_resolves_to_default_model(self):
+        """No EMBEDDING_MODEL in the environment (conftest scrubs it) means the
+        shipped default, not a KeyError and not an empty model id."""
+        assert resolve_embedding_model() == DEFAULT_EMBEDDING_MODEL
+
+    def test_env_override_is_returned(self, monkeypatch):
+        """A known arm id set in the process environment wins over the
+        default — this is how a bake-off arm is selected without a code edit."""
+        monkeypatch.setenv("EMBEDDING_MODEL", "Alibaba-NLP/gte-modernbert-base")
+
+        assert resolve_embedding_model() == "Alibaba-NLP/gte-modernbert-base"
+
+    def test_whitespace_only_env_falls_back_to_default(self, monkeypatch):
+        """`EMBEDDING_MODEL=" "` (or an empty export) is a typo, not a request
+        to embed under a model named " ". Strip-then-or sends it to the
+        default rather than to a download of a nonexistent repo id."""
+        monkeypatch.setenv("EMBEDDING_MODEL", "   ")
+
+        assert resolve_embedding_model() == DEFAULT_EMBEDDING_MODEL
+
+    def test_unknown_model_id_is_returned_with_a_warning(self, monkeypatch, caplog):
+        """An id with no MODEL_SPECS entry still runs (so a new arm can be
+        tried immediately), but it must say so: generic defaults mean no known
+        context window and no prompts, which the operator has to know about."""
+        monkeypatch.setenv("EMBEDDING_MODEL", "some-vendor/unknown-embedder")
+
+        with caplog.at_level(logging.WARNING, logger="src.embedder"):
+            resolved = resolve_embedding_model()
+
+        assert resolved == "some-vendor/unknown-embedder"
+        assert "MODEL_SPECS" in caplog.text
+        assert "some-vendor/unknown-embedder" in caplog.text
+
+    def test_unknown_model_gets_the_generic_spec(self):
+        """The generic spec is all-None: no window claim, no max_seq_length
+        override, no prompts."""
+        assert get_model_spec("some-vendor/unknown-embedder") == EmbeddingModelSpec()
+
+    def test_module_constant_is_the_default_model(self):
+        """Guard for the rest of this suite. EMBEDDING_MODEL is bound ONCE, at
+        import, from the process environment — so an EMBEDDING_MODEL exported
+        in the shell before pytest started would rebind it, and the conftest
+        scrub (which runs per test, long after import) cannot unbind it. Every
+        assertion below that names MiniLM would then be testing the wrong
+        model."""
+        assert EMBEDDING_MODEL == DEFAULT_EMBEDDING_MODEL, (
+            "EMBEDDING_MODEL is set in the environment this pytest run "
+            "inherited, and it is baked into src.embedder at import time. "
+            "Run `unset EMBEDDING_MODEL` and re-run the suite."
+        )
+
+    # --- constructor kwargs ---------------------------------------------
+
+    def test_minilm_construction_is_byte_identical_to_before(self, monkeypatch):
+        """Inertness canary. The seam must change NOTHING about how the shipped
+        baseline is built — same model_kwargs, same encode_kwargs, and an EMPTY
+        query_encode_kwargs so langchain keeps using encode_kwargs for queries
+        exactly as it did before Phase 15."""
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        get_embedding_function()
+
+        assert calls == [
+            {
+                "model_name": DEFAULT_EMBEDDING_MODEL,
+                "model_kwargs": {"device": "cpu", "local_files_only": True},
+                "encode_kwargs": {"normalize_embeddings": True},
+                "query_encode_kwargs": {},
+            }
+        ]
+
+    def test_query_prompt_merges_the_base_encode_kwargs(self, monkeypatch):
+        """Merge canary — the unnormalized-query hazard. langchain-huggingface
+        1.2.2's embed_query REPLACES encode_kwargs with query_encode_kwargs
+        when the latter is non-empty; it does not merge. A query_encode_kwargs
+        of just {"prompt": ...} would therefore drop normalize_embeddings and
+        embed queries unnormalized against normalized documents. This pins the
+        explicit merge."""
+        monkeypatch.setitem(
+            MODEL_SPECS, DEFAULT_EMBEDDING_MODEL, EmbeddingModelSpec(query_prompt="Q: ")
+        )
+        get_embedding_function.cache_clear()
+
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        get_embedding_function()
+
+        assert calls[0]["query_encode_kwargs"] == {
+            "normalize_embeddings": True,
+            "prompt": "Q: ",
+        }
+        assert calls[0]["encode_kwargs"] == {"normalize_embeddings": True}
+
+    def test_doc_prompt_applies_to_documents_only(self, monkeypatch):
+        """A doc prompt goes into encode_kwargs (documents); with no query
+        prompt configured, query_encode_kwargs stays empty so queries inherit
+        encode_kwargs — including the doc prompt is langchain's behaviour, not
+        something this seam invents, and there is no doc-prompt-only model in
+        MODEL_SPECS today. This pins where the prompt lands."""
+        monkeypatch.setitem(
+            MODEL_SPECS, DEFAULT_EMBEDDING_MODEL, EmbeddingModelSpec(doc_prompt="D: ")
+        )
+        get_embedding_function.cache_clear()
+
+        calls = []
+
+        class RecorderEmbeddings:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr("src.embedder.HuggingFaceEmbeddings", RecorderEmbeddings)
+
+        get_embedding_function()
+
+        assert calls[0]["encode_kwargs"] == {
+            "normalize_embeddings": True,
+            "prompt": "D: ",
+        }
+        assert calls[0]["query_encode_kwargs"] == {}
+
+    # --- client configuration -------------------------------------------
+
+    def test_apply_model_config_sets_max_seq_length_and_clears_prompt_name(self):
+        """max_seq_length is forced onto the loaded client (repos ship
+        sentinels), and default_prompt_name is neutralized so a repo config
+        cannot silently prefix DOCUMENTS."""
+
+        class StubClient:
+            max_seq_length = 512
+            default_prompt_name = "query"
+
+        class StubEmb:
+            _client = StubClient()
+
+        emb = StubEmb()
+        _apply_model_config(emb, EmbeddingModelSpec(context_window=8192, max_seq_length=8192))
+
+        assert emb._client.max_seq_length == 8192
+        assert emb._client.default_prompt_name is None
+
+    def test_apply_model_config_raises_when_readback_disagrees(self):
+        """A client that accepts the assignment but keeps its own value would
+        truncate at a length the guard and provenance never see. The readback
+        turns that into a loud failure at construction."""
+
+        class IgnoringClient:
+            default_prompt_name = None
+
+            @property
+            def max_seq_length(self):
+                return 512
+
+            @max_seq_length.setter
+            def max_seq_length(self, value):
+                pass  # silently ignores the assignment
+
+        class StubEmb:
+            model_name = "vendor/stubborn-model"
+            _client = IgnoringClient()
+
+        with pytest.raises(ValueError, match="stubborn-model"):
+            _apply_model_config(
+                StubEmb(), EmbeddingModelSpec(context_window=8192, max_seq_length=8192)
+            )
+
+    def test_apply_model_config_is_a_noop_without_a_client(self):
+        """Test doubles (RecorderEmbeddings, FakeEmbeddings) have no
+        underlying SentenceTransformer. Configuring one must not be a
+        precondition for constructing an embedding function."""
+
+        class NoClientEmb:
+            pass
+
+        _apply_model_config(
+            NoClientEmb(), EmbeddingModelSpec(context_window=8192, max_seq_length=8192)
+        )  # must not raise
+
+    # --- spec invariant --------------------------------------------------
+
+    def test_validate_model_specs_rejects_a_window_mismatch(self):
+        """The invariant (plan-gate finding A17): the guard checks chunks
+        against context_window while the client truncates at max_seq_length, so
+        a divergence would let provenance report over-window=0 while the model
+        truncated anyway. The error must name the offending model."""
+        bad = {
+            "vendor/mismatched": EmbeddingModelSpec(context_window=8192, max_seq_length=512)
+        }
+
+        with pytest.raises(ValueError, match="vendor/mismatched"):
+            _validate_model_specs(bad)
+
+    def test_validate_model_specs_skips_partial_specs(self):
+        """A spec that sets only one of the two makes no claim about the other
+        (MiniLM: window known, repo max_seq_length left alone) — not a
+        violation."""
+        _validate_model_specs(
+            {
+                "vendor/window-only": EmbeddingModelSpec(context_window=256),
+                "vendor/nothing": EmbeddingModelSpec(),
+            }
+        )  # must not raise
+
+    def test_shipped_specs_satisfy_the_invariant(self):
+        """The committed MODEL_SPECS — the baseline plus all three bake-off
+        arms — pass the same check that runs at import."""
+        arms = [
+            "Alibaba-NLP/gte-modernbert-base",
+            "ibm-granite/granite-embedding-small-english-r2",
+            "Qwen/Qwen3-Embedding-0.6B",
+        ]
+        for arm in arms:
+            spec = MODEL_SPECS[arm]
+            assert spec.context_window == 8192
+            assert spec.max_seq_length == 8192
+
+        _validate_model_specs(MODEL_SPECS)  # must not raise
