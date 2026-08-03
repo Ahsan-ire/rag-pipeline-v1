@@ -8,11 +8,11 @@
 {"question": "Which three registers does the Land Registry maintain?", "expected_sections": ["4.9.2"], "type": "direct"}
 {"question": "How does ownership held as tenants in common devolve on the death of one owner?", "expected_sections": ["5.8"], "type": "direct"}
 {"question": "What form must a contract for the sale of land take in order to be enforceable?", "expected_sections": ["6.1"], "type": "direct"}
-{"question": "Who holds the deposit paid under a contract for sale, and in what capacity?", "expected_sections": ["6.3.2", "APPENDIX 6.1"], "type": "direct"}
+{"question": "Who holds the deposit paid under a contract for sale, and in what capacity?", "expected_sections": ["6.3.2", "APPENDIX 6.1", "6.3"], "type": "direct"}
 {"question": "What protection does the Family Home Protection Act 1976 give to a non-owning spouse?", "expected_sections": ["7.1", "7.2"], "type": "direct"}
 {"question": "When is a spouse's prior written consent required for a conveyance of the family home?", "expected_sections": ["7.2.9", "7.1"], "type": "direct"}
 {"question": "Why does a deed need a receipt clause?", "expected_sections": ["8.2.5.7"], "type": "direct"}
-{"question": "What is an accountable trust receipt and when is it used?", "expected_sections": ["9.6.1.1", "9.6.1"], "type": "direct"}
+{"question": "What is an accountable trust receipt and when is it used?", "expected_sections": ["9.6.1.1", "9.6.1", "9.6"], "type": "direct"}
 {"question": "What searches should a purchaser's solicitor carry out before completion, and why?", "expected_sections": ["10.1", "10.2"], "type": "direct"}
 {"question": "When is a bankruptcy search appropriate?", "expected_sections": ["10.2.3"], "type": "direct"}
 {"question": "What is the purpose of requisitions on title?", "expected_sections": ["15.1"], "type": "direct"}

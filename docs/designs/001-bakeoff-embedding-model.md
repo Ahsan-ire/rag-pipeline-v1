@@ -3,7 +3,7 @@
 **Status:** draft (plan gate 3 Aug 2026: two rounds run, verdict **REVISE** — round-3
 consolidation pending; flips to `reviewed` only on READY, per docs/designs/README.md)
 **Date:** 3 Aug 2026
-**Decision ledger entry:** docs/decisions.md D53 (added when decided)
+**Decision ledger entry:** docs/decisions.md D57 (bake-off outcome, added when decided); diagnosis + instrument repair recorded as D54
 
 ## Problem
 
@@ -45,16 +45,35 @@ therefore rests primarily on **model quality** (MiniLM 42.92 vs the candidates' 
 MTEB v2 English retrieval), with the window removing a real but not-yet-implicated defect.
 The bake-off is the instrument that settles it; nothing here presumes the answer.
 
-**A second, independent finding (3 Aug) that caps strict@6 regardless of model.** Some eval
-questions expect section numbers that no chunk carries: golden `1.7.2`, `6.3.2`, `9.6.1` and
-realistic `4.8.1.1` (2 rows). In each case the parent *and* the children are indexed, so the
-D20 runt-merge folded the section's own text into a neighbour and no chunk claims that exact
-`section_number`. Those questions can never strict-HIT under any embedding model (they remain
-reachable by the related/dotted-nesting rule). Structural ceilings: **golden strict@6 ≤ 27/30
-= 0.900**, **realistic strict@6 ≤ 15/17 = 0.882**. Selection and acceptance must be read
-against those ceilings, not against 1.000. Fixing the eval sets or the section-number
-inheritance is explicitly out of scope here (it would change the measuring instrument in the
-same phase that uses it) and is the first item of the follow-on backlog.
+**The full failure-class diagnosis (4 Aug, per-question, offline — D54).** Every answerable
+realistic question was re-run at top_k=20 across hybrid/vector/bm25 plus a cached-expansion
+production replay. The 12 non-hits decompose into:
+
+| Class | Count | Evidence | What would fix it |
+|---|---|---|---|
+| Vocabulary gap | 3 | Same content retrieves at rank 1–6 under legal phrasing ("successive squatters…" → rank 1) and is absent from the top 20 under lay phrasing ("neighbour has been using our client's field…") | Better semantic embeddings — this bake-off's central thesis |
+| Near-miss | 5 | Expected section at rank 7–19 (S5 at raw rank 9; the spouse-consent question ranks 17 raw → 1 with expansion) | A stronger model tightens ranking; a cross-encoder reranker (Phase 16) is the dedicated tool |
+| Absorbed label | 2 | Expected `4.8.1.1` carried by the chunk labelled `4.8.1` — scoring artefact, text present | Instrument repair (done, below) |
+| Expansion variance | cross-cutting | Cached-expansion replay: realistic 10/17 = **0.588** vs the canonical draw's 8/17 = 0.471, identical system | Measure-and-disclose acceptance (user decision, 4 Aug) |
+
+**Instrument repair (D54, applied 4 Aug before any arm build):** the four absorbed-label rows
+gained the absorbing chunk's label as an additional accepted answer (realistic
+`4.8.1.1`→+`4.8.1` ×2; golden `6.3.2`→+`6.3`, `9.6.1`→+`9.6`; golden `1.7.2` left as-is — it
+already hits via the present `1.7.2.3`). Post-repair offline baselines, which supersede the
+committed-report figures as the baseline-arm comparison: **golden raw-hybrid strict@6
+25/30 = 0.833** (was 0.800), **realistic raw-hybrid 6/17 = 0.353** (unchanged — those rows
+need ranking, not labels). Structural ceilings lifted to 1.000. The arm table reports, per
+arm, the per-class movement: deep-misses recovered (of 3), near-misses pulled into top-6
+(of 5).
+
+**Historical note — the absorbed-label finding (3 Aug), now repaired.** Before the D54 repair,
+golden `1.7.2`, `6.3.2`, `9.6.1` and realistic `4.8.1.1` (2 rows) expected section numbers no
+chunk carries — the D20 runt-merge folded each section's text into a neighbour (parents *and*
+children indexed), so those rows could never strict-HIT and strict@6 was structurally
+ceilinged at golden 0.900 / realistic 0.882. The repair above lifted both ceilings to 1.000
+**before any arm was built**, so the instrument is consistent for the whole bake-off. The
+deeper fix — chunks carrying the section numbers they absorbed, restoring citation precision —
+is Phase 16 work (owner decision, 4 Aug), bundled with the refined practitioner golden set.
 
 Two structural facts constrain any fix (both measured 3 Aug, same index):
 
@@ -130,7 +149,7 @@ read against the 27/30 = 0.900 structural ceiling above.
 3. Among survivors, highest golden strict hit@6 wins.
 4. Ties break to the smaller download / lower measured p50 query-embed latency.
 5. **If no arm survives 1–2, the baseline survives by default and the phase outcome is "no
-   model swap"** — a negative result recorded in D53 with the full arm table (the D50
+   model swap"** — a negative result recorded in D57 with the full arm table (the D50
    precedent). In that branch the phase **STOPS for user disposition** and the truncation
    guard does **not** land: under MiniLM's 256-token window the guard would correctly reject a
    sample-corpus chunk (one of the 16 is 258 tokens) and break the CI smoke job, so shipping
@@ -349,6 +368,19 @@ D50's addendum records as moving golden 27/30 → 26/30 and S5 from related-rank
 a slice where one question is 5.9 points. The gate can be reformulated as "measure and
 disclose" rather than "pass or fail", which is what the evidence supports; that is a product
 decision for the owner.
+
+### Round 4 (owner decisions + diagnosis, 4 Aug — gate unblocked)
+
+The owner reviewed the diagnosis and decided all open questions: **(1)** acceptance for the
+canonical metrics is **measure-and-disclose** (Tier 2 of the acceptance block in
+IMPLEMENTATION_PLAN.md §Phase 15; deterministic bake-off rules stay hard gates in Tier 1);
+**(2)** the absorbed-label rows are repaired **now** by accepting the absorbing label
+(applied — see *Problem*), with the metadata-level fix (chunks recording the section numbers
+they absorbed) deferred to Phase 16; **(3)** re-chunking the corpus for four labels is
+rejected; **(4)** Phase 16 carries the refined practitioner golden set (designed around the
+vocabulary-gap findings), the absorbed-sections metadata fix, and the cross-encoder reranker
+targeting the near-miss class. Diagnosis and repair recorded as D54; the transformers pin as
+D53; remaining entries renumbered D55–D58 in the phase section.
 
 ## Outcome
 

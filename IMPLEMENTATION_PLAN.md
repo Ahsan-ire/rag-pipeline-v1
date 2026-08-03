@@ -621,14 +621,29 @@ model swap plus honest accounting. Model research 3 Aug (MTEB v2 English retriev
 recomputed from the official results repo; licence/gating/`trust_remote_code`/prefix contracts
 read from the HF configs). Full gated plan: ~/.claude/plans/lucky-whistling-sunbeam.md.
 Bake-off brief: docs/designs/001-bakeoff-embedding-model.md. Design record: docs/decisions.md
-D53–D57.)
+D53–D58. **4 Aug diagnosis (D54)** classified the realistic failures into four measured
+classes — vocabulary gap (3 deep-misses; the same content retrieves at rank 1–6 under
+legal-register phrasing), near-misses at rank 7–19 (5, incl. S5 at raw rank 9), absorbed
+labels (the ceiling above), and expansion sampling variance (cached-expansion replay scores
+0.588 realistic where the canonical draw scored 0.471, same system) — so the bake-off's job
+is specific: recover deep-misses and pull near-misses inside top-6, per class, with zero
+regressions. The user set acceptance to **measure-and-disclose** for the canonical metrics on
+4 Aug: the recorded expansion variance exceeds any hard bar's effect size on n=17.)
 
-1. **Hygiene + dependency pin (WS1, D56):** `.gitignore` gains `chroma_db_arm_*/` and
+0. **Instrument repair (WS0, D54 — DONE 4 Aug, before any arm build):** the four eval rows
+   whose expected section was runt-merged into a neighbour gain the absorbing chunk's label as
+   an additional accepted answer (realistic `4.8.1.1`→+`4.8.1` ×2, golden `6.3.2`→+`6.3`,
+   `9.6.1`→+`9.6`; golden `1.7.2` deliberately left — it hits via the present `1.7.2.3`).
+   Text was never lost; only labels diverged, so this repairs the *instrument*, not the system.
+   Post-repair offline baselines (zero API): golden raw-hybrid strict@6 **25/30 = 0.833** (was
+   0.800), realistic unchanged **6/17 = 0.353**; structural ceilings lifted to 1.000. These are
+   the bake-off's baseline-arm comparison numbers.
+1. **Hygiene + dependency pin (WS1, D53):** `.gitignore` gains `chroma_db_arm_*/` and
    `eval/bakeoff/` **before any arm is built** — arm indexes hold the full copyrighted corpus
    text exactly as `chroma_db/` does; the CLAUDE.md Codex do-not-read clause is extended to
    both. `transformers==5.14.1` pinned exactly in requirements.txt (previously transitive at
    5.13.0; ModernBERT-based candidates need ≥4.48, so the floor becomes load-bearing).
-2. **Per-model config seam + `EMBEDDING_MODEL` env override (WS2, D54):** `src/embedder.py`
+2. **Per-model config seam + `EMBEDDING_MODEL` env override (WS2, D55):** `src/embedder.py`
    gains `resolve_embedding_model()` (process env var, else `DEFAULT_EMBEDDING_MODEL`) and
    `MODEL_SPECS: dict[str, EmbeddingModelSpec]` (frozen dataclass: `context_window`,
    `max_seq_length`, `query_prompt`, `doc_prompt`) so bake-off arms run in one checkout.
@@ -640,7 +655,7 @@ D53–D57.)
    `default_prompt_name` is forced to None so a model's own repo config cannot silently prompt
    documents; `max_seq_length` is set post-construction with a readback assert. All inert for
    MiniLM (byte-equal constructor kwargs, empty `query_encode_kwargs`).
-3. **Tokenizer-true accounting: index-time guard + provenance (WS3, D55; lands atomically
+3. **Tokenizer-true accounting: index-time guard + provenance (WS3, D56; lands atomically
    with the winner adoption in item 5, NOT before it — one of the 16 sample-corpus chunks is
    258 tokens, so under MiniLM's 256 window the guard would correctly reject it and break
    `build_sample_index` and CI for the whole interval):**
@@ -660,7 +675,7 @@ D53–D57.)
    `CHARS_PER_TOKEN` and the char thresholds are deliberately unchanged (their blast radius is
    the char-calibrated fixtures, the 16-chunk sample-corpus freeze and the CI greps; deferred
    to the next deliberate re-chunk).
-4. **Embedding bake-off (WS4, D53):** three arms + the MiniLM baseline, judged **only** by
+4. **Embedding bake-off (WS4, D57):** three arms + the MiniLM baseline, judged **only** by
    `eval/golden_set.jsonl` (harness rule; the held-out set appears in exactly one command in
    this phase, the WS7 canonical run). Arms: `Alibaba-NLP/gte-modernbert-base`,
    `ibm-granite/granite-embedding-small-english-r2` (cheap arm), `Qwen/Qwen3-Embedding-0.6B`
@@ -685,8 +700,8 @@ D53–D57.)
    committed, unit-tested script that refuses `--heldout` and emits an arm manifest of input
    sha256s and commands, so held-out exclusion is a property of an artifact rather than
    self-attestation. Download size and measured per-query embed latency are recorded per arm.
-5. **Winner adoption + re-baseline, only if a non-baseline candidate survives (WS5–WS7, D53
-   addendum, D57):** `DEFAULT_EMBEDDING_MODEL`
+5. **Winner adoption + re-baseline, only if a non-baseline candidate survives (WS5–WS7, D57
+   addendum, D58):** `DEFAULT_EMBEDDING_MODEL`
    flips to the winner; full `--reset` re-index; `scripts/build_sample_index.py` gains
    `--reset` (without it the model-independent IDs leave MiniLM vectors under a stale
    manifest) and `sample_chroma_db/` is regenerated with the three CI smoke greps verified
@@ -709,48 +724,51 @@ carries the token stats and degrades to "unavailable" without losing `chunk_coun
 `build_sample_index(reset=True)` re-adds 16 chunks while the existing idempotence test stays
 green. All offline — models and tokenizers mocked, no network, no API key.
 
-**decisions.md:** D53 (+ addendum), D54, D55, D56, D57.
+**decisions.md:** D53, D54 (landed at phase start), D55, D56, D57 (+ addendum), D58.
 
-**Acceptance:** *(every report-reading criterion below is gated on a freshness precondition —
-`eval/results.md` provenance must name the winning model AND a git sha on this branch;
-against the committed July report several of these greps pass vacuously, plan-gate finding
-A5.)* Full suite green (`python -m pytest tests/ -q`); the winning arm's per-question golden
-flip list — raw-hybrid **and** production-config (expansion + intent replayed from the
-committed cache) — is committed to the bake-off brief and shows zero HIT→MISS in both
-(selection-rule restatement: it disqualifies rather than measures, so the falsifiable
-criteria are the ones that follow); realistic strict@6 ≥ 0.529 on the canonical hybrid+rewrite
-row, read against the 15/17 = 0.882 structural ceiling (the offline arms' comparable baseline
-is raw-hybrid 0.353, **not** 0.471); held-out strict@6 unregressed on **both** the raw-hybrid
-row (20/20) and the shipped hybrid+rewrite row (0.950); negatives ≥ 11/14 total; for **both**
-S5 and N4 the top six carry an **equal-or-descendant** match (`s == group or
-s.startswith(group + ".")`) for *each* of the two role groups (2.2.1 and 2.2.2), read from
-`retrieved_sections` — not the evaluator's existential HIT flag, which passes on any one of
-three alternatives (finding C3), and not plain "related", whose symmetric prefix matching
-(`src/generator.py:292-295`) would let one generic parent `2.2` satisfy both roles at once
-(round-2 finding) — and the S5 answer passes the Phase 14 comparison rubric; canonical
-v4 guards green; provenance names the new model, its window, the stored-chunk token
-distribution and over-window = 0; a failing preflight leaves the index intact — neither
-`clear_store` nor `sync_documents` is reached (targeted pytest, plan-gate finding C1);
-sample-corpus CI smoke still `strict hit@6 = 7/7 = 1.000` with both row greps byte-intact,
-green **on CI** before the canonical run is spent; CI cache key names the winner;
-`transformers==5.14.1` in requirements.txt and in `pip freeze`; ABOUT.md discloses download
-size and measured **p50** query-embed latency (p95 is the third cut — acceptance must never
-require what the cut list offers to cut, the A4 defect recurring); nothing corpus-bearing
-tracked (`git
-check-ignore` on a probe path *inside* **each** arm dir and `eval/bakeoff/` — a bare name gives
-a false negative, finding A1 — plus **`git status --porcelain` showing no untracked
-corpus-bearing path**; the naive `| grep -v '^??'` filter discards exactly the `?? chroma_db_arm_*/`
-line a gitignore failure produces, round-2 finding #10); D53–D57 present and the decisions.md
-current-phase header reads 15. *(Every report-reading criterion above is additionally gated on
-the freshness precondition: the report's sha must be reachable from HEAD, that commit must
-contain `assert_chunks_fit_window`, and the embedding-model line must name the exact winner —
-a label-existence grep passes on the July report, and so does "a sha on this branch", since
-the July commit is an ancestor of it.)* **If no non-baseline candidate survives selection, the
-outcome is "no model swap": record the negative result and STOP for user disposition before
-landing the guard or rebuilding the sample index** — under MiniLM's 256-token window the guard
-cannot land without a standing truncation exception, so whether to widen the bracket or adopt
-such a policy is the user's call, not the implementer's. The pin and hygiene work stands
-either way.
+**Acceptance (two tiers, per the 4 Aug user decision — D54):**
+
+*Tier 1 — HARD GATES (deterministic, each fails the phase):* full suite green
+(`python -m pytest tests/ -q`); the winning arm has **zero** per-question golden HIT→MISS
+flips vs the rebuilt baseline arm in **both** raw-hybrid and the cached production-config
+replay, with both flip lists committed to the bake-off brief; a failing preflight leaves the
+index intact — neither `clear_store` nor `sync_documents` is reached (targeted pytest,
+finding C1); provenance names the new model, its window, the stored-chunk token distribution
+and over-window = 0; sample-corpus CI smoke still `strict hit@6 = 7/7 = 1.000` with both row
+greps byte-intact, green **on CI** before the canonical run is spent; CI cache key names the
+winner; `transformers==5.14.1` in requirements.txt and `pip freeze`; nothing corpus-bearing
+tracked (`git check-ignore` on a probe path *inside* **each** arm dir and `eval/bakeoff/` —
+a bare name gives a false negative, finding A1 — plus `git status --porcelain` showing no
+untracked corpus-bearing path; a `grep -v '^??'` filter would discard exactly the
+`?? chroma_db_arm_*/` line a gitignore failure produces, round-2 finding #10); D53–D58 present
+and the decisions.md current-phase header reads 15; ABOUT.md discloses download size and
+measured **p50** query-embed latency. *(Freshness precondition on every report-reading check:
+the report's sha is reachable from HEAD, that commit contains `assert_chunks_fit_window`, and
+the embedding-model line names the exact winner — a label-existence grep passes on the July
+report, and so does "a sha on this branch", since the July commit is an ancestor of it,
+finding A5.)*
+
+*Tier 2 — MEASURED AND DISCLOSED (reported in eval/results.md, the brief's Outcome, and the
+PR; NOT pass/fail — D50's recorded expansion variance exceeds any hard bar's effect on n=17,
+and the canonical run is sampled once):* realistic strict@6 on the canonical hybrid+rewrite
+row vs the 0.471 July figure (post-repair offline baseline: raw-hybrid 0.353; the
+cached-expansion replay of the July system scored 0.588, bounding the sampling noise);
+held-out strict@6 on both rows vs 20/20 and 0.950; negatives vs 11/14; **per-failure-class
+movement from the D54 diagnosis** — vocabulary-gap deep-misses recovered (of 3), near-misses
+pulled into top-6 (of 5, S5 among them); S5/N4 both-role-group coverage by equal-or-descendant
+match (`s == group or s.startswith(group + ".")` for each of 2.2.1 and 2.2.2 — not the
+evaluator's existential flag, finding C3, and not symmetric "related", which one generic
+parent `2.2` would satisfy, round-2 finding) plus the S5 answer against the Phase 14
+comparison rubric; canonical v4 guard status. **Any Tier-2 degradation vs the July headline
+is presented as an explicit disposition in the PR body (the D50-addendum precedent) — the
+merge decision is the user's.**
+
+**If no non-baseline candidate survives Tier-1 selection, the outcome is "no model swap":
+record the negative result and STOP for user disposition before landing the guard or
+rebuilding the sample index** — under MiniLM's 256-token window the guard cannot land without
+a standing truncation exception, so whether to widen the bracket or adopt such a policy is the
+user's call, not the implementer's. The pin, hygiene and instrument-repair work stands either
+way.
 
 ---
 

@@ -1546,3 +1546,50 @@ figure was 0.412. Run-to-run expansion variance is the mechanism in both cases. 
 arm ran before the intent_weight=0 no-op fix; with ≥6 non-zero-score fused docs per question
 throughout (pool 12, 2 arms, ≥4 sub-queries), zero-weight padding could not enter any top-6,
 so the W=0 arm equals the true no-intent baseline for every measured number.
+
+## D53 — transformers promoted from transitive to exact pin (3 Aug 2026)
+**Decision:** `transformers==5.14.1` pinned in requirements.txt (was transitive via
+sentence-transformers/langchain-huggingface, resolving to 5.13.0 locally).
+**Why:** the Phase 15 embedding candidates are ModernBERT-based and carry a hard
+`transformers>=4.48` floor — an unpinned transitive dependency that the code now depends on
+by version is a fresh-clone failure waiting to happen; CLAUDE.md's dependency rule requires
+exact pins with stated reasons. The CI HuggingFace cache key must track the embedding-model
+name for the same reason (a stale key silently re-downloads every run and never persists).
+**Rejected:** leaving it transitive (works until any resolver drift); pinning `torch` in the
+same breath (real hygiene point, unrelated to this phase — Phase 16 backlog).
+**Consequence:** the D47 cold-cache-miss message heuristic in `src/embedder.py` was verified
+against 5.13.0; it must be re-verified under 5.14.1 and its version note updated when the
+model seam lands (plan-gate finding A14).
+
+## D54 — Failure-class diagnosis; eval-set instrument repair for absorbed section labels (4 Aug 2026)
+**Decision:** the realistic-slice failures are diagnosed into four measured classes, and the
+four eval rows whose expected section number no chunk carries gain the ABSORBING chunk's
+label as an additional accepted answer (original labels retained): realistic `4.8.1.1`→+`4.8.1`
+(2 rows), golden `6.3.2`→+`6.3`, golden `9.6.1`→+`9.6`. Golden `1.7.2` is left unrepaired —
+its row already hits via the present `1.7.2.3` and adding the wide parent `1.7` would loosen
+the exam without need.
+**Why (the diagnosis, measured 3–4 Aug, offline):** (1) **Vocabulary gap** — 3 deep-misses
+where lay staff phrasing fails on content that the legal-register golden phrasing retrieves at
+rank 1–6 (natural experiment: "successive squatters…" rank 1 vs "neighbour has been using our
+client's field…" absent from top-20; "tenants in common devolve" rank 6 vs "two brothers own a
+farm and one died" absent). (2) **Near-misses** — 5 questions whose expected section ranks
+7–19 at top_k=6 cutoff (S5 raw rank 9). (3) **Absorbed labels** — D20's runt-merge folded four
+sections' text into a neighbouring chunk; the text is fully present and retrievable, only the
+`section_number` label differs, so the scoring marked genuinely-correct retrievals wrong and
+strict@6 was structurally ceilinged (golden 0.900, realistic 0.882). (4) **Expansion sampling
+variance** — replaying the committed cached expansions moves realistic to 10/17 = 0.588 vs the
+canonical run's 8/17 = 0.471 on the identical system; individual questions swing rank 17→1 on
+the expansion draw. Notably, truncation — the Phase 15 premise — does NOT discriminate:
+78.3% of strict-MISS expected-section chunks exceed the 256-token window vs 83.3% of
+strict-HITs. Post-repair offline baselines: golden raw-hybrid strict@6 25/30 = 0.833 (was
+0.800), realistic unchanged 6/17 = 0.353; ceilings lifted to 1.000.
+**Rejected:** re-chunking the corpus to restore the four labels (text is not lost — cost out
+of all proportion, and D20's merge policy exists for measured reasons); recording absorbed
+section numbers in chunk metadata (better long-term — citations regain precision — but it is
+chunker+evaluator code with test blast radius: Phase 16, bundled with the refined practitioner
+golden set); repairing mid-bake-off (changing the instrument during the measurement).
+**Consequence:** the bake-off's job is now specific — recover vocabulary-gap deep-misses and
+pull near-misses inside top-6, reported per class in the arm table; acceptance for the noisy
+canonical metrics moves to measure-and-disclose (user decision, 4 Aug), since the recorded
+expansion variance exceeds the effect a hard bar would measure on n=17; the S5/N4 anchors are
+knife-edge ranking cases, not recall failures.
