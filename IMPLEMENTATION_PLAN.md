@@ -734,9 +734,13 @@ distribution and over-window = 0; a failing preflight leaves the index intact �
 sample-corpus CI smoke still `strict hit@6 = 7/7 = 1.000` with both row greps byte-intact,
 green **on CI** before the canonical run is spent; CI cache key names the winner;
 `transformers==5.14.1` in requirements.txt and in `pip freeze`; ABOUT.md discloses download
-size and measured p50/p95 query-embed latency; nothing corpus-bearing tracked (`git
-check-ignore` on a probe path *inside* an arm dir — the bare name gives a false negative,
-finding A1 — plus clean `git status --porcelain`); D53–D57 present and the decisions.md
+size and measured **p50** query-embed latency (p95 is the third cut — acceptance must never
+require what the cut list offers to cut, the A4 defect recurring); nothing corpus-bearing
+tracked (`git
+check-ignore` on a probe path *inside* **each** arm dir and `eval/bakeoff/` — a bare name gives
+a false negative, finding A1 — plus **`git status --porcelain` showing no untracked
+corpus-bearing path**; the naive `| grep -v '^??'` filter discards exactly the `?? chroma_db_arm_*/`
+line a gitignore failure produces, round-2 finding #10); D53–D57 present and the decisions.md
 current-phase header reads 15. *(Every report-reading criterion above is additionally gated on
 the freshness precondition: the report's sha must be reachable from HEAD, that commit must
 contain `assert_chunks_fit_window`, and the embedding-model line must name the exact winner —

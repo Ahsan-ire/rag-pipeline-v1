@@ -1,6 +1,7 @@
 # 001 — Embedding-model bake-off (Phase 15)
 
-**Status:** reviewed (plan gate, 3 Aug 2026 — REVISE then READY; see `## Review`)
+**Status:** draft (plan gate 3 Aug 2026: two rounds run, verdict **REVISE** — round-3
+consolidation pending; flips to `reviewed` only on READY, per docs/designs/README.md)
 **Date:** 3 Aug 2026
 **Decision ledger entry:** docs/decisions.md D53 (added when decided)
 
@@ -130,10 +131,12 @@ read against the 27/30 = 0.900 structural ceiling above.
 4. Ties break to the smaller download / lower measured p50 query-embed latency.
 5. **If no arm survives 1–2, the baseline survives by default and the phase outcome is "no
    model swap"** — a negative result recorded in D53 with the full arm table (the D50
-   precedent). The guard, provenance, dependency pin and hygiene work still land; the
-   acceptance criteria that presuppose a new model are then reported as not-applicable with
-   the measured reason, and whether to widen the bracket is the user's call, not the
-   implementer's.
+   precedent). In that branch the phase **STOPS for user disposition** and the truncation
+   guard does **not** land: under MiniLM's 256-token window the guard would correctly reject a
+   sample-corpus chunk (one of the 16 is 258 tokens) and break the CI smoke job, so shipping
+   it would require a standing truncation exception — a policy choice for the user, not the
+   implementer. Only the dependency pin and the repo hygiene stand unconditionally. Whether to
+   widen the bracket instead is likewise the user's call.
 
 **Diagnostics recorded but not binding:** realistic strict@6 and related@6 (compare against
 the offline raw-hybrid baseline **0.353**, not the canonical 0.471 — expansion is disabled in
@@ -313,6 +316,39 @@ correctly revised, and found five further defects — all **accepted** and appli
    framing surviving in two, the corrected transformers-import claim not propagated, scratchpad-
    vs-committed parser, and unconditional "solved by window" doc instructions that contradict a
    no-swap outcome) — all reconciled across the three documents.
+
+### Round 3 (verdict: still REVISE — consolidation, 3 Aug)
+
+A second re-gate found the v2 revision failing in nine further blocking ways. The pattern
+mattered more than any single item: the same rules were restated in three documents and drifted
+apart between edits, and several round-1 dispositions were recorded as "folded into the plan"
+without ever becoming a plan step. Two structural corrections:
+
+- **One normative source.** `IMPLEMENTATION_PLAN.md` §Phase 15 now owns the selection rule and
+  the acceptance block (CLAUDE.md already designates it the working spec); the workstream plan
+  carries execution mechanics, and this brief carries the bake-off contract and these logs. No
+  rule appears in two places.
+- **Instrument gaps are build steps, not assumptions.** The production-config disqualifier and
+  the both-role-group coverage test were written as if instruments existed for them; neither
+  did (`scripts/w_sweep.py` compares W arms within one index and matches existentially). They
+  are now explicit work in `scripts/bakeoff_report.py` and `scripts/w_sweep.py`, landing before
+  the selection step that depends on them.
+
+Also fixed: the no-swap branch no longer lands a guard that cannot land under MiniLM; the
+negatives count is scoped to held-out + realistic (the naive latch returned 16 on any report);
+the hygiene check no longer filters out the untracked line that a gitignore failure produces;
+p95 latency is required by neither acceptance nor cut list simultaneously; the offline report's
+per-question section is keyed to its real `hybrid+rewrite` label; the branch is pushed and the
+PR opened before the canonical run, so "CI green first" is achievable; the production index is
+rebuilt only after the sample index and CI pass; and a held-out regression gets the same
+STOP-for-user-disposition branch as a missed realistic bar.
+
+**Open question deliberately escalated rather than decided:** whether criteria 3, 6 and 7
+should be hard gates at all. Each is measured once, on a canonical run whose expansion sampling
+D50's addendum records as moving golden 27/30 → 26/30 and S5 from related-rank-2 to MISS — on
+a slice where one question is 5.9 points. The gate can be reformulated as "measure and
+disclose" rather than "pass or fail", which is what the evidence supports; that is a product
+decision for the owner.
 
 ## Outcome
 
