@@ -453,8 +453,23 @@ gte was baseline-equal on golden aggregate while regressing realistic and N4 cov
 **Neither candidate recovered a single vocabulary-gap question (0/3 for every arm)** — the
 lay-phrasing failure class is untouched by stronger general-purpose embedders on this corpus.
 
+**Post-verdict mechanism probe (4 Aug, per-arm vector/bm25/hybrid ranks on the flipped
+questions):** the undertaking flip is NOT an embedding failure — **all three models rank the
+expected chunk #1 in vector-only mode**, and BM25 misses it entirely in every arm; the loss
+happens in rank fusion, where BM25's pile of confident wrong candidates demotes the vector's
+top pick to the top-6 boundary (baseline lands exactly at 6; the candidates' slightly
+different candidate tails push it just past). gte's second flip is a genuine semantic
+regression (expected section absent from its top-20 vector list where baseline ranks it 5).
+So the disqualifications decompose into: one real semantic regression (gte), one
+fusion-boundary knife-edge that punishes any perturbation of a rank-6 hit (both), and the
+realistic-slice collapse (granite, the substantive failure). Two implications recorded for
+Phase 16: the fusion stack (RRF constants, pool 12, W) was tuned under MiniLM across Phases
+3–14, so any candidate faces a co-adapted incumbent — a future bake-off could compare
+candidate+retuned-fusion as systems; and BM25 contributing nothing on several golden
+questions strengthens the reranker case independently of embeddings.
+
 Interpretation, stated plainly: the MTEB quality story (MiniLM 42.9 vs candidates 53.9–57.0)
-**did not transfer to this corpus**. The D54 diagnosis anticipated this possibility —
+**did not transfer to this corpus as system-level wins**. The D54 diagnosis anticipated this possibility —
 truncation was already shown not to discriminate hits from misses, and the vocabulary-gap
 class was always a hypothesis. The per-question controls did exactly what they were built
 for: an aggregate-only comparison would have shipped granite and silently traded two field-
