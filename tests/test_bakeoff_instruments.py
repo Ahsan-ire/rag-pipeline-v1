@@ -692,3 +692,52 @@ def test_percentile_is_nearest_rank():
 def test_default_query_set_is_not_the_heldout_set():
     """The latency default points at the realistic set, never the held-out one."""
     assert os.path.basename(embed_latency.DEFAULT_QUERIES) == "realistic_set.jsonl"
+
+
+class TestCompareProdRanks:
+    """compare_prod_ranks — selection disqualifier #2 (production config)."""
+
+    @staticmethod
+    def _dump(rows):
+        return {"ranks": rows}
+
+    def test_flip_gain_and_clean_rows(self):
+        from scripts.bakeoff_report import compare_prod_ranks
+
+        base = self._dump({
+            "W=0.25|golden|0": {"question": "q0", "strict_rank": 3},
+            "W=0.25|golden|1": {"question": "q1", "strict_rank": None},
+            "W=0.25|golden|2": {"question": "q2", "strict_rank": 1},
+            "W=0.5|golden|0": {"question": "q0", "strict_rank": 9},
+            "W=0.25|realistic|0": {"question": "r0", "strict_rank": 2},
+        })
+        arm = self._dump({
+            "W=0.25|golden|0": {"question": "q0", "strict_rank": 9},
+            "W=0.25|golden|1": {"question": "q1", "strict_rank": 4},
+            "W=0.25|golden|2": {"question": "q2", "strict_rank": 2},
+            "W=0.5|golden|0": {"question": "q0", "strict_rank": 1},
+            "W=0.25|realistic|0": {"question": "r0", "strict_rank": None},
+        })
+        out = compare_prod_ranks(base, arm)
+        assert [r["question"] for r in out["flips"]] == ["q0"]  # 3 -> 9
+        assert [r["question"] for r in out["gains"]] == ["q1"]  # None -> 4
+        assert out["unmatched"] == []
+        # W=0.5 and realistic rows must not leak into the golden W=0.25 view.
+        assert all(r["key"].startswith("W=0.25|golden|") for r in out["flips"] + out["gains"])
+
+    def test_unmatched_keys_surface(self):
+        from scripts.bakeoff_report import compare_prod_ranks
+
+        base = self._dump({"W=0.25|golden|0": {"question": "q0", "strict_rank": 1}})
+        arm = self._dump({"W=0.25|golden|1": {"question": "q1", "strict_rank": 1}})
+        out = compare_prod_ranks(base, arm)
+        assert out["flips"] == [] and out["gains"] == []
+        assert out["unmatched"] == ["W=0.25|golden|0", "W=0.25|golden|1"]
+
+    def test_rank_six_is_a_hit_seven_is_not(self):
+        from scripts.bakeoff_report import compare_prod_ranks
+
+        base = self._dump({"W=0.25|golden|0": {"question": "q", "strict_rank": 6}})
+        arm = self._dump({"W=0.25|golden|0": {"question": "q", "strict_rank": 7}})
+        out = compare_prod_ranks(base, arm)
+        assert [r["question"] for r in out["flips"]] == ["q"]

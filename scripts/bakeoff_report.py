@@ -641,6 +641,68 @@ def render(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> str:
 # --------------------------------------------------------------------------
 # Manifest + CLI
 # --------------------------------------------------------------------------
+def compare_prod_ranks(
+    baseline: Mapping[str, Any],
+    arm: Mapping[str, Any],
+    weight: float = 0.25,
+    label: str = "golden",
+    top_k: int = HIT_K,
+) -> Dict[str, Any]:
+    """Golden strict@k flips between two ``w_sweep --ranks-out`` dumps.
+
+    This is selection disqualifier #2 (production configuration — surface
+    rewrites plus the intent arm at the shipped weight, replayed from the
+    committed expansion cache): an arm can be clean on raw queries and regress
+    under expansion, so raw-hybrid flips alone do not measure what ships.
+
+    Rows are matched by their ``W=<w>|<label>|<i>`` key — both dumps come from
+    the same set files in the same order, so index identity is question
+    identity; a key present on one side only is reported, never silently
+    dropped.
+
+    Args:
+        baseline: parsed JSON of the baseline arm's ranks dump.
+        arm: parsed JSON of the candidate arm's ranks dump.
+        weight: the intent weight to compare at (the shipped W).
+        label: the set label to compare (selection uses the golden set only).
+        top_k: strict hit cutoff.
+
+    Returns:
+        ``{"weight", "label", "flips": [...], "gains": [...], "unmatched":
+        [...]}`` where flips are baseline strict-HIT@k rows that the arm
+        strict-MISSes, gains the reverse, each carrying the question text.
+    """
+    prefix = f"W={weight}|{label}|"
+    base_rows = {k: v for k, v in baseline["ranks"].items() if k.startswith(prefix)}
+    arm_rows = {k: v for k, v in arm["ranks"].items() if k.startswith(prefix)}
+    flips: List[Dict[str, Any]] = []
+    gains: List[Dict[str, Any]] = []
+    unmatched = sorted(set(base_rows) ^ set(arm_rows))
+    for key, brow in base_rows.items():
+        arow = arm_rows.get(key)
+        if arow is None:
+            continue
+        b_hit = _hit_at_k(brow.get("strict_rank"), top_k)
+        a_hit = _hit_at_k(arow.get("strict_rank"), top_k)
+        row = {
+            "key": key,
+            "question": brow.get("question"),
+            "baseline_rank": brow.get("strict_rank"),
+            "arm_rank": arow.get("strict_rank"),
+        }
+        if b_hit and not a_hit:
+            flips.append(row)
+        elif a_hit and not b_hit:
+            gains.append(row)
+    return {
+        "weight": weight,
+        "label": label,
+        "flips": sorted(flips, key=lambda r: r["key"]),
+        "gains": sorted(gains, key=lambda r: r["key"]),
+        "unmatched": unmatched,
+    }
+
+
 def sha256_file(path: str) -> str:
     """SHA-256 of a file, read in chunks (reports are small; be tidy anyway)."""
     digest = hashlib.sha256()
@@ -721,6 +783,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         metavar="PATH",
         help="Also write a JSON manifest of the inputs (paths + sha256s).",
     )
+    parser.add_argument(
+        "--prod-ranks",
+        nargs="+",
+        default=None,
+        metavar="RANKS_JSON",
+        help=(
+            "w_sweep --ranks-out dumps: the baseline arm's dump first, then one "
+            "per candidate arm (file stem names the arm). Emits the "
+            "production-config golden flip lists at the shipped W "
+            "(selection disqualifier #2)."
+        ),
+    )
     raw = list(sys.argv[1:] if argv is None else argv)
     _refuse_heldout(parser, raw)
     args = parser.parse_args(raw)
@@ -738,6 +812,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     print(render(arms, args.baseline))
+
+    if args.prod_ranks:
+        with open(args.prod_ranks[0], encoding="utf-8") as f:
+            base_dump = json.load(f)
+        print("\n## Production-config golden flips (W=0.25, cached expansions)\n")
+        for path in args.prod_ranks[1:]:
+            name = os.path.splitext(os.path.basename(path))[0]
+            with open(path, encoding="utf-8") as f:
+                result = compare_prod_ranks(base_dump, json.load(f))
+            flips = result["flips"] or "none"
+            gains = [r["question"][:70] for r in result["gains"]] or "none"
+            print(f"- **{name}**: HIT→MISS: {flips}")
+            print(f"  MISS→HIT: {gains}")
+            if result["unmatched"]:
+                print(f"  UNMATCHED KEYS (investigate): {result['unmatched']}")
 
     if args.manifest_out:
         manifest = build_manifest(arms, paths, args.baseline)
