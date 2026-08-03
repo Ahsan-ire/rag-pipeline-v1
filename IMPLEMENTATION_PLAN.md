@@ -612,7 +612,8 @@ not discriminate hits from misses, so the expected gain rests primarily on model
 settles it. A second 3 Aug finding caps the instrument itself: golden `1.7.2`, `6.3.2`,
 `9.6.1` and realistic `4.8.1.1` (2 rows) expect section numbers no chunk carries — the D20
 runt-merge folded each into a neighbour (parents *and* children are indexed) — so **strict@6
-is structurally ceilinged at golden 27/30 = 0.900 and realistic 15/17 = 0.882** regardless of
+was — until the WS0 repair below — structurally ceilinged at golden 0.900 and realistic
+0.882** regardless of
 model. Also measured the same day: a 512-token window would still truncate 24–38% of chunks
 and force re-splitting 36.4% of them (+554 chunks), fragmenting the D4 chunk-equals-numbered-
 paragraph unit well beyond the oversize splitting D4 already contemplates;
@@ -699,17 +700,31 @@ regressions. The user set acceptance to **measure-and-disclose** for the canonic
    N4 are diagnostics; ties break to the smaller/faster model. The selection parser is a
    committed, unit-tested script that refuses `--heldout` and emits an arm manifest of input
    sha256s and commands, so held-out exclusion is a property of an artifact rather than
-   self-attestation. Download size and measured per-query embed latency are recorded per arm.
+   self-attestation. `scripts/bakeoff_report.py` also computes the Tier-2 per-class
+   movement (deep-misses recovered, near-misses pulled into top-6) from the committed class
+   roster in the brief — the roster and the computation are build steps, not assumptions
+   (round-3 auditor finding #6). Download size and measured per-query embed latency are recorded per arm.
 5. **Winner adoption + re-baseline, only if a non-baseline candidate survives (WS5–WS7, D57
-   addendum, D58):** `DEFAULT_EMBEDDING_MODEL`
-   flips to the winner; full `--reset` re-index; `scripts/build_sample_index.py` gains
-   `--reset` (without it the model-independent IDs leave MiniLM vectors under a stale
-   manifest) and `sample_chroma_db/` is regenerated with the three CI smoke greps verified
-   locally; the CI HuggingFace cache key tracks the model name. The W sweep is re-run offline
-   against the new index (cached expansions are query-side and index-independent, so it stays
-   zero-API) and `INTENT_LIST_WEIGHT` is re-decided under the new embeddings — the D50
-   question that was explicitly parked until this lever landed. Then **one** canonical run
-   writes `eval/results.md`.
+   addendum, D58). Ordering is load-bearing and REVERSIBLE-FIRST (round-3 auditor blocker #1
+   — nothing destroys the production index until CI has accepted the winner):**
+   (a) `DEFAULT_EMBEDDING_MODEL` flips to the winner and the WS3 guard lands with it;
+   (b) `scripts/build_sample_index.py` gains `--reset` (without it the model-independent IDs
+   leave MiniLM vectors under a stale manifest), `sample_chroma_db/` is regenerated, and the
+   three CI smoke greps pass locally; the CI HuggingFace cache key tracks the model name;
+   (c) **push the branch and open the PR** — CI triggers only on push-to-main or pull_request,
+   so without this step "CI green before the canonical run" is unachievable — and wait for CI
+   green (D40: vector floats differ across platforms; a macOS-green/ubuntu-red smoke must
+   surface HERE, while everything is still reversible);
+   (d) only then the full `--reset` re-index of the production `./chroma_db`;
+   (e) the W re-sweep, offline (cached expansions are query-side and index-independent;
+   `offline_only=True` makes an incomplete cache raise rather than call the API). **The one
+   binding W rule (D58) — D50's recorded rule re-run under the new embeddings:** smallest
+   W ∈ {0, 0.25, 0.5} making S5 strict@6 HIT, subject to zero golden-control strict flips vs
+   the W=0 control AND N4 remaining HIT; the incumbent 0.25 stands if no W qualifies; any
+   change to this rule itself requires its own D58 rationale; if W changes, every surviving
+   arm and the baseline are replayed at the final W, the flip lists regenerated, and the
+   branch re-pushed for CI before WS7;
+   (f) then **one** canonical run writes `eval/results.md`.
 
 **Tests:** env resolution (unset / override / whitespace / unknown-model warning) and a guard
 test pinning `EMBEDDING_MODEL == DEFAULT_EMBEDDING_MODEL` so a polluted shell fails legibly;
