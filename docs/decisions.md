@@ -1593,3 +1593,33 @@ pull near-misses inside top-6, reported per class in the arm table; acceptance f
 canonical metrics moves to measure-and-disclose (user decision, 4 Aug), since the recorded
 expansion variance exceeds the effect a hard bar would measure on n=17; the S5/N4 anchors are
 knife-edge ranking cases, not recall failures.
+
+## D57 — Embedding bake-off: NEGATIVE RESULT, no model swap (4 Aug 2026)
+**Decision:** the Phase 15 embedding bake-off selects NO candidate; `all-MiniLM-L6-v2` stays
+the production embedder. Both surviving candidates were disqualified by the pre-registered
+per-question rule (zero golden strict HIT→MISS flips vs the rebuilt baseline arm, in raw
+hybrid AND the cached-expansion production config): gte-modernbert-base flipped two golden
+controls, granite-small-english-r2 flipped one — each verified in the underlying reports and
+persisting under the production replay. Qwen3-Embedding-0.6B was cost-disqualified at the
+wall-clock gate (measured 269 s / 20 chunks → ~330 min projected build vs the 90-min gate).
+**Why:** the MTEB quality gap (42.9 vs 53.9–57.0) did not transfer to this corpus, and the
+aggregate numbers actively misled: granite's +0.067 golden aggregate came with a realistic
+slice collapse to 0.118 (vs 0.353), a per-class regression, and N4 both-role coverage going
+yes/yes → no/no. Neither candidate recovered a single vocabulary-gap question (0/3 across
+all arms) — the lay-phrasing failure class is untouched by stronger general-purpose
+embedders here. Full arm table, flip lists, latencies and interpretation:
+docs/designs/001-bakeoff-embedding-model.md §Outcome; artifacts in eval/bakeoff/ (manifest
+with sha256s).
+**Rejected:** shipping granite on its golden aggregate (the D50 lesson, now with a second
+data point: aggregates hide control flips); shipping gte as "no worse on aggregate"
+(regressed realistic and N4 coverage); re-running with different seeds until a candidate
+passed (the rule is the rule).
+**Consequence:** the pre-registered no-swap branch applies — no production re-index, no
+sample-corpus regeneration, no CI cache-key change, the WS3 truncation guard does not land
+absent an owner-approved truncation-exception policy, and NO canonical API run is needed
+(production config unchanged; the committed eval/results.md remains the accurate record).
+The D54 instrument repair, D55 model-config seam, bake-off instruments, and D53 pin all
+stand. Owner disposition options: widen the bracket (arctic-l-v2.0, 2.3 GB, is the remaining
+licence-clean 8k candidate; Qwen under GPU/ONNX), adopt a truncation exception to land the
+guard under MiniLM, and/or aim Phase 16 directly at the measured failure classes (reranker
+for the five near-misses; expansion/vocabulary work for the three-gap class).

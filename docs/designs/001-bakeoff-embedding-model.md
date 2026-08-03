@@ -428,6 +428,47 @@ application.
 
 ## Outcome
 
-Filled in after the bake-off: winner, arm table, per-question flip lists (raw-hybrid and
-production-config), sizes and latencies, per-class movement vs the roster, the decisions.md
-entry number.
+**NEGATIVE RESULT (4 Aug 2026, D57): no candidate survives selection — the baseline wins by
+default and the phase outcome is "no model swap."** Full evidence: `eval/bakeoff/` (gitignored
+artifacts; manifest with sha256s) and the tables below.
+
+| Arm | Golden S@6 | Golden R@6 | Realistic S@6 | Realistic R@6 | p50 embed | Disposition |
+|---|---|---|---|---|---|---|
+| baseline (MiniLM, rebuilt) | 0.833 | 0.900 | 0.353 | 0.588 | 11.7 ms | **survives by default** |
+| gte-modernbert-base | 0.833 | 0.933 | 0.294 | 0.529 | 26.1 ms | DISQUALIFIED — 2 golden HIT→MISS flips (raw AND production config) |
+| granite-small-english-r2 | 0.900 | 1.000 | **0.118** | 0.412 | 26.7 ms | DISQUALIFIED — 1 golden HIT→MISS flip (raw AND production config) |
+| Qwen3-Embedding-0.6B | — | — | — | — | — | COST-DISQUALIFIED (measured ~330 min projected build vs 90-min gate) |
+
+The disqualifying flips (verified in the underlying reports, not just the parser): both
+candidates lose *"What rules govern a solicitor giving an undertaking to a lender…"* (a
+baseline rank-6 HIT, absent from both candidates' top-20); gte additionally loses *"What
+searches should a purchaser's solicitor carry out before completion…"* (baseline rank 3).
+Both persist under the production-config replay, so this is not an expansion artefact.
+
+What the aggregate numbers would have hidden — the reason the per-question rule exists (D50):
+granite's +0.067 golden aggregate came with a **realistic-slice collapse to 0.118** (2/17,
+vs baseline 0.353), a per-class regression (2/5 near-misses recovered vs baseline's 3/5,
+losing the stamp-duty question), and N4 both-role coverage regressing from yes/yes to no/no.
+gte was baseline-equal on golden aggregate while regressing realistic and N4 coverage.
+**Neither candidate recovered a single vocabulary-gap question (0/3 for every arm)** — the
+lay-phrasing failure class is untouched by stronger general-purpose embedders on this corpus.
+
+Interpretation, stated plainly: the MTEB quality story (MiniLM 42.9 vs candidates 53.9–57.0)
+**did not transfer to this corpus**. The D54 diagnosis anticipated this possibility —
+truncation was already shown not to discriminate hits from misses, and the vocabulary-gap
+class was always a hypothesis. The per-question controls did exactly what they were built
+for: an aggregate-only comparison would have shipped granite and silently traded two field-
+test failure classes for a leaderboard number.
+
+Consequences per the pre-registered no-swap branch: `DEFAULT_EMBEDDING_MODEL` stays MiniLM;
+the WS3 truncation guard does NOT land (it cannot, under MiniLM's 256-token window, without a
+standing truncation-exception policy — the owner's call); no production re-index, no sample
+regeneration, no CI cache-key change, and **no canonical API run is warranted** (production
+config is unchanged, so the committed eval/results.md remains accurate). What stands: the
+instrument repair (D54), the model-config seam (D55) making any future bake-off a
+one-command-per-arm exercise, the bake-off instruments themselves, the transformers pin (D53)
+and hygiene, and this negative result. Widening the bracket (arctic-l-v2.0 at 2.3 GB is the
+remaining licence-clean 8k-window candidate; Qwen under GPU/ONNX), adopting a truncation
+exception to land the guard anyway, or redirecting Phase 16 at the failure classes directly
+(reranker for near-misses; expansion/vocabulary work for the gap class) are the owner's
+disposition options.
