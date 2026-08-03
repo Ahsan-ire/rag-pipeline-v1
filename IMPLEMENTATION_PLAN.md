@@ -695,7 +695,7 @@ regressions. The user set acceptance to **measure-and-disclose** for the canonic
    spend live API calls. **Selection disqualifies on any golden HIT→MISS versus the rebuilt
    baseline in *either* raw hybrid *or* the cached production configuration** (expansion +
    intent at the shipped W — raw hybrid alone does not measure what ships); among survivors,
-   highest golden strict@6, read against the 0.900 structural ceiling; realistic slice, S5 and
+   highest golden strict@6, read against the post-repair 1.000 structural ceiling; realistic slice, S5 and
    N4 are diagnostics; ties break to the smaller/faster model. The selection parser is a
    committed, unit-tested script that refuses `--heldout` and emits an arm manifest of input
    sha256s and commands, so held-out exclusion is a property of an artifact rather than
@@ -714,7 +714,10 @@ regressions. The user set acceptance to **measure-and-disclose** for the canonic
 **Tests:** env resolution (unset / override / whitespace / unknown-model warning) and a guard
 test pinning `EMBEDDING_MODEL == DEFAULT_EMBEDDING_MODEL` so a polluted shell fails legibly;
 MiniLM inertness canary (constructor kwargs byte-equal to today, `query_encode_kwargs` empty);
-query-prompt merge canary (normalization survives alongside the prompt); `_apply_model_config`
+query-prompt merge canary (normalization survives alongside the prompt); every known-model
+`MODEL_SPECS` entry enforces `max_seq_length == context_window` (a mismatch raises, with a
+mismatch test — provenance must not report zero over-window while the client truncates
+earlier); `_apply_model_config`
 set / readback-raise / `default_prompt_name` / no-`_client` no-op; context-window resolution
 (spec / tokenizer / sentinel raises); tokenizer loader local-first, cache-miss retry,
 unrelated-error propagation, lru reuse; token counting applies the same newline normalization

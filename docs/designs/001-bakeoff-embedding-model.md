@@ -100,7 +100,7 @@ Two structural facts constrain any fix (both measured 3 Aug, same index):
   `trust_remote_code=True`, and a download size a reviewer will tolerate. Licence must permit
   commercial use in an MIT repo — CC-BY-NC candidates are excluded regardless of quality.
 - **Dependency policy (CLAUDE.md):** no new dependency without a stated reason and an exact
-  pin. `transformers` is promoted from transitive to pinned in this phase (D56).
+  pin. `transformers` is promoted from transitive to pinned in this phase (D53).
 - **Eval integrity (D30, D31, D38, D46, D51):** the held-out set is never used for selection
   and appears in no bake-off command. Arm reports carry no chunk or answer text. Arm indexes
   and arm reports are gitignored before the first arm is built.
@@ -131,7 +131,7 @@ labels the set `tuning` only on exact equality, and a `./` prefix silently relab
 `golden`, breaking any parser keyed to the section heading.
 
 **Primary metric — golden strict hit@6, hybrid row** (`## tuning — retrieval ablation`),
-read against the 27/30 = 0.900 structural ceiling above.
+read against the post-repair 30/30 = 1.000 structural ceiling.
 
 **Selection rule, applied mechanically:**
 
