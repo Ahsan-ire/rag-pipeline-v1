@@ -1,6 +1,6 @@
 # 001 — Embedding-model bake-off (Phase 15)
 
-**Status:** reviewed (plan gate READY — round 5, 4 Aug 2026; see `## Review`)
+**Status:** implemented (negative result — no model swap; see `## Outcome` and D57 + addendum)
 **Date:** 3 Aug 2026
 **Decision ledger entry:** docs/decisions.md D57 (bake-off outcome, added when decided); diagnosis + instrument repair recorded as D54
 

@@ -4,7 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 15 — retrieval foundation: embedding upgrade + tokenizer-true accounting**
+**Current phase: 15 — retrieval foundation (negative result recorded, closing)**
+
+**Next: D59** (update this line in the same commit as each new entry).
 
 ---
 
@@ -1623,3 +1625,83 @@ stand. Owner disposition options: widen the bracket (arctic-l-v2.0, 2.3 GB, is t
 licence-clean 8k candidate; Qwen under GPU/ONNX), adopt a truncation exception to land the
 guard under MiniLM, and/or aim Phase 16 directly at the measured failure classes (reranker
 for the five near-misses; expansion/vocabulary work for the three-gap class).
+
+## D55 — Per-model embedding config seam + EMBEDDING_MODEL override (4 Aug 2026; entry backfilled 24 Aug — code landed in 01ff456)
+**Decision:** `src/embedder.py` gains `EmbeddingModelSpec` (frozen dataclass: `context_window`,
+`max_seq_length`, `query_prompt`, `doc_prompt`), a `MODEL_SPECS` registry covering MiniLM plus the
+three bake-off arms, and `resolve_embedding_model()`, which reads the `EMBEDDING_MODEL` **process**
+environment variable (never `.env`) and otherwise returns `DEFAULT_EMBEDDING_MODEL`. The resolved id
+stays a module constant (`EMBEDDING_MODEL`), so it keeps flowing unchanged into the Chroma
+collection metadata, the `embedding_model.txt` sidecar manifest, `assert_embedding_model`'s default
+argument and `evaluator.py`'s import-by-value. `tests/conftest.py` scrubs `EMBEDDING_MODEL` (with
+`ALLOW_CHUNK_TRUNCATION`) in an autouse fixture, so a bake-off shell cannot leak into the suite.
+**Why:** the bake-off had to index four arms under four different models in one checkout with no
+code edit per arm — a model choice is configuration, and the index, eval and query entry points must
+all resolve the same one. `MODEL_SPECS` is validated at import time (`max_seq_length ==
+context_window` wherever both are set) because the truncation guard reads one value while the
+embedding client truncates at the other: a divergence would let provenance report zero over-window
+chunks while the model silently cut them short (plan-gate finding A17).
+**Rejected:** a hardcoded model constant (the status quo — it makes each arm a patch, so the arms
+stop being the same code); a CLI-only `--embedding-model` flag (misses the eval and script entry
+points that never parse the pipeline CLI); reading the override from `.env` (`embedder` imports
+before `generator`'s `load_dotenv`, so a `.env` value would apply per entry point — `index` and
+`eval` could silently use different models); substituting rather than merging query prompts into
+`query_encode_kwargs` (langchain-huggingface 1.2.2 `embed_query` replaces `encode_kwargs` wholesale,
+which would embed queries unnormalized against normalized documents).
+**Consequence:** the MiniLM path is byte-inert (identical constructor kwargs, empty
+`query_encode_kwargs`, canary-tested), so the seam survives D57's no-swap outcome at zero production
+risk, and any future bake-off arm is one exported environment variable rather than a diff.
+
+## D56 / D58 — reserved numbers, MOOTED (24 Aug 2026)
+**Decision:** D56 (the tokenizer-true index-time truncation guard and token-distribution provenance,
+WS3) and D58 (the post-swap W re-sweep under the new embeddings, WS5e) were numbers reserved by the
+Phase 15 plan for the winner-adoption branch. D57's negative result means that branch was never
+taken, so both are recorded here as mooted rather than left as silent gaps. The numbers are
+**retired, not reused**: a future truncation guard or W re-sweep takes a fresh number.
+**Why:** the ledger is append-only and the plan named D53–D58 in advance, so two missing numbers
+would read as lost entries rather than as work that correctly did not happen. Reusing them would
+break the one-number-one-decision property that makes every cross-reference
+(IMPLEMENTATION_PLAN.md, docs/designs/001, commit messages) stable.
+**Rejected:** deleting the reservations from the plan (rewriting a document the plan gate approved,
+and erasing the evidence that the no-swap branch was pre-registered); writing speculative D56/D58
+entries for work that never ran (this is a ledger of decisions, not of intentions); renumbering a
+later decision into the gap (breaks existing references).
+**Consequence:** the WS3 guard stays unlanded — under MiniLM's 256-token window it would correctly
+reject the 258-token sample-corpus chunk and break `build_sample_index` and CI, so it cannot land
+without a standing truncation-exception policy, and the user chose accept-&-close on 24 Aug without
+adopting one. The next new ledger entry is D59.
+
+## D57 addendum — post-verdict mechanism probe (4 Aug 2026; entry backfilled 24 Aug — landed in ec2551b)
+**Decision:** record what the disqualifying flips actually *were*, rather than leaving "two
+candidates flipped golden controls" as the phase's last word. Per-arm vector-only, BM25 and hybrid
+ranks were pulled for every flipped question, and the flips decompose into three unlike things:
+(1) the flip both candidates share — the *"undertaking to a lender"* control — is a **fusion
+knife-edge, not an embedding deficiency**: all three arms rank the expected chunk **#1 in
+vector-only mode**, and BM25 misses it entirely in every arm, so RRF's pile of confident-but-wrong
+lexical candidates demotes the vector arm's top pick to the top-6 boundary (the baseline lands
+exactly at rank 6, and any perturbation of the candidate tail pushes it past);
+(2) gte-modernbert-base's *second* flip (*"searches before completion"*) is a **genuine semantic
+regression** — the expected section is absent from its top-20 vector list where the baseline ranks
+it 5;
+(3) granite-small-english-r2's realistic-slice collapse (**0.353 → 0.118**) is the substantive
+failure, and it is precisely what the +0.067 golden aggregate hid.
+**Why:** a negative result is only reusable if it says why. "No candidate won" invites the wrong
+follow-up (try more embedders); "one real semantic regression, one fusion boundary, one slice
+collapse" names failure classes that a *different* instrument addresses. The fusion stack (RRF
+constants, pool 12, W) was tuned under MiniLM across Phases 3–14, so every candidate faces a
+co-adapted incumbent — a fair future bake-off compares candidate-plus-retuned-fusion as *systems*,
+not embedders in isolation.
+**Rejected:** reading the shared flip as evidence against both candidates' embeddings (their
+vector-only ranks say the opposite); re-tuning fusion per arm inside this bake-off to rescue a
+candidate (changing the instrument mid-measurement — the same reason D54's repair landed before any
+arm was built); loosening the pre-registered zero-flip rule once the mechanism looked benign (the
+rule is the rule, and a rank-6 hit that any perturbation dislodges is real fragility whoever owns
+it).
+**Consequence:** the fusion-boundary class is **Phase 16 reranker territory** — BM25 contributing
+nothing at all on several golden questions strengthens the cross-encoder case independently of any
+embedding argument. **Re-open condition (binding):** the embedding bracket is revisited only *after*
+the Phase 16 question-set expansion gives the eval statistical power. At n≈23–30 the 95% confidence
+interval is roughly ±14 points, so a bake-off verdict on a new arm today would be measuring noise —
+widening the bracket before widening the question set buys another unfalsifiable table. The full arm
+table, flip lists, latencies and interpretation stay in
+docs/designs/001-bakeoff-embedding-model.md §Outcome.
