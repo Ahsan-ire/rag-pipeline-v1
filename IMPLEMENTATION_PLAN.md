@@ -788,6 +788,24 @@ a standing truncation exception, so whether to widen the bracket or adopt such a
 user's call, not the implementer's. The pin, hygiene and instrument-repair work stands either
 way.
 
+**Outcome (closed 24 Aug 2026):** **NEGATIVE per D57 — no model swap.** No candidate survived
+Tier-1 selection (gte-modernbert-base and granite-small-english-r2 each flipped golden controls in
+raw hybrid *and* the cached production-config replay; Qwen3-Embedding-0.6B was cost-disqualified at
+the wall-clock gate), so the pre-registered no-swap branch applies and `all-MiniLM-L6-v2` remains
+the production embedder. **MOOTED:** WS5–WS8 and every winner-conditional item — winner adoption,
+the sample-index regeneration, the CI cache-key change, the production re-index, the D58 W
+re-sweep, the canonical run, and the ABOUT.md download-size/p50-latency disclosure that belonged to
+the adopted model. **WS3 guard NOT landed:** no truncation-exception policy was adopted — the user
+chose accept-&-close on 24 Aug — and under MiniLM's 256-token window the guard cannot land without
+one (D56/D58 record both reserved numbers as retired). **What stands:** the D53 pin and hygiene, the
+D54 diagnosis and instrument repair, the D55 model-config seam, and the committed bake-off
+instruments (`scripts/bakeoff_report.py` incl. its `compare_prod_ranks` production-config flip
+check, `scripts/w_sweep.py`, `scripts/embed_latency.py`) with their tests. The **re-open condition**
+for the embedding bracket is recorded in the
+D57 addendum (revisit only after the Phase 16 question-set expansion supplies statistical power).
+Full arm table, flip lists and the post-verdict mechanism probe:
+docs/designs/001-bakeoff-embedding-model.md §Outcome.
+
 ---
 
 ## Cut list (v2)
