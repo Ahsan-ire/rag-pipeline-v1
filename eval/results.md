@@ -238,3 +238,18 @@ Experimental and secondary — gates nothing. Conditional on a non-refused answe
 - [refusal] refused caveat=False gate=REFUSAL grounded=0/0 :: What are the requirements for making a valid will in Ireland?
 - [refusal] refused caveat=False gate=REFUSAL grounded=0/0 :: Do I need planning permission to build an extension to my house?
 
+## Annotation (24 Aug 2026 — not a run)
+
+The question-set sha256s recorded in the header above predate the D54 instrument
+repair (4 Aug 2026: rows whose labeled section was absorbed by a runt-merge gained
+the absorbing chunk's label as an additional accepted answer). Current file hashes:
+
+- path: eval/golden_set.jsonl
+  - sha256: d3e3e432890a2c8471086fa12113058a88e62cfa85c806a00edc5fefe2c1d283
+- path: eval/realistic_set.jsonl
+  - sha256: ec488b571e4fbda7b92e318f250e18fe7e72d8f3c4070f1eb84870e0f94494fe
+
+The run's numbers above are unaffected: the repair loosens acceptance only, and
+post-repair offline baselines are recorded in D54. Held-out set unchanged (hash
+in header still matches). This block is hand-appended metadata — a disclosed
+one-time exception to "results.md is written only by canonical runs."
