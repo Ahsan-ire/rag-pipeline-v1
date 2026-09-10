@@ -33,6 +33,7 @@ rejected, and how to carry the whole thing into a new project. Project
 | `IMPLEMENTATION_PLAN.md` | Phase-scoped working spec; one phase per session |
 | `docs/decisions.md` | Append-only decision ledger (what/why/rejected) |
 | `docs/designs/` | Design artifacts + bake-off briefs (see its README) |
+| `docs/work-state.md` | Living handoff: where work stands, next actions in order, open decisions. Updated before a session's context is lost |
 | `.claude/agents/plan-auditor.md` | Fresh-context critic for plans, pre-implementation |
 | `.claude/agents/pressure-tester.md` | Fresh-context verifier of "done" claims, evidence-only |
 | `.claude/skills/plan-gate/` | Pre-implementation gate: artifact → two independent critiques → reconcile → READY/REVISE |
@@ -61,6 +62,31 @@ retrieval architecture): `/bake-off <decision>` — independent fresh-context
 candidates from a shared brief, cross-critique, eval-set verdict on the
 tuning set, ledger entry, and the losing design handed to the pressure-tester
 as extra attack surface when the winner is implemented.
+
+## Third-party models (revised 10 Sep 2026)
+
+The harness used to run exactly one third-party model in exactly one shape: Codex
+as a read-only critic at the plan and merge gates. It now runs two, in two shapes:
+
+- **grok** — implementer for grunt work (mechanical, fully specced, test-verified),
+  writing only inside a sandboxed sibling worktree, never committing.
+- **Codex** — co-developer on design and judgment-bearing work *as well as* the
+  adversarial reviewer at the gates. Still always `--sandbox read-only`.
+- **Claude** — orchestrator: writes the specs, reviews every third-party diff, runs
+  the gates, and is the only actor that commits.
+
+Claude reviews grok's diffs, which inverts Principle 2's usual direction — that is
+the point: the second-vendor leg runs both ways. Where Codex co-authored a design it
+cannot also be that design's fresh-context critic; the artifact records which critique
+legs actually ran.
+
+The normative source for task classes, containment and the dispatch contract is
+`docs/designs/002-third-party-implementer-lane.md` (status: draft — plan-gate before
+first dispatch). The corpus ban in CLAUDE.md binds every vendor, not just Codex.
+
+*This section is a summary; the fuller harness update (changelog, re-gate stopping
+rule, Tier-1/Tier-2 vocabulary, negative-result phase path) is item 3 of the re-draft
+list in `docs/work-state.md`.*
 
 ## Deliberately rejected (do not rebuild these)
 
