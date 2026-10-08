@@ -4,7 +4,7 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 15 — retrieval foundation (negative result recorded, closing)**
+**Current phase: post-Phase-15 (v2.2.0 merged 9 Oct). Next: integrity hotfix + global harness — see docs/designs/003-roadmap-and-next-actions.md**
 
 **Next: D60** — reserved for the third-party lane decision (design 002-v2); the next unrelated entry takes D61. (Update this line in the same commit as each new entry.)
 
