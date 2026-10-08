@@ -61,6 +61,24 @@ DETAIL_MODE = "hybrid+rewrite"
 GOLDEN_BASENAME = "golden_set.jsonl"
 REALISTIC_BASENAME = "realistic_set.jsonl"
 
+# The only question-set files a selection report may record. Anything else
+# (notably the held-out set, however a report file happens to be named) is
+# refused at parse time — see _assert_set_provenance.
+ALLOWED_SET_BASENAMES = (GOLDEN_BASENAME, REALISTIC_BASENAME)
+
+# The intent-fusion weight that ships; compare_prod_ranks reads the dumps at it
+# and the manifest records it.
+SHIPPED_WEIGHT = 0.25
+
+# Default expansion cache the production-rank dumps were replayed from
+# (scripts/w_sweep.py CACHE); duplicated as a relative path so importing this
+# script never imports the sweep (which chdirs and loads the pipeline).
+DEFAULT_EXPANSION_CACHE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "eval",
+    "w_sweep_expansions_20260717.json",
+)
+
 # The cutoff every "@6" figure in this report is read at.
 HIT_K = 6
 
@@ -264,6 +282,28 @@ def _parse_provenance(body: Sequence[str]) -> Tuple[Optional[str], Dict[str, Dic
     return model, sets
 
 
+def _assert_set_provenance(prov_sets: Mapping[str, Mapping[str, str]]) -> None:
+    """Refuse a report recording any question set other than golden/realistic.
+
+    The held-out exclusion in ``main`` only inspects CLI filenames; a report
+    file can be named anything. This checks what the report itself says it was
+    run on, so a held-out run cannot enter selection under a neutral filename
+    (or be mistaken for golden by the label fallback in ``set_of_kind``).
+
+    Raises:
+        ValueError: if a recorded set has no path, or its path's basename is
+            not one of :data:`ALLOWED_SET_BASENAMES`.
+    """
+    for label, fields in prov_sets.items():
+        path = fields.get("path")
+        if not path or os.path.basename(path) not in ALLOWED_SET_BASENAMES:
+            raise ValueError(
+                f"report records question set {label!r} with path {path!r}; "
+                f"only {list(ALLOWED_SET_BASENAMES)} may enter selection "
+                "(the held-out set is never used for selection)"
+            )
+
+
 def parse_report(text: str) -> Dict[str, Any]:
     """Parse one offline arm report into a comparable dict.
 
@@ -279,7 +319,9 @@ def parse_report(text: str) -> Dict[str, Any]:
     Raises:
         ValueError: if the report does not disclose disabled expansion (it is
             then not comparable to the other arms), or if a set's per-question
-            detail was rendered under a mode other than ``hybrid+rewrite``.
+            detail was rendered under a mode other than ``hybrid+rewrite``,
+            or if the report records a question set whose path is not the
+            golden or realistic set file.
     """
     if EXPANSION_DISABLED_MARKER not in text:
         raise ValueError(
@@ -297,6 +339,7 @@ def parse_report(text: str) -> Dict[str, Any]:
     for heading, body in _split_sections(text):
         if heading.startswith("## Provenance"):
             model, prov_sets = _parse_provenance(body)
+            _assert_set_provenance(prov_sets)
             continue
         m = _ABLATION_HEADING.match(heading)
         if m is not None:
@@ -367,6 +410,28 @@ def _headline_row(data: Optional[Mapping[str, Any]]) -> Dict[str, Optional[float
     }
 
 
+def _check_detail_count(name: str, kind: str, data: Mapping[str, Any]) -> None:
+    """Raise if a set's detail-row count differs from the ``n`` its report states."""
+    n = _headline_row(data)["n"]
+    if n is not None and n != len(data["questions"]):
+        raise ValueError(
+            f"arm {name!r}: {kind} set reports n={n} but its per-question "
+            f"detail has {len(data['questions'])} rows — truncated or "
+            "mis-parsed report"
+        )
+
+
+def _require_golden_detail(name: str, arm: Mapping[str, Any]) -> None:
+    """Raise unless ``arm`` has a non-empty golden detail list matching its n."""
+    golden = set_of_kind(arm, "golden")
+    if golden is None or not golden["questions"]:
+        raise ValueError(
+            f"arm {name!r} has no golden per-question detail; flip lists "
+            "computed from it would be vacuously empty"
+        )
+    _check_detail_count(name, "golden", golden)
+
+
 def compare(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> Dict[str, Any]:
     """Build the selection table and the golden per-question flip lists.
 
@@ -383,6 +448,10 @@ def compare(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> Dict[str, A
 
     Raises:
         KeyError: if ``baseline`` is not among ``arms``.
+        ValueError: if any arm (baseline included) has no golden set, an empty
+            golden question-detail list, or a detail count that disagrees with
+            the ``n`` its own ablation table reports — each would make the
+            flip lists vacuously empty, i.e. a clean pass proving nothing.
     """
     if baseline not in arms:
         raise KeyError(f"baseline arm {baseline!r} not among reports: {list(arms)}")
@@ -398,7 +467,13 @@ def compare(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> Dict[str, A
             }
         )
 
-    base_golden = set_of_kind(arms[baseline], "golden") or {"questions": []}
+    for name, arm in arms.items():
+        _require_golden_detail(name, arm)
+        realistic = set_of_kind(arm, "realistic")
+        if realistic is not None:
+            _check_detail_count(name, "realistic", realistic)
+
+    base_golden = set_of_kind(arms[baseline], "golden")
     base_hits = {
         q["question"]: _hit_at_k(q["strict_rank"]) for q in base_golden["questions"]
     }
@@ -407,7 +482,7 @@ def compare(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> Dict[str, A
     for name, arm in arms.items():
         if name == baseline:
             continue
-        golden = set_of_kind(arm, "golden") or {"questions": []}
+        golden = set_of_kind(arm, "golden")
         hit_to_miss, miss_to_hit, unmatched = [], [], []
         seen = set()
         for q in golden["questions"]:
@@ -644,7 +719,7 @@ def render(arms: Mapping[str, Mapping[str, Any]], baseline: str) -> str:
 def compare_prod_ranks(
     baseline: Mapping[str, Any],
     arm: Mapping[str, Any],
-    weight: float = 0.25,
+    weight: float = SHIPPED_WEIGHT,
     label: str = "golden",
     top_k: int = HIT_K,
 ) -> Dict[str, Any]:
@@ -671,12 +746,22 @@ def compare_prod_ranks(
         ``{"weight", "label", "flips": [...], "gains": [...], "unmatched":
         [...]}`` where flips are baseline strict-HIT@k rows that the arm
         strict-MISSes, gains the reverse, each carrying the question text.
+
+    Raises:
+        ValueError: if the baseline or the arm has no row for the prefix.
     """
     prefix = f"W={weight}|{label}|"
     base_rows = {k: v for k, v in baseline["ranks"].items() if k.startswith(prefix)}
     arm_rows = {k: v for k, v in arm["ranks"].items() if k.startswith(prefix)}
     flips: List[Dict[str, Any]] = []
     gains: List[Dict[str, Any]] = []
+    if not base_rows or not arm_rows:
+        raise ValueError(
+            f"no production-rank rows match {prefix!r} in the "
+            f"{'baseline' if not base_rows else 'arm'} dump — an empty "
+            "comparison would pass vacuously (wrong weight/label, or a "
+            "truncated dump?)"
+        )
     unmatched = sorted(set(base_rows) ^ set(arm_rows))
     for key, brow in base_rows.items():
         arow = arm_rows.get(key)
@@ -716,6 +801,11 @@ def build_manifest(
     arms: Mapping[str, Mapping[str, Any]],
     paths: Mapping[str, str],
     baseline: str,
+    *,
+    prod_rank_paths: Optional[Sequence[str]] = None,
+    shipped_weight: float = SHIPPED_WEIGHT,
+    expansion_cache_path: Optional[str] = None,
+    command_line: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Describe exactly which artifacts produced this comparison.
 
@@ -723,12 +813,21 @@ def build_manifest(
         arms: ``{arm_name: parsed_report}``.
         paths: ``{arm_name: report_path}``.
         baseline: the baseline arm name.
+        prod_rank_paths: the production-rank dumps consumed (baseline first);
+            each is recorded with its sha256.
+        shipped_weight: the intent weight the production ranks were read at.
+        expansion_cache_path: the expansion cache the dumps were replayed from;
+            recorded with its sha256 when the file exists, else path-only with
+            a null sha256, and null when not supplied.
+        command_line: the exact argv of this run (``sys.argv``).
 
     Returns:
         A JSON-ready dict carrying, per arm, the report path and its sha256,
         the embedding model, and each eval set's path + sha256 as recorded in
         the report's provenance — so held-out absence is checkable from the
-        artifact rather than asserted from shell history.
+        artifact rather than asserted from shell history. Plus
+        ``prod_ranks`` (path + sha256 each), ``shipped_weight``,
+        ``expansion_cache`` and ``command_line``.
     """
     manifest: Dict[str, Any] = {"baseline": baseline, "arms": {}}
     for name, arm in arms.items():
@@ -741,6 +840,22 @@ def build_manifest(
                 for label, data in sorted(arm["sets"].items())
             ],
         }
+    manifest["prod_ranks"] = [
+        {"path": p, "sha256": sha256_file(p)} for p in (prod_rank_paths or [])
+    ]
+    manifest["shipped_weight"] = shipped_weight
+    if expansion_cache_path is None:
+        manifest["expansion_cache"] = None
+    else:
+        manifest["expansion_cache"] = {
+            "path": expansion_cache_path,
+            "sha256": (
+                sha256_file(expansion_cache_path)
+                if os.path.isfile(expansion_cache_path)
+                else None
+            ),
+        }
+    manifest["command_line"] = list(command_line or [])
     return manifest
 
 
@@ -795,6 +910,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "(selection disqualifier #2)."
         ),
     )
+    parser.add_argument(
+        "--expansion-cache",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Expansion cache the --prod-ranks dumps were replayed from; its "
+            "sha256 goes in the manifest. Defaults to the committed W-sweep "
+            "cache when --prod-ranks is given."
+        ),
+    )
     raw = list(sys.argv[1:] if argv is None else argv)
     _refuse_heldout(parser, raw)
     args = parser.parse_args(raw)
@@ -829,7 +954,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  UNMATCHED KEYS (investigate): {result['unmatched']}")
 
     if args.manifest_out:
-        manifest = build_manifest(arms, paths, args.baseline)
+        manifest = build_manifest(
+            arms,
+            paths,
+            args.baseline,
+            prod_rank_paths=args.prod_ranks or [],
+            shipped_weight=SHIPPED_WEIGHT,
+            expansion_cache_path=args.expansion_cache
+            or (DEFAULT_EXPANSION_CACHE if args.prod_ranks else None),
+            command_line=[sys.argv[0], *raw],
+        )
         with open(args.manifest_out, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
         print(f"\nManifest written: {args.manifest_out}")

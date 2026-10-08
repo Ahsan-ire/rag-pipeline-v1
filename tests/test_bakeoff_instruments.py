@@ -261,6 +261,11 @@ def test_compare_lists_both_flip_directions_with_full_question_text():
 def test_compare_flags_questions_present_in_only_one_arm():
     """A question in one arm but not the other means the sets differ — say so."""
     trimmed = build_report(
+        # n=1 so the new detail-count check (C3) passes: this test is about
+        # differing question sets, not a truncated report.
+        golden_ablation={
+            mode: vals[:8] + (1,) for mode, vals in BASELINE_GOLDEN_ABLATION.items()
+        },
         golden_rows=[
             _detail_row("direct", 1, 1, ["9.1"], ["9.1", "9.2", "9.3", "9.4", "9.5", "9.6"], G1),
         ]
@@ -741,3 +746,140 @@ class TestCompareProdRanks:
         arm = self._dump({"W=0.25|golden|0": {"question": "q", "strict_rank": 7}})
         out = compare_prod_ranks(base, arm)
         assert [r["question"] for r in out["flips"]] == ["q"]
+
+
+# ---------------------------------------------------------------------------
+# C2 — set-provenance guard
+# ---------------------------------------------------------------------------
+def test_parse_report_rejects_a_recorded_heldout_set_path_under_a_neutral_name():
+    """The CLI filename check cannot see inside a report: a held-out run saved
+    as ``arm-b.md`` records ``eval/heldout_set.jsonl`` in its provenance. The
+    parser must refuse it rather than let the label fallback treat it as
+    golden. (Synthetic text; the real held-out file is never read.)"""
+    text = build_report().replace(
+        "  - path: eval/golden_set.jsonl", "  - path: eval/heldout_set.jsonl"
+    )
+    assert "heldout_set.jsonl" in text
+    with pytest.raises(ValueError, match="held-out"):
+        bakeoff_report.parse_report(text)
+
+
+def test_parse_report_rejects_a_recorded_set_with_no_path():
+    text = build_report().replace("  - path: eval/golden_set.jsonl\n", "")
+    with pytest.raises(ValueError, match="only"):
+        bakeoff_report.parse_report(text)
+
+
+def test_cli_rejects_a_neutrally_named_report_recording_heldout(tmp_path):
+    bad = tmp_path / "arm-b.md"
+    bad.write_text(
+        build_report().replace("eval/golden_set.jsonl", "eval/heldout_set.jsonl"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="held-out"):
+        bakeoff_report.main(["--reports", str(bad), "--baseline", "arm-b"])
+
+
+# ---------------------------------------------------------------------------
+# C3 — vacuous-pass guards
+# ---------------------------------------------------------------------------
+def _ablation_n(n):
+    return {mode: vals[:8] + (n,) for mode, vals in BASELINE_GOLDEN_ABLATION.items()}
+
+
+def test_compare_fails_on_an_empty_baseline_golden_detail():
+    empty = build_report(golden_rows=[], golden_ablation=_ablation_n(0))
+    arms = {
+        "baseline-fixture": bakeoff_report.parse_report(empty),
+        "candidate": bakeoff_report.parse_report(build_report()),
+    }
+    with pytest.raises(ValueError, match="baseline-fixture.*no golden"):
+        bakeoff_report.compare(arms, "baseline-fixture")
+
+
+def test_compare_fails_on_an_empty_arm_golden_detail():
+    empty = build_report(golden_rows=[], golden_ablation=_ablation_n(0))
+    arms = {
+        "baseline-fixture": bakeoff_report.parse_report(build_report()),
+        "candidate": bakeoff_report.parse_report(empty),
+    }
+    with pytest.raises(ValueError, match="candidate.*no golden"):
+        bakeoff_report.compare(arms, "baseline-fixture")
+
+
+def test_compare_fails_when_detail_count_disagrees_with_reported_n():
+    """Ablation says n=3 but only one detail row parsed: truncated report."""
+    short = build_report(
+        golden_rows=[
+            _detail_row("direct", 1, 1, ["9.1"], ["9.1", "9.2", "9.3", "9.4", "9.5", "9.6"], G1),
+        ]
+    )
+    arms = {
+        "baseline-fixture": bakeoff_report.parse_report(build_report()),
+        "candidate": bakeoff_report.parse_report(short),
+    }
+    with pytest.raises(ValueError, match="n=3.*1 rows"):
+        bakeoff_report.compare(arms, "baseline-fixture")
+
+
+class TestCompareProdRanksVacuous:
+    ROW = {"W=0.25|golden|0": {"question": "q", "strict_rank": 1}}
+
+    def test_no_baseline_rows_for_the_prefix_fails(self):
+        with pytest.raises(ValueError, match="baseline"):
+            bakeoff_report.compare_prod_ranks({"ranks": {}}, {"ranks": self.ROW})
+
+    def test_no_arm_rows_for_the_prefix_fails(self):
+        wrong_weight = {"W=0.5|golden|0": {"question": "q", "strict_rank": 1}}
+        with pytest.raises(ValueError, match="arm"):
+            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": wrong_weight})
+
+
+# ---------------------------------------------------------------------------
+# C5 — manifest provenance fields
+# ---------------------------------------------------------------------------
+def test_manifest_records_prod_rank_hashes_weight_cache_and_command_line(tmp_path, capsys):
+    baseline, candidate = _write_arms(tmp_path)
+    base_dump = tmp_path / "baseline-fixture.json"
+    arm_dump = tmp_path / "candidate.json"
+    rows = {"W=0.25|golden|0": {"question": "q", "strict_rank": 1}}
+    base_dump.write_text(json.dumps({"ranks": rows}), encoding="utf-8")
+    arm_dump.write_text(json.dumps({"ranks": rows}), encoding="utf-8")
+    cache = tmp_path / "expansions.json"
+    cache.write_text("{}", encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    argv = [
+        "--reports", str(baseline), str(candidate),
+        "--baseline", "baseline-fixture",
+        "--prod-ranks", str(base_dump), str(arm_dump),
+        "--expansion-cache", str(cache),
+        "--manifest-out", str(manifest_path),
+    ]
+
+    assert bakeoff_report.main(argv) == 0
+    capsys.readouterr()
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["prod_ranks"] == [
+        {"path": str(base_dump), "sha256": bakeoff_report.sha256_file(str(base_dump))},
+        {"path": str(arm_dump), "sha256": bakeoff_report.sha256_file(str(arm_dump))},
+    ]
+    assert manifest["shipped_weight"] == bakeoff_report.SHIPPED_WEIGHT == 0.25
+    assert manifest["expansion_cache"] == {
+        "path": str(cache),
+        "sha256": bakeoff_report.sha256_file(str(cache)),
+    }
+    assert manifest["command_line"][1:] == argv
+
+
+def test_manifest_without_prod_ranks_has_empty_fields_not_missing_ones(tmp_path):
+    baseline, _ = _write_arms(tmp_path)
+    manifest = bakeoff_report.build_manifest(
+        {"baseline-fixture": bakeoff_report.parse_report(build_report())},
+        {"baseline-fixture": str(baseline)},
+        "baseline-fixture",
+        command_line=["x"],
+    )
+    assert manifest["prod_ranks"] == []
+    assert manifest["expansion_cache"] is None
+    assert manifest["command_line"] == ["x"]
