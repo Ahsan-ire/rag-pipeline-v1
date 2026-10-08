@@ -780,6 +780,31 @@ class TestPerModelConfigSeam:
             }
         ]
 
+    def test_minilm_spec_with_real_client_only_clears_prompt_name(self):
+        """Inertness canary, client half. The recorder canary above has no
+        ``_client``, so _apply_model_config returns early and never reaches the
+        ``default_prompt_name = None`` line. Here the fake DOES have a client
+        carrying a repo-inherited prompt name: on the shipped MiniLM spec the
+        prompt name must end up None and nothing else (max_seq_length, other
+        attributes) may change."""
+
+        class StubClient:
+            max_seq_length = 256
+            default_prompt_name = "query"
+            other = "untouched"
+
+        class StubEmb:
+            model_name = DEFAULT_EMBEDDING_MODEL
+            _client = StubClient()
+
+        emb = StubEmb()
+        _apply_model_config(emb, MODEL_SPECS[DEFAULT_EMBEDDING_MODEL])
+
+        assert emb._client.default_prompt_name is None
+        assert emb._client.max_seq_length == 256
+        assert emb._client.other == "untouched"
+        assert vars(emb._client) == {"default_prompt_name": None}
+
     def test_query_prompt_merges_the_base_encode_kwargs(self, monkeypatch):
         """Merge canary — the unnormalized-query hazard. langchain-huggingface
         1.2.2's embed_query REPLACES encode_kwargs with query_encode_kwargs
@@ -809,11 +834,11 @@ class TestPerModelConfigSeam:
         assert calls[0]["encode_kwargs"] == {"normalize_embeddings": True}
 
     def test_doc_prompt_applies_to_documents_only(self, monkeypatch):
-        """A doc prompt goes into encode_kwargs (documents); with no query
-        prompt configured, query_encode_kwargs stays empty so queries inherit
-        encode_kwargs — including the doc prompt is langchain's behaviour, not
-        something this seam invents, and there is no doc-prompt-only model in
-        MODEL_SPECS today. This pins where the prompt lands."""
+        """A doc prompt goes into encode_kwargs (documents) and must NOT reach
+        queries. langchain-huggingface uses query_encode_kwargs when non-empty
+        and otherwise falls back to encode_kwargs, so an empty dict would leak
+        the doc prompt onto queries (C6). Queries get explicit
+        normalization-only kwargs instead."""
         monkeypatch.setitem(
             MODEL_SPECS, DEFAULT_EMBEDDING_MODEL, EmbeddingModelSpec(doc_prompt="D: ")
         )
@@ -833,7 +858,8 @@ class TestPerModelConfigSeam:
             "normalize_embeddings": True,
             "prompt": "D: ",
         }
-        assert calls[0]["query_encode_kwargs"] == {}
+        assert calls[0]["query_encode_kwargs"] == {"normalize_embeddings": True}
+        assert "prompt" not in calls[0]["query_encode_kwargs"]
 
     # --- client configuration -------------------------------------------
 
@@ -931,3 +957,161 @@ class TestPerModelConfigSeam:
             assert spec.max_seq_length == 8192
 
         _validate_model_specs(MODEL_SPECS)  # must not raise
+
+
+def _snapshot(persist_dir):
+    """Byte snapshot of every file under the store directory (path -> bytes)."""
+    from pathlib import Path
+
+    return {
+        str(p): p.read_bytes() for p in sorted(Path(persist_dir).rglob("*")) if p.is_file()
+    }
+
+
+class TestCrossModelWriteGuard:
+    """A1: every index WRITE path refuses a different embedding model than the
+    one recorded beside the store (MiniLM and granite are both 384-d, so
+    dimensions cannot catch this)."""
+
+    OTHER = "ibm-granite/granite-embedding-small-english-r2"
+
+    def _doc(self, text="1.1 Registration of title.", source="h.pdf"):
+        return Document(page_content=text, metadata={"source": source})
+
+    def _indexed(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        add_documents([self._doc()], vector_store=store, persist_directory=persist_dir)
+        return persist_dir, store
+
+    def test_same_model_reindex_is_allowed(self, tmp_path):
+        persist_dir, store = self._indexed(tmp_path)
+
+        assert add_documents(
+            [self._doc("2.1 Stamp duty.")], vector_store=store, persist_directory=persist_dir
+        ) == 1
+        counts = sync_documents(
+            "h.pdf", [self._doc("3.1 Folio.")], vector_store=store, persist_directory=persist_dir
+        )
+        assert counts["added"] == 1
+        rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
+
+    def test_cross_model_add_documents_raises_and_changes_nothing(self, tmp_path, monkeypatch):
+        persist_dir, store = self._indexed(tmp_path)
+        before = _snapshot(persist_dir)
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+
+        with pytest.raises(ValueError, match="--reset") as exc:
+            add_documents(
+                [self._doc("9.9 New.")], vector_store=store, persist_directory=persist_dir
+            )
+
+        assert DEFAULT_EMBEDDING_MODEL in str(exc.value) and self.OTHER in str(exc.value)
+        assert _snapshot(persist_dir) == before
+        assert len(store.get()["ids"]) == 1
+
+    def test_cross_model_sync_documents_raises_and_changes_nothing(self, tmp_path, monkeypatch):
+        persist_dir, store = self._indexed(tmp_path)
+        before = _snapshot(persist_dir)
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+
+        for rebuild in (True, False):  # False is the deferred-BM25 path
+            with pytest.raises(ValueError, match="--reset"):
+                sync_documents(
+                    "h.pdf",
+                    [self._doc("9.9 New.")],
+                    vector_store=store,
+                    persist_directory=persist_dir,
+                    rebuild_bm25=rebuild,
+                )
+
+        assert _snapshot(persist_dir) == before
+        assert len(store.get()["ids"]) == 1
+
+    def test_cross_model_rebuild_bm25_raises_and_changes_nothing(self, tmp_path, monkeypatch):
+        persist_dir, store = self._indexed(tmp_path)
+        before = _snapshot(persist_dir)
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+
+        with pytest.raises(ValueError, match="--reset"):
+            rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
+
+        assert _snapshot(persist_dir) == before
+
+    def test_collection_metadata_model_mismatch_raises(self, tmp_path, monkeypatch):
+        """No manifest at all, but the Chroma collection itself records the
+        old model: still refused."""
+        persist_dir, store = self._indexed(tmp_path)
+        (tmp_path / "chroma" / "embedding_model.txt").unlink()
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+
+        with pytest.raises(ValueError, match="collection model"):
+            add_documents([self._doc("9.9 New.")], vector_store=store, persist_directory=persist_dir)
+
+    def test_fresh_store_creates_manifest(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+
+        add_documents([self._doc()], vector_store=store, persist_directory=persist_dir)
+
+        assert (tmp_path / "chroma" / "embedding_model.txt").read_text() == self.OTHER
+
+    def test_deferred_batch_sync_on_fresh_store_then_rebuild(self, tmp_path):
+        """The batch indexer path: several deferred syncs, then one rebuild. The
+        second source must not be refused as a manifest-less legacy store."""
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+
+        for src in ("a.pdf", "b.pdf"):
+            sync_documents(
+                src,
+                [self._doc(f"text for {src}", source=src)],
+                vector_store=store,
+                persist_directory=persist_dir,
+                rebuild_bm25=False,
+            )
+        rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
+
+        assert len(store.get()["ids"]) == 2
+        assert (tmp_path / "chroma" / "embedding_model.txt").exists()
+
+    def test_legacy_nonempty_store_without_manifest_raises(self, tmp_path):
+        persist_dir = str(tmp_path / "chroma")
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        store.add_documents([self._doc()], ids=["legacy1"])  # bypasses add_documents: no manifest
+        before = _snapshot(persist_dir)
+
+        with pytest.raises(ValueError, match="legacy"):
+            add_documents([self._doc("2.1 More.")], vector_store=store, persist_directory=persist_dir)
+        with pytest.raises(ValueError, match="legacy"):
+            sync_documents(
+                "h.pdf", [self._doc("2.1 More.")], vector_store=store, persist_directory=persist_dir
+            )
+        with pytest.raises(ValueError, match="legacy"):
+            rebuild_bm25_index(vector_store=store, persist_directory=persist_dir)
+
+        assert _snapshot(persist_dir) == before
+        assert not (tmp_path / "chroma" / "embedding_model.txt").exists()
+
+    def test_cleared_store_permits_a_model_change(self, tmp_path, monkeypatch):
+        """--reset in src/pipeline.py calls clear_store before syncing; after
+        that the store is fresh and a different model is allowed."""
+        persist_dir, _ = self._indexed(tmp_path)
+        clear_store(persist_dir)
+        # The CLI runs reset in a process that has not opened the store yet;
+        # here the first store was opened in-process, and Chroma caches its
+        # client (with the old collection metadata) per path. Drop that cache
+        # to mimic the fresh process.
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        SharedSystemClient.clear_system_cache()
+        monkeypatch.setattr("src.embedder.EMBEDDING_MODEL", self.OTHER)
+
+        store = get_vector_store(embedding_function=FakeEmbeddings(), persist_directory=persist_dir)
+        counts = sync_documents(
+            "h.pdf", [self._doc()], vector_store=store, persist_directory=persist_dir
+        )
+
+        assert counts["added"] == 1
+        assert (tmp_path / "chroma" / "embedding_model.txt").read_text() == self.OTHER
