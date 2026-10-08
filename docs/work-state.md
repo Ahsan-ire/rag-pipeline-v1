@@ -5,10 +5,17 @@ context is lost. It exists because the 24 Aug session's Track 2–4 drafts lived
 temp scratchpad and were gone by 10 Sep. Anything worth resuming from goes in the repo,
 not in a chat.
 
-**Last updated:** 10 Sep 2026 (recorded, no code written this session)
-**Branch:** `phase-15-retrieval-foundation` @ `fd6c936` — clean, 11 commits ahead of
-`main`, **never pushed, no PR.** `origin/main` unchanged since 24 Aug.
-**Suite:** 609 tests green at `fd6c936`.
+**Last updated:** 8 Oct 2026
+**Branch:** `phase-15-retrieval-foundation`, **pushed 8 Oct** (tracks origin). Gate blockers 1–6
+and the Codex merge-review findings were fixed on 8 Oct (D59). The PR is not open yet: it
+waits for a scoped Codex re-review of the fixed diff.
+**Suite:** 629 passed (8 Oct).
+**Forward plan:** `docs/designs/003-roadmap-and-next-actions.md` (draft; owner decisions in;
+Codex astra review pending). It supersedes §2–§3 below as the plan of record. Those sections
+are kept as history.
+**Correction:** an earlier version said a `phase-16-harness` branch "already exists". It never
+existed anywhere. Earlier commit counts were also wrong: the branch was 14 commits ahead at
+`fd6c936`, not 11.
 
 ---
 

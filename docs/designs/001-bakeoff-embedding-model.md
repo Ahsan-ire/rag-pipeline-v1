@@ -426,6 +426,19 @@ monotonically (destructive code bug → cannot-fail criteria → document drift)
 round's fixes are mechanically verifiable text reconciliations, each checked by grep after
 application.
 
+### Merge gate (Codex `gpt-6.1-sol` @ xhigh, read-only, 8 Oct 2026 — pre-fix diff)
+
+Verdict: request changes, with 1 BLOCKER, 4 MAJOR and 2 MINOR findings. Dispositions were
+approved by the owner on 8 Oct. Full table: `docs/designs/003-roadmap-and-next-actions.md`
+§Review.
+- **C1 BLOCKER** — the model override could mix vectors from two models in one store. **ACCEPT** (gate blocker 1): a cross-model guard on all three write paths.
+- **C2 MAJOR** — held-out exclusion was enforced on CLI filenames only. **ACCEPT**: provenance guard on recorded set paths.
+- **C3 MAJOR** — missing evidence produced clean flip lists (vacuous pass). **ACCEPT**: guards plus tests asserting the vacuous case fails.
+- **C4 MAJOR** — cohort identity was not validated across reports and dumps. **DEFER to Phase 16 WS-A6**; for this run, see the identity check in §Outcome repairs.
+- **C5 MAJOR** — the manifest lacked production inputs and commands, and the Outcome merged the two flip arms. **ACCEPT**: the instrument records them now, and §Outcome repairs inline the evidence.
+- **C6 MINOR** — a doc-prompt-only spec leaked the document prompt into queries. **ACCEPT**: fixed, and the test no longer blesses the leak.
+- **C7 MINOR** — docs described a guard that doesn't exist. **ACCEPT**: docstrings corrected; plan disposition recorded (D59).
+
 ## Outcome
 
 **NEGATIVE RESULT (4 Aug 2026, D57): no candidate survives selection — the baseline wins by
@@ -487,3 +500,56 @@ remaining licence-clean 8k-window candidate; Qwen under GPU/ONNX), adopting a tr
 exception to land the guard anyway, or redirecting Phase 16 at the failure classes directly
 (reranker for near-misses; expansion/vocabulary work for the gap class) are the owner's
 disposition options.
+
+### Disclosure repairs (8 Oct 2026 — `/phase-gate 15` blocker 3)
+
+Authored by Claude from the local run artifacts in `eval/bakeoff/` (gitignored and
+corpus-bearing, so never by a third-party model). Nothing below changes the verdict. It
+fills three gaps the gate found.
+
+**1. S5 rank line.** S5 is the realistic-slice comparison anchor from Phase 14 (D46
+addendum / D50): *"What is the difference between a purchase and sale conveyance?"*,
+expected `2.2.1`/`2.2.2`/`2.9`. Ranks are within the top-6 cut; "—" means outside the top 6.
+
+| Arm | Raw hybrid strict / related | Production replay W=0.25 (shipped) strict / related | W=0.0 | W=0.5 |
+|---|---|---|---|---|
+| baseline (MiniLM) | — / 6 | — / 4 | — / 2 | 5 / 5 |
+| gte-modernbert-base | — / 6 | — / 4 | — / — | — / 1 |
+| granite-small-english-r2 | — / 6 | — / 5 | — / 2 | — / — |
+
+No arm rescues S5 at the shipped weight. That matches D50: S5 is a fusion-weight knife-edge,
+not an embedding gap.
+
+**2. The Tier-1 rule's two arms, shown separately.** The pre-registered rule needs zero
+golden strict HIT→MISS flips against the rebuilt baseline in **raw hybrid** AND in the
+**cached production-config replay (W=0.25)**. Each arm is checked on its own. The
+realistic-slice flips are shown for disclosure only; they are not part of the rule.
+
+| Candidate | Raw hybrid — golden HIT→MISS | Production replay — golden HIT→MISS | Raw — realistic HIT→MISS | Replay — realistic HIT→MISS |
+|---|---|---|---|---|
+| gte-modernbert-base | **2**: undertaking-to-a-lender; searches-before-completion | **2**: same two | 2 | 0 |
+| granite-small-english-r2 | **1**: undertaking-to-a-lender | **1**: same | 4 | 4 |
+
+Both candidates fail the rule in both arms independently, so the disqualification does
+not depend on which arm is read. Counts by set (n=30 golden, n=17 realistic) match the
+reports. Production rows were paired by position and checked for identical question text
+(Codex C4 asks for this check to become part of the instrument in Phase 16).
+
+**3. Auditability evidence, inline.** sha256 of every artifact the verdict rests on, as
+of 8 Oct (the three report hashes match `manifest.json` byte for byte):
+
+| Artifact | sha256 |
+|---|---|
+| `baseline-minilm.md` | `00f83bf5b343974a7ff59e9625621d9ae6d026f74da0e9d8da54923f062e8eff` |
+| `gte.md` | `a0bb6df883675ad4a51933dd6f822735f30bfbde42d83b9da5a7f7d8c1afb6b6` |
+| `granite.md` | `6fff40f3bee5717e478abf48323a0cb8bc53351a96fdb52e743f107134252795` |
+| `ranks_baseline.json` | prefix `519f209bdd5df6df` |
+| `ranks_gte.json` | prefix `6337bd7fc24dc2a4` |
+| `ranks_granite.json` | prefix `268be04ba020a8fe` |
+| `manifest.json` | prefix `81f69803bdb3aba1` |
+
+Eval-set hashes recorded in the manifest for all three arms: golden
+`d3e3e432…c1d283`, realistic `ec488b57…94494fe`, which are the post-D54 sets. No held-out
+path appears in any artifact (checked 8 Oct). The production-rank dumps, shipped W and
+commands were not in the original manifest (Codex C5). The fixed instrument records them
+from now on, and the dump hashes above close that gap for this run.

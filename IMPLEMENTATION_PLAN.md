@@ -837,6 +837,19 @@ never-cut: the index-time truncation guard; `--reset` on every re-index; the arm
 gitignore landing before any arm is built; the held-out set staying out of arm selection; the
 canonical v4 guards.
 
+**Phase 15 disposition note (8 Oct 2026, D59 — appended; the lists above are unedited):**
+- **"Never-cut: the index-time truncation guard" → MOOT, not cut.** At plan gate (brief 001,
+  finding A2) the guard was resequenced to land *with* an adopted winning model. Under
+  MiniLM's 256-token window it would correctly reject the 258-token sample chunk and break
+  CI. No winner was adopted (D57), so its precondition never arose. No truncation-exception
+  policy is adopted.
+- **"Chunk-token provenance disclosure is NOT cuttable" → delivered in measured form:**
+  - the 1,470-chunk token distribution in brief 001 §Problem (3 Aug);
+  - the hit/miss truncation-discrimination measurement (D54).
+  Automated per-run provenance is deferred to the next embedder change.
+- Whether truncation is load-bearing is now a Phase 16 experiment
+  (docs/designs/003-roadmap-and-next-actions.md, WS-C).
+
 ## Two-track git strategy
 
 Tags freeze a fixed commit (`v1.0-pre-critique` on `17d23b1`, `v1.0-baseline` on the Phase 6 merge

@@ -6,7 +6,7 @@
 
 **Current phase: 15 — retrieval foundation (negative result recorded, closing)**
 
-**Next: D59** (update this line in the same commit as each new entry).
+**Next: D60** — reserved for the third-party lane decision (design 002-v2); the next unrelated entry takes D61. (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1705,3 +1705,39 @@ interval is roughly ±14 points, so a bake-off verdict on a new arm today would 
 widening the bracket before widening the question set buys another unfalsifiable table. The full arm
 table, flip lists, latencies and interpretation stay in
 docs/designs/001-bakeoff-embedding-model.md §Outcome.
+
+## D59 — Phase 15 gate disposition: fix forward, truncation guard MOOT, deferrals recorded (8 Oct 2026; gate run 24–25 Aug)
+**Decision:**
+- `/phase-gate 15` ran on 24–25 Aug and returned **FAIL — fixable forward**, with six blockers (`docs/phase15-gate-report.md`).
+- On 10 Sep the owner chose to fix all six on the phase branch before opening the PR.
+- On 8 Oct the owner approved these dispositions:
+  1. A cross-model guard on every index write path (blocker 1 / Codex C1).
+  2. This entry (blocker 2).
+  3. Disclosure repairs to brief 001's §Outcome: S5 rank line, the two Tier-1 arms shown separately, artifact hashes inline (blocker 3).
+  4. **The index-time truncation guard is recorded as MOOT, not cut** (blocker 4, below).
+  5. Docstrings corrected to describe what exists (blocker 5).
+  6. The inertness canary now covers the `default_prompt_name = None` mutation (blocker 6).
+- The Codex merge review (8 Oct, `gpt-6.1-sol`) added held-out provenance and vacuous-pass guards to `scripts/bakeoff_report.py` (C2, C3), a complete run manifest (C5), and the doc-prompt query-leak fix (C6). All were accepted and fixed here.
+- **Deferred to Phase 16, with reasons:**
+  - C4 (cross-report cohort-identity validation) moves to the Phase 16 instrument rework, before the instrument is used again.
+  - The rest of the gate's quality backlog (item 9) moves too: `w_sweep.py`'s module-level `chdir`, cwd-relative paths, duplicated helpers, and the unsingle-sourced arm roster.
+  - None of these affects the D57 verdict. The real artifacts reference only the golden and realistic sets, all arms share identical set hashes, and both candidates were disqualified by flips the instrument *found* in both Tier-1 arms.
+
+**Truncation guard (blocker 4):**
+- The never-cut list (IMPLEMENTATION_PLAN.md, Phase 15 cut list) names the index-time truncation guard. At plan gate, that guard was resequenced to land *with* an adopted winning model (brief 001, finding A2), because under MiniLM's 256-token window it would correctly reject the 258-token sample chunk and break CI. No winner was adopted (D57), so the guard's precondition never arose: it is **MOOT, not cut**. It does not land under MiniLM, and no truncation-exception policy is adopted.
+- The "not cuttable" chunk-token provenance disclosure was **delivered in measured form**: the 1,470-chunk token distribution in brief 001 §Problem (3 Aug), plus the hit/miss discrimination measurement (D54). Automated per-run eval provenance of the token distribution is deferred to the next embedder change.
+- Whether truncation is load-bearing for retrieval is now an explicit Phase 16 experiment (design 003 WS-C).
+
+**Third-party lane:** no third-party model has written to this repository. Codex has only run read-only reviews at the gates. The lane decision (workers and co-development) takes **D60**, on design 002-v2, which is plan-gated together with design 003. So the governance deviation the gate anticipated did not occur.
+
+**Why:**
+- The ledger is append-only, so a phase cannot close on-plan while its own never-cut list names something that did not land unless the reconciliation is recorded.
+- Recording "MOOT under the pre-registered no-swap branch" tells the truth: the guard was never abandoned, its condition was never met. Calling it "cut" would erase the plan-gate resequencing that made it conditional.
+
+**Rejected:**
+- Silently editing the never-cut list.
+- Adopting a truncation-exception policy just to land a warn-mode guard under MiniLM. That adds noise to every index and CI run, and tests nothing while the truncation-helps question is unanswered.
+- Deferring the C2/C3 instrument fixes to Phase 16. They are a few lines each, and C2 guards a hard rule (held-out never used in selection).
+- Opening the PR before the fixes (the 10 Sep disposition).
+
+**Consequence:** Phase 15 can merge after a suite-green re-gate of the blockers, a scoped Codex re-review of the fixed diff, CI green on the PR, and the owner's "go". Tag `v2.2.0` follows. The next new ledger entry after D60 is D61.

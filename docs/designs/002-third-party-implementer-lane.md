@@ -2,7 +2,7 @@
 
 **Status:** draft — `/plan-gate` before the first dispatch
 **Date:** 10 Sep 2026
-**Decision ledger entry:** docs/decisions.md D59 (to be added when decided)
+**Decision ledger entry:** docs/decisions.md D60 (reserved; to be added when decided — D59 is the Phase 15 gate disposition)
 **Supersedes:** the unlanded "Codex implementer lane" draft of 24 Aug (lost with the
 session scratchpad; its content is folded in here)
 
