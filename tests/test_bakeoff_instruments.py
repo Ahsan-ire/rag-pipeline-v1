@@ -18,6 +18,8 @@ corpus or eval-set text is copied into this file.
 import json
 import os
 
+import re
+
 import pytest
 
 from scripts import bakeoff_report, embed_latency, w_sweep
@@ -822,8 +824,50 @@ def test_compare_fails_when_detail_count_disagrees_with_reported_n():
         bakeoff_report.compare(arms, "baseline-fixture")
 
 
+def test_parse_report_rejects_a_report_with_no_provenance_block():
+    """Re-review C2: with the whole ``Question sets:`` block removed, sets are
+    synthesised from the ablation/detail headings with path=None. They must be
+    refused, not let into selection via the label fallback."""
+    text = re.sub(r"Question sets:\n(?:.*\n)*?\n", "\n", build_report(), count=1)
+    assert "Question sets:" not in text
+    with pytest.raises(ValueError, match="only .* may enter selection"):
+        bakeoff_report.parse_report(text)
+
+
+def test_compare_fails_when_the_golden_ablation_section_is_missing():
+    """Re-review C3: without the ablation section there is no reported n, so a
+    truncated detail list cannot be detected. Missing n must fail, not pass."""
+    text = re.sub(
+        r"## tuning — retrieval ablation\n(?:.*\n)*?(?=## realistic — retrieval ablation)",
+        "",
+        build_report(),
+        count=1,
+    )
+    assert "## tuning — retrieval ablation" not in text
+    arms = {
+        "baseline-fixture": bakeoff_report.parse_report(build_report()),
+        "candidate": bakeoff_report.parse_report(text),
+    }
+    with pytest.raises(ValueError, match="no reported n"):
+        bakeoff_report.compare(arms, "baseline-fixture")
+
+
 class TestCompareProdRanksVacuous:
     ROW = {"W=0.25|golden|0": {"question": "q", "strict_rank": 1}}
+
+    def test_a_row_without_strict_rank_is_missing_evidence_not_a_miss(self):
+        """Re-review C3: a dump row lacking the field must fail; an explicit
+        JSON null (a genuine miss) stays accepted, see TestCompareProdRanks."""
+        bare = {"W=0.25|golden|0": {"question": "q"}}
+        with pytest.raises(ValueError, match="lacks strict_rank"):
+            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": bare})
+        with pytest.raises(ValueError, match="lacks strict_rank"):
+            bakeoff_report.compare_prod_ranks({"ranks": bare}, {"ranks": self.ROW})
+
+    def test_an_explicit_null_strict_rank_is_a_recorded_miss(self):
+        null = {"W=0.25|golden|0": {"question": "q", "strict_rank": None}}
+        out = bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": null})
+        assert [r["question"] for r in out["flips"]] == ["q"]
 
     def test_no_baseline_rows_for_the_prefix_fails(self):
         with pytest.raises(ValueError, match="baseline"):

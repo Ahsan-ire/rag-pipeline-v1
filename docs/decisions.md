@@ -1741,3 +1741,25 @@ docs/designs/001-bakeoff-embedding-model.md §Outcome.
 - Opening the PR before the fixes (the 10 Sep disposition).
 
 **Consequence:** Phase 15 can merge after a suite-green re-gate of the blockers, a scoped Codex re-review of the fixed diff, CI green on the PR, and the owner's "go". Tag `v2.2.0` follows. The next new ledger entry after D60 is D61.
+
+## D59 addendum — Codex re-review of the fixes (8 Oct 2026)
+**Decision:** a scoped Codex re-review (`gpt-6.1-sol`, high) of `f4f2f21..832eb2f` found no
+blocker. It found two partial gaps and one disclosure gap; all are now closed or stated.
+- **C2 residual:** a report with **no** provenance block yielded sets with `path=None` that
+  the label fallback admitted. Now every consumed set is validated after assembly.
+- **C3 residual:** a missing ablation section meant no `n`, which skipped the completeness
+  check. A production-rank row *lacking* `strict_rank` read as a MISS. Both now raise; an
+  explicit JSON `null` is still a recorded miss.
+- **C5 historical:** full dump and expansion-cache hashes are inlined in brief 001. The 3–4
+  Aug per-arm command lines were never logged, and that gap is **stated, not repaired**.
+
+D59's statement that the Codex findings were "fixed here" holds as of this addendum, with
+the C5 historical gap noted. The re-review also reported that its sandboxed Python import of
+`src` triggered `load_dotenv()`, which read `.env`. No value was displayed. The remedy is
+harness-level and recorded in design 003 Track B: secrets move out of repo `.env` files, and
+Codex runs with a scrubbed environment.
+**Why:** a fix is only closed when its adversarial re-check closes. Vacuous-pass holes in a
+selection instrument are exactly the class D50 and D57 warn about.
+**Rejected:** deferring the residuals to Phase 16. They are a few lines each, and the
+instrument is binding.
+**Consequence:** Track A can open the PR once CI is green.

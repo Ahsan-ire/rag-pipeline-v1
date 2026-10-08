@@ -553,3 +553,25 @@ Eval-set hashes recorded in the manifest for all three arms: golden
 path appears in any artifact (checked 8 Oct). The production-rank dumps, shipped W and
 commands were not in the original manifest (Codex C5). The fixed instrument records them
 from now on, and the dump hashes above close that gap for this run.
+
+**Provenance addendum (8 Oct 2026, after the Codex re-review, finding 3).**
+
+Full sha256 of the production-replay inputs:
+
+| Input | sha256 |
+|---|---|
+| `ranks_baseline.json` | `519f209bdd5df6dffa36c3687bd51318f35a92175152174de0a0015763ecb57c` |
+| `ranks_gte.json` | `6337bd7fc24dc2a407edebe63c2ef5402e9acab75f11075f8f39f864ee378d99` |
+| `ranks_granite.json` | `268be04ba020a8fe9f499142b8c17b7122bbe21e2c857aee89f62425ee8f9a0e` |
+| `manifest.json` | `81f69803bdb3aba1651f4b4b3ccc173c340bf3ea011e1b420c02b2918e75692f` |
+| Expansion cache: `eval/w_sweep_expansions_20260717.json` | `0bc3bf9c5045b8a1dfc0cfb5866659f882c015daea70601c8a4bbe5644436148` |
+
+The expansion cache is committed. It is `scripts/w_sweep.py`'s default, and no other cache
+exists in the repository. Each rank dump records its own `persist_dir` and `weights`
+(0.0 / 0.25 / 0.5).
+
+**Retained provenance gap (stated, not repaired).** The exact per-arm command lines of the
+3–4 Aug runs were not logged. They cannot be reconstructed beyond the pre-registered
+templates in §Decision criteria (`EMBEDDING_MODEL=<model-id> … eval … --persist-dir
+./chroma_db_arm_<arm>`) and the baseline rebuild line. The fixed instrument records
+`command_line` for every future run.

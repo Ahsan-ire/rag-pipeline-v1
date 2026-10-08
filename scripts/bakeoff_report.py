@@ -363,6 +363,10 @@ def parse_report(text: str) -> Dict[str, Any]:
             "ablation": ablations.get(label, {}),
             "questions": details.get(label, []),
         }
+    # Validate every set that will be consumed, not only those the provenance
+    # section listed: a report with no provenance block would otherwise yield
+    # sets with path=None that the label fallback lets into selection (C2).
+    _assert_set_provenance(sets)
     return {"embedding_model": model, "expansion_disabled": True, "sets": sets}
 
 
@@ -413,7 +417,12 @@ def _headline_row(data: Optional[Mapping[str, Any]]) -> Dict[str, Optional[float
 def _check_detail_count(name: str, kind: str, data: Mapping[str, Any]) -> None:
     """Raise if a set's detail-row count differs from the ``n`` its report states."""
     n = _headline_row(data)["n"]
-    if n is not None and n != len(data["questions"]):
+    if n is None:
+        raise ValueError(
+            f"arm {name!r}: {kind} set has no reported n (missing ablation "
+            "section?) — detail completeness cannot be checked"
+        )
+    if n != len(data["questions"]):
         raise ValueError(
             f"arm {name!r}: {kind} set reports n={n} but its per-question "
             f"detail has {len(data['questions'])} rows — truncated or "
@@ -763,6 +772,15 @@ def compare_prod_ranks(
             "truncated dump?)"
         )
     unmatched = sorted(set(base_rows) ^ set(arm_rows))
+    # An absent strict_rank is missing evidence, not a recorded MISS (an
+    # explicit JSON null is a genuine miss and stays accepted).
+    for side, rows in (("baseline", base_rows), ("arm", arm_rows)):
+        for key, row in rows.items():
+            if "strict_rank" not in row:
+                raise ValueError(
+                    f"{side} production-rank row {key!r} lacks strict_rank — "
+                    "missing evidence is not a recorded MISS"
+                )
     for key, brow in base_rows.items():
         arow = arm_rows.get(key)
         if arow is None:
