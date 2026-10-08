@@ -56,21 +56,26 @@ third-party lane / global harness (002-v2); D61+ come from this plan.
 
   No config change is needed.
 
-### 1.2 Open questions for the owner (block the marked work)
-| # | Question | Blocks | My recommendation |
-|---|---|---|---|
-| Q1 | **Answer scope:** may the tool give substantive answers, or only identify relevant handbook passages with a summary? Which question classes must it refuse (fees, planning advice, litigation…)? | H, 16A labels | Substantive answers for what the handbook covers, cited. Refuse advice that depends on facts or documents outside the handbook. Write it as a policy in the system prompt and the eval schema. |
-| Q2 | **`PARTIALLY_VERIFIED` answers:** today they are shown with the unverified locators named. Keep that, or withhold the answer and show only the verified passages? | H | Keep showing, but also flag *uncited statements* and withhold any truncated answer (H1–H3). |
-| Q3 | **Who labels and seals** the held-out scenarios? The owner, a colleague, or the owner plus a second reviewer for refusal and ambiguous rows? | 16A | Owner labels; a second reviewer (colleague) checks every sealed, refusal and ambiguous row. |
-| Q4 | **Acceptable bars:** supported-error rate, p95 latency, cost per query. | 20, 21 | Propose ≤1% unsupported claims on the adjudicated set; p95 ≤ 20 s; ≤ €0.05/query. |
-| Q5 | **Operator:** who owns deployment, updates, incidents and source-currency review (new handbook editions) at the firm? | 18, 20 | The owner, for the pilot. Name a backup person. |
-| Q6 | If verified single-pass retrieval meets Q4, is **non-agentic an acceptable end state**? | 21 | Yes. Phase 21 (loop) becomes optional and evidence-gated. |
-| Q7 | May **Claude-authored paraphrases** of tutorial scenarios be committed to the public repo, or must all tutorial-derived data stay private? | 16A | Private until the Law Society replies; commit only aggregates and opaque IDs. |
-| Q8 | Track B as its **own versioned repo** (`~/ClaudeCode/harness`) installed into `~/.claude`, rather than files edited in place? | B | Yes: it can be tested, rolled back and uninstalled. |
+### 1.2 Owner answers (9 Oct 2026)
+| # | Question | Answer, and what it changes |
+|---|---|---|
+| Q1 | Answer scope | **Substantive answers, built as two modes.** The scope grows over time: Tailte Éireann registration guidance, courts.ie, statutes, other Law Society manuals. (a) **Handbook mode** (default, today's behaviour): grounded in the Conveyancing Handbook only; the gate and refusal stay as they are. (b) **Research mode** (opt-in toggle): handbook plus the model's general knowledge plus **up-to-date authoritative online sources**, as two-way verification. It flags where the handbook may be outdated, or where the law has moved, and ends with a protective disclaimer. Every claim carries a **provenance label**: `[Handbook ¶x, p.y]` (gate-verified) / `[Source: URL, date accessed]` (web, allow-listed authoritative domains) / `[General knowledge — not verified]`. Labels are never blended. New roadmap item: Phase 19, research mode. Ledger: **D61**. |
+| Q2 | `PARTIALLY_VERIFIED` display | Applies to **Handbook mode**: keep showing it with the unverified locators named, and add the uncited-statement flag and the truncation withhold (H1–H3). Research mode uses the per-claim labels from Q1. |
+| Q3 | Who labels and seals | The **owner** labels. A colleague gives a second opinion on refusal and ambiguous rows. ("Labelling" = writing the answer key: which handbook paragraphs answer each test question, or whether it should be refused. "Sealing" = locking a share of those questions away, unseen and never used for tuning, so they work as an honest final exam.) |
+| Q4 | Bars | **Accepted for Handbook mode:** ≤1% unsupported claims on the adjudicated set; p95 ≤ 20 s; ≤ €0.05/query. Research mode will be slower and costlier, so it gets its own bars in Phase 19. |
+| Q5 | Operator | The **owner**. Backup to be named later. |
+| Q6 | Non-agentic end state? | **No:** the owner wants agentic development to proceed at Phase 21. It stays evidence-gated for *production use* (it ships when it beats single-pass on sealed families), but it is planned, not optional. Research mode (Phase 19) is its natural first host: handbook retrieval, statute lookup and allow-listed web search as tools. |
+| Q7 | Tutorial-derived paraphrases public? | **Private for now.** Commit them later once the Law Society replies. A research subagent maps the legal landscape and the Law Society's own terms before the email is sent. |
+| Q8 | Harness as its own repo | **Yes:** `~/ClaudeCode/harness` (in progress). |
+
+Also decided 9 Oct:
+- the integrity hotfix (§3) **proceeds**, and Track B **proceeds**;
+- a future **legal-data partnership** (a provider of verified Irish legal data, to strengthen verification beyond the open web) goes on the 23+ track; the owner will share the business-plan research.
+
 
 ---
 
-## 2. Track A — close Phase 15 (**complete except merge**)
+## 2. Track A — close Phase 15 (**COMPLETE: merged and tagged `v2.2.0` on 9 Oct**)
 
 A0–A9 are done (push; blockers 1–6; Codex C1–C7 dispositions; re-review residuals in
 `f1a0644`; work-state corrected; PR #19 opened; CI green).
@@ -261,11 +266,13 @@ measured failures. An LLM may *propose* more retrieval but never approve an unsu
 | **17a — answer integrity (full)** | Claim-level entailment pass (downgrade-only); `search_result` blocks for native citations, with our gate as a second check; prompt-injection delimiters; tightened locator matching; quote-snapping; conflict surfacing. |
 | **17b — model migration** (kept separate so regressions stay attributable) | Sonnet 5 → 5.5 (`between_tools` or adaptive at low effort; no `disabled`); canonical run; model IDs to config. |
 | **18 — service + index lifecycle + source registry** | One application package: a typed query service with thin CLI and FastAPI adapters. Explicit states: answer / refusal / insufficient-evidence / operational-error, plus evidence refs and degradation flags. Disclosure policy is enforced before serialisation and streaming. Ingestion is an admin job. **Immutable index releases:** Chroma + BM25 + **paragraph/source registry** (source, edition, para, page span, absorbed sections) + full manifest; built and validated offline; one atomic release id; requests pinned to a release; rollback retained; desync repaired by rebuilding, never by mutating the live index; the pickle loader is trusted-local-only. **Tracing:** request/step ids; release, config, model and prompt versions; evidence ids; budgets; errors; verification decisions. Keyed HMAC (not a salted hash) for queries. Hash chain with an independent checkpoint. Edition/currency shown in answers. |
-| **19 — deterministic tools + routing** (needs the 18 registry) | `get_paragraph`, `get_chapter_toc`, `follow_cross_reference`, `define`; an Adaptive-RAG router (direct lookup / single pass / decomposition / refuse); one-shot decomposition. Measured on the non-agentic path first. |
+| **19 — deterministic tools + routing + RESEARCH MODE** (needs the 18 registry; Q1) | **Research mode:** an opt-in toggle; Anthropic web search with `allowed_domains` limited to authoritative sources (irishstatutebook.ie, revisedacts.lawreform.ie, courts.ie, tailte.ie, lawsociety.ie, gov.ie); a currency check comparing handbook statements with current sources; per-claim provenance labels; protective disclaimer; its own eval (claim support against sources, currency-flag accuracy) and its own Q4-style bars. **Data-flow note:** research-mode questions go to the search provider, so no client-identifying facts in queries (UI warning plus a redaction check). |
+| 19 (cont.) | `get_paragraph`, `get_chapter_toc`, `follow_cross_reference`, `define`; an Adaptive-RAG router (direct lookup / single pass / decomposition / refuse); one-shot decomposition. Measured on the non-agentic path first. |
 | **20 — internal pilot** | **Entry requirements** (not exit): named-user auth; licence position confirmed (§7); Anthropic ZDR/DPA **confirmed for the actual org, model and features** (it is not automatic); raw-query logging removed; firm AI-policy sign-off (Law Society GenAI guidelines v4); Q4 bars agreed; operator named (Q5); backup and restore tested. Then a React + TS front end with citation-first UI, side-by-side passages, distinct refusal / insufficient states, and feedback into candidate review. |
-| **21 — bounded agentic loop (optional, per Q6)** | A deterministic state machine with typed read-only tools; a sufficiency model proposes retrieval; request-wide budgets covering retries; on exhaustion, return an already-verified answer or abstain; trajectory eval. Kept only if it beats the frozen single-pass on sealed families without more unsupported claims. |
+| **21 — bounded agentic loop (planned, per Q6; ships to production only if it wins)** | A deterministic state machine with typed read-only tools; a sufficiency model proposes retrieval; request-wide budgets covering retries; on exhaustion, return an already-verified answer or abstain; trajectory eval. Kept only if it beats the frozen single-pass on sealed families without more unsupported claims. |
 | **22 — operational exit assessment** | Pre-registered adjudicated scenario counts, severity categories, claim-support / completeness / refusal metrics, incident thresholds and rollback criteria. "Four weeks, zero ungrounded" becomes supplementary only: 0 failures in 25 still leaves an ~11% upper bound. |
-| **23+ — multi-document / per-firm packaging** | Only with source authority, temporal metadata and document access controls. Self-hosted single-tenant per firm, each firm ingesting its own licensed copy. Needs a named operator and support model before any external offer. |
+| **23+ — multi-source corpora / partnership / per-firm packaging** | Tailte Éireann guidance, courts.ie, statutes, other Law Society manuals, each with source authority and edition/currency metadata; a legal-data provider partnership as a verification layer (owner's business-plan research). |
+| 23+ (cont.) | Only with source authority, temporal metadata and document access controls. Self-hosted single-tenant per firm, each firm ingesting its own licensed copy. Needs a named operator and support model before any external offer. |
 
 **Not planned:** open-ended or multi-agent orchestration; GraphRAG; tuning on <50 families;
 fine-tuning on eval data.
@@ -338,8 +345,7 @@ As decided in §1.1. Hard floor for every third-party lane:
 - Quota exhaustion → INCOMPLETE gate states, never silent skips.
 
 ## Ledger numbering
-D59 (+ addendum) landed · D60 third-party lane / global harness (002-v2) · D61 integrity
-hotfix · D62+ Phase 16A/B decisions. D56/D58 stay retired.
+D59 (+ addendum) landed · D60 third-party lane / global harness (harness DESIGN v2) · **D61 answer-scope modes (Q1, owner 9 Oct)** · D62 integrity hotfix · D63+ Phase 16A/B decisions. D56/D58 stay retired.
 
 
 ## Review
