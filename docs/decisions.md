@@ -6,7 +6,7 @@
 
 **Current phase: post-Phase-15 (v2.2.0 merged 9 Oct). Next: integrity hotfix + global harness — see docs/designs/003-roadmap-and-next-actions.md**
 
-**Next: D60** — reserved for the third-party lane decision (design 002-v2); the next unrelated entry takes D61. (Update this line in the same commit as each new entry.)
+**Next: D62** (D60 is reserved for the third-party lane / global harness decision; D61 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1763,3 +1763,26 @@ selection instrument are exactly the class D50 and D57 warn about.
 **Rejected:** deferring the residuals to Phase 16. They are a few lines each, and the
 instrument is binding.
 **Consequence:** Track A can open the PR once CI is green.
+
+## D61 — Answer scope: two modes, Handbook (default) and Research (opt-in) (owner decision, 9 Oct 2026)
+**Decision:** the tool may give substantive answers. It does this in two modes.
+- **Handbook mode** is the default and today's behaviour. It answers from the Conveyancing Handbook only; the grounding gate, refusal phrase and `PARTIALLY_VERIFIED` display stay as they are, hardened by the integrity hotfix (D62).
+- **Research mode** is an opt-in toggle built in Phase 19. It draws on three things:
+  - the handbook;
+  - the model's general knowledge;
+  - up-to-date authoritative online sources, limited to allow-listed domains (irishstatutebook.ie, revisedacts.lawreform.ie, courts.ie, tailte.ie, lawsociety.ie, gov.ie).
+
+  These act as two-way verification. The mode also flags where the handbook may be out of date, and ends with a protective disclaimer. Every claim carries a provenance label: `[Handbook ¶x, p.y]` (gate-verified), `[Source: URL, date accessed]`, or `[General knowledge — not verified]`. Sources are never blended unlabelled.
+- **Later scope:** Tailte Éireann guidance, courts.ie, statutes, other Law Society manuals, and a legal-data provider partnership as a verification layer.
+- **Phase 21** (bounded agentic loop) is planned, not optional. It ships to production only if it beats single-pass on sealed families.
+
+**Why:**
+- Practitioners need answers that reflect current law even when their handbook edition predates it.
+- The handbook-only guarantee is the product's integrity anchor, so it stays the default and is never diluted. That's why the modes are separate, not merged.
+
+**Rejected:** blending model knowledge into Handbook-mode answers, which would make citation verification meaningless; unrestricted web search instead of allow-listed authorities; and dropping refusal in Handbook mode.
+
+**Consequence:**
+- Phase 19 gains Research mode, with its own eval (claim support against sources, currency-flag accuracy) and its own latency and cost bars. The Q4 bars apply to Handbook mode.
+- Research-mode questions go to the search provider, so no client-identifying facts may be included (UI warning plus a redaction check).
+- Licensing questions about API transmission and excerpt display apply to both modes (design 003 §7; private research note 9 Oct).
