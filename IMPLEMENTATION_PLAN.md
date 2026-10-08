@@ -808,169 +808,234 @@ docs/designs/001-bakeoff-embedding-model.md §Outcome.
 
 ---
 
-## Integrity hotfix (H) — `integrity-hotfix` → `v2.2.1` (spec v2, 9 Oct 2026)
+## Integrity hotfix (H) — `integrity-hotfix` → `v2.2.1` (spec v3, 9 Oct 2026)
 
-**Authority:**
-- `docs/designs/003-roadmap-and-next-actions.md` §3, with the owner's answers in §1.2 (Q1/Q2);
-- the astra finding B1 (in 003 §Review);
-- ledger **D61** (answer-scope modes) and **D62** (this hotfix), both written in this branch.
+**Authority:** `docs/designs/003-roadmap-and-next-actions.md` §3, with the owner's answers
+in §1.2 (Q1/Q2), and ledger **D61** (on this branch).
+- **D62 is written during implementation**, not before it. It records the decisions below,
+  and the plan-gate rounds are reconciled in 003 `## Review → Integrity hotfix plan gate`.
+- **Deliberate divergences from 003 §3, superseding it:**
+  - **H2 is display-only.** 003 said "downgrade-only". Display-only is chosen for three
+    reasons: D38/D44 keep sentence coverage descriptive; the owner's Q2 answer keeps the
+    `PARTIALLY_VERIFIED` display; and claim-level downgrades belong with the entailment pass
+    in Phase 17a, where they can be measured.
+  - **003's H5 "scope policy in the system prompt" is dropped.** Q1 made today's prompt *be*
+    Handbook mode, so there's nothing to change in the prompt. H5 becomes a source label plus
+    a disclaimer.
 
-**Scope:** Handbook mode only; Research mode is Phase 19. **Retrieval is untouched.**
+**Scope:** Handbook mode only. **Retrieval is untouched.**
 
-**v2 reconciles** the round-1 plan gate: plan-auditor (3 BLOCKER / 14 DEGRADES / 3 COSMETIC)
-and Codex `gpt-6.1-sol` (2 BLOCKER / 6 MAJOR / 2 MINOR). The disposition table is in D62.
-
-**Evidence gathered before v2:**
-- The local audit log (67 real queries) has a maximum answer of 5,639 chars (~1.4k tokens),
-  under the 2,048-token cap. No truncation has been observed yet.
-- A live probe (9 Oct, pinned langchain-anthropic 1.4.8, `claude-sonnet-5`, through
-  `ChatPromptTemplate | ChatAnthropic`) returns `AIMessage.response_metadata["stop_reason"]`
-  = `"max_tokens"` / `"end_turn"`, plus `stop_details`.
+**Evidence:**
+- The CLI audit log (67 real queries; eval traffic is excluded by D36) has a maximum answer of
+  5,639 chars (~1.4k tokens), under the 2,048-token cap.
+- A live probe (9 Oct) through `ChatPromptTemplate | ChatAnthropic` (`claude-sonnet-5`,
+  langchain-anthropic 1.4.8, langchain-core 1.4.8, anthropic 0.116.0) returns
+  `response_metadata["stop_reason"]` = `max_tokens` / `end_turn`, plus `stop_details`.
 
 ### Work
-1. **H1 — generation status at the right seam.**
-   - `generate()` (src/generator.py ~L364) drops `StrOutputParser` and invokes
-     `PROMPT_TEMPLATE | llm`.
-   - It normalises the `AIMessage`:
-     - text = `.content` if str; else the joined `text` blocks of a list (an empty list → "");
-     - `stop_reason` = `response_metadata.get("stop_reason")`.
-   - It returns its existing keys **plus** `generation_status`, one of `complete`
-     (`end_turn`, `stop_sequence`) / `truncated` (`max_tokens`) / `declined` (`refusal`) /
-     `unexpected` (any other value) / `unknown` (key absent or None), and the raw
-     `stop_reason`.
-   - `generate_with_sources` passes both through.
-   - `max_tokens` rises 2048 → **4096**: headroom for long multi-part answers at no cost
-     to short ones.
-2. **H1b — outcome precedence (extends D35).**
-   - Two new terminal outcomes, `ANSWER_TRUNCATED` and `MODEL_DECLINED`, are assigned by a
-     new pure function `grounding.generation_outcome(status)` that runs **before**
-     `classify`:
-     - `truncated` → `ANSWER_TRUNCATED`;
-     - `declined` or `unexpected` → `MODEL_DECLINED`;
-     - `complete` or `unknown` → fall through to `classify`, **unchanged** for existing
-       inputs.
-   - Terminal outcomes **beat** every citation outcome, the legacy `outcome is None`
-     fallback and `--show-unverified`. The draft is never printed, never returned and never
-     logged.
-   - An exact refusal sentence carrying `max_tokens`/`refusal` resolves to the terminal
-     outcome. Precedence is tested.
-   - `unknown` is shown normally plus the line "Completion status could not be confirmed"
-     (audited). Missing metadata stays **visible** without blanking every answer.
-3. **H2 — uncited-statement hint (display-only heuristic, D38/D44 unchanged).**
-   - At query time, reuse `evaluator.split_sentences` **as-is**: imported, not moved,
-     unmodified. Evaluator numbers can't drift, because evaluator code is untouched except
-     the H1c accounting.
-   - A unit is flagged when it has no locator **and** all of these hold:
-     - it is ≥5 words;
-     - it doesn't end with `:`;
-     - it isn't the leading `CAVEAT_PREFIX`;
-     - it isn't a rule-3(b) gap statement (patterns: "do not address", "does not directly
-       answer", "not covered", "the extracts do not").
-   - A whole-answer refusal flags nothing.
-   - Display heading: "These statements may not be backed by a citation (heuristic):".
-     The count is audited.
-   - It **never** changes the outcome and never runs on display decoration.
-   - Known splitter limits (lowercase starts, quotes) are documented as misses.
-4. **H1c — evaluator accounting (one normalisation path).**
-   - `generate_answers` records `generation_status` per row. It **does not retry** a
-     returned (non-exception) incomplete status.
-   - Rows with status `truncated`/`declined`/`unexpected` are counted per set and in
-     aggregate as `generation_incomplete`, and **excluded** from completeness, the judge and
-     refusal-accuracy denominators. They are reported in their own line.
+1. **H1 — generation status, set inside `generate_with_sources`, so every consumer gets it
+   (D35's reasoning).**
+   - `generate()` invokes `PROMPT_TEMPLATE | llm`, without `StrOutputParser`.
+   - **Text:** `.content` if it's a str; otherwise the joined `text` blocks (an empty list
+     gives "").
+   - **Status mapping:**
+
+     | `stop_reason` | `generation_status` |
+     |---|---|
+     | `end_turn`, `stop_sequence` | `complete` |
+     | `max_tokens`, `model_context_window_exceeded` | `truncated` |
+     | `refusal` | `declined` |
+     | any other value | `incomplete` |
+     | absent or None in the response metadata | `unknown` |
+
+   - The return gets two new keys, `generation_status` and `stop_reason`; the existing keys
+     are unchanged.
+   - **`max_tokens` stays 2048.** No answer has come near it, and raising it would hit D52's
+     120 s timeout sizing and the judge, which shares `get_llm`. Revisit in Phase 19.
+   - **Pin the transitive dependencies** the metadata path depends on, by the D53 precedent:
+     `langchain-core==1.4.8`, `anthropic==0.116.0`. These are already installed versions,
+     not new dependencies.
+2. **H1b — terminal outcomes take precedence (extends D35).**
+   - `generate_with_sources` calls a new pure `grounding.generation_outcome(status)` **before**
+     `classify`, and sets `gate_outcome` from it:
+
+     | Status | Outcome |
+     |---|---|
+     | `truncated` | `ANSWER_TRUNCATED` |
+     | `declined` | `MODEL_DECLINED` |
+     | `incomplete` | `GENERATION_INCOMPLETE` |
+     | `complete` or `unknown` | `classify` result, unchanged for existing inputs |
+
+   - Terminal outcomes beat every citation outcome, the legacy `outcome is None` fallback and
+     `--show-unverified`.
+   - An exact refusal sentence carrying a terminal status → the terminal outcome.
+   - **A result dict with no `generation_status` key** (legacy mocks or fakes) is treated as
+     `unknown`. The **legacy `outcome is None` display path is exempt** from the "could not
+     be confirmed" line, keeping D35's exact v1 display there.
+3. **H1c — evaluator accounting.**
+   - **Status reaches the refusal scorer.** `evaluate_refusals`' `answer_fn` may return
+     either a str (legacy, meaning status `unknown`) or `{"answer", "generation_status"}`.
+     Run_eval_matrix's `_answer_fn`, `evaluate_refusals`' default and legacy `run_eval`'s
+     default return the dict.
+   - **One normaliser** maps a result to (text, status) for every scorer.
+   - `generate_answers` records the status per row, and does **not retry** on a returned
+     status.
+   - Rows with `truncated`/`declined`/`incomplete` are counted per set and in aggregate as
+     `generation_incomplete`, broken down by status. They are **excluded** from completeness,
+     the judge and the refusal-accuracy denominators, and reported on their own line.
+   - **`GATE_OUTCOMES` and the completeness distribution are unchanged**: excluded rows never
+     enter them.
    - `unknown` is counted and reported.
-   - The canonical guard requires `generation_incomplete == 0` **and** `unknown == 0`.
-     That is a new canonical condition, so the definition becomes **v5** (D51 convention:
-     version bumps only on a changed condition).
-   - `GATE_OUTCOMES` gains the two outcomes, so the distribution never drops them.
-   - The default refusal `answer_fn` and the legacy `run_eval` use the same normaliser.
-5. **H3 — one rendering contract.**
-   - New `src/render.py`: `render(outcome, result, flags) -> Rendered(display_text, action,
-     public_result)`.
-   - `public_result` is the **only** dict `query()` returns. It is an allowlist per
-     outcome: the draft, `answer`, uncited sentences and raw message are excluded for
-     terminal and blocked outcomes, keeping D35's blocked allowlist.
-   - It covers every path: no_results, legacy None, the four citation outcomes, the two
-     terminal outcomes, `show_unverified` on/off, and uncited on/off.
-   - Verbose chunk scores stay a separate print, before rendering.
-6. **H4 — honest wording.**
-   - README L6 and L12–14 say the locator and page are machine-checked against the
-     retrieved passage. That is **not** a check that the passage supports the claim, and
-     partially verified answers are shown with their unverified locators named.
-   - The README "Four possible outcomes" table (L40–47) becomes the full outcome table.
-   - Same fix in `Demo/demo.html` L138.
-   - `docs/v1-v2-comparison.md` gets a dated correction note (it's a historical
-     comparison).
-   - CLAUDE.md: the canonical definition becomes **v5**, with its full condition list (incl.
-     D51's judge/BM25 guards and the new incomplete-generation condition).
-7. **H5 — source label + disclaimer (display-only).**
-   - For shown answers only (VERIFIED, PARTIAL, override draft, unknown-status):
-     - prefix: `Source: <titles of the retrieved documents' metadata["title"]>`, derived from
-       retrieval and **not hard-coded**, so the sample index and other document types label
-       truthfully;
-     - suffix: "Research aid — check the cited paragraphs; not legal advice; the source
-       edition may predate current law."
-   - It lives in `display_text` only. The raw `answer`, `answer_chars`, refusal matching,
-     caveat detection, citation extraction and H2 never see it.
-   - **No `--mode` flag yet:** it would clash with `eval --mode`. Mode selection arrives
-     with Research mode (Phase 19) as `query --source`.
+   - **Canonical v5:** the canonical guard additionally requires
+     `generation_incomplete == 0` **and** `unknown == 0`. Bump the report title constant
+     (src/evaluator.py ~L1990–1995) and its test pin (tests/test_evaluator.py ~L2711) to
+     **v5**, and update CLAUDE.md's canonical condition list completely (incl. D51's
+     judge/BM25 guards).
+   - The committed `eval/results.md` stays a v4 report until the next canonical run, which is
+     stated in D62.
+   - **Fixture migration:** canonical-true evaluator fixtures get explicit
+     `generation_status: "complete"`. Missing metadata is never treated as complete.
+4. **H2 — uncited-statement hint (display-only heuristic; evaluator code untouched).**
+   - **Steps:**
+     1. Strip one leading exact `CAVEAT_PREFIX`, as the evaluator does.
+     2. Flag every *remaining* exact `CAVEAT_PREFIX` occurrence as "repeated caveat".
+     3. Split with `evaluator.split_sentences` (imported, unmodified).
+   - **A unit is flagged** when it has no locator, is ≥5 words, and doesn't end with `:`.
+   - **Gap-statement exemption** (narrow): a unit is exempt only if it **starts with** one of
+     "The extracts do not", "The source material does not", "This is not covered", "The
+     handbook does not" **and** contains none of "but", "however", "likely", "probably",
+     "generally", "usually".
+   - A whole-answer refusal flags nothing.
+   - **Display heading:** "These statements may not be backed by a citation (heuristic):".
+   - The count is audited; the text never is. The outcome never changes.
+   - **Documented misses:** lowercase starts, quotes, and the exemption's own blind spots.
+5. **H3 — one rendering contract (`src/render.py`).**
+   - `render(result, flags) -> Rendered(display_text, action, public_result)`.
+   - **`public_result` keeps D35's uniform key set** on every path: `answer`,
+     `gate_outcome`, `citations`, `sources`, `citation_check`, `source_documents`,
+     `answer_chars`, plus the new `generation_status`, `stop_reason`, `uncited_count`.
+   - **For blocked and terminal outcomes**, `answer` is a **synthesised safe notice**, never
+     the draft. `citations`/`citation_check` follow D35's blocked allowlist. No uncited
+     sentences appear.
+   - **Matrix:** no_results × legacy None × the four citation outcomes × the three terminal
+     outcomes × `show_unverified` on/off × uncited on/off × status `unknown`/`complete`.
+   - The verbose chunk-score print stays before rendering.
+6. **H4 — honest wording, on every surface that states the outcome set or the verification
+   claim.**
+   - README: L6, L12–14, L37 (alt text), L40–47 (outcome table → the full set), L49, L84.
+   - `Demo/demo.html`: L138, L198–200, L393.
+   - ABOUT.md: L36–39.
+   - `docs/diagrams/user-journey*.mmd`: add the terminal outcomes, and re-render the SVGs
+     with `npx -y @mermaid-js/mermaid-cli`. That's a dev-time tool, not a project dependency.
+     If it's unavailable, the caption says "simplified — full outcome table in README".
+   - `docs/v1-v2-comparison.md`: a dated correction note.
+   - CLAUDE.md: canonical v5 (H1c).
+7. **H5 — source label + disclaimer (display-only), for outcomes VERIFIED, PARTIAL and the
+   override draft only.**
+   - Prefix `Source:` + the sorted unique `metadata["title"]` of the chunks matched by
+     **verified** citations, falling back to the retrieved chunks.
+   - Suffix: "Research aid — check the cited paragraphs; not legal advice; the source edition
+     may predate current law."
+   - It lives in `display_text` only. Raw `answer`, `answer_chars`, refusal matching, caveat
+     detection, citation extraction and H2 never see it.
+   - **No mode flag in H.** No mode selection exists yet. Research mode's CLI shape is
+     decided in Phase 19.
 8. **H6 — audit (extends D36).**
-   - New actions: `ACTION_WITHHELD_TRUNCATED`, `ACTION_WITHHELD_DECLINED`.
-   - New always-present fields: `stop_reason` (str|null), `generation_status`,
-     `uncited_count` (int).
+   - New actions: `withheld_truncated`, `withheld_declined`, `withheld_incomplete`.
+   - New always-present fields:
+     - `stop_reason` (str|null);
+     - `generation_status`, which is `"not_run"` on the no-results path;
+     - `uncited_count` (int, 0 when not computed).
    - Exactly one event per query.
-   - `answer_chars` measures the raw draft length, as today.
-   - No answer text, uncited sentences or message objects in any event, even with
+   - No answer text, uncited sentences or message objects, even with
      `AUDIT_LOG_RAW_QUERIES=1`.
-   - Field propagation goes through `_write_audit`/`build_event`; `tests/test_audit.py`
-     `EXPECTED_KEYS` is updated.
-9. **Ledger:**
-   - **D61**, answer-scope modes (owner decision, 9 Oct; records Q1/Q2 and Research mode
-     as Phase 19).
-   - **D62**, this hotfix: extends D35 (the outcome set), D36 (actions and fields) and D51
-     (canonical v5); includes the gate-round dispositions.
-   - Update the decisions.md `Next:` and `Current phase` lines.
+   - Propagate through `_write_audit` / `build_event`, and update `tests/test_audit.py`
+     `EXPECTED_KEYS`.
+9. **Ledger:** D62, covering:
+   - the decisions above;
+   - the divergences from 003;
+   - `max_tokens` kept at 2048;
+   - canonical v5;
+   - the dependency pins.
+
+   Also update decisions.md's `Next:` and `Current phase` lines.
 
 ### Acceptance (Tier-1)
 - (a) The full suite is green.
-- (b) **Real-path status test:** a fake `BaseChatModel` returns a `ChatResult` whose
-  `llm_output` carries `stop_reason` (the langchain_core merge path the live probe
-  exercises). It goes through the real `PROMPT_TEMPLATE | llm` seam, for `end_turn`,
-  `max_tokens`, `refusal` with empty list content, `pause_turn`, and absent.
-- (c) **Leak tests:** sentinel draft text and sentinel uncited sentences never appear in
-  stdout, `query()`'s returned dict or the audit line, for both terminal outcomes and with
-  `show_unverified` on and off.
-- (d) **Precedence tests:** an exact refusal sentence with `max_tokens` → `ANSWER_TRUNCATED`;
-  with `refusal` → `MODEL_DECLINED`.
-- (e) **Evaluator snapshot:** before any edit, `main`'s evaluator outputs on the existing
-  fixtures are captured to a JSON snapshot, and afterwards the outputs are identical for
-  complete-status rows. New tests cover incomplete rows on answerable and refusal-type rows,
-  per-set and aggregate counts, exclusion from completeness/judge/refusal denominators, no
-  retry, partial-report routing, and canonical rejection when either count is non-zero.
-- (f) **Render matrix:** every path in H3, as a table test.
-- (g) **H2 fixtures:** cited, uncited, heading, list lead-in, gap statement, leading caveat,
-  repeated caveat (flagged, matching the evaluator's leading-only rule), refusal, and a
-  known-miss (lowercase start) documented as a miss.
-- (h) H5: the label comes from metadata; sample-index and legislation-type fixtures are
-  labelled truthfully; decoration is absent from `answer`/`answer_chars`; refusal matching
-  is unchanged.
-- (i) Audit `EXPECTED_KEYS` plus the field-presence rules.
-- (j) The offline eval (`--skip-refusals --skip-completeness`) against the same
-  `./chroma_db` gives retrieval ablation rows identical to `main`'s; a keyed environment
-  fixture asserts zero model calls.
-- (k) D61 and D62 are written; the `Next:` and `Current phase` lines are updated.
+- (b) **Real-path status:** a fake `BaseChatModel` returns a `ChatResult` whose `llm_output`
+  carries `stop_reason`, through the real `PROMPT_TEMPLATE | llm` seam, for:
+  - `end_turn`;
+  - `max_tokens`;
+  - `model_context_window_exceeded`;
+  - `refusal` with empty list content;
+  - `pause_turn`;
+  - absent.
+- (c) **Leak tests:**
+  - sentinel draft and sentinel uncited text never appear in stdout, in `query()`'s returned
+    dict or in the audit line;
+  - for every terminal outcome **and** for shown outcomes (audit line);
+  - with `show_unverified` on/off and with `AUDIT_LOG_RAW_QUERIES=1`.
+- (d) **Precedence:** an exact refusal sentence with each terminal status gives the terminal
+  outcome; a legacy mock without status shows the v1 display unchanged.
+- (e) **Evaluator regression (projection):**
+  - Before any code edit, a script run on `main` writes
+    `tests/fixtures/h_eval_projection_main.json`, recording `main`'s SHA.
+  - It captures, per listed fixture: strict/related ranks, sentence-coverage numerators and
+    denominators per row, completeness aggregates, refusal-accuracy counts and judge input
+    texts.
+  - The fixtures are the evaluator tests the plan names in D62's appendix: the completeness,
+    refusal and matrix fixtures.
+  - Afterwards the same projection must be identical. New fields (status, incomplete counts)
+    are asserted separately.
+  - New tests:
+    - incomplete rows, on answerable and refusal-type rows;
+    - per-set and aggregate counts;
+    - exclusion from completeness, the judge and refusal denominators;
+    - no retry;
+    - partial-report routing;
+    - canonical rejection when either count is non-zero;
+    - the v5 title.
+- (f) **Render matrix:** every combination in H3, asserting `public_result` keys and the
+  notice text.
+- (g) **H2 fixtures:**
+  - cited, uncited, heading, list lead-in;
+  - a narrow gap statement (exempt);
+  - D32's hedge "This is not covered in the source material, but the likely answer is 20
+    days." (**flagged**);
+  - "Defects not covered by the warranty remain the vendor's risk." (**flagged**);
+  - leading caveat (stripped);
+  - repeated caveat (flagged as "repeated caveat");
+  - refusal (nothing flagged);
+  - a lowercase-start miss, documented.
+- (h) **H5:**
+  - the label equals the titles of the chunks behind verified citations (or of the retrieved
+    chunks if none);
+  - sample-index and legislation fixtures are covered;
+  - the decoration is absent from `answer`/`answer_chars`;
+  - refusal matching is unchanged.
+- (i) **Audit:** `EXPECTED_KEYS`, values per path (incl. `not_run`) and the three new
+  actions.
+- (j) **Retrieval regression canary:**
+  - Before implementation, the offline eval runs on `main` against `./chroma_db`, and its
+    output is stored locally at `data/research/h_offline_baseline_main.md` with the SHA.
+  - After implementation, the same command produces identical retrieval ablation rows.
+  - This is a canary for accidental retrieval edits only; H's own coverage is (b)–(i).
+  - A keyed-environment fixture asserts zero model calls offline.
+- (k) D62 is written; the `Next:` and `Current phase` lines are updated; 003's `## Review`
+  carries the plan-gate reconciliation.
 
 ### Tier-2
 - A local-only live check of 5 questions: direct, lay-phrased, comparison, out-of-scope,
-  long multi-part, plus one forced `max_tokens` (`max_tokens=16`).
-- The PR records **metadata only**: outcome, `generation_status`, citation counts, uncited
-  count, `answer_chars`. **No answer text in the PR or the repo** (CLAUDE.md corpus rule;
-  D30; the phase14-rubric-spotchecks precedent).
+  long multi-part.
+- The PR records **metadata only**: outcome, status, citation and uncited counts,
+  `answer_chars`. **No answer text in the PR or the repo.**
+- Forced truncation is covered by the Tier-1 fakes and the 9 Oct live probe. No new
+  `max_tokens` override is added.
 
 ### Gates
-1. Round-2 plan gate (plan-auditor + Codex sol).
+1. Round-3 plan gate.
 2. Implement.
-3. Gate steps per `.claude/skills/phase-gate` run against this section (the skill takes a
-   phase number, so it is invoked as "H", with criteria read from here).
+3. Gate steps per `.claude/skills/phase-gate`, run against this section (invoked as "H").
 4. Codex merge review.
 5. PR, then CI, then the owner's "go", then tag `v2.2.1`.
 

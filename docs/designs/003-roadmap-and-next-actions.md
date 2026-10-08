@@ -415,6 +415,47 @@ Co-developer proposals adopted:
 
 The proposed 002-v2 outline is adopted as the skeleton (§4 principles). Astra's open questions are merged into §1.2 (Q1–Q6).
 
+### Integrity hotfix plan gate (IMPLEMENTATION_PLAN.md §H)
+
+| Round | plan-auditor | Codex `gpt-6.1-sol` | Result |
+|---|---|---|---|
+| 1 (spec v1) | 3 BLOCKER / 14 DEGRADES / 3 COSMETIC | 2 BLOCKER / 6 MAJOR / 2 MINOR | REVISE → spec v2 |
+| 2 (spec v2) | 2 BLOCKER / 16 DEGRADES / 6 COSMETIC | 0 BLOCKER / 2 MAJOR / 2 MINOR | REVISE → spec v3 |
+
+**Round 1 → v2:**
+- Tier-2 metadata-only, with no answer text in the PR.
+- The status seam moved to `generate()`.
+- Terminal outcomes take precedence over the override and the public return.
+- Evaluator accounting and canonical rejection added.
+- The phantom "substantive" logic was replaced by an explicit heuristic.
+- The raw-versus-display boundary was defined.
+- The truthful source label replaced the hard-coded "Handbook only" claim.
+- Audit propagation and actions were specified.
+- The `--mode` flag was dropped.
+- The authorities (003, D61) were made present on the branch.
+
+**Round 2 → v3:**
+- The snapshot became a field projection captured on `main`.
+- The repeated-caveat contradiction was resolved with explicit detection.
+- Status reaches the refusal scorer through an `answer_fn` contract.
+- `GATE_OUTCOMES` is left unchanged.
+- Canonical v5 bumps the title and test pin.
+- The status is set inside `generate_with_sources`.
+- Missing status means `unknown`; the legacy path is exempt.
+- The D35 key set is kept, with a safe notice.
+- `unknown` was added to the render matrix.
+- Every honesty surface is enumerated.
+- The divergences from 003 §3 are recorded as superseding.
+- The narrow gap exemption is backed by D32-hedge fixtures.
+- The forced-truncation live call was dropped.
+- `max_tokens` stays 2048.
+- The baseline is captured before implementation.
+- The leak tests were widened.
+- A `GENERATION_INCOMPLETE` outcome was added for non-decline stops.
+- `not_run` status on the no-results path.
+- The transitive pins `langchain-core` and `anthropic` were added.
+- The label comes from verified-citation titles.
+
 ## Outcome
 
 *(Filled in as tracks complete.)*
