@@ -19,9 +19,19 @@ def _no_live_api_key(monkeypatch):
     behaviour-changing opt-in that a dev box may set in .env (field-test
     query capture), and tests assert the default (off) audit event shape.
     Tests that exercise the opt-in set it explicitly via monkeypatch.
+
+    EMBEDDING_MODEL is exported into the shell during a bake-off arm run: a
+    leaked value would point spec/prompt assertions at the wrong model.
+    ALLOW_CHUNK_TRUNCATION belonged to the index-time truncation guard (Phase
+    15 WS3, reserved D56), which was designed but NOT landed — mooted by the
+    D57 no-swap outcome (disposition in D59) — so nothing reads it today. The
+    scrub is kept deliberately so a future guard cannot inherit shell state.
+    Tests that exercise either set them explicitly via monkeypatch.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("ALLOW_CHUNK_TRUNCATION", raising=False)
 
 
 @pytest.fixture

@@ -5,8 +5,9 @@ RAG pipeline over an OCR-scanned Irish conveyancing handbook (~800 pages, decima
 paragraph numbering: Chapter 3 → 3.2 → 3.2.1). The product's entire point is
 **grounded answers with chapter/paragraph/page citations** and explicit refusal
 when the answer is not in the corpus. Portfolio piece for the Claude Corps
-Fellowship — two-track: v1 freeze on 11 July (to be tagged `v1.0-baseline` at
-merge), v2 remediation target 13 July, fellowship deadline 17 July.
+Fellowship — submitted 17 Jul 2026 at `v2.1.1`. Now on the post-submission
+production-hardening track; the current phase is stated at the top of
+docs/decisions.md.
 
 Working spec lives in IMPLEMENTATION_PLAN.md. Design rationale lives in
 docs/decisions.md. Current phase is stated at the top of decisions.md.
@@ -70,7 +71,7 @@ it *pointers* (file paths, branch names), not pasted content.
   of the diff vs main; fix findings forward or rebut them explicitly in the
   PR description.
 - Canonical call:
-  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, or held-out eval files."`
+  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, or held-out eval files."`
 - Treat Codex findings like pressure-tester findings: verify each against
   the code before acting; it can be wrong or out of scope. Proposed diffs
   are suggestions, not patches: verify and apply them yourself — Codex
@@ -78,8 +79,9 @@ it *pointers* (file paths, branch names), not pasted content.
 - NEVER paste corpus text (handbook extracts, chunk contents, held-out eval
   questions) into a Codex prompt, and always include the do-not-read clause
   above — the corpus is copyrighted and must not be shipped to a third-party
-  model (same reason as the `data/` commit ban; note `chroma_db/` contains
-  the full corpus text too).
+  model (same reason as the `data/` commit ban; note `chroma_db/` and the
+  Phase 15 bake-off arm indexes `chroma_db_arm_*/` contain the full corpus
+  text too).
 
 ## Conventions
 - Python 3.11+, type hints and docstrings on all public functions.

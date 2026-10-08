@@ -162,14 +162,20 @@ deterministic.
   confidence interval (0.839–1.000). It's an honest out-of-sample estimate, not a large-scale
   benchmark.
 - **Embedding truncation.** `all-MiniLM-L6-v2` embeds only the first ~256 tokens of a chunk;
-  a 15 Jul measurement found 71% of chunks exceed that window, so the vector arm never sees the
-  back half of a median chunk. BM25 sees the full text (D23). Token-aware chunking is the top
-  post-submission retrieval fix.
+  a 15 Jul measurement found 71% of chunks exceed that window (67.4% on the 3 Aug re-measurement),
+  so the vector arm never sees the back half of a median chunk. BM25 sees the full text (D23).
+  It is a real information-loss defect, but it was measured as **non-discriminating for retrieval
+  on this corpus** — 78.3% of strict-MISS expected-section chunks are over the window versus 83.3%
+  of strict-HITs (D54) — and the failure of the 8k-window candidates to win the Phase 15 bake-off
+  (D57) confirms the extra context is not the binding constraint here.
 - **Realistic-slice recall is the current frontier.** Strict hit@6 on messy real-staff phrasing is
   0.471 — far below the handbook-vocabulary sets. Phase 14 added intent-level rewriting, fused at
   the weight the measurement supported (W=0.25). The W sweep's negative result, where a higher weight
   rescued the target comparison question but broke a working control, is recorded in D50 and its
-  addendum rather than shipped. The structural fix is token-aware chunking (Phase 15).
+  addendum rather than shipped. Phase 15 diagnosed the remaining failures into measured classes
+  (vocabulary gap, near-misses at rank 7–19, absorbed labels, expansion sampling variance — D54);
+  a stronger embedding model was tested against them and did not help (D57), so the next attempt is
+  a reranker, not a bigger context window.
 - **Run-to-run variance.** The generation API runs at a fixed default temperature and expansion
   rewrites are sampled, so borderline rows (refusal boundary, rank-6 hits) can flip between eval
   runs; committed numbers are one canonical sample.
@@ -203,7 +209,7 @@ deterministic.
 python -m pytest tests/ -q
 ```
 
-558 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`),
+609 tests. All IO and models are mocked (see the `FakeEmbeddings` pattern in `tests/test_embedder.py`),
 with no network access and no API key required (the suite scrubs any ambient `ANTHROPIC_API_KEY` so
 an unpatched seam fails loudly rather than making a live call).
 
@@ -225,9 +231,22 @@ an unpatched seam fails loudly rather than making a live call).
   a documented weighted-fusion contract (W ≤ 0.5 dominance invariant; the sweep's negative result
   documented in D50 rather than shipped past its constraint), canonical-report v4 guards, and LLM
   client timeouts (D49–D52).
-- **Next (Phase 15):** token-aware chunking (the 71% truncation fix), BM25 stemming, a service
-  layer for a staff-facing front end, entailment-level citation checking, matter-scoped deployment,
-  and multi-document indexing (the per-source sync already supports it).
+- **Done (Phase 15, negative result):** the phase set out to fix retrieval by widening the embedding
+  window, and ran a plan-gated bake-off — three candidate models plus a freshly rebuilt MiniLM
+  baseline, judged only by the tuning set, with per-question controls fixed in advance. The measured
+  answer was no: no candidate improved on the baseline for this corpus, so `all-MiniLM-L6-v2` stays
+  and the truncation guard that would have shipped with a winner was mooted (D57, and
+  [`docs/designs/001-bakeoff-embedding-model.md`](docs/designs/001-bakeoff-embedding-model.md)).
+  What stands from the phase: the failure-class diagnosis and eval instrument repair (D54), the
+  per-model config seam that makes any future bake-off one variable per arm (D55), the exact
+  `transformers` pin (D53), and the bake-off instruments themselves.
+- **Next (Phase 16):** expand the golden set — at n≈23–30 the confidence intervals are wide enough
+  that a small effect cannot be told from noise — and add a cross-encoder reranker aimed at the two
+  failure classes Phase 15 actually measured: the near-misses ranking 7–19, and the fusion-boundary
+  cases where the vector arm ranks the right chunk first and lexical scoring pushes it out of the
+  top 6. Still on the list beyond that: BM25 stemming, a service layer for a staff-facing front end,
+  entailment-level citation checking, matter-scoped deployment, and multi-document indexing (the
+  per-source sync already supports it).
 
 ## License
 
@@ -238,7 +257,7 @@ here and no rights over it are granted.
 ## More detail
 
 - `IMPLEMENTATION_PLAN.md` — phase-by-phase build plan and acceptance criteria.
-- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D52).
+- `docs/decisions.md` — design rationale, one entry per meaningful choice, append-only (D1–D58).
 - `eval/results.md` — the canonical held-out evaluation report with full provenance.
 - `docs/harness.md` — the development workflow itself (gates, fresh-context critics, eval-judged
   bake-offs) and how to port it to a new project.

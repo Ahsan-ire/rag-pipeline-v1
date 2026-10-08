@@ -4,7 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: 14 — answer quality: synthesis + intent-level rewriting**
+**Current phase: 15 — retrieval foundation (negative result recorded, closing)**
+
+**Next: D60** — reserved for the third-party lane decision (design 002-v2); the next unrelated entry takes D61. (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1546,3 +1548,218 @@ figure was 0.412. Run-to-run expansion variance is the mechanism in both cases. 
 arm ran before the intent_weight=0 no-op fix; with ≥6 non-zero-score fused docs per question
 throughout (pool 12, 2 arms, ≥4 sub-queries), zero-weight padding could not enter any top-6,
 so the W=0 arm equals the true no-intent baseline for every measured number.
+
+## D53 — transformers promoted from transitive to exact pin (3 Aug 2026)
+**Decision:** `transformers==5.14.1` pinned in requirements.txt (was transitive via
+sentence-transformers/langchain-huggingface, resolving to 5.13.0 locally).
+**Why:** the Phase 15 embedding candidates are ModernBERT-based and carry a hard
+`transformers>=4.48` floor — an unpinned transitive dependency that the code now depends on
+by version is a fresh-clone failure waiting to happen; CLAUDE.md's dependency rule requires
+exact pins with stated reasons. The CI HuggingFace cache key must track the embedding-model
+name for the same reason (a stale key silently re-downloads every run and never persists).
+**Rejected:** leaving it transitive (works until any resolver drift); pinning `torch` in the
+same breath (real hygiene point, unrelated to this phase — Phase 16 backlog).
+**Consequence:** the D47 cold-cache-miss message heuristic in `src/embedder.py` was verified
+against 5.13.0; it must be re-verified under 5.14.1 and its version note updated when the
+model seam lands (plan-gate finding A14).
+
+## D54 — Failure-class diagnosis; eval-set instrument repair for absorbed section labels (4 Aug 2026)
+**Decision:** the realistic-slice failures are diagnosed into four measured classes, and the
+four eval rows whose expected section number no chunk carries gain the ABSORBING chunk's
+label as an additional accepted answer (original labels retained): realistic `4.8.1.1`→+`4.8.1`
+(2 rows), golden `6.3.2`→+`6.3`, golden `9.6.1`→+`9.6`. Golden `1.7.2` is left unrepaired —
+its row already hits via the present `1.7.2.3` and adding the wide parent `1.7` would loosen
+the exam without need.
+**Why (the diagnosis, measured 3–4 Aug, offline):** (1) **Vocabulary gap** — 3 deep-misses
+where lay staff phrasing fails on content that the legal-register golden phrasing retrieves at
+rank 1–6 (natural experiment: "successive squatters…" rank 1 vs "neighbour has been using our
+client's field…" absent from top-20; "tenants in common devolve" rank 6 vs "two brothers own a
+farm and one died" absent). (2) **Near-misses** — 5 questions whose expected section ranks
+7–19 at top_k=6 cutoff (S5 raw rank 9). (3) **Absorbed labels** — D20's runt-merge folded four
+sections' text into a neighbouring chunk; the text is fully present and retrievable, only the
+`section_number` label differs, so the scoring marked genuinely-correct retrievals wrong and
+strict@6 was structurally ceilinged (golden 0.900, realistic 0.882). (4) **Expansion sampling
+variance** — replaying the committed cached expansions moves realistic to 10/17 = 0.588 vs the
+canonical run's 8/17 = 0.471 on the identical system; individual questions swing rank 17→1 on
+the expansion draw. Notably, truncation — the Phase 15 premise — does NOT discriminate:
+78.3% of strict-MISS expected-section chunks exceed the 256-token window vs 83.3% of
+strict-HITs. Post-repair offline baselines: golden raw-hybrid strict@6 25/30 = 0.833 (was
+0.800), realistic unchanged 6/17 = 0.353; ceilings lifted to 1.000.
+**Rejected:** re-chunking the corpus to restore the four labels (text is not lost — cost out
+of all proportion, and D20's merge policy exists for measured reasons); recording absorbed
+section numbers in chunk metadata (better long-term — citations regain precision — but it is
+chunker+evaluator code with test blast radius: Phase 16, bundled with the refined practitioner
+golden set); repairing mid-bake-off (changing the instrument during the measurement).
+**Consequence:** the bake-off's job is now specific — recover vocabulary-gap deep-misses and
+pull near-misses inside top-6, reported per class in the arm table; acceptance for the noisy
+canonical metrics moves to measure-and-disclose (user decision, 4 Aug), since the recorded
+expansion variance exceeds the effect a hard bar would measure on n=17; the S5/N4 anchors are
+knife-edge ranking cases, not recall failures.
+
+## D57 — Embedding bake-off: NEGATIVE RESULT, no model swap (4 Aug 2026)
+**Decision:** the Phase 15 embedding bake-off selects NO candidate; `all-MiniLM-L6-v2` stays
+the production embedder. Both surviving candidates were disqualified by the pre-registered
+per-question rule (zero golden strict HIT→MISS flips vs the rebuilt baseline arm, in raw
+hybrid AND the cached-expansion production config): gte-modernbert-base flipped two golden
+controls, granite-small-english-r2 flipped one — each verified in the underlying reports and
+persisting under the production replay. Qwen3-Embedding-0.6B was cost-disqualified at the
+wall-clock gate (measured 269 s / 20 chunks → ~330 min projected build vs the 90-min gate).
+**Why:** the MTEB quality gap (42.9 vs 53.9–57.0) did not transfer to this corpus, and the
+aggregate numbers actively misled: granite's +0.067 golden aggregate came with a realistic
+slice collapse to 0.118 (vs 0.353), a per-class regression, and N4 both-role coverage going
+yes/yes → no/no. Neither candidate recovered a single vocabulary-gap question (0/3 across
+all arms) — the lay-phrasing failure class is untouched by stronger general-purpose
+embedders here. Full arm table, flip lists, latencies and interpretation:
+docs/designs/001-bakeoff-embedding-model.md §Outcome; artifacts in eval/bakeoff/ (manifest
+with sha256s).
+**Rejected:** shipping granite on its golden aggregate (the D50 lesson, now with a second
+data point: aggregates hide control flips); shipping gte as "no worse on aggregate"
+(regressed realistic and N4 coverage); re-running with different seeds until a candidate
+passed (the rule is the rule).
+**Consequence:** the pre-registered no-swap branch applies — no production re-index, no
+sample-corpus regeneration, no CI cache-key change, the WS3 truncation guard does not land
+absent an owner-approved truncation-exception policy, and NO canonical API run is needed
+(production config unchanged; the committed eval/results.md remains the accurate record).
+The D54 instrument repair, D55 model-config seam, bake-off instruments, and D53 pin all
+stand. Owner disposition options: widen the bracket (arctic-l-v2.0, 2.3 GB, is the remaining
+licence-clean 8k candidate; Qwen under GPU/ONNX), adopt a truncation exception to land the
+guard under MiniLM, and/or aim Phase 16 directly at the measured failure classes (reranker
+for the five near-misses; expansion/vocabulary work for the three-gap class).
+
+## D55 — Per-model embedding config seam + EMBEDDING_MODEL override (4 Aug 2026; entry backfilled 24 Aug — code landed in 01ff456)
+**Decision:** `src/embedder.py` gains `EmbeddingModelSpec` (frozen dataclass: `context_window`,
+`max_seq_length`, `query_prompt`, `doc_prompt`), a `MODEL_SPECS` registry covering MiniLM plus the
+three bake-off arms, and `resolve_embedding_model()`, which reads the `EMBEDDING_MODEL` **process**
+environment variable (never `.env`) and otherwise returns `DEFAULT_EMBEDDING_MODEL`. The resolved id
+stays a module constant (`EMBEDDING_MODEL`), so it keeps flowing unchanged into the Chroma
+collection metadata, the `embedding_model.txt` sidecar manifest, `assert_embedding_model`'s default
+argument and `evaluator.py`'s import-by-value. `tests/conftest.py` scrubs `EMBEDDING_MODEL` (with
+`ALLOW_CHUNK_TRUNCATION`) in an autouse fixture, so a bake-off shell cannot leak into the suite.
+**Why:** the bake-off had to index four arms under four different models in one checkout with no
+code edit per arm — a model choice is configuration, and the index, eval and query entry points must
+all resolve the same one. `MODEL_SPECS` is validated at import time (`max_seq_length ==
+context_window` wherever both are set) because the truncation guard reads one value while the
+embedding client truncates at the other: a divergence would let provenance report zero over-window
+chunks while the model silently cut them short (plan-gate finding A17).
+**Rejected:** a hardcoded model constant (the status quo — it makes each arm a patch, so the arms
+stop being the same code); a CLI-only `--embedding-model` flag (misses the eval and script entry
+points that never parse the pipeline CLI); reading the override from `.env` (`embedder` imports
+before `generator`'s `load_dotenv`, so a `.env` value would apply per entry point — `index` and
+`eval` could silently use different models); substituting rather than merging query prompts into
+`query_encode_kwargs` (langchain-huggingface 1.2.2 `embed_query` replaces `encode_kwargs` wholesale,
+which would embed queries unnormalized against normalized documents).
+**Consequence:** the MiniLM path is byte-inert (identical constructor kwargs, empty
+`query_encode_kwargs`, canary-tested), so the seam survives D57's no-swap outcome at zero production
+risk, and any future bake-off arm is one exported environment variable rather than a diff.
+
+## D56 / D58 — reserved numbers, MOOTED (24 Aug 2026)
+**Decision:** D56 (the tokenizer-true index-time truncation guard and token-distribution provenance,
+WS3) and D58 (the post-swap W re-sweep under the new embeddings, WS5e) were numbers reserved by the
+Phase 15 plan for the winner-adoption branch. D57's negative result means that branch was never
+taken, so both are recorded here as mooted rather than left as silent gaps. The numbers are
+**retired, not reused**: a future truncation guard or W re-sweep takes a fresh number.
+**Why:** the ledger is append-only and the plan named D53–D58 in advance, so two missing numbers
+would read as lost entries rather than as work that correctly did not happen. Reusing them would
+break the one-number-one-decision property that makes every cross-reference
+(IMPLEMENTATION_PLAN.md, docs/designs/001, commit messages) stable.
+**Rejected:** deleting the reservations from the plan (rewriting a document the plan gate approved,
+and erasing the evidence that the no-swap branch was pre-registered); writing speculative D56/D58
+entries for work that never ran (this is a ledger of decisions, not of intentions); renumbering a
+later decision into the gap (breaks existing references).
+**Consequence:** the WS3 guard stays unlanded — under MiniLM's 256-token window it would correctly
+reject the 258-token sample-corpus chunk and break `build_sample_index` and CI, so it cannot land
+without a standing truncation-exception policy, and the user chose accept-&-close on 24 Aug without
+adopting one. The next new ledger entry is D59.
+
+## D57 addendum — post-verdict mechanism probe (4 Aug 2026; entry backfilled 24 Aug — landed in ec2551b)
+**Decision:** record what the disqualifying flips actually *were*, rather than leaving "two
+candidates flipped golden controls" as the phase's last word. Per-arm vector-only, BM25 and hybrid
+ranks were pulled for every flipped question, and the flips decompose into three unlike things:
+(1) the flip both candidates share — the *"undertaking to a lender"* control — is a **fusion
+knife-edge, not an embedding deficiency**: all three arms rank the expected chunk **#1 in
+vector-only mode**, and BM25 misses it entirely in every arm, so RRF's pile of confident-but-wrong
+lexical candidates demotes the vector arm's top pick to the top-6 boundary (the baseline lands
+exactly at rank 6, and any perturbation of the candidate tail pushes it past);
+(2) gte-modernbert-base's *second* flip (*"searches before completion"*) is a **genuine semantic
+regression** — the expected section is absent from its top-20 vector list where the baseline ranks
+it 5;
+(3) granite-small-english-r2's realistic-slice collapse (**0.353 → 0.118**) is the substantive
+failure, and it is precisely what the +0.067 golden aggregate hid.
+**Why:** a negative result is only reusable if it says why. "No candidate won" invites the wrong
+follow-up (try more embedders); "one real semantic regression, one fusion boundary, one slice
+collapse" names failure classes that a *different* instrument addresses. The fusion stack (RRF
+constants, pool 12, W) was tuned under MiniLM across Phases 3–14, so every candidate faces a
+co-adapted incumbent — a fair future bake-off compares candidate-plus-retuned-fusion as *systems*,
+not embedders in isolation.
+**Rejected:** reading the shared flip as evidence against both candidates' embeddings (their
+vector-only ranks say the opposite); re-tuning fusion per arm inside this bake-off to rescue a
+candidate (changing the instrument mid-measurement — the same reason D54's repair landed before any
+arm was built); loosening the pre-registered zero-flip rule once the mechanism looked benign (the
+rule is the rule, and a rank-6 hit that any perturbation dislodges is real fragility whoever owns
+it).
+**Consequence:** the fusion-boundary class is **Phase 16 reranker territory** — BM25 contributing
+nothing at all on several golden questions strengthens the cross-encoder case independently of any
+embedding argument. **Re-open condition (binding):** the embedding bracket is revisited only *after*
+the Phase 16 question-set expansion gives the eval statistical power. At n≈23–30 the 95% confidence
+interval is roughly ±14 points, so a bake-off verdict on a new arm today would be measuring noise —
+widening the bracket before widening the question set buys another unfalsifiable table. The full arm
+table, flip lists, latencies and interpretation stay in
+docs/designs/001-bakeoff-embedding-model.md §Outcome.
+
+## D59 — Phase 15 gate disposition: fix forward, truncation guard MOOT, deferrals recorded (8 Oct 2026; gate run 24–25 Aug)
+**Decision:**
+- `/phase-gate 15` ran on 24–25 Aug and returned **FAIL — fixable forward**, with six blockers (`docs/phase15-gate-report.md`).
+- On 10 Sep the owner chose to fix all six on the phase branch before opening the PR.
+- On 8 Oct the owner approved these dispositions:
+  1. A cross-model guard on every index write path (blocker 1 / Codex C1).
+  2. This entry (blocker 2).
+  3. Disclosure repairs to brief 001's §Outcome: S5 rank line, the two Tier-1 arms shown separately, artifact hashes inline (blocker 3).
+  4. **The index-time truncation guard is recorded as MOOT, not cut** (blocker 4, below).
+  5. Docstrings corrected to describe what exists (blocker 5).
+  6. The inertness canary now covers the `default_prompt_name = None` mutation (blocker 6).
+- The Codex merge review (8 Oct, `gpt-6.1-sol`) added held-out provenance and vacuous-pass guards to `scripts/bakeoff_report.py` (C2, C3), a complete run manifest (C5), and the doc-prompt query-leak fix (C6). All were accepted and fixed here.
+- **Deferred to Phase 16, with reasons:**
+  - C4 (cross-report cohort-identity validation) moves to the Phase 16 instrument rework, before the instrument is used again.
+  - The rest of the gate's quality backlog (item 9) moves too: `w_sweep.py`'s module-level `chdir`, cwd-relative paths, duplicated helpers, and the unsingle-sourced arm roster.
+  - None of these affects the D57 verdict. The real artifacts reference only the golden and realistic sets, all arms share identical set hashes, and both candidates were disqualified by flips the instrument *found* in both Tier-1 arms.
+
+**Truncation guard (blocker 4):**
+- The never-cut list (IMPLEMENTATION_PLAN.md, Phase 15 cut list) names the index-time truncation guard. At plan gate, that guard was resequenced to land *with* an adopted winning model (brief 001, finding A2), because under MiniLM's 256-token window it would correctly reject the 258-token sample chunk and break CI. No winner was adopted (D57), so the guard's precondition never arose: it is **MOOT, not cut**. It does not land under MiniLM, and no truncation-exception policy is adopted.
+- The "not cuttable" chunk-token provenance disclosure was **delivered in measured form**: the 1,470-chunk token distribution in brief 001 §Problem (3 Aug), plus the hit/miss discrimination measurement (D54). Automated per-run eval provenance of the token distribution is deferred to the next embedder change.
+- Whether truncation is load-bearing for retrieval is now an explicit Phase 16 experiment (design 003 WS-C).
+
+**Third-party lane:** no third-party model has written to this repository. Codex has only run read-only reviews at the gates. The lane decision (workers and co-development) takes **D60**, on design 002-v2, which is plan-gated together with design 003. So the governance deviation the gate anticipated did not occur.
+
+**Why:**
+- The ledger is append-only, so a phase cannot close on-plan while its own never-cut list names something that did not land unless the reconciliation is recorded.
+- Recording "MOOT under the pre-registered no-swap branch" tells the truth: the guard was never abandoned, its condition was never met. Calling it "cut" would erase the plan-gate resequencing that made it conditional.
+
+**Rejected:**
+- Silently editing the never-cut list.
+- Adopting a truncation-exception policy just to land a warn-mode guard under MiniLM. That adds noise to every index and CI run, and tests nothing while the truncation-helps question is unanswered.
+- Deferring the C2/C3 instrument fixes to Phase 16. They are a few lines each, and C2 guards a hard rule (held-out never used in selection).
+- Opening the PR before the fixes (the 10 Sep disposition).
+
+**Consequence:** Phase 15 can merge after a suite-green re-gate of the blockers, a scoped Codex re-review of the fixed diff, CI green on the PR, and the owner's "go". Tag `v2.2.0` follows. The next new ledger entry after D60 is D61.
+
+## D59 addendum — Codex re-review of the fixes (8 Oct 2026)
+**Decision:** a scoped Codex re-review (`gpt-6.1-sol`, high) of `f4f2f21..832eb2f` found no
+blocker. It found two partial gaps and one disclosure gap; all are now closed or stated.
+- **C2 residual:** a report with **no** provenance block yielded sets with `path=None` that
+  the label fallback admitted. Now every consumed set is validated after assembly.
+- **C3 residual:** a missing ablation section meant no `n`, which skipped the completeness
+  check. A production-rank row *lacking* `strict_rank` read as a MISS. Both now raise; an
+  explicit JSON `null` is still a recorded miss.
+- **C5 historical:** full dump and expansion-cache hashes are inlined in brief 001. The 3–4
+  Aug per-arm command lines were never logged, and that gap is **stated, not repaired**.
+
+D59's statement that the Codex findings were "fixed here" holds as of this addendum, with
+the C5 historical gap noted. The re-review also reported that its sandboxed Python import of
+`src` triggered `load_dotenv()`, which read `.env`. No value was displayed. The remedy is
+harness-level and recorded in design 003 Track B: secrets move out of repo `.env` files, and
+Codex runs with a scrubbed environment.
+**Why:** a fix is only closed when its adversarial re-check closes. Vacuous-pass holes in a
+selection instrument are exactly the class D50 and D57 warn about.
+**Rejected:** deferring the residuals to Phase 16. They are a few lines each, and the
+instrument is binding.
+**Consequence:** Track A can open the PR once CI is green.

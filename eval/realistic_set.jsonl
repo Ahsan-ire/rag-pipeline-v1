@@ -1,5 +1,5 @@
-{"question": "Can you do a transfer based on the deed of assignment (lease) if you've given 15 years of consideration? This is for unregistered land", "expected_sections": ["4.8.1.1", "4.7.4.3"], "type": "direct"}
-{"question": "Can you do a transfer based on the deed of assignment? And can you explain what 15 years of consideration refers to?", "expected_sections": ["4.8.1.1", "4.5.1"], "type": "direct"}
+{"question": "Can you do a transfer based on the deed of assignment (lease) if you've given 15 years of consideration? This is for unregistered land", "expected_sections": ["4.8.1.1", "4.7.4.3", "4.8.1"], "type": "direct"}
+{"question": "Can you do a transfer based on the deed of assignment? And can you explain what 15 years of consideration refers to?", "expected_sections": ["4.8.1.1", "4.5.1", "4.8.1"], "type": "direct"}
 {"question": "Can you explain the progress for registering unregistered land?", "expected_sections": ["13.3", "13.1"], "type": "direct"}
 {"question": "Can you explain what unregistered land means?", "expected_sections": ["1.7", "1.8"], "type": "direct"}
 {"question": "What is the difference between a purchase and sale conveyance?", "expected_sections": ["2.2.1", "2.2.2", "2.9"], "type": "direct"}

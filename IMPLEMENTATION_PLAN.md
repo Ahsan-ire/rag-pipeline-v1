@@ -597,6 +597,217 @@ disposition: D50 addendum; the disposition is the merge decision.
 
 ---
 
+## Phase 15 — retrieval foundation: embedding upgrade + tokenizer-true accounting (Mon 3–Wed 5 Aug, ~2 days) — `phase-15-retrieval-foundation`
+
+(First post-submission phase; the repo shipped as `v2.1.1` on 17 Jul and was untouched until
+3 Aug. Origin: the D23 truncation finding, re-measured 3 Aug against the live index —
+**67.4% of the 1,470 stored chunks exceed MiniLM's 256-token window** (median 386 BERT-tokens,
+p95 713, max 2,640), and the D21 citation prefix is prepended *after* every size check, so it
+is uncounted overhead on top of that. Truncation is treated here as a **measured information-
+loss defect and a preregistered hypothesis, NOT a demonstrated root cause** (plan-gate finding
+C6): measuring the realistic set's expected-section chunks on 3 Aug found 78.3% of the
+strict-MISS chunks over the window versus **83.3% of the strict-HIT ones** — truncation does
+not discriminate hits from misses, so the expected gain rests primarily on model quality
+(MiniLM 42.92 vs candidates 53.9–61.8 MTEB v2 English retrieval) and the bake-off is what
+settles it. A second 3 Aug finding caps the instrument itself: golden `1.7.2`, `6.3.2`,
+`9.6.1` and realistic `4.8.1.1` (2 rows) expect section numbers no chunk carries — the D20
+runt-merge folded each into a neighbour (parents *and* children are indexed) — so **strict@6
+was — until the WS0 repair below — structurally ceilinged at golden 0.900 and realistic
+0.882** regardless of
+model. Also measured the same day: a 512-token window would still truncate 24–38% of chunks
+and force re-splitting 36.4% of them (+554 chunks), fragmenting the D4 chunk-equals-numbered-
+paragraph unit well beyond the oversize splitting D4 already contemplates;
+an 8,192-token window truncates nothing, so the chunker stays byte-frozen and the fix is a
+model swap plus honest accounting. Model research 3 Aug (MTEB v2 English retrieval + BEIR
+recomputed from the official results repo; licence/gating/`trust_remote_code`/prefix contracts
+read from the HF configs). Full gated plan: ~/.claude/plans/lucky-whistling-sunbeam.md.
+Bake-off brief: docs/designs/001-bakeoff-embedding-model.md. Design record: docs/decisions.md
+D53–D58. **4 Aug diagnosis (D54)** classified the realistic failures into four measured
+classes — vocabulary gap (3 deep-misses; the same content retrieves at rank 1–6 under
+legal-register phrasing), near-misses at rank 7–19 (5, incl. S5 at raw rank 9), absorbed
+labels (the ceiling above), and expansion sampling variance (cached-expansion replay scores
+0.588 realistic where the canonical draw scored 0.471, same system) — so the bake-off's job
+is specific: recover deep-misses and pull near-misses inside top-6, per class, with zero
+regressions. The user set acceptance to **measure-and-disclose** for the canonical metrics on
+4 Aug: the recorded expansion variance exceeds any hard bar's effect size on n=17.)
+
+0. **Instrument repair (WS0, D54 — DONE 4 Aug, before any arm build):** the four eval rows
+   whose expected section was runt-merged into a neighbour gain the absorbing chunk's label as
+   an additional accepted answer (realistic `4.8.1.1`→+`4.8.1` ×2, golden `6.3.2`→+`6.3`,
+   `9.6.1`→+`9.6`; golden `1.7.2` deliberately left — it hits via the present `1.7.2.3`).
+   Text was never lost; only labels diverged, so this repairs the *instrument*, not the system.
+   Post-repair offline baselines (zero API): golden raw-hybrid strict@6 **25/30 = 0.833** (was
+   0.800), realistic unchanged **6/17 = 0.353**; structural ceilings lifted to 1.000. These are
+   the bake-off's baseline-arm comparison numbers.
+1. **Hygiene + dependency pin (WS1, D53):** `.gitignore` gains `chroma_db_arm_*/` and
+   `eval/bakeoff/` **before any arm is built** — arm indexes hold the full copyrighted corpus
+   text exactly as `chroma_db/` does; the CLAUDE.md Codex do-not-read clause is extended to
+   both. `transformers==5.14.1` pinned exactly in requirements.txt (previously transitive at
+   5.13.0; ModernBERT-based candidates need ≥4.48, so the floor becomes load-bearing).
+2. **Per-model config seam + `EMBEDDING_MODEL` env override (WS2, D55):** `src/embedder.py`
+   gains `resolve_embedding_model()` (process env var, else `DEFAULT_EMBEDDING_MODEL`) and
+   `MODEL_SPECS: dict[str, EmbeddingModelSpec]` (frozen dataclass: `context_window`,
+   `max_seq_length`, `query_prompt`, `doc_prompt`) so bake-off arms run in one checkout.
+   `EMBEDDING_MODEL` stays a module constant, so `evaluator.py` import-by-value, provenance,
+   the manifest write and `assert_embedding_model`'s default arg keep working unchanged.
+   Query-side prompts are **merged** into `query_encode_kwargs`, never substituted
+   (langchain-huggingface 1.2.2 `embed_query` *replaces* `encode_kwargs` — a naive prompt
+   config would embed queries unnormalized against normalized documents);
+   `default_prompt_name` is forced to None so a model's own repo config cannot silently prompt
+   documents; `max_seq_length` is set post-construction with a readback assert. All inert for
+   MiniLM (byte-equal constructor kwargs, empty `query_encode_kwargs`).
+3. **Tokenizer-true accounting: index-time guard + provenance (WS3, D56; lands atomically
+   with the winner adoption in item 5, NOT before it — one of the 16 sample-corpus chunks is
+   258 tokens, so under MiniLM's 256 window the guard would correctly reject it and break
+   `build_sample_index` and CI for the whole interval):**
+   `assert_chunks_fit_window()` at a single choke point in `add_documents` and
+   `sync_documents`, **plus an explicit preflight in `index_documents` before `if reset:` in
+   both branches** — `src/pipeline.py:118` clears the store before `:123` syncs, so a
+   sync-only guard would fire after `--reset` had already destroyed the index, leaving nothing
+   at all; a failing preflight must reach neither `clear_store` nor `sync_documents`.
+   Indexing fails loudly, before any store write, if a stored chunk
+   **including its citation prefix** exceeds the configured model's window; the error names
+   `section_number`/pages/token count and never chunk text (D30 + copyright).
+   `ALLOW_CHUNK_TRUNCATION=1` downgrades it to a warning so a MiniLM rollback re-index stays
+   possible. Eval provenance discloses the embedding window and the stored-chunk token
+   distribution (n / max / p50 / p95 / over-window). `transformers` is imported lazily behind
+   a monkeypatchable seam so the chunker keeps its zero-heavy-imports property and the test
+   suite never downloads a tokenizer. **`src/chunker.py` is byte-frozen this phase** —
+   `CHARS_PER_TOKEN` and the char thresholds are deliberately unchanged (their blast radius is
+   the char-calibrated fixtures, the 16-chunk sample-corpus freeze and the CI greps; deferred
+   to the next deliberate re-chunk).
+4. **Embedding bake-off (WS4, D57):** three arms + the MiniLM baseline, judged **only** by
+   `eval/golden_set.jsonl` (harness rule; the held-out set appears in exactly one command in
+   this phase, the WS7 canonical run). Arms: `Alibaba-NLP/gte-modernbert-base`,
+   `ibm-granite/granite-embedding-small-english-r2` (cheap arm), `Qwen/Qwen3-Embedding-0.6B`
+   (ceiling arm, behind a wall-clock cost gate) — plus a **freshly rebuilt**
+   `chroma_db_arm_baseline_minilm` baseline under the pinned Phase 15 stack
+   (`ALLOW_CHUNK_TRUNCATION=1`), never the pre-Phase-15 `./chroma_db`, whose documents were
+   embedded under a different dependency stack that the model-id-only manifest cannot detect.
+   Per-arm precheck asserts normalization,
+   window, pooling and prompt config before its index is built; each arm is indexed with
+   `--reset` into its own `--persist-dir` (content-hash chunk IDs are model-independent, so a
+   non-reset rebuild is a silent no-op that leaves stale vectors under a stale manifest), and
+   a 1,470-chunk count is the chunker-byte-freeze canary (arm *completeness* is checked from
+   the store's own vector count — the chunker's printed number is model-independent and cannot
+   detect a bad build). Offline evals only (`--skip-refusals --skip-completeness` = zero API
+   calls). Before any production replay, `scripts/w_sweep.py` gains enforced offline-only cache
+   loading, `--persist-dir`, and machine-readable per-question output, so the replay cannot
+   spend live API calls. **Selection disqualifies on any golden HIT→MISS versus the rebuilt
+   baseline in *either* raw hybrid *or* the cached production configuration** (expansion +
+   intent at the shipped W — raw hybrid alone does not measure what ships); among survivors,
+   highest golden strict@6, read against the post-repair 1.000 structural ceiling; realistic slice, S5 and
+   N4 are diagnostics; ties break to the smaller/faster model. The selection parser is a
+   committed, unit-tested script that refuses `--heldout` and emits an arm manifest of input
+   sha256s and commands, so held-out exclusion is a property of an artifact rather than
+   self-attestation. `scripts/bakeoff_report.py` also computes the Tier-2 per-class
+   movement (deep-misses recovered, near-misses pulled into top-6) from the committed class
+   roster in the brief — the roster and the computation are build steps, not assumptions
+   (round-3 auditor finding #6). Download size and measured per-query embed latency are recorded per arm.
+5. **Winner adoption + re-baseline, only if a non-baseline candidate survives (WS5–WS7, D57
+   addendum, D58). Ordering is load-bearing and REVERSIBLE-FIRST (round-3 auditor blocker #1
+   — nothing destroys the production index until CI has accepted the winner):**
+   (a) `DEFAULT_EMBEDDING_MODEL` flips to the winner and the WS3 guard lands with it;
+   (b) `scripts/build_sample_index.py` gains `--reset` (without it the model-independent IDs
+   leave MiniLM vectors under a stale manifest), `sample_chroma_db/` is regenerated, and the
+   three CI smoke greps pass locally; the CI HuggingFace cache key tracks the model name;
+   (c) **push the branch and open the PR** — CI triggers only on push-to-main or pull_request,
+   so without this step "CI green before the canonical run" is unachievable — and wait for CI
+   green (D40: vector floats differ across platforms; a macOS-green/ubuntu-red smoke must
+   surface HERE, while everything is still reversible);
+   (d) only then the full `--reset` re-index of the production `./chroma_db`;
+   (e) the W re-sweep, offline (cached expansions are query-side and index-independent;
+   `offline_only=True` makes an incomplete cache raise rather than call the API). **The one
+   binding W rule (D58) — D50's recorded rule re-run under the new embeddings:** smallest
+   W ∈ {0, 0.25, 0.5} making S5 strict@6 HIT, subject to zero golden-control strict flips vs
+   the W=0 control AND N4 remaining HIT; the incumbent 0.25 stands if no W qualifies; any
+   change to this rule itself requires its own D58 rationale; if W changes, every surviving
+   arm and the baseline are replayed at the final W, the flip lists regenerated, and the
+   branch re-pushed for CI before WS7;
+   (f) then **one** canonical run writes `eval/results.md`.
+
+**Tests:** env resolution (unset / override / whitespace / unknown-model warning) and a guard
+test pinning `EMBEDDING_MODEL == DEFAULT_EMBEDDING_MODEL` so a polluted shell fails legibly;
+MiniLM inertness canary (constructor kwargs byte-equal to today, `query_encode_kwargs` empty);
+query-prompt merge canary (normalization survives alongside the prompt); every known-model
+`MODEL_SPECS` entry enforces `max_seq_length == context_window` (a mismatch raises, with a
+mismatch test — provenance must not report zero over-window while the client truncates
+earlier); `_apply_model_config`
+set / readback-raise / `default_prompt_name` / no-`_client` no-op; context-window resolution
+(spec / tokenizer / sentinel raises); tokenizer loader local-first, cache-miss retry,
+unrelated-error propagation, lru reuse; token counting applies the same newline normalization
+langchain applies; guard passes, raises with the prefix counted, writes nothing to the store
+when it raises, honours the escape hatch, and keeps chunk text out of its message; provenance
+carries the token stats and degrades to "unavailable" without losing `chunk_count`;
+`build_sample_index(reset=True)` re-adds 16 chunks while the existing idempotence test stays
+green. All offline — models and tokenizers mocked, no network, no API key.
+
+**decisions.md:** D53, D54 (landed at phase start), D55, D56, D57 (+ addendum), D58.
+
+**Acceptance (two tiers, per the 4 Aug user decision — D54):**
+
+*Tier 1 — HARD GATES (deterministic, each fails the phase):* full suite green
+(`python -m pytest tests/ -q`); the winning arm has **zero** per-question golden HIT→MISS
+flips vs the rebuilt baseline arm in **both** raw-hybrid and the cached production-config
+replay, with both flip lists committed to the bake-off brief; a failing preflight leaves the
+index intact — neither `clear_store` nor `sync_documents` is reached (targeted pytest,
+finding C1); provenance names the new model, its window, the stored-chunk token distribution
+and over-window = 0; sample-corpus CI smoke still `strict hit@6 = 7/7 = 1.000` with both row
+greps byte-intact, green **on CI** before the canonical run is spent; CI cache key names the
+winner; `transformers==5.14.1` in requirements.txt and `pip freeze`; nothing corpus-bearing
+tracked (`git check-ignore` on a probe path *inside* **each** arm dir and `eval/bakeoff/` —
+a bare name gives a false negative, finding A1 — plus `git status --porcelain` showing no
+untracked corpus-bearing path; a `grep -v '^??'` filter would discard exactly the
+`?? chroma_db_arm_*/` line a gitignore failure produces, round-2 finding #10); D53–D58 present
+and the decisions.md current-phase header reads 15; ABOUT.md discloses download size and
+measured **p50** query-embed latency. *(Freshness precondition on every report-reading check:
+the report's sha is reachable from HEAD, that commit contains `assert_chunks_fit_window`, and
+the embedding-model line names the exact winner — a label-existence grep passes on the July
+report, and so does "a sha on this branch", since the July commit is an ancestor of it,
+finding A5.)*
+
+*Tier 2 — MEASURED AND DISCLOSED (reported in eval/results.md, the brief's Outcome, and the
+PR; NOT pass/fail — D50's recorded expansion variance exceeds any hard bar's effect on n=17,
+and the canonical run is sampled once):* realistic strict@6 on the canonical hybrid+rewrite
+row vs the 0.471 July figure (post-repair offline baseline: raw-hybrid 0.353; the
+cached-expansion replay of the July system scored 0.588, bounding the sampling noise);
+held-out strict@6 on both rows vs 20/20 and 0.950; negatives vs 11/14; **per-failure-class
+movement from the D54 diagnosis** — vocabulary-gap deep-misses recovered (of 3), near-misses
+pulled into top-6 (of 5, S5 among them); S5/N4 both-role-group coverage by equal-or-descendant
+match (`s == group or s.startswith(group + ".")` for each of 2.2.1 and 2.2.2 — not the
+evaluator's existential flag, finding C3, and not symmetric "related", which one generic
+parent `2.2` would satisfy, round-2 finding) plus the S5 answer against the Phase 14
+comparison rubric; canonical v4 guard status. **Any Tier-2 degradation vs the July headline
+is presented as an explicit disposition in the PR body (the D50-addendum precedent) — the
+merge decision is the user's.**
+
+**If no non-baseline candidate survives Tier-1 selection, the outcome is "no model swap":
+record the negative result and STOP for user disposition before landing the guard or
+rebuilding the sample index** — under MiniLM's 256-token window the guard cannot land without
+a standing truncation exception, so whether to widen the bracket or adopt such a policy is the
+user's call, not the implementer's. The pin, hygiene and instrument-repair work stands either
+way.
+
+**Outcome (closed 24 Aug 2026):** **NEGATIVE per D57 — no model swap.** No candidate survived
+Tier-1 selection (gte-modernbert-base and granite-small-english-r2 each flipped golden controls in
+raw hybrid *and* the cached production-config replay; Qwen3-Embedding-0.6B was cost-disqualified at
+the wall-clock gate), so the pre-registered no-swap branch applies and `all-MiniLM-L6-v2` remains
+the production embedder. **MOOTED:** WS5–WS8 and every winner-conditional item — winner adoption,
+the sample-index regeneration, the CI cache-key change, the production re-index, the D58 W
+re-sweep, the canonical run, and the ABOUT.md download-size/p50-latency disclosure that belonged to
+the adopted model. **WS3 guard NOT landed:** no truncation-exception policy was adopted — the user
+chose accept-&-close on 24 Aug — and under MiniLM's 256-token window the guard cannot land without
+one (D56/D58 record both reserved numbers as retired). **What stands:** the D53 pin and hygiene, the
+D54 diagnosis and instrument repair, the D55 model-config seam, and the committed bake-off
+instruments (`scripts/bakeoff_report.py` incl. its `compare_prod_ranks` production-config flip
+check, `scripts/w_sweep.py`, `scripts/embed_latency.py`) with their tests. The **re-open condition**
+for the embedding bracket is recorded in the
+D57 addendum (revisit only after the Phase 16 question-set expansion supplies statistical power).
+Full arm table, flip lists and the post-verdict mechanism probe:
+docs/designs/001-bakeoff-embedding-model.md §Outcome.
+
+---
+
 ## Cut list (v2)
 
 **Cut order if behind (Phases 6–12 only; superseded for Phase 13 below):** judge pass →
@@ -611,6 +822,33 @@ relevance machine-grading of graded answers (judge measures claim support only �
 limitation). Phase 13 cut order if behind: report-callout polish → D-entry prose → README demo
 tweaks. Phase 13 never-cut: gate behaviour, exact REFUSAL_PHRASE, canonical guard (incl. the
 judge pass in the WS8 canonical run), keyless CI.
+**Phase 15 cuts:** re-expressing the chunker's char thresholds in true tokens (deliberately
+deferred — with an 8k window nothing needs re-splitting, so paying the fixture +
+sample-corpus-freeze blast radius now buys nothing; it belongs to the next deliberate
+re-chunk); BM25 stemming, the service layer and entailment-level citation checking (each its
+own measurable phase — folding them in would confound the embedding measurement). Phase 15
+cut order if behind: Qwen3-0.6B arm (cost-disqualified with its measured wall-clock recorded
+as a rejected alternative) → `scripts/embed_latency.py` (fall back to an inline timing snippet
+recorded in the brief) → the p95 latency figure (p50 alone satisfies the ops disclosure).
+**Chunk-token provenance disclosure is NOT cuttable** — it is named in the acceptance block,
+and offering it as a cut made the phase simultaneously on-plan and unacceptable (plan-gate
+finding A4). Phase 15
+never-cut: the index-time truncation guard; `--reset` on every re-index; the arm-directory
+gitignore landing before any arm is built; the held-out set staying out of arm selection; the
+canonical v4 guards.
+
+**Phase 15 disposition note (8 Oct 2026, D59 — appended; the lists above are unedited):**
+- **"Never-cut: the index-time truncation guard" → MOOT, not cut.** At plan gate (brief 001,
+  finding A2) the guard was resequenced to land *with* an adopted winning model. Under
+  MiniLM's 256-token window it would correctly reject the 258-token sample chunk and break
+  CI. No winner was adopted (D57), so its precondition never arose. No truncation-exception
+  policy is adopted.
+- **"Chunk-token provenance disclosure is NOT cuttable" → delivered in measured form:**
+  - the 1,470-chunk token distribution in brief 001 §Problem (3 Aug);
+  - the hit/miss truncation-discrimination measurement (D54).
+  Automated per-run provenance is deferred to the next embedder change.
+- Whether truncation is load-bearing is now a Phase 16 experiment
+  (docs/designs/003-roadmap-and-next-actions.md, WS-C).
 
 ## Two-track git strategy
 
