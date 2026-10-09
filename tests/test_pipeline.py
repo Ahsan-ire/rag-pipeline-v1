@@ -1225,8 +1225,8 @@ class TestQuery:
 
 
 class TestQueryTerminalOutcomes:
-    """H1b interim handling in query(): a terminal outcome never prints or
-    returns the draft (stage B replaces this with src/render.py)."""
+    """H1b via src/render.py: a terminal outcome never prints or returns the
+    draft (full matrix and leak tests live in tests/test_render.py)."""
 
     SENTINEL = "SENTINEL DRAFT BODY: uncited secret text about registration."
 
