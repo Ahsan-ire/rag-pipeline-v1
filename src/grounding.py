@@ -7,7 +7,11 @@ something this pipeline can check. The outcome vocabulary is deliberately about
 *citation verification* ("VERIFIED"), never about legal validity, so a consumer
 can never read "CITATIONS_VERIFIED" as "the law is stated correctly".
 
-The four outcomes are mutually exclusive; ``classify`` returns exactly one.
+The four citation outcomes are mutually exclusive; ``classify`` returns exactly one.
+The pipeline can also end in three terminal generation outcomes that are decided
+before ``classify`` runs and take precedence over it: ``ANSWER_TRUNCATED``,
+``MODEL_DECLINED`` and ``GENERATION_INCOMPLETE`` (the answer is withheld). A
+query that retrieves nothing ends as ``no_results``, with no model call.
 """
 
 from typing import Dict, List

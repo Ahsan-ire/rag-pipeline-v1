@@ -34,9 +34,14 @@ this chunker; but an arbitrary PDF will not suffice.
         │                     reciprocal rank fusion (rewrites capped below the original's vote)
         ▼  src/generator.py   Claude drafts a graded answer citing [Handbook, para 3.2.1, p.87]
         │
-        ▼  src/grounding.py   fail-closed gate: every citation checked against a retrieved chunk.
+        ▼  src/grounding.py   fail-closed gate: every citation locator checked against a retrieved
+        │                     chunk (not whether it supports the claim; uncited statements are
+        │                     not checked). Terminal outcomes first: truncated / declined /
+        │                     incomplete generation → WITHHELD, no sources, no override.
         │                     none verified → answer WITHHELD (sources shown, draft on request);
-        │                     some verified → shown with a warning naming the unverified ones
+        │                     some verified → shown with a warning naming the unverified ones;
+        │                     shown answers get a Source label, a display-only uncited-statement
+        │                     hint and a research-aid disclaimer
         ▼  src/audit.py       append-only event log (query + rewrite HASHES + retrieval + gate
                               outcome; no text)
 ```

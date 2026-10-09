@@ -10,8 +10,8 @@ flowchart TB
         UQ["Your question"] --> RW["Haiku: 3 rewrites +<br/>intent reframe"]
         RW --> HR["Hybrid retrieval,<br/>weighted rank fusion"]
         HR --> GEN["Sonnet drafts answer<br/>with para + page cites"]
-        GEN --> GATE{"Citation gate"}
-        GATE --> OUT["Answer / warning /<br/>withheld / refusal"]
+        GEN --> GATE{"Finished normally?<br/>Citation gate"}
+        GATE --> OUT["Verified / partial /<br/>unverified (blocked) / refusal,<br/>or withheld: truncated,<br/>declined, incomplete"]
         OUT --> LOG["Audit log,<br/>hashes only"]
     end
     IDX -.->|local index| HR
