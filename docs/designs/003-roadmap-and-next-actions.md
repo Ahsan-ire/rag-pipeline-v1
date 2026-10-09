@@ -423,6 +423,8 @@ The proposed 002-v2 outline is adopted as the skeleton (§4 principles). Astra's
 | 2 (spec v2) | 2 BLOCKER / 16 DEGRADES / 6 COSMETIC | 0 BLOCKER / 2 MAJOR / 2 MINOR | REVISE → spec v3 |
 | 3 (spec v3) | **0 BLOCKER** / 10 DEGRADES / 7 COSMETIC | **0 BLOCKER / 0 MAJOR** / 2 MINOR | READY with v3.1 amendments (re-gate stopping rule: 3 rounds, severity monotonically declining 5→2→0, residue precision-only). **Dispositions: every finding in rounds 1–3 ACCEPTED; none rebutted.** Round-3 #8 (spec diverges from approved 003 §3: H2 display-only; H5 label+disclaimer; offline check narrowed) **escalated to the owner**. |
 
+**Owner sign-off (9 Oct 2026):** round-3 #8 approved — all three divergences (H2 display-only; H5 label + disclaimer; (j) narrowed to a retrieval canary). Implementation followed; D62 records the result.
+
 **Round 1 → v2:**
 - Tier-2 metadata-only, with no answer text in the PR.
 - The status seam moved to `generate()`.

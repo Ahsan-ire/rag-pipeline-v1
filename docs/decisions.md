@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: post-Phase-15 (v2.2.0 merged 9 Oct). Next: integrity hotfix + global harness — see docs/designs/003-roadmap-and-next-actions.md**
+**Current phase: integrity hotfix H (`integrity-hotfix` → v2.2.1, D62), then the global harness (Track B) and Phase 16A — see docs/designs/003-roadmap-and-next-actions.md**
 
-**Next: D62** (D60 is reserved for the third-party lane / global harness decision; D61 landed).  (Update this line in the same commit as each new entry.)
+**Next: D63** (D60 is reserved for the third-party lane / global harness decision; D61 and D62 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1786,3 +1786,54 @@ instrument is binding.
 - Phase 19 gains Research mode, with its own eval (claim support against sources, currency-flag accuracy) and its own latency and cost bars. The Q4 bars apply to Handbook mode.
 - Research-mode questions go to the search provider, so no client-identifying facts may be included (UI warning plus a redaction check).
 - Licensing questions about API transmission and excerpt display apply to both modes (design 003 §7; private research note 9 Oct).
+
+## D62 — Integrity hotfix H: generation status, terminal outcomes, one rendering contract (9 Oct 2026)
+**Decision:** v2.2.1 hardens Handbook mode (D61) without touching retrieval. The spec is IMPLEMENTATION_PLAN.md §Integrity hotfix (H), v3 plus the v3.1 amendments; the plan-gate rounds are in design 003 `## Review`.
+- **H1 status:** `generate()` reads `response_metadata["stop_reason"]` through `PROMPT_TEMPLATE | llm` (no `StrOutputParser`) and returns `generation_status` / `stop_reason`:
+
+  | `stop_reason` | `generation_status` |
+  |---|---|
+  | `end_turn`, `stop_sequence` | `complete` |
+  | `max_tokens`, `model_context_window_exceeded` | `truncated` |
+  | `refusal` | `declined` |
+  | any other value | `incomplete` |
+  | absent or None | `unknown` |
+
+- **H1b terminal outcomes:** `ANSWER_TRUNCATED`, `MODEL_DECLINED` and `GENERATION_INCOMPLETE` are decided by `grounding.generation_outcome` **before** `classify`. They beat every citation outcome, the legacy `None` path and `--show-unverified`; the draft is never printed or returned. An unrecognised status string fails closed to `GENERATION_INCOMPLETE`. (Extends D35.)
+- **H1c evaluator:** truncated, declined and incomplete rows are counted per set (`generation_incomplete`, by status), excluded from completeness, the judge and the refusal denominators, and never retried. Generation-error rows get status `error` and count only in `generation_errors`. **Canonical v5** additionally requires `generation_incomplete == 0` and `unknown == 0`. The report title is v5. The committed `eval/results.md` remains the "Report v3"-titled 17 Jul run until the next canonical (v5) run.
+- **H2 uncited hint (display-only):** shown for VERIFIED, PARTIAL and the override draft only. `uncited_count` is an int there, `null` elsewhere in the return, and `0` in the audit. The outcome never changes.
+- **H3:** `src/render.py` `render(result, RenderFlags) -> Rendered(display_text, action, public_result)` is the single place where the draft can leak or not. `public_result` keeps D35's key set plus `generation_status`, `stop_reason` and `uncited_count`.
+- **H5:** a `Source:` label (prettified titles of the chunks behind verified citations) on VERIFIED and PARTIAL, plus the disclaimer "Research aid — check the cited paragraphs; not legal advice; the source edition may predate current law." on those and on the override draft. Display-only.
+- **H6 audit:** adds the `withheld_truncated` / `withheld_declined` / `withheld_incomplete` actions, and the always-present fields `stop_reason`, `generation_status` (`not_run` on no-results) and `uncited_count`. No text is logged.
+- **H4:** README, `Demo/demo.html`, ABOUT, the comparison note and both diagrams now state what the gate checks (locators, not support; uncited statements unchecked) and list the full outcome set.
+
+**Why:** a truncated or declined draft could previously reach the user as if it were complete. "Verified" also overclaimed what the gate checks. A truncated draft whose surviving citations resolve would have been shown as `CITATIONS_VERIFIED`.
+
+**Divergences from design 003 §3 (owner sign-off, 9 Oct):**
+- H2 is display-only, not downgrade-only. Claim-level downgrades belong with the Phase 17a entailment pass.
+- H5 is a source label plus disclaimer. There is no system-prompt scope policy, because Q1 made today's prompt *be* Handbook mode.
+- The (j) offline check is a retrieval-row canary only.
+
+**Kept, not changed:**
+- `max_tokens` stays 2048. The largest real answer was 5,639 chars (~1.4k tokens). Raising it would touch D52's timeout sizing and the judge. Revisit in Phase 19, or as soon as a canonical v5 run is blocked by truncation.
+- Transitive pins `langchain-core==1.4.8` and `anthropic==0.116.0` (the installed versions; D53 precedent): the metadata path depends on them.
+
+**Ambiguities resolved during implementation (recorded, not silent):**
+- The `unknown` "could not be confirmed" line is display-only. It is not written into the public `answer`, so `answer_chars == len(answer)` holds on shown paths; consumers read `generation_status == "unknown"`.
+- `RenderFlags` carries the retriever output, because the blocked-source listing and the Source label need chunk metadata.
+- Display order on VERIFIED and PARTIAL: Source label, answer, verification line, hint, disclaimer.
+- Repeated caveat prefixes are counted and removed before sentence splitting, so they are never flagged twice.
+- A legacy result with no status renders D35's exact v1 display, without the `unknown` line.
+
+**Evidence:**
+- The suite went from 633 to 773 tests.
+- `tests/test_h_projection.py`: 69 evaluator test IDs (manifest `tests/fixtures/h_projection_manifest.txt`, captured on main `85a4283`) project identically before and after.
+- Offline eval on the branch: every retrieval row is identical to the pre-implementation baseline (orchestrator-verified; the record is local in `data/research/`).
+- Diagrams were re-rendered with `npx -y @mermaid-js/mermaid-cli@12.0.0 -c docs/diagrams/mmdc-config.json -t default|dark -b transparent`. A local puppeteer config pointed at the system Chrome; it is not committed.
+
+**Rejected:**
+- Raising `max_tokens` now.
+- A `--mode` flag. Research mode's CLI shape is Phase 19.
+- Downgrading outcomes on uncited text without an entailment check.
+- Retrying on a terminal status, which would hide model behaviour from the eval.
+
