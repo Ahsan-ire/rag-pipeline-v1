@@ -1862,13 +1862,15 @@ instrument is binding.
 "One phase per session" becomes "one phase per branch and PR"; a session may chain phases in roadmap order (design 003 §9).
 
 **Owner hard stops (the orchestrator pings with a 🔴 INPUT NEEDED message and a push notification, then waits):**
-- spend above €40 per week combined (Anthropic API eval runs plus DeepSeek/GLM prepaid; Grok and Codex are flat-fee);
+- spend above €40 per week on Anthropic API eval runs, or above about $40 per week on third-party workers (Grok and Codex are flat-fee);
 - anything only the owner can do: logins, `harness-init`, `install.sh` owner operations, key or PAT rotation, billing;
 - legal, licensing and data-protection positions (Phase 20 entry requirements), and anything sent to a person outside the project;
 - a gate that cannot pass without changing an approved acceptance criterion, the data-class floor, or the eval protocol;
 - deleting anything that is not fully merged.
 
 **Codex accounts:** fixed roles. Account 1 runs `gpt-6.1-sol` gates; account 2 (`CODEX_HOME=~/.codex-alt`) runs `gpt-6-astra` architecture reviews and is the overflow for account 1. Each account keeps the ≤2 astra calls per 5 h limit.
+
+**Third-party continuity budget:** about $40 per week of DeepSeek/GLM usage (each funded with $20 on 9 Oct), plus Grok Build on the owner's flat-fee SuperGrok plan. It is used to keep work moving when Claude usage limits bite. Before a limit, queued R0 tasks are dispatched to sandboxed workers through `harness-worker`, and the worker-reviewer and the orchestrator review the results once Claude is back. No third-party model becomes the orchestrator or gets a non-sandboxed session in a project, because that would expose R1 data. Workers are available only once the harness's worker stage (B2) and its escape probes pass.
 
 **Unchanged:** the data-class floor (no corpus, index, held-out, log or tutorial content to any non-Anthropic model, whatever the vendor), the plan gate before each phase, the eval protocol, and the CLAUDE.md hard rules.
 
