@@ -1039,6 +1039,75 @@ in §1.2 (Q1/Q2), and ledger **D61** (on this branch).
 4. Codex merge review.
 5. PR, then CI, then the owner's "go", then tag `v2.2.1`.
 
+### Spec v3.1 amendments (round-3 gate, 9 Oct; both legs found no BLOCKER; Codex found no MAJOR)
+These amendments override v3 where they conflict.
+
+1. **H0: pre-implementation captures (a new first step).**
+   - `pytest --collect-only` of the evaluator completeness, refusal and matrix tests is written,
+     together with `main`'s SHA, to `tests/fixtures/h_projection_manifest.txt`.
+   - `scripts/h_capture_projection.py` (committed) writes `tests/fixtures/h_eval_projection_main.json`
+     for exactly those test IDs, run on the `main` SHA.
+   - The after-comparison is a suite test, `tests/test_h_projection.py`.
+   - (j)'s offline baseline is captured by the orchestrator.
+2. **Exact texts** (display and public `answer`):
+   - `unknown` (non-legacy, shown outcomes): "⚠ Completion status could not be confirmed (no
+     stop reason returned) — check this answer with extra care." The **legacy path never shows
+     it** (asserted both ways).
+   - `ANSWER_TRUNCATED`: "WITHHELD — ANSWER INCOMPLETE: the answer was cut off before it was
+     complete and has been withheld. Try a narrower question."
+   - `MODEL_DECLINED`: "WITHHELD — the model declined to answer this request. Rephrase the
+     question or consult the handbook directly."
+   - `GENERATION_INCOMPLETE`: "WITHHELD — answer generation did not complete normally and the
+     answer has been withheld. Please retry."
+   - Terminal outcomes print **no sources and no `--show-unverified` hint**.
+3. **Where H2 and H5 apply:**
+   - H2 computes and shows only for VERIFIED, PARTIAL and the override draft. `uncited_count`
+     is an int there and **`null`** everywhere else (legacy path, refusal, blocked, terminal,
+     no_results).
+   - H5's `Source:` label goes on **VERIFIED and PARTIAL only**, built from the
+     verified-citation chunks' titles prettified (extension stripped, `_` → space). The
+     override draft keeps its existing "UNVERIFIED DRAFT" branding with no Source label; the
+     disclaimer still applies.
+4. **The render matrix covers reachable states only.** It's an explicit table:
+
+   | Path | Status | Uncited |
+   |---|---|---|
+   | no_results | — | — |
+   | legacy None | — | — |
+   | REFUSAL | complete / unknown | — |
+   | VERIFIED, PARTIAL | complete / unknown | uncited present / absent |
+   | BLOCKED | complete / unknown | — (with override on/off) |
+   | each terminal outcome | — | — (with override on/off) |
+
+5. **H4 additions:** `docs/diagrams/pipeline-steps.mmd` (its `OUT` node) and the
+   `src/grounding.py` module docstring. Re-render with the repo's
+   `docs/diagrams/mmdc-config.json`, both themes, and an exact `@mermaid-js/mermaid-cli`
+   version pinned in the command. The `.mmd` sources are the record. If rendering is
+   unavailable, the PR leaves the SVGs unchanged and opens a follow-up issue; there's no
+   caption fallback.
+6. **H2 precision:**
+   - Markdown heading lines (`#…`) are exempt.
+   - Hedge words are matched as **whole words** (`\b…\b`).
+   - The "heading" fixture expects *not flagged*.
+7. **H1c precision:**
+   - Generation-error rows get status `error` (counted only in `generation_errors`, never as
+     `unknown`).
+   - The eval report adds per-set `answer_chars` max/p95 (metadata), so the next run measures
+     eval answer lengths.
+   - If canonical v5 is ever blocked by truncation, a follow-up raises `max_tokens` together
+     with D52 timeout sizing.
+   - Correct wording: the committed `eval/results.md` is the **"Report v3"-titled 17 Jul
+     run**. It stays the record until the next canonical (v5) run.
+8. **(b) additions:** `stop_sequence` and an explicit `None`. The "no retry" test is kept as a
+   regression lock, and acknowledged to pass today.
+9. **(j) is orchestrator-verified.** The pressure-tester can't read `data/` or `chroma_db/`.
+   Its gate verdict for (j) cites the orchestrator's recorded comparison.
+10. **Tier-2:** live questions are **not** taken from the held-out set, and the PR omits
+    question text too.
+11. **003 `## Review`:** gets a per-round finding → disposition line. All findings are
+    ACCEPTED; none are rebutted. Round-3 #8 (divergences from the approved 003 §3) is
+    **escalated to the owner for sign-off before implementation.**
+
 ## Cut list (v2)
 
 **Cut order if behind (Phases 6–12 only; superseded for Phase 13 below):** judge pass →
