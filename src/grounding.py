@@ -9,8 +9,10 @@ can never read "CITATIONS_VERIFIED" as "the law is stated correctly".
 
 The four citation outcomes are mutually exclusive; ``classify`` returns exactly
 one. Three further TERMINAL outcomes (H1b) name a generation that did not finish
-normally; ``generation_outcome`` maps the generation status to them and they take
-precedence over every citation outcome.
+normally: ``ANSWER_TRUNCATED``, ``MODEL_DECLINED`` and ``GENERATION_INCOMPLETE``.
+``generation_outcome`` maps the generation status to them; they are decided before
+``classify`` runs and take precedence over every citation outcome (the answer is
+withheld). A query that retrieves nothing ends as ``no_results``, with no model call.
 """
 
 from typing import Dict, List, Optional

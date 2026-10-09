@@ -1,7 +1,9 @@
 flowchart LR
     Q["Your question,<br/>in plain English"] --> R["Retrieve relevant<br/>paragraphs"]
     R --> D["Draft answer citing<br/>para + page"]
-    D --> G{"Grounding gate:<br/>check every citation"}
+    D --> S{"Did generation<br/>finish normally?"}
+    S -->|cut off / declined /<br/>incomplete| T["Withheld:<br/>truncated, declined<br/>or incomplete"]
+    S -->|yes| G{"Grounding gate:<br/>check every citation"}
     G -->|all verified| A["Answer +<br/>verified citations"]
     G -->|partly verified| W["Answer + warning<br/>naming unverified"]
     G -->|none verified| B["Answer withheld,<br/>sources listed"]
