@@ -27,13 +27,19 @@ model's opinion, never on the held-out set.
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
 - Query: `python -m src.pipeline query "..." --top-k 6`
 - Extraction QA: `python scripts/extraction_qa.py ./data/Conveyancing_Handbook.pdf`
-- Eval (canonical v3, held-out headline; **makes live API calls** incl. Haiku
+- Eval (canonical v5, held-out headline; **makes live API calls** incl. Haiku
   query expansion):
   `python -m src.pipeline eval --heldout eval/heldout_set.jsonl --realistic eval/realistic_set.jsonl --judge`
-  — writes the committed `eval/results.md` only on a canonical run (held-out
-  set AND realistic set at distinct paths, all 4 modes incl. hybrid+rewrite,
-  refusals+completeness, top_k=6, no generation errors, expansion attempted
-  with zero fallbacks); else the gitignored `eval/results_partial.md`.
+  — writes the committed `eval/results.md` only on a canonical run, i.e. ALL
+  of: a held-out set AND a realistic set, each with answerable hybrid results,
+  at distinct file identities; all 4 modes incl. hybrid+rewrite; refusals AND
+  completeness scored; top_k=6; zero generation errors; zero
+  `generation_incomplete` rows (truncated/declined/incomplete stop reasons)
+  and zero `unknown`-status rows (v5, H1c); query expansion attempted (>=1)
+  with zero fallbacks; the BM25 sidecar actually loaded whenever a default
+  retrieval/generation path ran (D51); and the judge ran on every set, judged
+  >=1 item and had zero judge API/parse errors (D51). Else the gitignored
+  `eval/results_partial.md`.
 - Eval offline / CI (no API key, retrieval ablation only):
   `python -m src.pipeline eval --skip-refusals --skip-completeness` — both
   skips are required to make ZERO API calls: they suppress generation AND
