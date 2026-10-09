@@ -1800,12 +1800,12 @@ instrument is binding.
   | absent or None | `unknown` |
 
 - **H1b terminal outcomes:** `ANSWER_TRUNCATED`, `MODEL_DECLINED` and `GENERATION_INCOMPLETE` are decided by `grounding.generation_outcome` **before** `classify`. They beat every citation outcome, the legacy `None` path and `--show-unverified`; the draft is never printed or returned. An unrecognised status string fails closed to `GENERATION_INCOMPLETE`. (Extends D35.)
-- **H1c evaluator:** truncated, declined and incomplete rows are counted per set (`generation_incomplete`, by status), excluded from completeness, the judge and the refusal denominators, and never retried. Generation-error rows get status `error` and count only in `generation_errors`. **Canonical v5** additionally requires `generation_incomplete == 0` and `unknown == 0`. The report title is v5. The committed `eval/results.md` remains the "Report v3"-titled 17 Jul run until the next canonical (v5) run.
-- **H2 uncited hint (display-only):** shown for VERIFIED, PARTIAL and the override draft only. `uncited_count` is an int there, `null` elsewhere in the return, and `0` in the audit. The outcome never changes.
+- **H1c evaluator:** truncated, declined and incomplete rows are counted per set (`generation_incomplete`, by status), excluded from completeness, the judge and the refusal denominators, and never retried. A present-but-None status counts as `unknown`; any unrecognised status string counts as `incomplete` (fail closed, matching `generation_outcome`). Generation-error rows get status `error`, are counted in `generation_errors` and never as `unknown`; in refusal scoring they keep `main`'s documented conservative treatment (scored "not refused", which can only deflate accuracy), and any error already makes a run non-canonical. Codex's merge review asked for their exclusion; that was rebutted because amendment 7 only separates `error` from `unknown`. The legacy `run_eval` report lists excluded rows as `excluded (<status>)` and discloses the counts. **Canonical v5** additionally requires `generation_incomplete == 0` and `unknown == 0`. The report title is v5. The committed `eval/results.md` remains the "Report v3"-titled 17 Jul run until the next canonical (v5) run.
+- **H2 uncited hint (display-only):** shown for VERIFIED, PARTIAL and the override draft only. `uncited_count` is an int there and `null` everywhere else, in both the return and the audit. Amendment 3 overrides v3 H6's "0 when not computed". The outcome never changes.
 - **H3:** `src/render.py` `render(result, RenderFlags) -> Rendered(display_text, action, public_result)` is the single place where the draft can leak or not. `public_result` keeps D35's key set plus `generation_status`, `stop_reason` and `uncited_count`.
 - **H5:** a `Source:` label (prettified titles of the chunks behind verified citations) on VERIFIED and PARTIAL, plus the disclaimer "Research aid — check the cited paragraphs; not legal advice; the source edition may predate current law." on those and on the override draft. Display-only.
 - **H6 audit:** adds the `withheld_truncated` / `withheld_declined` / `withheld_incomplete` actions, and the always-present fields `stop_reason`, `generation_status` (`not_run` on no-results) and `uncited_count`. No text is logged.
-- **H4:** README, `Demo/demo.html`, ABOUT, the comparison note and both diagrams now state what the gate checks (locators, not support; uncited statements unchecked) and list the full outcome set.
+- **H4:** README, `Demo/demo.html`, ABOUT, the comparison note and both diagrams now state precisely what the gate checks: a cited paragraph must nest with a retrieved chunk's section and its page must fall in that chunk's pages. It does not check that the exact paragraph exists, that the passage supports the claim, or uncited statements. They also list the full outcome set.
 
 **Why:** a truncated or declined draft could previously reach the user as if it were complete. "Verified" also overclaimed what the gate checks. A truncated draft whose surviving citations resolve would have been shown as `CITATIONS_VERIFIED`.
 
@@ -1829,7 +1829,15 @@ instrument is binding.
 - The suite went from 633 to 773 tests.
 - `tests/test_h_projection.py`: 69 evaluator test IDs (manifest `tests/fixtures/h_projection_manifest.txt`, captured on main `85a4283`) project identically before and after.
 - Offline eval on the branch: every retrieval row is identical to the pre-implementation baseline (orchestrator-verified; the record is local in `data/research/`).
+- **Appendix (acceptance (e)):** the projected evaluator tests are the 69 IDs in `tests/fixtures/h_projection_manifest.txt` (classes `TestEvaluateCompleteness`, `TestEvaluateRefusals`, `TestRunEvalMatrix`, collected on `main`).
 - Diagrams were re-rendered with `npx -y @mermaid-js/mermaid-cli@12.0.0 -c docs/diagrams/mmdc-config.json -t default|dark -b transparent`. A local puppeteer config pointed at the system Chrome; it is not committed.
+
+**Follow-ups (from the phase gate's code review, non-blocking):**
+- `run_eval_matrix` recomputes row statuses instead of reading the status `generate_answers` stores.
+- The answer_fn status wrapper exists in three copies.
+- `render.py` imports the eval harness for `split_sentences`; move it to a shared text module.
+- `test_h_projection` reruns 69 tests in a subprocess on every suite run.
+- The H2 gap exemption misses gap statements written as list items.
 
 **Rejected:**
 - Raising `max_tokens` now.

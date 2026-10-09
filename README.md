@@ -9,10 +9,11 @@ page and reach your own conclusion.
 
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
 first-line sweep before diving into an ~800-page manual. The answer orients you. The
-**citation is the product**: each citation's paragraph and page are machine-checked against the
-retrieved text before you see the answer, so `[Handbook, para 6.3.2, p.214]` points at a real
-retrieved paragraph. That check proves the locator exists in what was retrieved; it does not prove
-the paragraph supports the claim, and a sentence with no citation is not checked at all. An answer
+**citation is the product**: before you see the answer, each citation is matched against the chunks
+retrieved for your question. The cited paragraph must be the section of a retrieved chunk (or nest
+inside it), and the cited page must fall within that chunk's pages, so `[Handbook, para 6.3.2, p.214]`
+lands you on retrieved text. That check does not prove the exact paragraph number exists, and it does
+not prove the passage supports the claim. A sentence with no citation is not checked at all. An answer
 whose citations cannot be verified is **withheld, not shown**, and an answer that was cut off,
 declined by the model, or otherwise did not finish is withheld too. The system fails closed rather
 than guessing confidently.
@@ -51,21 +52,22 @@ Every query ends in exactly one outcome. None of them is a confident, unchecked 
 | ✂️ **Answer truncated** (`ANSWER_TRUNCATED`) | The model hit its output limit mid-answer | Withheld, with a notice to try a narrower question. No sources, no override |
 | 🙅 **Model declined** (`MODEL_DECLINED`) | The model declined the request | Withheld, with a notice to rephrase or consult the handbook. No sources, no override |
 | ❓ **Generation incomplete** (`GENERATION_INCOMPLETE`) | Generation stopped for any other abnormal reason | Withheld, with a notice to retry. No sources, no override |
-| (none) `no_results` | Retrieval returned nothing | A no-results message; the model is never called |
+| (none) `no_results` | Retrieval returned nothing | A no-results message; no answer is generated |
 
 The three withheld terminal outcomes take precedence over every citation outcome, including
 `--show-unverified`: a cut-off or declined draft is never printed. If the model returns no stop
-reason at all, the answer is shown with a warning that its completion status could not be
-confirmed.
+reason at all, the citation gate still decides whether the answer is shown; when it is shown, it
+carries a warning that its completion status could not be confirmed.
 
-What the verified outcomes do and don't claim: the check confirms each cited paragraph/page
-locator against the chunks retrieved for that question. It does **not** check that the cited
-paragraph supports the sentence it follows, and it does not check statements that carry no
-citation. As a display-only hint, the output lists sentences that appear to have no citation
+What the verified outcomes do and don't claim: the check matches each cited paragraph/page against
+the chunks retrieved for that question (a related section number, and a page inside that chunk's
+pages). It does **not** check that the exact paragraph exists or that it supports the sentence it
+follows, and it does not check statements that carry no citation. As a display-only hint, the output lists sentences that appear to have no citation
 under "These statements may not be backed by a citation (heuristic)". It is a heuristic, it never
-changes the outcome, and it can miss cases (for example sentences starting in lowercase). Shown
-answers end with "Research aid — check the cited paragraphs; not legal advice; the source edition
-may predate current law."
+changes the outcome, and it can miss cases (for example sentences starting in lowercase). Verified
+and partially verified answers, and an unverified draft shown with `--show-unverified`, end with
+"Research aid — check the cited paragraphs; not legal advice; the source edition may predate current
+law." (the `Source:` label appears on the verified and partially verified answers only).
 
 (These are the pipeline's outcomes, the first four of which the demo below illustrates. The answer
 *text* itself is separately graded — direct answer, partial answer naming its gaps, closest-related
@@ -92,11 +94,13 @@ Why each step exists, in one line each:
 5. **Graded answers** — direct answer, partial answer that names its gaps, closest-related guidance
    under an explicit caveat, or an exact refusal — never a shrug dressed up as an answer.
 6. **The grounding gate** — the step that makes the citations checkable: every `(paragraph, page)`
-   the model cites is checked against the chunks actually retrieved. Invented citations don't pass.
+   the model cites is checked against the chunks actually retrieved. A citation pointing outside
+   what was retrieved doesn't pass.
    Before the gate runs, the generation's stop reason is read: a truncated, declined or otherwise
    incomplete answer is withheld without being shown.
-   To be precise about what that proves: the locator resolves to real retrieved text. It does not
-   prove the passage legally supports the claim; that judgment is yours, which is why every answer
+   To be precise about what that proves: the citation falls inside real retrieved text (a related
+   section, on a page that chunk covers). It does not prove the exact paragraph number exists, or
+   that the passage legally supports the claim; that judgment is yours, which is why every answer
    ends at the book.
 
 ## Try it — interactive demo, no install

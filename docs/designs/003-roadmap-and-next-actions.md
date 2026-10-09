@@ -459,6 +459,20 @@ The proposed 002-v2 outline is adopted as the skeleton (§4 principles). Astra's
 - The transitive pins `langchain-core` and `anthropic` were added.
 - The label comes from verified-citation titles.
 
+**Round 3 → v3.1 (dispositions; all ACCEPTED, none rebutted):**
+- H0 capture order and projection mechanics → amendment 1.
+- Exact notice texts, and the legacy path never showing the `unknown` line → amendment 2.
+- Where H2 and H5 apply, and `uncited_count` null elsewhere → amendment 3.
+- The render matrix limited to reachable states → amendment 4.
+- Missing H4 surfaces (`pipeline-steps.mmd`, the grounding docstring) and the pinned render command → amendment 5.
+- H2 precision (headings, whole-word hedges) → amendment 6.
+- H1c precision (`error` vs `unknown`, `answer_chars` stats, the results.md wording) → amendment 7.
+- (b) gains `stop_sequence` and an explicit None → amendment 8.
+- (j) is orchestrator-verified → amendment 9.
+- Tier-2 privacy (no held-out or question text) → amendment 10.
+- This disposition record → amendment 11.
+- #8 (divergence from 003 §3) → escalated; owner sign-off is amendment 12.
+
 ## Outcome
 
 *(Filled in as tracks complete.)*

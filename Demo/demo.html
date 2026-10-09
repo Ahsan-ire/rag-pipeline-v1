@@ -136,8 +136,9 @@
   <h1>Legal RAG Pipeline — interactive demo</h1>
   <p class="sub">A first-line sweep of a conveyancing handbook: grounded answers whose citations are
   <b>machine-checked against the retrieved text before you see them</b> — so the citation leads you to
-  a real retrieved paragraph and page to read and judge for yourself. (The check confirms the locator
-  exists; it does not confirm the paragraph supports the claim.)</p>
+  retrieved text, on a page that text covers, to read and judge for yourself. (The check confirms the
+  citation falls inside what was retrieved; it does not confirm the exact paragraph exists or that it
+  supports the claim.)</p>
 
   <div class="notice">
     <b>What this is:</b> a guided <i>simulation</i> of the real pipeline's logic, running entirely in
@@ -185,9 +186,11 @@
       <h3>🛡️ The grounding gate — every citation checked</h3>
       <div class="checks" id="checks"></div>
       <p class="why">Each cited (paragraph, page) must match a chunk that was <i>actually
-      retrieved</i>. This is the fabricated-locator safeguard: an invented locator has nothing to
-      match, so it cannot pass. (It proves the citation resolves to retrieved text — whether that
-      text supports the claim is the reader's judgment, at the cited page.)</p>
+      retrieved</i>: a related section number, on a page that chunk covers. This is the
+      fabricated-locator safeguard: a locator pointing outside what was retrieved has nothing to
+      match, so it cannot pass. (It proves the citation falls inside retrieved text — not that the
+      exact paragraph exists, nor that the text supports the claim; that is the reader's judgment, at
+      the cited page.)</p>
     </div>
 
     <div class="verdict" id="verdict"></div>

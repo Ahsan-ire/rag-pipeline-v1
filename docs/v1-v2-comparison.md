@@ -8,8 +8,9 @@
 > decision it describes (D42).
 
 > **Correction note (9 Oct 2026):** the grounding-gate row in the version table below describes
-> citations as "verified". Stated precisely: the gate checks that each cited paragraph/page locator
-> resolves to a retrieved chunk; it does not check that the passage supports the claim, and
+> citations as "verified". Stated precisely: the gate checks that each cited paragraph/page falls inside
+> a retrieved chunk (a related section number, on a page that chunk covers); it does not check that the
+> exact paragraph exists or that the passage supports the claim, and
 > uncited statements are not checked. The gate's four citation outcomes are also not the pipeline's
 > whole outcome set: answers that are truncated, declined by the model or otherwise incomplete are
 > withheld (`ANSWER_TRUNCATED`, `MODEL_DECLINED`, `GENERATION_INCOMPLETE`), and a query with no

@@ -12,7 +12,8 @@ one. Three further TERMINAL outcomes (H1b) name a generation that did not finish
 normally: ``ANSWER_TRUNCATED``, ``MODEL_DECLINED`` and ``GENERATION_INCOMPLETE``.
 ``generation_outcome`` maps the generation status to them; they are decided before
 ``classify`` runs and take precedence over every citation outcome (the answer is
-withheld). A query that retrieves nothing ends as ``no_results``, with no model call.
+withheld). A query that retrieves nothing ends as ``no_results``: no answer is generated
+(query expansion, if enabled, has already run).
 """
 
 from typing import Dict, List, Optional
@@ -39,9 +40,9 @@ STATUS_DECLINED = "declined"
 STATUS_INCOMPLETE = "incomplete"
 STATUS_UNKNOWN = "unknown"
 STATUS_ERROR = "error"
-# Statuses where the model's output is not a finished, accepted answer.
-# Audit/public-result only: the no-results path never calls the model.
+# Audit/public-result only: the no-results path generates no answer.
 STATUS_NOT_RUN = "not_run"
+# Statuses where the model's output is not a finished, accepted answer.
 INCOMPLETE_STATUSES = (STATUS_TRUNCATED, STATUS_DECLINED, STATUS_INCOMPLETE)
 
 _STOP_REASON_STATUS = {

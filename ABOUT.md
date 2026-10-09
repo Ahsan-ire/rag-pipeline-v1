@@ -40,8 +40,9 @@ this chunker; but an arbitrary PDF will not suffice.
         │                     incomplete generation → WITHHELD, no sources, no override.
         │                     none verified → answer WITHHELD (sources shown, draft on request);
         │                     some verified → shown with a warning naming the unverified ones;
-        │                     shown answers get a Source label, a display-only uncited-statement
-        │                     hint and a research-aid disclaimer
+        │                     verified/partial answers get a Source label, a display-only
+        │                     uncited-statement hint and a research-aid disclaimer (an override
+        │                     draft gets the hint and disclaimer; a refusal gets none)
         ▼  src/audit.py       append-only event log (query + rewrite HASHES + retrieval + gate
                               outcome; no text)
 ```
