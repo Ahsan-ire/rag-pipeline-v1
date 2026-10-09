@@ -1113,578 +1113,405 @@ These amendments override v3 where they conflict.
     protection is on for `main` (no force-push, no deletion, admins included; harness
     Layer 3).
 
-## Phase 16A — eval foundations — `phase-16a1-eval-instrument` → `v2.3.0`, then `phase-16a2-eval-data` → `v2.4.0` (spec v3, 9 Oct 2026: Codex round 2 and plan-auditor round 2 reconciled; combined dispositions table at the end)
+## Phase 16A — eval foundations — `phase-16a1-eval-instrument` → `v2.3.0` (spec v4, 10 Oct 2026: rescoped after plan-gate round 3; 16A-1 fully specified, 16A-2 outlined for its own gate; dispositions at the end)
 
-**Authority:** `docs/designs/003-roadmap-and-next-actions.md` §5 16A (normative) and §1.2 (Q1 scope classes;
-Q3 owner labels, colleague second opinion; Q7 tutorial material private); astra B3, M8–M10; D54; D57
-addendum (re-open condition); D59 (C4, item 9); D61; D62 follow-ups; D64 (standing go, hard stops).
+**Authority:** design 003 §5 16A (normative), §1.2 (Q1, Q3, Q7); astra B3, M8–M10; D54; D57 addendum; D59; D61;
+D62; D64. **v4 rescope (orchestrator, binding):** three gate rounds failed, mostly on the sealed-set data protocol,
+which needs owner answers not yet given. So **16A-1, the instrument, is fully specified here and reviewable alone**,
+with `sealed` only a fail-closed refusal; trusted sealed processors, slots, the signed core, the slot ledger, sealed
+rendering and slot replay move to **16A-2, outlined below for its own spec and plan gate**. **Ordering (003 16A.1):**
+no private question enters an eval run, cache or judge call before 16A-1 merges; no private eval data exists before
+16A-2's gate passes. **Lanes:** **[C]** Claude only (corpus, `chroma_db/`, real eval rows of any class, tutorial
+content, judgment, integration, canaries, commits with `Implemented-by:`). **[W]** R0 code on **synthetic fixtures
+only**, via `harness-worker` once B2's escape probes pass and OS-1's `worker_allow` is applied (else Claude); workers
+never get real eval rows (public v1 included), files quoting them, `eval/private/` or report output. **D64 triggers
+in 16A-1:** a spend-meter stop or a run needing more than the weekly ceiling (item 8); a private-data hit in pushed
+history (item 1); the OS-1 manifest refresh (owner-only).
 
-**v3 design rules** (v2's row index, needle sources and slot/hash coupling are gone): privacy by location +
-marker (item 1); honest blindness (16A-2); signed rules, computed lists, a separate slot ledger (item 5);
-canonical replay (items 3, 5); a metered API (item 8). **Ordering (003 16A.1):** no private question
-enters any eval run, cache or judge call until 16A-1 is merged; no private data exists before OS-1 is applied.
-
-**Sealed-output rule (whole phase):** anything printed, committed or returned to the orchestrator about a
-sealed set is pre-registered aggregates or counts only: no row or family ids, sections, ranks, strata or
-per-row outcomes. Per-row sealed data lives only under `eval/private/sealed/`; only the trusted processors
-(item 1) and the subagents named in 16A-2 open it, never the orchestrator.
-
-**Lanes:** **[C]** Claude only (corpus, `chroma_db/`, tutorial or private eval content, judgment). **[W]** R0
-code on **synthetic fixtures only**, via `harness-worker` once B2's escape probes pass and OS-1's
-`worker_allow` is applied (else Claude implements it); workers never receive real eval rows (public v1
-included), `eval/private/`, held-out files or report output. Integration, real-row checks, canaries and
-commits stay [C] (`Implemented-by:`).
-
-**Owner touchpoints (D64): two pings.**
-- **OS-1** (sent at the start of 16A-1; 16A-1 proceeds; **16A-2 step 1 waits for it**). Exact questions:
-  1. *Manifest:* "Please review the `.harness/project.toml` diff (adds `^eval/private/` to `never_commit`,
-     `eval/private` to `restricted_read` and `codex_clause`, the [W] globs to `worker_allow`) and run
-     `~/ClaudeCode/harness/bin/harness-init` on this repo to apply it."
-  2. *Tutorials:* "Which tutorials beyond T1 and T7 may 16A-2 subagents use as blind drafting sources?"
-  3. *Colleague queries:* "Can colleagues' real queries be collected for the realistic slice? If so, about
-     how many, by what date? Please remove client identifiers before dropping them in."
-  4. *Source mix:* "Plan default: at least 25% of realistic families from tutorial or colleague sources if
-     available; otherwise Claude-drafted lay phrasings, with the D46 self-retrieval caveat disclosed in
-     D71. Approve, or set another minimum (and say whether the sealed split needs one too)."
-  5. *Second reviewer:* "Will a colleague review the sealed refusal and ambiguous labels you forward at
-     OS-2 within 7 days (or name a deadline)? Families without that review leave sealed for development."
-- **OS-2** (16A-2 step 7; blocks sealing): the single validation session.
-- **D64 triggers named here:** a spend-meter stop or an unapproved estimate above the remaining weekly cap;
-  a re-epoch, replacement sealing, an amendment to the signed core or canonical v6 guard list, or raising
-  K_max; a target or criterion not met as approved, other than the pre-approved negative branch.
+**OS-1 — owner questions** (sent at 16A-1's start; non-blocking for 16A-1, **blocking for 16A-2's spec**):
+1. *Manifest:* "Please review the `.harness/project.toml` diff in the 16A-1 PR (`^eval/private/` → `never_commit`;
+   `eval/private` → `restricted_read`; the do-not-read clause → `codex_clause`; [W] globs → `worker_allow`), then
+   run `~/ClaudeCode/harness/bin/harness-init /Users/malik26/ClaudeCode/rag-pipeline-v1 --refresh`." (Plain
+   `harness-init` is a no-op once enrolled, `harness-init:896`; `--refresh` adopts the reviewed file, `:935–953`;
+   `harness-doctor` then shows no drift.)
+2. *Tutorials:* "Which tutorials beyond T1 and T7 may 16A-2 draft from?"
+3. *Colleague queries:* "Can colleagues' real queries (client identifiers removed) feed the realistic slice? How many, by when?"
+4. *Source mix:* "Default: ≥ 25% of realistic families from tutorial or colleague sources if available, else lay
+   phrasings Claude drafts, with the D46 self-retrieval caveat. Approve or set a minimum; does sealed need one?"
+5. *Second reviewer:* "Who gives Q3's second opinion on refusal and ambiguous labels, and by when? If nobody can, do
+   you review alone with the gap disclosed, or does 16A-2 wait?"
+6. *Forwarding:* "May handbook- or tutorial-derived eval material (Q7: tutorial material is private) go to that
+   colleague? It is a licensing and data-protection position (D64 hard stop); nothing leaves the project until then."
 
 ### 16A-1 — instrument (fully agentic)
-
-**Evidence (checked on `main` 9ce4e07; bare line numbers are `src/evaluator.py`):**
-- Question text reaches both reports (`:1402–1413`, `:2549`, `:2572`; printed `:1550`, `:2167`); the matrix
-  detail line adds expected/retrieved sections and ranks (`:2546–2549`); per-row state is keyed by text
-  (`:1899–1965`, `:2533–2559`). The judge record carries the question (`src/judge.py:271`; configured
-  `src/pipeline.py:642`, written `:2171–2173`). The live expansion cache is keyed by text (`:1711–1724`).
-- `scripts/w_sweep.py` keys by text and prints 60/70-character prefixes (`:84`, `:150`, `:196`);
-  `scripts/bakeoff_report.py` parses `:: question` (`:95`), keys flips by text (`:487–508`), matches roster
-  and role coverage by prefix (`:544`, `:603`) and skips unmatched rows (`:786`).
-- `load_golden_set` validates (`:200`) but projects three fields (`:205–210`); matching is OR-only
-  (`:397`); `retrieved_sections` drops chunk ids (`:384–387`); both formatters print `datetime.now()`
-  (`:1326`, `:2210`); the matrix report prints each set's sha256 (`:2328`); held-out branches key on the
-  `held-out` label (`:2042–2048`, `:2341–2353`). Citations are validated (`src/generator.py:427`) before a
-  terminal status overrides the outcome (`:433`); `src/render.py:350` can show an unverified draft.
-- **No usage capture:** judge and rewrite chains end in `StrOutputParser` (`src/judge.py:103`,
-  `src/query_rewrite.py:183`); the generator reads only `stop_reason` (`src/generator.py:391–394`).
-- **Only `pipeline query` leaves a retrieval trace** (`src/pipeline.py:196–255` → `src/audit.py`
-  `log_event`); other paths open the store via `get_vector_store` (`src/embedder.py:353`; callers
-  `src/retriever.py:84`, `:270`; evaluator `:1246`, `:1750`) and `load_bm25_index` (`src/bm25_index.py:78`).
-- `src/render.py:30` imports `split_sentences` from the evaluator; `_GAP_STARTS` is private (`:79`).
-  `.harness/project.toml`: `restricted_read` lacks `eval/private`; `codex_clause = ""`. Dev sets: golden 35
-  rows (23 direct / 7 exact_token / 5 refusal; 11 multi-section), realistic 23 (16 / 1 / 6; 11
-  multi-section), no `id`; `tests/test_evaluator.py` has 59 `run_eval*` calls.
+**Evidence (`main` 9ce4e07; bare numbers are `src/evaluator.py`):** question text reaches both reports (`:1402–1413`,
+`:2549`, `:2572`), the judge dump (`src/judge.py:271`), the expansion cache (`:1711–1724`), w_sweep prefixes
+(`scripts/w_sweep.py:84`) and bake-off keys (`scripts/bakeoff_report.py:487–508`); the loader keeps three fields
+(`:205–210`); matching is OR-only (`:397`); held-out branches key on the label (`:2042–2048`); no usage capture
+(`src/judge.py:103`); SDK retries (`src/generator.py:167`, `src/query_rewrite.py:173`); 59 `run_eval*` test calls.
 
 ### Work
-0. **P0 — pre-implementation captures [C]** (before any code edit; H0 precedent).
-   `scripts/p16_capture_projection.py` (committed) runs both v5 formatters on `main`, models faked, over the
-   public v1 sets (golden, realistic, sample) **plus a synthetic set labelled `held-out`**
-   (`tests/fixtures/p16_synthetic_heldout.jsonl`, invented rows; no real held-out row is read): one offline
-   run, and one canonical-shaped run whose fakes satisfy every v5 guard (results path redirected to tmp).
-   Clock, paths and provenance are injected; output `tests/fixtures/p16_v5_projection_main.json` (`reports`
-   compared, `main_sha` provenance). The orchestrator records H (j)'s offline retrieval-ablation rows on
-   `./chroma_db` at `data/research/p16_offline_baseline_main.md`, with the SHA.
-1. **Privacy classes and output control (D65).**
-   - **[W] Registry** `eval/sets.json` + `src/eval_sets.py`: per set `path`, `privacy`, `role`
-     (`tuning`/`realistic`/`sealed`/`regression`), `status` (`active`/`retired`), `sha256`; sealed sets add
-     `epoch` and `commitment` (file sha256 + sha256 of the sorted family ids). Public: v1 golden, realistic,
-     sample and heldout (heldout sha256 filled in at integration [C]). A marked file cannot register public.
-   - **[W] `classify(path)`** on the resolved path (`os.path.realpath`), first match wins: (1) under
-     `eval/private/sealed/` → sealed; (2) bytes match `"sealed"\s*:\s*true` → sealed, wherever the file is
-     (a copy, rename, reorder, subset or reserialisation keeps its rows' markers); (3) under `eval/private/`
-     → private; (4) a registered public path whose current sha256 matches → public; (5) a v5/v6 report or
-     eval-tool cache whose recorded input-set sha256s (the report's `sha256:` lines; a cache's `inputs`
-     header) are all registered public sets → public; (6) with `--legacy-public`, a sha256 listed in
-     `eval/legacy_public.json` (pre-16A artifacts such as `eval/w_sweep_expansions_20260717.json` and the
-     Phase 15 reports; written in 16A-1, frozen at its merge) → public; (7) else private (fail closed: a
-     stripped header lands here). A run's class is the strictest input's; nothing is promoted by id or text.
-   - **[C] Explicit privacy.** `run_eval`, `run_eval_matrix`, both formatters and the `w_sweep` and
-     `bakeoff_report` entry functions take a keyword-only `privacy` with **no default**. CLIs pass
-     `classify`'s result; tests pass `privacy="public"` explicitly (the 59 `run_eval*` calls and the
-     bake-off instrument tests are edited mechanically; the H0 projection must still match). An AST test
-     forbids that literal outside `tests/`.
-   - **[W] Allowlisted serialiser** (`src/eval_privacy.py`), by run class: public as today; private →
-     opaque ids + metrics, never a question, gap keyword or prefix (w_sweep's prefix prints become ids);
-     sealed → pre-registered aggregates and counts only, for **every** set in the run, reals to 4 decimals.
-   - **[C] Destinations.** A private run writes detail, judge dumps, caches and rank dumps only under
-     `eval/private/`; a sealed run only under `eval/private/sealed/`, with `"sealed": true` on every row and
-     file header; its only writes outside are the aggregate report, ledger line and slot record. Containment
-     uses the resolved path (a symlink or `..` escape is refused). Non-public runs print warnings and
-     exceptions as id (sealed: a count) + exception type, never `str(exc)` or a traceback with row values.
-   - **[W] Leak scanner** `scripts/scan_leaks.py` (trusted): loads its own needles at scan time from every
-     private and sealed file (`classify`); prints counts and needle classes, never a needle.
-     - **Q-needles:** for each non-public, non-`legacy` question, the whole question and every 8-token
-       window (NFKC, casefold, punctuation → space, whitespace collapsed). A window also found in a
-       registered public question is exempt; the whole question never is. A question with every window
-       exempt is flagged: sealed-eligible → ineligible (item 4 `pool`); private → counted for review.
-     - **S-needles (sealed only):** evidence section ids as intact tokens (`4.8.1` is never split) and gap
-       keywords as whole tokens, minus the aggregate template's fixed vocabulary; they scan the templated
-       sealed-run outputs only (stdout, the report's sealed block, ledger line, slot record). Section ids and
-       legal terms occur legitimately in tracked code (`3.2.1` at `src/chunker.py:202`), so repo-wide scans
-       use Q-needles only.
-     - **Promise:** any verbatim (normalised) run of ≥ 8 tokens of a non-public question, and any whole one,
-       is detected; shorter fragments are prevented by the serialiser (tested in (b)), not promised here.
-     - **Targets:** run outputs before printing or writing outside `eval/private/`; at the merge gate, every
-       tracked file at HEAD, commit messages and tag annotations in the PR range, the PR body, comments and
-       review comments (`gh pr view --json body,comments`; `gh api .../pulls/N/comments`). A hit aborts that
-       output; a sealed slot is never re-run for it (per-row results are already stored, item 4): after a
-       fix, `scripts/render_sealed.py --slot N` re-renders the aggregate with zero model calls.
-   - **[W] Store-access stamp.** `get_vector_store` and `load_bm25_index` append `{ts, pid, argv0}` to
-     `logs/store_access.jsonl` (`STORE_ACCESS_LOG` overrides; a write failure warns, never fails the call;
-     `tests/conftest.py` redirects it). `scripts/check_store_access.py --since T0 --until T1` prints a
-     count. With the audit log's line count, it is the evidence for "never retrieved" (16A-2 step 2).
-   - **[C] Trusted sealed processors** (the only readers of sealed files; counts and hashes out): the
-     evaluator under a reserved slot; `src/eval_sets.py`; `scripts/validate_eval_set.py` (sealed line/field
-     detail goes to `eval/private/sealed/diagnostics/`); `scripts/eval_split.py`; `scripts/scan_leaks.py`;
-     `scripts/render_sealed.py`; `scripts/apply_validation.py`. Every other tool refuses a sealed input.
-   - **[C] Hygiene and rules.** `.gitignore` and `scripts/check_never_commit.py` gain `eval/private/`
-     (extends D63); CLAUDE.md's do-not-read clause gains `eval/private/`; new hard rules: the sealed-output
-     rule and "the orchestrator never opens `eval/private/sealed/`"; the OS-1 manifest diff is prepared.
-     **Residual (D65):** the never-open rule, the marker and the subagents' no-retrieval rule are
-     instruction-enforced misuse guards, not a boundary (a deliberately stripped marker or a direct
-     `chromadb` import goes undetected); a Read-deny hook for `eval/private/sealed/` is left to the harness.
-2. **Schema v2 (D66) [W].** `src/eval_schema.py` + `scripts/validate_eval_set.py` (line and field, never
-   text; sealed: counts only). Rows carry `"schema": 2`; mixed v1/v2 files are rejected; sealed sets are v2,
-   every row marked.
-   - **Identity:** `id` unique per set; `family_id` names a scenario and its paraphrases. Public v2 ids match
-     `^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$`; non-public `family_id` matches `^f[0-9a-f]{8}$` (issued by
-     `eval_split.py`) and `id` is `<family_id>-<n>`; any other pattern is rejected.
-   - **`scope`** `answer` | `partial` | `refuse` (Handbook mode, D61). **`evidence`:** AND groups, each a
-     non-empty OR list of sections; `[]` iff `refuse`. **`gaps`:** `partial` only and non-empty there:
-     `[{"id", "keywords": [≥ 1 non-empty string]}]`.
-   - **Optional:** `type` (agrees with `scope`); `register` `modelled`/`lay`/`terse`; `source`
-     `handbook`/`tutorial`/`colleague`/`legacy`; `ambiguous`; `owner_status`
-     `draft`/`approved`/`changed`/`rejected`; `second_status` `not_required`/`pending`/`agree`/`disagree`/
-     `missing`. A second review is **required** iff the row is sealed and `refuse` or `ambiguous` (Q3).
-   - **v1 rows load exactly as today** (`load_golden_set` byte-equal); internally a v1 row gets
-     `id = "q:" + sha256(question)[:12]` (public file) or `L<line>` (non-public), `family_id = id`, one OR
-     group, scope from `type`.
-3. **Scoring, report v6, canonical v6 (D66).** First commit: `split_sentences`, `_GAP_STARTS` and the hedge
-   regex move to `src/text_utils.py` (render and evaluator import it; `src.evaluator.split_sentences` stays
-   as a re-export), so the new scorers create no import cycle.
-   - **[W] `score_evidence(ranked, groups, mode, absorbed=None)`**, `ranked` = ordered `(chunk_id, section)`
-     pairs. `completion_rank` = max over groups of the first rank matching any member (strict = equal;
-     related = today's nesting rule); `None` if a group is unmatched; also `groups_covered@k`. hit@k iff
-     `completion_rank ≤ k`; one group equals today's `first_*_rank`. Absorbed aliases (item 7) share their
-     chunk's rank and add no ranked entries.
-   - **[W] `observed_scope(result)`** under the default display policy (`show_unverified=False`; the
-     `render.py:350` override is outside this metric), first match wins: `unscored` (status not `complete`,
-     a terminal outcome, or no gate outcome on a non-refusal) → `withheld` (`CITATIONS_UNVERIFIED`) →
-     `refuse` (`is_refusal`, `src/generator.py:201`) → `partial` (a sentence passes H2's gap-statement
-     test) → `answer`.
-   - **[W] `score_partial(result, groups, gaps)`:** `unscored` rows count, never correct; otherwise correct
-     iff the outcome is `CITATIONS_VERIFIED` or `PARTIALLY_VERIFIED`, not `is_refusal`, ≥ 1 verified
-     citation related-matches a required group, and every gap is stated (a gap-statement sentence holds one
-     of its keywords as a whole word, case-insensitively). Gap recall is reported separately.
-   - **[C] Integration:** v2 sets use the new scorers; v1 sets use the untouched v5 path.
-   - **Report v6** (iff a loaded set is schema 2) adds family counts with eligible denominators; a scope
-     confusion table (labelled 3 × observed 5); family rates with Wilson CIs (`unavailable` when empty); the
-     cohort block (item 6); expansion mode and digest (item 5); run cost (item 8).
-   - **Canonical v6** = every v5 guard, with two replacements: the headline is the registry's active
-     `role = sealed` set (not the `held-out` label); the rewrite guard is met **live** (attempts > 0,
-     fallbacks 0) **or by replay** (complete, digest-verified coverage from an artifact whose build record
-     met it, item 5). It adds: the signed core matches; the slot is declared and reserved by this process;
-     the commitment verifies, `status == active`; per-row results stored before rendering; a clean leak
-     scan; an active spend meter.
-   - **v5 compatibility:** runs over registered public v1 sets stay report v5 byte for byte (fixed clock,
-     paths, provenance); a v1 file classed private follows the serialiser, deliberately not byte-compatible.
-4. **Pool, split, seal and slots (D67).** `scripts/eval_split.py` ([W] tool on synthetic data; [C] runs):
-   - `migrate`: v1 golden + realistic, the 24 T1/T7 rows and a pairing map → schema-2 development rows in
-     `eval/private/dev/` (`source` `legacy` for v1, `tutorial` for T1/T7; ids issued here). A
-     golden↔realistic pair is one family in realistic; golden-only and T1/T7 families go to tuning.
-   - `pool`: input `eval/private/sealed/pool/drafts.jsonl` (schema-2 rows with a content-free `draft_key`
-     `d<batch>-<n>` and `draft_family`, no ids) + the dedup verdict file (step 3). It issues ids; sets
-     `eligible_sealed` (false if dedup-flagged, fully window-exempt, or from a batch that failed its window
-     check); writes `pool.jsonl` beside it, every row marked; prints totals by source, scope and
-     eligibility. **Pool digest** = sha256 of the complete family records (every row and field) sorted by
-     `family_id`, one `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)` line each.
-   - **Seed before split:** `eval/split_seed.json` (seed from `secrets`, pool digest, quotas) must be
-     committed at HEAD; `split` refuses an uncommitted seed, a differing digest or an existing assignment
-     file. `--new-epoch` needs recorded owner approval and fresh validation (D64).
-   - **`split_families(families, seed, quotas, strata)`** (pure): sort by `family_id`, seeded shuffle; each
-     family to exactly one split with all its rows; sealed draws only `eligible_sealed`, realistic only
-     lay-register seeds; strata = scope × primary chapter (first section of the first group; `multi` if
-     groups span chapters; `refuse`); refusal band 25–30% of each split's families; an infeasible quota
-     fails with counts and writes nothing. Assignments go to `eval/private/sealed/split_assignments.json`;
-     development-assigned rows move to `eval/private/dev/` unmarked (the only sanctioned unmarking).
-   - `demote --reason <enum>` (called only by `apply_validation` and `seal`, never by hand with a sealed id)
-     appends to `eval/private/sealed/demotions.jsonl` and moves the family to tuning, unmarked.
-   - `seal` demotes families with any fully window-exempt phrasing, applies the band fallback (step 8),
-     refuses below 50 families, writes the committed `eval/split_manifest.json` (seed, pool digest,
-     per-split family and row **totals** with no sealed strata, split-file sha256s, assignment and
-     demotion-log sha256s, sealed commitment) and registers the set. `verify` replays `split(seed, pool)`
-     then the demotion log, checks membership and every hash, and prints pass/fail and counts.
-   - **[C] Slot guards.** Before any sealed retrieval, expansion or model call: the signed core matches
-     (item 5); the commitment verifies and `status == active`; `--sealed-slot N` is declared in
-     `eval/slots.toml`; this process reserved it.
-     - **Reservation:** exclusive create (`O_CREAT|O_EXCL`) in an out-of-tree state directory
-       (`~/.local/state/rag-pipeline-v1/sealed_slots/<epoch>-<N>.json`, untouched by checkouts and
-       `git clean`), mirrored to committed `eval/sealed_slots/<epoch>-<N>.json`; either existing refuses.
-     - **States:** `reserved` → `stored` (per-row results fsynced under `eval/private/sealed/runs/`) →
-       `publishing` (fsynced **before** any performance aggregate is printed, written or returned) →
-       `completed`; or `failed`. Canonical status is decided before `publishing`; a non-canonical run ends
-       `failed`, unpublished. A reserved slot never returns to unused.
-     - `eval/sealed_ledger.md`: one line per finished slot (date, commit, slot, state, purpose, aggregates).
-     - **Exposure** (a sealed file opened outside the trusted list, sealed retrieval outside a slot) retires
-       the set (`status = retired`, role `regression`); replacement sealing is a D64 hard stop.
-5. **Pre-registration, statistics, frozen expansions (D68).**
-   - **[W] `src/eval_stats.py`** (stdlib only): family collapse (`all` | `majority`; a tie is a MISS); exact
-     two-sided McNemar on family outcomes (primary); **Durkalski's clustered χ²** (sensitivity; Durkalski
-     et al. 2003, as htestClust `mcnemarClust`): cluster k = a family with m_k phrasings (concordant
-     included), d_k = (b_k − c_k)/m_k, χ² = (Σd_k)² / Σd_k², 1 df; singletons reduce it to the
-     uncorrected asymptotic McNemar, not the exact test; Σd_k² = 0 is `unavailable`. Also Wilson CIs
-     (`unavailable` when empty, never `[0, 0]`); exact power and MDE vs N, (p10, p01) or a discordance grid,
-     the adjusted α and target power (not monotone in N: MDE = the smallest effect reaching target power at
-     that N); Holm over K_max; `critical_verdict` kept apart from `exploratory_verdict`; variance summaries.
-   - **Eligible populations:** retrieval metrics count `answer` + `partial` families, scope and refusal
-     metrics all families; each rate, CI and MDE uses the printed eligible denominator.
-   - **Verdict per confirmatory slot** (candidate vs incumbent on the primary metric): **PASS** iff it
-     favours the candidate, Holm-adjusted p ≤ α, the point estimate ≥ MWE, and `critical_verdict` is not
-     FAIL; **FAIL** iff `critical_verdict` FAILs or adjusted p ≤ α favours the incumbent; else
-     **INCONCLUSIVE**. Interim adjusted p = K_max·p; the final Holm table can upgrade an INCONCLUSIVE, never
-     reverse a PASS or FAIL. Unused and failed slots enter with p = 1; K never shrinks. Every slot run also
-     carries the development sets, so `critical_verdict` is an aggregate of the same run.
-   - **Candidate rule (one non-adaptive batch per epoch).** Candidates are chosen on development evidence
-     only. All confirmatory candidates of an epoch are declared in **one batch** before its first
-     confirmatory slot is reserved; `scripts/eval_slots.py declare` refuses once any is reserved. A
-     candidate conceived after a confirmatory result is exploratory or waits for a new epoch (fresh sealed
-     families; D64 hard stop). The only sealed information before the batch is slot 0's descriptive
-     aggregates (no rows, families or sections); D68 discloses this residual adaptivity.
-   - **Signed core + slot ledger.** `eval/preregistration.toml` (the core) is immutable once signed:
-     the owner approves it at OS-2; the orchestrator commits it with `eval/preregistration.sig.json` (core
-     sha256, signing commit, date) and records both in the D68 addendum; any later change is an amendment
-     (D64 hard stop). `eval/slots.toml` is append-only; each `[[slot]]` records epoch, slot, kind
-     (`baseline`/`spare`/`confirmatory`/`exploratory`), `core_sha256`, candidate config hash, commit, the
-     development report hashes that selected it, and `expansion` = `fixed:<artifact digest>` or
-     `candidate:<rewrite config hash>`. A sealed run checks sha256(core) == sig == its slot's `core_sha256`;
-     appending a slot never touches the core.
-   - **Core contents:** unit (family), outcome and tie rules; primary metric (family strict@6,
-     hybrid+rewrite); eligible populations; MWE (draft 0.10); α = 0.05 family-wise, Holm over K_max
-     (draft 4), target power 0.8, MDE over discordance 0.2/0.3/0.5; the schedule (slot 0 incumbent
-     baseline, descriptive; spare 0b only if slot 0 ended `failed` before `publishing` and within the
-     approved spend; one confirmatory batch ≤ K_max per epoch); the critical-control rule; R (draft 5);
-     the verdict rules; the canonical v6 guard list.
-   - **Critical-control rule** (signed as a rule; the list is computed): the retrieval-eligible development
-     families, on final labels, that are a family strict HIT@6 in **both** raw hybrid (offline) and
-     hybrid+rewrite replaying the development artifact, in the step 10 baseline. `scripts/critical_controls.py`
-     computes the list; it is committed with its sha256 (in D72) before any 16B slot.
-   - **[W] Frozen expansion artifact** (`src/expansion_artifact.py`): entries keyed by (row id, question
-     sha256), as an expansion depends only on the question (label changes never invalidate it); bound to the
-     rewrite model id, prompt sha256 and rewrite config hash; an `inputs` header and a **build record**
-     (entries, live attempts, fallbacks, building run). `run_eval_matrix` accepts an injected artifact and
-     replays it in every arm; a missing entry or identity mismatch fails (never regenerates); the report
-     records the digest and separate `rewrite_live` / `rewrite_replayed` counts; v5 runs keep today's live
-     expansion. The *development artifact* is built live (zero fallbacks) on the final tuning and realistic
-     v2 in step 10 (`eval/private/artifacts/`); the *sealed artifact* is slot 0's live expansions, stored at
-     `stored` under `eval/private/sealed/artifacts/` (0b rebuilds it live). *Retrieval-only candidates*
-     declare `fixed:<sealed artifact digest>`; both arms replay it. *Rewrite-changing candidates* declare
-     `candidate:<config hash>` plus a development artifact built with that config before the batch; in the
-     slot the candidate arm expands live with exactly that config and the incumbent arm replays.
-   - **Deployment variance:** R draws on the development sets, each re-expanding live and re-running
-     retrieval and family scoring: per-family flip frequency against the development-artifact replay, and
-     the family-rate range.
-6. **C4 cohort identity + item-9 backlog (D69).**
-   - **[C] Cohort block** per set in report v6: path, privacy, schema, sha256 (sealed: commitment), rows,
-     families, `cohort_fp` = sha256 over the sorted `(id, evidence fingerprint, scope)` tuples.
-   - **[C] `compare` / `compare_prod_ranks`** key rows by `(set sha256, id)`, never position or prefix.
-     Both arms must cover the eligible ids exactly once with every required field (a missing, extra or
-     duplicate row fails; the `bakeoff_report.py:786` skip goes). They refuse differing set hashes, labels,
-     `cohort_fp`, scorer version or absorbed-map hash; expansion identity is checked as the slot declares
-     (development comparisons: identical digests unless `candidate:`). Every critical control must resolve
-     and be a strict HIT in the baseline arm, else the comparison is refused as non-reproducing (an
-     instrument error, not a verdict). The D54 roster and role coverage move to ids; v5 output is unchanged.
-   - **[W] Item 9:** `w_sweep.py` loses its module-level `chdir` and cwd-relative paths; duplicated helpers
-     merge; the arm roster is single-sourced. **D62 follow-up:** one answer_fn status wrapper.
-7. **Absorbed-section metadata (D70).**
-   - **[W] Chunker side channel:** each D20 runt merge as (absorbing section, absorbed section, absorbed span
-     in `clean_text`); each final chunk's own span carried through the oversize re-split; chunk text, ids
-     and metadata unchanged.
-   - **[C] `scripts/absorbed_map.py`** runs it on the corpus (no re-index) and commits
-     `eval/absorbed_sections.json` (versioned, hashed; chunk ids and section numbers only), keyed by
-     production chunk id (source-scoped content hashes, `src/embedder.py:378–406`; oversize merges re-split
-     into chunks sharing one `section_number`, `src/chunker.py:491–504`). A chunk lists an absorbed section
-     only if the whole absorbed span (whitespace-trimmed, as emitted chunk bodies are) lies inside its own
-     span; siblings and find-miss sub-chunks (`chunker.py:494–504`) get none. **Every key must exist in
-     `./chroma_db`**, or the build fails (e.g. a differing `source` string). v6 strict scoring credits an
-     absorbed section only through that chunk's entry; the map hash binds comparisons. D54's repairs,
-     production metadata and the gate are untouched.
-8. **API spend meter (D69).**
-   - **[C] `config/api_prices.toml`** (committed): per model id, $/MTok for input, output, cache write and
-     cache read; `price_list_date`; `usd_per_eur`. An unknown model id refuses the call.
-   - **[W] `src/spend.py`:** `SpendMeter(prices, limit_eur, ledger)` as a LangChain callback handler
-     (`raise_error=True`). **Before** each call (`on_chat_model_start`): worst case = the prompt's UTF-8
-     bytes as input tokens + `max_tokens` output; if spent + worst case > limit, it raises
-     `SpendLimitReached` and nothing is sent. **After** each call: the cost from `usage_metadata` (missing
-     usage counts as the worst case) goes to `logs/spend_ledger.jsonl` (time, run id, model, tokens, cost;
-     no text). Each evaluator-level retry is a separate metered call.
-   - **[C] Wiring:** attached in `get_llm()` (generator, judge) and `get_rewrite_llm()` on every live run.
-     Limit = the remaining D64 weekly cap (€40 minus this ISO week's ledger total) or a lower
-     `--approved-eur`; a higher figure needs `--owner-approved-eur`, as approved by the owner (OS-2 or a D64
-     ping; recorded in D72). A stop aborts the run (a sealed slot ends `failed`, unpublished) and is the D64
-     spend hard stop. Report v6 prints the run cost; v5 report text is unchanged.
-9. **Ledger + docs [C].** D65–D70; CLAUDE.md (canonical v5 and v6, the privacy and sealed rules,
-   `eval/private/`, the meter); `docs/harness.md` changelog and the negative-result phase path (16A-2 Stop
-   paths); the `Current phase` and `Next:` lines.
+0. **P0 — captures before any code edit [C]** (H0 precedent). `tests/p16_capture.py` (an uncollected driver) imports
+   `src` from `--repo` and runs both v5 formatters, models faked, over public golden, realistic, sample and the
+   invented `tests/fixtures/p16_synthetic_heldout.jsonl` labelled `held-out`: an offline and a canonical-shaped run
+   (fakes meet every v5 guard; tmp results path; clock, paths, provenance injected), passing `privacy="public"` only
+   where the runner has it, with an expansion fake taking any keywords; run on a scratch worktree of `9ce4e07` →
+   `tests/fixtures/p16_v5_projection_main.json`. H (j)'s offline rows go to `data/research/p16_offline_baseline_main.md`.
+1. **Privacy classes and output control (D65):** `public`, `private`, and `sealed` (16A-1: refusal only).
+   - **[W] Registry** `eval/sets.json` + `src/eval_sets.py`: `name`, `path`, `privacy` (`public`/`private`), `role`
+     (`tuning`/`realistic`/`regression`/`fixture`), `status`, `sha256`; at merge, public v1 golden, realistic, sample,
+     heldout (sha256 filled in [C]) and the synthetic fixtures; no private set; `sealed` or marked files are refused.
+   - **[W] `classify(path)`**, resolved path, first match wins: (1) under `eval/private/sealed/` → sealed; (2) a
+     `.json`/`.jsonl` eval input with any parsed row or header holding `"sealed": true` → sealed, wherever it lives
+     (copies, renames, reorders, subsets, reserialisations keep row markers); (3) under `eval/private/` → private;
+     (4) a registered public path at its registered sha256 → public; (5) a report, cache or artifact whose recorded
+     input sha256s are all registered public → public; (6) with `--legacy-public`, a sha256 in the frozen
+     `eval/legacy_public.json` (pre-16A artifacts) → public; (7) else private. Only eval inputs are ever classified.
+   - **[C] Privacy floor:** `run_eval`, `run_eval_matrix`, both formatters and the `w_sweep` and `bakeoff_report`
+     entry functions take a keyword-only `privacy`, no default. A runner derives its own floor (the strictest
+     `classify` over every path it opens); a weaker caller value raises `PrivacyFloorError` before any retrieval,
+     expansion or model call, a stronger one is honoured, and formatters refuse a class weaker than the result's.
+     CLIs pass `classify`'s result; tests pass `privacy="public"` and register tmp sets via a `tests/conftest.py`
+     fixture patching the registry loader (59 calls edited); AST tests keep that literal and any registry,
+     classifier or override parameter out of `src/` and `scripts/`.
+   - **[C] Sealed refusal** (before any retrieval, expansion or model call; CLI exit 4), complete for 16A-1:
+     `pipeline eval`, `run_eval`, `run_eval_matrix`, `load_golden_set`, `eval_schema.load_v2`, `validate_eval_set.py`,
+     `w_sweep.py`, `bakeoff_report.py`, `scan_leaks.py` (as a source) and the expansion-artifact loader.
+   - **[W] Serialiser** (`src/eval_privacy.py`, allowlist): private → opaque ids, metrics, section ids, ranks; never a
+     question, gap keyword, prefix, raw malformed value or `str(exc)`. **[C] Destinations:** a private run writes
+     reports, detail, judge dumps, caches, rank dumps and artifacts only under `eval/private/` (resolved-path
+     containment; symlink and `..` escapes refused); errors print as id + exception type.
+   - **[W] Leak scanner** `scripts/scan_leaks.py`, never printing a needle. *Sources (explicit):* registry `private`
+     sets, `--needles <path>` (must classify private) and, in `--output` mode, the run's own private inputs; public
+     and sealed sources are refused (empty until 16A-2). *Needles* (JSON and `\uXXXX` escapes decoded, then NFKC,
+     casefold, punctuation → space, whitespace collapsed; targets alike): each private question whole and each
+     8-token window; a whole question is exempt only if its normalised sha256 equals a registered public
+     question's (`source` grants nothing), a window only if it occurs in one; under 8 tokens only the whole needle
+     exists. **Promise:** every non-exempt whole question and window is caught; shorter fragments are the
+     serialiser's job ((b)). *Modes:* `--output` (a private run's stdout and report before release; a hit aborts,
+     exit 5); `--merge-gate --base <ref>` (tracked files at HEAD, **every blob version added or modified in
+     `base..HEAD`**, commit messages, tags, PR body, comments, review comments). *Hits* give target (file:line,
+     commit or PR item), needle id (`n` + 10 hex of its sha256), kind and source, never text; the orchestrator may
+     open that tracked file (private, not sealed, content is readable by Claude) and fix it, rewriting unpushed
+     history. With private sets present, `--merge-gate` runs before every push (CI cannot); a hit in pushed history
+     is a data incident and a D64 owner stop.
+   - **[C] Hygiene and rules:** `.gitignore`, `check_never_commit.py` and CLAUDE.md's do-not-read clause gain
+     `eval/private/` (extends D63); CLAUDE.md gains the private-output and sealed-refusal rules. **Residual (D65):** a
+     stripped marker, a direct `chromadb` import or a skipped pre-push scan goes undetected (instruction-enforced).
+2. **Schema v2 (D66) [W]:** `src/eval_schema.py` + `scripts/validate_eval_set.py` (errors by line and field, never
+   text); `"schema": 2`, no mixed files. **Identity:** `id` unique per set; `family_id` = a scenario and its
+   paraphrases; public ids `^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$`; non-public `family_id` `^f[0-9a-f]{8}$`, `id`
+   `<family_id>-<n>`, nothing else. **`scope`** `answer`|`partial`|`refuse` (D61); **`evidence`:** AND groups of
+   non-empty OR section lists, `[]` iff `refuse`; **`gaps`:** `partial` only, non-empty, each `{"id", "keywords"}`
+   with ≥ 1 non-empty keyword. **Optional:** `type` (agrees with `scope`), `register` (`modelled`/`lay`/`terse`),
+   `source` (`handbook`/`tutorial`/`colleague`/`legacy`), `ambiguous`, `owner_status` (`draft`/`approved`/`changed`/
+   `rejected`), `second_status` (`not_required`/`pending`/`agree`/`disagree`/`missing`); when a second review is
+   required is 16A-2's rule (P3), following 003 §5 16A.4 unnarrowed. **Inventory:** each evidence section must be in
+   `eval/section_inventory.json` (item 7), else a line/field error (the D54 class). **v1 rows load as today**
+   (`load_golden_set` byte-equal); internally `id = "q:" + sha256(question)[:12]` or `L<line>`, `family_id = id`.
+3. **Scoring and report v6 (D66).** First commit: `split_sentences`, `_GAP_STARTS`, the hedge regex and a new
+   `is_gap_statement` move to `src/text_utils.py`, imported by render and evaluator (no import cycle). **Gap
+   statements (D62 follow-up taken):** H2's `unit.startswith(_GAP_STARTS)` (`src/render.py:148`) misses list items;
+   `is_gap_statement` first strips list markers (`-`, `*`, `•`, `1.`, `1)`, `(a)`) and emphasis, hedge rule
+   unchanged, and render uses it too, so list-item gap statements stop being flagged as uncited.
+   - **[W] `score_evidence(ranked, groups, mode, absorbed=None)`**, `ranked` = ordered `(chunk_id, section)` pairs:
+     `completion_rank` = max over groups of the first rank matching any member (strict = equal, related = today's
+     nesting), `None` if a group is unmatched; `groups_covered@k`; hit@k iff `completion_rank ≤ k`; one group =
+     today's `first_*_rank`; absorbed aliases share their chunk's rank and add no entries.
+   - **[W] `observed_scope(result)`** (default display, `show_unverified=False`), first match wins: `unscored`
+     (status not `complete`, a terminal outcome, or no gate outcome on a non-refusal; citations are validated
+     before terminal status, `src/generator.py:427`, `:433`) → `withheld` (`CITATIONS_UNVERIFIED`) → `refuse`
+     (`is_refusal`) → `partial` (a unit passes `is_gap_statement`) → `answer`.
+   - **[W] `score_partial(result, groups, gaps)`:** `unscored` counts, never correct; else correct iff the outcome is
+     `CITATIONS_VERIFIED` or `PARTIALLY_VERIFIED`, not `is_refusal`, ≥ 1 verified citation related-matches a required
+     group, and every gap is stated (a gap-statement unit holds one of its keywords as a whole word, any case); gap
+     recall is separate. **[C]** v2 sets use these scorers, v1 sets the v5 path.
+   - **Report v6** (iff a set is schema 2): family counts with eligible denominators (retrieval `answer` + `partial`;
+     scope and refusal all), scope confusion (labelled 3 × observed 5), family rates with Wilson CIs, cohort block,
+     expansion digest, run cost. **No v6 run is canonical in 16A-1 or writes `eval/results.md`** (P7). Registered
+     public v1 sets stay report v5 byte for byte (fixed clock, paths, provenance); private v1 files get the serialiser.
+4. **Pure split and statistics (D67) [W]**, data-free building blocks for 16A-2.
+   - **`split_families(families, seed, quotas, strata, *, twins, preassigned=(), min_share=None)`:** content-free
+     records (`family_id`, scope, primary chapter, source, register, per-split eligibility; a question, evidence, gap
+     or `sealed` field is refused). `twins` = `{batches, pairs_covered, edges}` is refused unless `pairs_covered`
+     lists every unordered batch pair present (self-pairs and `preassigned` included); edges merge families into one
+     unit (union-find), eligible for a split only if every member is. Sorted by `family_id`, seeded shuffle, each
+     unit to one split; `preassigned` families never move but count toward their split's quotas, strata, band and
+     `min_share` (per-split minimum share by source); strata = scope × primary chapter (`multi`; `refuse`); band
+     25–30% of each split's final families; infeasible → `SplitInfeasible` with per-constraint counts, no output.
+   - **`src/eval_stats.py`** (stdlib): family collapse (`all`|`majority`; a tie is a MISS); exact two-sided McNemar;
+     **Durkalski's clustered χ²** (Durkalski et al. 2003; htestClust `mcnemarClust`): d_k = (b_k − c_k)/m_k, m_k =
+     the family's phrasings, concordant included, χ² = (Σd_k)²/Σd_k², 1 df (singletons give the uncorrected
+     asymptotic McNemar, not the exact test; Σd_k² = 0 → `unavailable`); Wilson (z = 1.96; empty → `unavailable`);
+     exact `power(N, discordance, effect, alpha, sided)`, `"two"` counting every two-sided rejection, `"directional"`
+     only those favouring the candidate; MDE = the smallest effect (0.01 grid) whose **directional** power reaches
+     the target (`none` if none does; not monotone in N); Holm; per-family flip frequency. Verdicts, K_max: P5, P6.
+5. **Frozen expansion artifact (D68) [W]** (`src/expansion_artifact.py`): entries keyed by (row id, question sha256),
+   bound to rewrite model id, prompt sha256 and rewrite config hash, with an `inputs` header and a build record
+   (entries, live attempts, fallbacks). `run_eval_matrix(expansion=)`: `"live"` (default), `build:<path>` (private →
+   `eval/private/artifacts/`) or an artifact replayed in every arm; a missing entry or identity mismatch fails with
+   zero expansion calls; reports record the digest, `rewrite_live`, `rewrite_replayed`; replay is never v5-canonical.
+6. **C4 cohort identity + item 9 (D68) [C]** ([C]: `scripts/w_sweep.py:34–35` and the roster quote real rows).
+   **Cohort block** per set in report v6: path, privacy, schema, sha256, rows, families, `cohort_fp` = sha256 of the
+   sorted `(id, evidence fingerprint, scope)` tuples. **`compare` / `compare_prod_ranks`** key rows by `(set sha256,
+   id)`; both arms must cover the eligible ids exactly once with every required field (missing, extra or duplicate
+   fails; the `:786` skip goes); differing set hashes, labels, `cohort_fp`, scorer version, absorbed-map hash or
+   expansion identity are refused unless both arms are live or `--rewrite-candidate <config hash>` declares that
+   only the candidate's rewrite config differs (its artifact records that hash). `--controls <file>` (ids bound to a
+   set sha256) must be non-empty and resolve in both arms; control flips are reported apart (choosing controls and
+   verdicts: P6). Roster and roles move to ids; v5 output is unchanged. **Item 9:** `w_sweep.py` loses its
+   module-level `chdir`; helpers merge; one arm roster; one answer_fn status wrapper (D62).
+7. **Absorbed-section map and inventory (D69).** **[W]** A chunker side channel records each D20 runt merge
+   (absorbing and absorbed section, absorbed span) and each final chunk's span through the oversize re-split, chunks
+   unchanged. **[C]** `scripts/absorbed_map.py` runs it on the corpus (no re-index) and commits
+   `eval/absorbed_sections.json` (versioned, hashed; chunk ids and section numbers only, keyed by production chunk
+   id, `src/embedder.py:378–406`) and `eval/section_inventory.json` (every `section_number` in `./chroma_db` plus
+   aliases). A chunk lists an absorbed section only if the whole trimmed span lies in its own (oversize siblings and
+   find-miss sub-chunks, `src/chunker.py:491–504`, get none); every key must exist in `./chroma_db`; v6 strict
+   scoring credits an alias only via its chunk; the map hash binds comparisons. **D54's chunk-metadata route is
+   re-deferred, not adopted:** it would change production metadata, citations, the index and the gate, which this
+   phase keeps byte-stable ((d), (l)); D69 names it a candidate for Phase 18.
+8. **API spend meter, eval only (D70).**
+   - **[C] `config/api_prices.toml`:** per model $/MTok (input, output, cache write, cache read), `price_list_date`,
+     `usd_per_eur`, `weekly_cap_eur = 40` (D64); an unpriced model is refused when the meter is built.
+   - **[W] `src/spend.py`:** `SpendMeter(prices, ledger, run_limit_eur)` builds the metered generation, rewrite and
+     judge clients: today's `ChatAnthropic` with `max_retries=0`, wrapped in `with_retry` over the SDK's retryable
+     errors (timeout, connection, 408/409/429, ≥ 500; 4 attempts, as D52), so **every attempt** passes the meter (a
+     callback, `raise_error=True`). *Reserve* (`on_chat_model_start`, before sending, under an exclusive
+     `fcntl.flock`): worst case = prompt UTF-8 bytes + 64 per message as input tokens (at the higher of the input
+     and cache-write rates) + `max_tokens` output; if the UTC ISO week's settled cost + open reservations + worst
+     case exceeds the week's ceiling, or run total + worst case the run limit, it raises `SpendLimitReached` and
+     nothing is sent; else it appends and fsyncs a `reserve` line. *Settle* (`on_llm_end`): the `usage_metadata`
+     cost replaces it; an error, timeout, missing usage or crash leaves the worst case charged. Lines hold time, run
+     id, project, model, kind, tokens, $, €, ceiling, approval reference; never text. *Location:* one per-user
+     ledger outside every checkout, `~/.local/state/claudecode/anthropic_spend.jsonl` (D64's cap is per owner), so
+     worktrees, branch switches and `git clean` cannot reset it; `CC_SPEND_LEDGER` overrides; `tests/conftest.py`
+     redirects it (autouse) and the meter refuses the default path while `PYTEST_CURRENT_TEST` is set. *Ceiling:*
+     €40 per UTC ISO week, hard; a run's limit is the remainder or a lower `--approved-eur`; only
+     `--owner-approved-eur X --approval-ref <ref>`, after the owner approves X, lifts it (logged on every line and
+     in the D-entry; a false reference is an instruction-enforced residual).
+   - **[C] `SpendLimitReached`** subclasses `BaseException`, so the broad handlers (`src/judge.py:180`,
+     `src/query_rewrite.py:366`, `:372`, `src/evaluator.py:1026`) cannot make it an api error, a fallback or a
+     retried error row; `expand_query` (its never-raise contract gains this exception), `judge_answer` and
+     `generate_answers` document it. The meter latches; `pipeline eval` prints run and week totals, writes no report
+     and exits 3 (the D64 spend stop).
+   - **[C] Wiring, eval only:** `get_llm()`/`get_rewrite_llm()` are unchanged, so `pipeline query` is never metered
+     (production spend is outside D64's eval cap). `generate`/`generate_with_sources` gain `llm=None`; `run_eval`,
+     `run_eval_matrix` and `w_sweep` gain `meter=None` and, given one, pass its clients to generation,
+     `expand_query(llm=)` and the judge's `llm_fn` (without one, call shapes are today's). A default live path with a
+     usable API key and no meter raises `SpendMeterRequired` before any call; the CLI builds a meter iff it is live.
+9. **Ledger + docs [C]:** D65 (item 1), D66 (2–3), D67 (4), D68 (5–6), D69 (7), D70 (8); 16A-2 allocates its own.
+   CLAUDE.md (privacy rules, `eval/private/`, sealed refusal, meter); `docs/harness.md`; `Current phase`, `Next:`.
 
 ### Acceptance (Tier-1)
-- **(a) Suite and CI** green, including `never-commit`; `tests/test_h_projection.py` (H0 lock) passes.
-- **(b) Canary leak test** (`tests/test_eval_privacy.py`, models faked): synthetic private and sealed sets
-  carry a distinct `P16-CANARY-<field>-<uuid>` in the question start and end, a gap keyword, an evidence
-  group, a malformed row's id-like value, a per-row and a top-level exception message; run through
-  `run_eval_matrix`, `run_eval`, the judge dump, `w_sweep` (prefix prints too), `bakeoff_report`,
-  `eval_split`, `validate_eval_set`, a loader error and a CLI exception. Each sentinel is absent (also as an
-  8-token window, JSON- or `\u`-escaped, re-cased or re-spaced) from stdout, stderr, `caplog` and every file
-  outside `tmp/eval/private/`, present in the private detail report; forced injections (whole question,
-  8-token prefix, reformatted copy) are caught and write nothing; a symlink escape aborts.
-- **(b2) Sealed aggregates only.** A sealed fixture run's stdout, report, ledger line, slot record and
-  returned result contain no fixture row or family id, section, stratum or per-row outcome (regex over the
-  fixture's ids and sections); public sets in the same run render as aggregates.
-- **(c) Classification:** one test per `classify` rule; a sealed fixture copied, renamed, reordered, subset
-  or reserialised outside `eval/private/` stays sealed; an unregistered file, a registered path with changed
-  bytes, a report with a stripped or non-public input header, and a mixed public + unmatched run are
-  private; a marked file cannot register public; the CLI resolves an unregistered file to private; the AST
-  test passes; every non-trusted tool refuses a sealed input with zero retrieval and model calls.
-- **(d) v5 unchanged:** `tests/test_p16_projection.py` reproduces P0's `reports` byte for byte (synthetic
-  held-out and canonical-branch runs included); `load_golden_set` is byte-equal on the v1 files [C]; H (j)'s
-  offline rows reproduce P0 (orchestrator-verified); each v5 canonical guard, removed alone, makes the run
-  non-canonical; the CI greps are unchanged.
-- **(e) Evidence groups** [W, synthetic]: two groups both hit → the later group's first hit; one missing →
-  a miss at every k; OR alternates; a parent matches under related, not strict; an absorbed alias takes its
-  chunk's rank; `groups_covered@k`. [C]: on every v1 golden and realistic row, single-group ranks equal the
-  v5 ranks (fake retriever).
-- **(f) PARTIAL and observed scope:** a stated gap in a VERIFIED or PARTIALLY_VERIFIED answer is correct;
-  incorrect: a missing gap, a keyword outside a gap statement, a whole refusal (quoted and trailing-period
-  variants), no verified citation in a required group, a withheld draft; truncated, declined, incomplete,
-  unknown and error drafts with verified citations and a stated gap are `unscored`; D32's hedge is not a
-  stated gap; one `observed_scope` fixture per class.
-- **(g) Schema rejections** name line and field, never text (sealed: counts, detail under
-  `eval/private/sealed/diagnostics/`): duplicate id; bad or non-opaque id; sealed below schema 2 or
-  unmarked; mixed versions; scope/evidence/gaps incoherence; empty keyword list or keyword; `type`/`scope`
-  disagreement; empty group; unknown `owner_status`/`second_status`.
-- **(h) Pool and split:** over 200 seeded synthetic pools no family is in two splits and phrasings follow
-  their family; same seed → same split; permuted input → identical split; ineligible families are never
-  sealed; quotas, strata and band hold; an infeasible quota fails writing nothing; an uncommitted seed, a
-  digest mismatch or existing assignments are refused; a label or eligibility change preserving every count
-  changes the digest; `verify` replays demotions and fails on a one-byte change to any split file; the
-  committed manifest carries no sealed id or stratum.
-- **(i) Sealed guards** (fake call counters): an unsigned core, core ≠ sig, an undeclared, used or
-  unscheduled slot, a commitment mismatch or `retired` status each refuse with zero retrieval, expansion
-  and model calls; of two processes reserving one slot exactly one proceeds; deleting the committed slot
-  file does not free the slot; an exception after reservation → `failed`; a crash before `publishing`
-  allows 0b, after it refuses 0b; a non-canonical run ends `failed` unpublished; a scanner abort after
-  `stored` re-renders via `render_sealed.py` with zero model calls; `declare` is refused after a
-  confirmatory reservation in the epoch; appending a slot leaves the core check passing.
-- **(j) Stats** (reference values recomputed 9 Oct, stdlib Python): exact McNemar b = 10, c = 2:
-  p = 0.03857421875; singleton Durkalski on the same data: χ² = 5.3333, p = 0.0209213353 (≠ exact); unequal
-  clusters (m_k, b_k, c_k) = (2,2,0), (2,1,1), (3,3,0), (2,0,1), (2,1,0): d = 1, 0, 1, −0.5, 0.5,
-  χ² = 2²/2.5 = 1.6, p = 0.2059032107; all-cancelling clusters → `unavailable`; exact power at gain
-  probability 0.8, α = 0.05: 0.2097280 (7 discordant) > 0.1677747 (8); N = 50, effect 0.10: 0.2411886 at
-  discordance 0.2, 0.0944530 at 0.8; Wilson 0/10 → [0, 0.27753], 10/10 → [0.72247, 1], 0/0 →
-  `unavailable`; three paraphrases count once; a tie is a MISS; Holm on a known vector; unused and failed
-  slots enter as p = 1, K unchanged; verdicts (below-MWE with p ≤ α is INCONCLUSIVE; a control flip FAILs
-  at p > 0.5; exploratory flips alone never FAIL; the final table never reverses).
-- **(k) C4:** a mismatched set hash, label, `cohort_fp`, scorer version or absorbed-map hash is refused;
-  `fixed:` arms with different digests are refused, a `candidate:` arm with the declared config accepted;
-  a missing, extra or duplicate row fails (today's missing-baseline-HIT case included); an unresolved or
-  non-HIT control is refused as non-reproducing; permuted production-rank rows match by id.
-- **(k2) Frozen expansions:** two arms replaying one artifact see identical expansions, `rewrite_live` = 0;
-  a full replay of an artifact built with zero fallbacks is canonical-eligible, one built with a fallback is
-  not; a missing entry fails with zero expansion calls; an identity mismatch refuses; each variance draw
-  re-expands and re-retrieves every development row.
-- **(l) Absorbed:** a synthetic runt merge yields the expected map; in an oversize merge only the containing
-  sub-chunk is credited (not its sibling or a find-miss sub-chunk); a key absent from a fake index fails the
-  build; the 16-chunk sample corpus is byte-identical; the 1,470-chunk canary holds (orchestrator-verified);
-  v5 scoring ignores the map.
-- **(m) Spend meter** (fake chat model with usage): usage is captured from generator, judge and rewrite; a
-  call whose worst case would cross the limit is never sent; missing usage counts as worst case; an unknown
-  model is refused; the weekly remainder comes from the ledger; ledger lines carry no text; the offline
-  command makes zero metered calls.
+- **(a)** Suite and CI green, `never-commit` included; the H0 lock (`tests/test_h_projection.py`) passes.
+- **(b) Canaries** (`tests/test_eval_privacy.py`, models faked): distinct `P16-CANARY-<field>-<uuid>` values (question
+  start and end, gap keyword, evidence group, malformed id-like value, per-row and top-level exception messages) go
+  through `run_eval_matrix`, `run_eval`, the judge dump, `w_sweep`, `bakeoff_report`, `validate_eval_set`, a loader
+  error and a CLI exception, and are absent (also as 8-token windows, escaped, re-cased, re-spaced) from stdout,
+  stderr, `caplog` and files outside `tmp/eval/private/`; `--output` catches forced injections; symlink and `..` escapes abort.
+- **(c) Classification and floor:** one test per `classify` rule; a marked JSONL copied, renamed, reordered, subset or
+  reserialised stays sealed, `.md`/`.py` files holding the marker text do not; changed bytes, stripped headers and
+  mixed public + unmatched runs are private; a marked file cannot register; a weaker `privacy` than the floor raises
+  with zero retrieval, expansion and model calls (a downgraded sealed input included), a stronger one is honoured,
+  formatters refuse a weaker class; both AST tests pass; item 1's refusal list refuses sealed input with zero calls.
+- **(d) v5 unchanged:** `tests/test_p16_projection.py` reproduces P0's `reports` byte for byte; `load_golden_set` is
+  byte-equal on the v1 files and H (j)'s offline rows match P0 [C]; each v5 canonical guard removed alone makes a run
+  non-canonical; the CI greps are unchanged; no v6 or replayed run writes `eval/results.md`.
+- **(e) Evidence groups** [W, synthetic]: two groups hit → the later group's first hit; one missing → a miss at every
+  k; OR alternates; a parent matches under related only; an alias takes its chunk's rank; `groups_covered@k`. [C]:
+  single-group ranks equal v5's on every v1 golden and realistic row (fake retriever).
+- **(f) PARTIAL and scope:** a stated gap in a VERIFIED or PARTIALLY_VERIFIED answer is correct, also as a bullet,
+  numbered or emphasised item; incorrect: a missing gap, a keyword outside a gap statement, a hedged one (D32), a
+  whole refusal, no verified citation in a required group, a withheld draft; truncated, declined, incomplete, unknown
+  and error drafts with verified citations and a stated gap are `unscored`; one fixture per `observed_scope` class;
+  render stops flagging list-item gap statements and still flags other list items.
+- **(g) Schema** errors give line and field, never text: duplicate or non-opaque id, mixed versions, incoherent
+  scope/evidence/gaps, empty keywords, a `type`/`scope` clash, an empty group, an unknown status, an uninventoried section.
+- **(h) `split_families`** (200 seeded synthetic pools): no unit spans splits; twin-edged families, cross-batch
+  included, share a split; a `twins` record missing a batch pair is refused; preassigned families count toward band,
+  quotas, strata and `min_share` and never move; seed and permutation invariance; no ineligible placement;
+  infeasible → counts; a content-bearing record is refused.
+- **(i) Scanner** (synthetic): public and sealed sources are refused; a 9-token private question whose two windows sit
+  in different public questions is caught whole; an exact-hash public question is exempt, its `source=legacy`
+  paraphrase is not; a sub-8-token question has only its whole needle; escaped injections are caught; hit lines hold
+  no fixture token; a clean real-shaped v5 report has zero hits; `--merge-gate` finds needles in a blob added then
+  deleted within the range, a commit message, a tag annotation and a faked `gh` PR body and comment.
+- **(j) Stats** (recomputed 10 Oct, stdlib Python 3): exact two-sided McNemar b = 10, c = 2 → p = 0.03857421875;
+  singleton Durkalski, same data → χ² = 5.3333, p = 0.0209213353 (≠ exact); clusters (m, b, c) = (2,2,0), (2,1,1),
+  (3,3,0), (2,0,1), (2,1,0) → d = 1, 0, 1, −0.5, 0.5, χ² = 2²/2.5 = 1.6, p = 0.2059032107; all-cancelling →
+  `unavailable`. Power, α = 0.05, gain probability 0.8 given d discordant: two-sided 0.209728 (d = 7) > 0.16777472
+  (d = 8), directional 0.2097152 > 0.16777216; N = 50, effect 0.10: two-sided 0.2411886, directional 0.2411428 at
+  discordance 0.2; 0.0944530 and 0.0925917 at 0.8. Directional MDE, 80% power, N = 36, discordance 0.2 / 0.3 / 0.5:
+  none / 0.26 / 0.34 at α = 0.05, none / 0.29 / 0.39 at α = 0.0125. Wilson 0/10 → [0, 0.27754], 10/10 → [0.72246, 1],
+  0/0 → `unavailable`. Holm (0.01, 0.04, 0.03, 0.005) → (0.03, 0.06, 0.06, 0.02). Three paraphrases count once.
+- **(k) C4:** a mismatched set hash, label, `cohort_fp`, scorer version, absorbed-map hash or expansion digest is
+  refused, a declared `--rewrite-candidate` arm accepted; missing, extra or duplicate rows fail (today's missing-
+  baseline-HIT case included); empty or unresolved `--controls` are refused; permuted rows match by id. **(k2)** Arms
+  replaying one artifact match, `rewrite_live` = 0; a missing entry fails with zero calls; a mismatch refuses.
+- **(l) Absorbed map:** a synthetic runt merge maps as expected; only the containing oversize sub-chunk is credited;
+  a key absent from a fake index fails the build; the inventory covers every fake-index section and alias; the
+  16-chunk sample corpus is byte-identical; the 1,470-chunk canary holds [C]; v5 scoring ignores the map.
+- **(m) Spend** (fake model with `usage_metadata`; tmp ledger): all three kinds settle; two transient failures then a
+  success make 3 reservations (1 settled, 2 at worst case); a call crossing the ceiling or run limit is never sent;
+  of two processes racing for one remaining worst case exactly one sends; an unsettled (crashed) reservation counts
+  in a new process; an unpriced model is refused; ISO-week totals are right; lines hold no fixture token;
+  `SpendLimitReached` passes through `generate_answers` (one call, no error row), `expand_query` (no fallback),
+  `judge_answer` (no api error), `run_eval_matrix` and the CLI (exit 3, no report); a fake key with no meter raises
+  `SpendMeterRequired`; `pipeline query` and the offline command build no meter; the suite never uses the default ledger.
 - **(n) Hygiene:** `git check-ignore eval/private/probe.jsonl` passes; `check_never_commit.py` rejects
-  `eval/private/x.jsonl`; `git ls-files eval/private` is empty; `w_sweep` imports without changing cwd and
-  runs from a tmp cwd; both store openers stamp (redirected in tests, failure-tolerant); `src.render` no
-  longer imports `src.evaluator`.
-- **(o) Ledger:** D65–D70 present; `Current phase` and `Next:` updated.
+  `eval/private/x.jsonl`; `git ls-files eval/private` is empty; `w_sweep` runs from a tmp cwd without `chdir`;
+  `src.render` no longer imports `src.evaluator`; the PR carries the OS-1 manifest diff. **(o)** D65–D70 present.
 
-**Tier-2:** offline v6 on v2 copies of golden and realistic (one family per row) equals the v5 row-level
-numbers (PR records metadata only); a worker-lane record per [W] item.
+**Tier-2:** offline v6 on v2 copies of golden and realistic (one family per row) equals v5's row-level numbers; a
+metered live smoke [C] (one generation, rewrite and judge call on a public golden row, limit €0.10) settles from real
+usage; a worker-lane record per [W] item. **Gates:** plan gate on v4 (plan-auditor + Codex `gpt-6.1-sol`, read-only;
+the outline only for completeness) → implement → `/phase-gate 16A-1` → Codex merge review → PR, CI → merge, `v2.3.0`.
 
-### 16A-2 — data + re-baseline
-**Preconditions:** 16A-1 merged; OS-1 applied (checked by (a)). **Layout:** `eval/private/{dev,validation,
-reports,artifacts}/` and `eval/private/sealed/` (pool, set, assignments, demotions, validation, diagnostics,
-runs, artifacts). **Committed:** counts, hashes, seed and split manifests, registry, slot records, ledger,
-core + sig, `slots.toml`, control list; development ids may appear in reports, sealed ids never.
+### 16A-2 — data + re-baseline (outline only; `phase-16a2-eval-data`)
+**Purpose (003 §5 16A.3–5, .7–8):** v2 data in families (tuning ≥ 60, realistic ≥ 40, sealed held-out ≥ 50; 2–3
+phrasings; refusals 25–30%), validated (owner + Q3 second opinion; flagged: T01-Bb, the realistic "planning permission
+for an extension" refusal label, T07-Ab/T07-Ba secondary labels, the pre-1975 architect's-certificate dates), sealed
+blind, pre-registered, re-baselined (offline + one canonical run, cost first). **Inputs:** OS-1's answers; 16A-1
+merged. **Rule:** 16A-2 gets its own spec and plan gate (plan-auditor + Codex) after OS-1 is answered and 16A-1 is
+merged; **no private eval data is created before that gate passes**; its D-entries and tag are set there.
+**Design problems** (deferred findings; Cx = Codex, Au = plan-auditor, rN = round):
+- **P1 Blindness:** who drafts, checks, dedups and paraphrases sealed data and what each returns; "never retrieved"
+  evidence (stamp reused handles too; unhealthy windows disqualify; production queries told apart; a window per
+  sealed dispatch); window-exempt and short questions. [Cx r3 5; Au r2 11, 12; Au r3 13, 14 (eligibility), 31]
+- **P2 Pool, dedup, split:** cross-batch twin dedup (drafts vs each other, development, held-out v1, regression)
+  producing the `twins` record; pool format, digest, freeze; pairing map; seed commitment; phrasing counts; inventory
+  checks on new labels; colleague intake and cutoff; `min_share` values; colleague queries in the realistic slice.
+  [Cx r1 6 (pool), r2 10; Au r2 13, 16, 17, 24; Au r3 1 (edges), 15 (applied), 20 (values), 21, 22]
+- **P3 Validation:** second review per 003 §5 16A.4 (every sealed, refusal and ambiguous label); a return channel for
+  owner and colleague verdicts that never shows the orchestrator sealed rows; approvals bound to final row hashes;
+  the colleague dependency and deadline; forwarding only under OS-1 Q6; rejected-family quarantine; quotas and bands
+  revalidated after demotion. [Cx r3 9, 10; Au r2 15, 16 (demotion), 20; Au r3 2, 3, 12]
+- **P4 Sealed lifecycle:** pre-seal protection; an explicit trusted-processor list; diagnostics; exposure and
+  retirement; aggregates-only rendering; S-needles and sealed hits without exposure; side channels (ledger tokens,
+  dedup replies, pool totals, transcripts, D-entry wording). [Cx r1 1, r2 3, 5; Au r2 10, 19, 21; Au r3 7, 23]
+- **P5 Pre-registration and slots:** signed core vs append-only slot ledger; atomic reservation; stored/publishing
+  states; spare 0b; slot-0 bootstrap expansion; declare vs exploratory; state after a scan abort; out-of-tree slot
+  state and its test redirect; a non-adaptive batch under Holm; re-epoch as a D64 stop. [Cx r1 4, 9, 15 (re-epoch),
+  r2 1, 6, 9, r3 7, 12, 13; Au r2 5, 22, 29; Au r3 8, 18 (slots), 21 (formats)]
+- **P6 Controls and artifacts:** a control rule that does not revive "zero flips anywhere" (draw-unstable families
+  out), its list bound and checked complete; which artifact covers development rows in sealed slots; the development
+  artifact on final labels; variance draws. [Cx r1 10 (draws), r3 6; Au r2 1, 9; Au r3 4, 5]
+- **P7 Canonical v6:** sealed headline; replay guard; one writer of `eval/results.md` beside canonical v5;
+  all-or-nothing size vs one spare. [Cx r2 8 (v6); Au r2 3; Au r3 17, 30]
+- **P8 Cost, power, negative branch:** estimate before OS-2 under 16A-1's meter; K_max-adjusted MDE and the D57
+  re-open threshold; a negative branch runnable without sealed artifacts; private data never committed. [Cx r1 5, 15
+  (estimate), r3 11; Au r2 28; Au r3 25 (Tier-2 MDE, D57)]
 
-**Blindness, stated honestly (D71).** Every new family, sealed included, is written by Claude-family
-subagents reading the handbook and approved tutorials, so seeds may sit closer to the corpus wording than
-real queries do. "Blind" means never retrieved outside a slot, never used for tuning, never read by the
-orchestrator. Every sealed-touching dispatch prompt forbids running `src.pipeline`, importing `src` or any
-eval command, and allows a reply of counts only (dedup: plus ineligible keys).
+### Plan-gate dispositions (Codex r1–r3, plan-auditor r2–r3; 10 Oct)
+Codex `gpt-6.1-sol` REVISE in r1 `425bdcc` (4 BLOCKER / 11 MAJOR / 1 MINOR), r2 `5513715` (2/7/3), r3 `16d0465` (1/10/2);
+plan-auditor FAIL in r2 `5513715` (2/18/9), r3 `16d0465` (1/17/13); no round-1 auditor leg. Each finding was checked
+against the plan and code; stats recomputed in stdlib Python 3 (v3's Wilson bounds were off in the 5th decimal). Of 101:
+**54 FIXED** in 16A-1 (a 16A-2 remainder is named under Where), **47 DEFERRED-16A-2** (owned by P1–P8), **0 REBUTTED**.
 
-### Work
-1. **Migrate development data [C]** (`eval_split.py migrate`). Proposed AND splits are flagged for OS-2. The
-   24 T1/T7 rows are development (already retrieved). The v1 files stay byte-frozen. Held-out v1 becomes
-   role `regression` once sealed v2 lands; still run and reported, never the headline.
-2. **Draft new families blind [C dispatch].**
-   - Fresh `sonnet` subagents, one batch per source, write schema-2 seed rows (`draft_key`, `draft_family`,
-     seed, `evidence`, `scope`, `gaps`, `source`, `register`, `ambiguous`, `"sealed": true`) straight into
-     `eval/private/sealed/pool/drafts.jsonl`, returning counts only. Sources per OS-1: the handbook, approved
-     tutorials, colleague queries the owner drops into `eval/private/sealed/pool/intake/` (orchestrator-unread).
-   - **Window check:** the orchestrator records T0/T1 around each batch and runs nothing that opens the
-     store in between; afterwards `check_store_access.py` and the audit log's line count (count only) must
-     show zero new entries in the window, else the batch is development-only.
-   - **Targets** (families, ~20% surplus): ≥ 60 sealed-eligible; enough lay families for realistic ≥ 40 and
-     others for tuning ≥ 60 after migration; refusals 25–30%; partials present; realistic mix per OS-1 Q4.
-3. **Label check and dedup [C dispatch].** A fresh `opus` subagent checks every draft's labels against the
-   handbook, writes notes beside the drafts, returns counts. Another compares each draft family's scenario
-   with **all** development families, held-out v1 and any regression set (same scenario → ineligible,
-   `dev_sibling`; exact duplicate → dropped), writes the verdict file, and returns counts plus the
-   ineligible `draft_family` keys (they can only become development). `pool` then issues ids, applies
-   eligibility (fully window-exempt questions included) and prints the digest.
-4. **Commit seed, split, paraphrase [C].** Commit `eval/split_seed.json`, run `split`; development-assigned
-   new families move to `eval/private/dev/`, readable by the orchestrator from then on. Development
-   paraphrases: the orchestrator or subagents. Sealed paraphrases: one fresh subagent writes 2–3 phrasings
-   (`modelled`/`lay`/`terse`) per sealed family into `eval/private/sealed/` under the same window check.
-5. **Development baseline [C]** (no sealed access): the zero-API offline ablation on tuning v2 and realistic
-   v2 (partial v6 report; the 16A-1 (d) v1 canary holds), and a metered 3-row live dry run (rewrite,
-   generation, judge) on development rows to measure tokens per call.
-6. **Cost estimate [C]:** planned calls × measured tokens × `config/api_prices.toml`, covering slot 0 (all
-   modes, generation, judge, live sealed expansion), retries at the retry limit, spare 0b, the development
-   artifact, the R variance draws and spend already incurred; with the price-list date and €/$ rate.
-7. **OS-2 — the batched owner session (one ping).** `apply_validation.py build` writes the packet (dev items
-   in `eval/private/validation/`, sealed in `eval/private/sealed/validation/`, every phrasing included) and
-   a one-page count summary. The owner (a) validates every sealed label, every refusal, partial and
-   ambiguous label, each phrasing's fit to its family's label, and the proposed AND splits; (b) rules on the
-   four flagged items: T01-Bb, the realistic "planning permission for an extension" refusal label (Q1), the
-   missing secondary labels on T07-Ab and T07-Ba, and the conflicting handbook dates for the pre-1975
-   architect's-certificate rule; (c) signs the core (item 5) and the canonical v6 guard list; (d) approves
-   the estimate if it exceeds the remaining weekly cap (estimate + 20%, never above the remaining cap
-   unless the owner approves a higher figure); (e) forwards the sealed refusal + ambiguous sub-packet to the
-   colleague (Q3) with a reply deadline (default 7 days), and drops the reply into
-   `eval/private/sealed/validation/`.
-8. **Apply validation [C].** `apply_validation.py apply` (counts only) sets `owner_status` and
-   `second_status`, then demotes to development owner-rejected families and families whose required second
-   review is `disagree`, or `missing` at the deadline (pre-registered: no resolver, no further ping).
-   **Band fallback:** if the sealed refusal share leaves 25–30%, `seal` demotes families of the
-   over-represented class in seeded order until it holds. D71 records raw agreement, Cohen's κ and PABAK over
-   answer/partial/refuse (κ is unstable at extreme prevalence), and the owner's change rate.
-9. **Seal [C].** `seal` (below 50 families → Stop paths); commit the manifest, the registry entry (`sealed`,
-   `active`) and the ledger header; `verify` passes.
-10. **Slot 0 and development measures [C].** Before reserving, the meter limit must cover the estimate (else
-    a D64 spend ping). One canonical v6 run on slot 0 (sealed + realistic v2; tuning v2 and held-out v1 as
-    regression), expanding live and storing the sealed artifact; it writes `eval/results.md` (sealed:
-    aggregates). Slot 0b only under item 5's rule. On the final development sets: build the development
-    artifact, run the offline and replay baselines, compute and commit the critical-control list with its
-    sha256, and run the R variance draws.
-11. **Ledger [C].** **D71:** data, sources and mix, counts, validation and agreement, the blindness and
-    authorship caveat, the flagged items' dispositions by item id and outcome class only (no row content).
-    **D72:** re-baseline, cost, variance, achieved MDE, the control-list hash; the D57 re-open condition
-    becomes testable. Update the `Current phase` and `Next:` lines.
-
-### Acceptance (Tier-1)
-- **(a) Hygiene:** suite and CI green; `git ls-files eval/private` empty; `verify` passes;
-  `.harness/project.toml` has `eval/private` in `restricted_read` and `codex_clause`, `^eval/private/` in
-  `never_commit`.
-- **(b) Counts:** ≥ 60 tuning, ≥ 40 realistic, ≥ 50 sealed families (retrieval-eligible sealed count
-  beside it); 2–3 phrasings per family; refusals 25–30% of each split's families; zero families across
-  splits; zero sealed families that are migrated, dedup-ineligible, fully window-exempt or from a failed
-  window.
-- **(c) Labels:** every sealed row has `owner_status` `approved` or `changed`; every sealed refusal or
-  ambiguous row has `second_status = agree`; no sealed row is `draft`, `pending`, `disagree` or `missing`;
-  every development refusal, partial and ambiguous row is owner-validated; D71 records agreement.
-- **(d) Flagged items:** all four have recorded dispositions.
-- **(e) Core signed:** the sig's sha256 equals the core's and appears in the D68 addendum and the report.
-- **(f) Canonical run:** every v6 guard passes; slot records and ledger show slot 0 `completed` (or 0
-  `failed` unpublished, then 0b `completed`) and nothing else.
-- **(g) Leak scan:** `scan_leaks.py` reports 0 over the merge-gate targets, run by the orchestrator once the
-  PR body and Codex dispositions are final and again after any later PR edit; a clean real-shaped report
-  passes.
-- **(h) Spend:** the 16A-2 ledger total ≤ the approved amount; no call crossed the weekly cap without the
-  owner's approval of that figure.
-- **(i) Ledger:** D71 and D72 present; the non-empty critical-control list committed with its hash.
-
-### Tier-2
-- **Baseline:** family strict@6 (hybrid+rewrite, raw hybrid) on sealed, realistic and tuning v2 with Wilson
-  CIs and eligible denominators; scope confusion, gap recall; held-out v1 as regression; D54 class counts
-  (development). **Variance and power:** variance over R draws; achieved MDE at the retrieval-eligible
-  sealed count. Expectation (9 Oct, exact test, 80% power, α = 0.05, K = 1): N = 36 → MDE ≈ 0.26 at
-  discordance 0.3, 0.34 at 0.5, none at 0.2; N = 50 → 0.22, 0.29 (≥ 50 sealed families ≈ 35–37
-  eligible), stated in D68 as the honest power constraint. **PR:** aggregates and hashes, never sealed ids.
-
-### Stop paths
-- **Negative branch (pre-approved; D57 and `docs/work-state.md` precedent).** If sealed v2 stays under 50
-  families, or another sealing target cannot be met as approved: do not seal; (e), (f) and the sealed parts
-  of (b), (c) are MOOT; commit tooling and non-private metadata only; D71 is the negative result (what fell
-  short, why); phase-gate with MOOT-marked criteria, Codex merge gate, PR headline = the result; merge and
-  tag `v2.4.0` under D64; then STOP and ping before 16B, whose confirmatory plan needs a sealed set.
-- **Spend:** a meter stop, or an estimate above the remaining cap not approved at OS-2, is a D64 spend ping;
-  meanwhile only offline work runs, and a deferred slot 0 leaves (f) unmet (no merge, no tag).
-- **Exposure and protocol:** sealed exposure retires the set (item 4); re-sealing, a change to the signed
-  core, the canonical v6 guard list or K_max, or an empty control list (16B's rule would be vacuous) is a D64
-  hard stop.
-
-### Gates
-1. **Plan gate:** plan-auditor + Codex `gpt-6.1-sol`, read-only, re-gate stopping rule.
-2. **16A-1:** implement → `/phase-gate 16A-1` → Codex merge review → PR, CI → merge, tag `v2.3.0` (D64).
-3. **16A-2:** steps 1–6 → OS-2 → steps 8–11 → `/phase-gate 16A-2` → Codex merge review on code and
-   committed metadata only (`eval/private/` in `restricted_read` and the do-not-read clause) → PR, CI →
-   merge, tag `v2.4.0` (D64), only if every Tier-1 criterion passed or the negative branch applies.
-
-### Ledger (from D65)
-D65 privacy and output control · D66 schema v2, scoring, report/canonical v6 · D67 pool, split, sealing,
-slots · D68 signed core, slot ledger, statistics, rules, frozen expansions (OS-2 addendum: core sha256 and
-signing commit) · D69 C4, item 9, spend meter · D70 absorbed map · D71 data v2 · D72 re-baseline.
-
-### Plan-gate dispositions (Codex rounds 1–2, plan-auditor round 2; 9 Oct)
-Codex `gpt-6.1-sol` r1 on `425bdcc`: REVISE (4 BLOCKER / 11 MAJOR / 1 MINOR); r2 on `5513715`: REVISE (2 /
-7 / 3, and 5 r1 findings not closed); plan-auditor on `5513715`: FAIL (2 / 18 / 9). Each finding was checked
-against the plan and cited code; Durkalski was recomputed in stdlib Python. "Item" = 16A-1 work item,
-"step" = 16A-2 step, a letter = a Tier-1 criterion of the half named.
-
-| Source | # | Sev. | Disposition | Where (v3) |
+| Source | # | Severity | Disposition | Where (v4) |
 |---|---|---|---|---|
-| Codex r1 | 1, 8, 12, 16 | BLOCKER, MAJOR ×2, MINOR | Closed in r2; kept | Sealed-output rule, item 1 serialiser, 16A-1 (b2); item 5 populations; item 3, (f); evidence block |
-| Codex r1 | 2, 3, 7, 9, 10 | BLOCKER ×2, MAJOR ×3 | Not closed in r2 → ACCEPTED as r2 #4, #2, #7, #6 (modified), #8 | See those rows |
-| Codex r1 | 4, 5, 6, 11, 13, 14, 15 | BLOCKER, MAJOR ×6 | Closed in r2; each extended in v3 by, respectively, auditor #22 (out-of-tree reservation), #28 (merged negative branch, private data still local), Codex r2 #10 (digest), auditor #1 (control rule), r2 #11 (interface), auditor #8 (held-out branch), auditor #2 (meter) | See those rows |
-| Codex r2 | 1 | BLOCKER | ACCEPTED: immutable signed core + sig; separate append-only `eval/slots.toml` citing the core hash | Item 5; 16A-1 (i) |
-| Codex r2 | 2 | BLOCKER | ACCEPTED by redesign: no row index; public only by registered path + sha256 or all-public input hashes; marker → sealed anywhere; stripped header → private | Item 1 `classify`; 16A-1 (c) |
-| Codex r2 | 3 | MAJOR | ACCEPTED: no sealed index exists; sealed diagnostics only under `eval/private/sealed/diagnostics/`, counts out | Items 1, 2; 16A-1 (g) |
-| Codex r2 | 4 | MAJOR | ACCEPTED: whole-question needles never exempt; fully exempt questions flagged or made ineligible; promise stated (≥ 8 tokens or whole question; shorter fragments prevented by the serialiser) | Item 1 scanner; step 3; 16A-1 (b) |
-| Codex r2 | 5 | MAJOR | ACCEPTED, modified: S-needles scan templated sealed outputs only; repo-wide scans use Q-needles (`3.2.1` at `chunker.py:202`) | Item 1 scanner; 16A-2 (g) |
-| Codex r2 | 6 | MAJOR | ACCEPTED, modified: one confirmatory batch per epoch, declared before any confirmatory slot; later ideas exploratory or a new epoch; slot-0 aggregates disclosed as residual | Item 5 candidate rule; 16A-1 (i) |
-| Codex r2 | 7 | MAJOR | ACCEPTED: d_k = (b_k − c_k)/m_k; χ² = 1.6, p = 0.2059032107 (recomputed) | Item 5; 16A-1 (j) |
-| Codex r2 | 8 | MAJOR | ACCEPTED: v6 rewrite guard met live or by verified replay of an artifact whose build met it; expansion identity per slot declaration; v5 unchanged | Items 3, 5, 6; 16A-1 (k), (k2) |
-| Codex r2 | 9 | MAJOR | ACCEPTED: 0b rebuilds the artifact; fsynced `stored`/`publishing` states; canonical decided before publishing; spend checked | Items 4, 5; step 10; 16A-1 (i) |
-| Codex r2 | 10, 11, 12 | MINOR ×3 | ACCEPTED: (10) digest over the complete canonical family records; (11) ordered `(chunk_id, section)`, aliases share rank, trimmed spans; (12) `show_unverified=False` stated | Item 4, 16A-1 (h); items 3, 7; item 3 `observed_scope` |
-| Auditor r2 | 1 | BLOCKER | ACCEPTED: signed selection rule; list computed on final labels after the step 10 baseline, committed with its hash before 16B | Item 5; step 10; 16A-2 (i) |
-| Auditor r2 | 2 | BLOCKER | ACCEPTED: spend meter built and tested in 16A-1; a stop is a declared D64 trigger | Item 8; 16A-1 (m); header |
-| Auditor r2 | 3, 5 | MAJOR | ACCEPTED (= Codex r2 #8 and #1) | Items 3, 5 |
-| Auditor r2 | 4 | MAJOR | ACCEPTED: `candidate:` expansion declaration; candidate live vs incumbent replay | Items 5, 6; 16A-1 (k) |
-| Auditor r2 | 6 | MAJOR | ACCEPTED: explicit `privacy` in the library; tests pass `"public"`; H0 lock must pass; AST test | Item 1; 16A-1 (a), (c) |
-| Auditor r2 | 7 | MAJOR | ACCEPTED: public by registered path + sha256, unaffected by migrated copies; migrated rows `source: legacy`, not needles | Item 1; item 4 `migrate` |
-| Auditor r2 | 8 | MAJOR | ACCEPTED: synthetic `held-out`-labelled set and a canonical-shaped run in P0 | P0; 16A-1 (d) |
-| Auditor r2 | 9 | MAJOR | ACCEPTED: development artifact built live on final labels in step 10, keyed so label changes never invalidate it | Item 5; step 10 |
-| Auditor r2 | 10 | MAJOR | ACCEPTED: new families are born marked in `eval/private/sealed/pool/` | Steps 2–4; item 4 |
-| Auditor r2 | 11 | MAJOR | ACCEPTED: subagents draft, check, dedup and paraphrase sealed data with counts-only replies; the orchestrator never reads it; caveat in D71 | 16A-2 blindness; steps 2–4 |
-| Auditor r2 | 12 | MAJOR | ACCEPTED: dispatch prohibition; store-access stamp + audit-log window check as the data source; instruction-enforced residual disclosed | Item 1 stamp; step 2; D65 |
-| Auditor r2 | 13 | MAJOR | ACCEPTED: dedup against all development, held-out v1 and regression scenarios | Step 3 |
-| Auditor r2 | 14 | MAJOR | ACCEPTED: trusted scanner loads its own needles; S-needle scope; clean-report criterion; an abort never consumes a slot | Item 1 scanner; 16A-1 (i); 16A-2 (g) |
-| Auditor r2 | 15 | MAJOR | ACCEPTED: colleague round-trip inside OS-2, 7-day default deadline, demotion fallback (no resolver needed) | OS-1 Q5; steps 7–8 |
-| Auditor r2 | 16 | MAJOR | ACCEPTED: seed committed before split; private assignments; demotion log replayed by `verify`; band fallback after attrition | Item 4; step 8; 16A-1 (h) |
-| Auditor r2 | 17 | MAJOR | ACCEPTED: source mix is an owner question with a stated default; "settled at the plan gate" removed | OS-1 Q2–Q4; D71 |
-| Auditor r2 | 18 | MAJOR | ACCEPTED: OS-1 blocks 16A-2; manifest incl. `codex_clause` checked | Header; 16A-2 (a) |
-| Auditor r2 | 19 | MAJOR | ACCEPTED: commit messages, tags, PR body, comments and review comments scanned, re-run after edits; D71 cites flagged items by id and outcome only | Item 1 scanner; step 11; 16A-2 (g) |
-| Auditor r2 | 20 | MAJOR | ACCEPTED: `owner_status` + `second_status`; "required" defined; κ with raw agreement and PABAK; phrasings validated | Item 2; steps 7–8; 16A-2 (c) |
-| Auditor r2 | 21, 22, 24 | MINOR ×3 | ACCEPTED: (21) sealed totals only, no strata committed; (22) out-of-tree `O_EXCL` reservation; (24) drafts carry `draft_key`/`draft_family`, `migrate` and `pool` issue ids | Item 4; 16A-1 (h), (i) |
-| Auditor r2 | 23, 25 | MINOR ×2 | ACCEPTED: (23) the `src/text_utils.py` move is item 3's first commit; (25) every absorbed-map key must exist in the production index | Items 3, 7; 16A-1 (l), (n) |
-| Auditor r2 | 26, 27 | MINOR ×2 | ACCEPTED: (26) [W] work uses synthetic data only, real-row checks and the heldout sha256 are [C]; (27) `--legacy-public` for hashes in `eval/legacy_public.json`, frozen at the 16A-1 merge | Lanes; item 1 `classify` (6); 16A-1 (d), (e) |
-| Auditor r2 | 28, 29 | MINOR ×2 | ACCEPTED: (28) the negative result is a merged deliverable, PR headline = result; (29) canonical decided before `publishing`, non-canonical → `failed` unpublished → 0b eligible | Stop paths; item 4 states; 16A-1 (i) |
-
-No finding was rebutted. Two directions were adjusted on evidence: only `pipeline query` writes the audit
-log (`src/pipeline.py:196–255`), hence the store-access stamp; and section ids and legal terms occur in
-tracked code (`src/chunker.py:202`), hence S-needles scan templated sealed outputs, not the repository.
+| Cx r1 | 1 | BLOCKER | DEFERRED-16A-2 | P4 sealed rendering; 16A-1 refuses sealed input, (c) |
+| Cx r1 | 2 | BLOCKER | FIXED | Item 1 serialiser, destinations, scanner; (b), (i) |
+| Cx r1 | 3 | BLOCKER | FIXED | Item 1 `classify` (2), (5), (7), sealed refusal; (c) |
+| Cx r1 | 4 | MAJOR | DEFERRED-16A-2 | P5 |
+| Cx r1 | 5 | BLOCKER | DEFERRED-16A-2 | P8 (closed in r2; carried as a constraint) |
+| Cx r1 | 6 | MAJOR | FIXED | Item 4 `split_families` (eligibility, units, twins); (h); pool → P2 |
+| Cx r1 | 7 | MAJOR | FIXED | Item 4 stats; (j) |
+| Cx r1 | 8 | MAJOR | FIXED | Item 4 power and MDE inputs; item 3 eligible denominators; (j) |
+| Cx r1 | 9 | MAJOR | DEFERRED-16A-2 | P5 |
+| Cx r1 | 10 | MAJOR | FIXED | Item 5 artifact; item 4 variance summary; (k2); draws → P6 |
+| Cx r1 | 11 | MAJOR | FIXED | Item 6 exact coverage, `--controls`; (k) |
+| Cx r1 | 12 | MAJOR | FIXED | Item 3 `observed_scope`, `score_partial`; (f) |
+| Cx r1 | 13 | MAJOR | FIXED | Item 7; (l) |
+| Cx r1 | 14 | MAJOR | FIXED | P0; item 3 v5 compatibility; (d) |
+| Cx r1 | 15 | MAJOR | FIXED | Item 8 ceiling and D64 stop; (m); re-epoch → P5, estimate → P8 |
+| Cx r1 | 16 | MINOR | FIXED | Evidence block |
+| Cx r2 | 1 | BLOCKER | DEFERRED-16A-2 | P5 |
+| Cx r2 | 2 | BLOCKER | FIXED | Item 1 registry, `classify`, floor; (c) |
+| Cx r2 | 3 | MAJOR | DEFERRED-16A-2 | P4; 16A-1 has no sealed diagnostics, (g) |
+| Cx r2 | 4 | MAJOR | FIXED | Item 1 scanner; (i) |
+| Cx r2 | 5 | MAJOR | FIXED | Item 1 scanner (Q-needles only); S-needles → P4 |
+| Cx r2 | 6 | MAJOR | DEFERRED-16A-2 | P5 |
+| Cx r2 | 7 | MAJOR | FIXED | (j) |
+| Cx r2 | 8 | MAJOR | FIXED | Items 3, 5, 6 (v5 live guard kept, replay non-canonical, `--rewrite-candidate`); (d), (k), (k2); v6 → P7 |
+| Cx r2 | 9 | MAJOR | DEFERRED-16A-2 | P5 |
+| Cx r2 | 10 | MINOR | DEFERRED-16A-2 | P2 |
+| Cx r2 | 11 | MINOR | FIXED | Items 3, 7; (e), (l) |
+| Cx r2 | 12 | MINOR | FIXED | Item 3 `observed_scope` |
+| Cx r3 | 1 | BLOCKER | FIXED | Item 8 locked reserve/settle, `max_retries=0` + metered retries; (m) |
+| Cx r3 | 2 | MAJOR | FIXED | Item 8 `SpendLimitReached`; (m) |
+| Cx r3 | 3 | MAJOR | FIXED | Item 1 privacy floor; (c) |
+| Cx r3 | 4 | MAJOR | FIXED | Item 1 scanner (exact-hash exemption, decoding, promise); (i) |
+| Cx r3 | 5 | MAJOR | DEFERRED-16A-2 | P1 (store-access stamp moved out of 16A-1) |
+| Cx r3 | 6 | MAJOR | DEFERRED-16A-2 | P6 |
+| Cx r3 | 7 | MAJOR | DEFERRED-16A-2 | P5 |
+| Cx r3 | 8 | MAJOR | FIXED | OS-1 Q1 (`--refresh`; `harness-doctor` drift check) |
+| Cx r3 | 9 | MAJOR | DEFERRED-16A-2 | P3 |
+| Cx r3 | 10 | MAJOR | DEFERRED-16A-2 | P3 |
+| Cx r3 | 11 | MAJOR | DEFERRED-16A-2 | P8 |
+| Cx r3 | 12 | MINOR | DEFERRED-16A-2 | P5 |
+| Cx r3 | 13 | MINOR | DEFERRED-16A-2 | P5 (v3's table claim withdrawn) |
+| Au r2 | 1 | BLOCKER | DEFERRED-16A-2 | P6 |
+| Au r2 | 2 | BLOCKER | FIXED | Item 8; (m) |
+| Au r2 | 3 | MAJOR | DEFERRED-16A-2 | P7 (v5's live guard is unchanged in 16A-1) |
+| Au r2 | 4 | MAJOR | FIXED | Item 6 `--rewrite-candidate`; (k) |
+| Au r2 | 5 | MAJOR | DEFERRED-16A-2 | P5 |
+| Au r2 | 6 | MAJOR | FIXED | Item 1 floor, tests-only registration; (a), (c) |
+| Au r2 | 7 | MAJOR | FIXED | Item 1 `classify` (4): public by registered path + sha256 |
+| Au r2 | 8 | MAJOR | FIXED | P0; (d) |
+| Au r2 | 9 | MAJOR | DEFERRED-16A-2 | P6 (the builder is item 5) |
+| Au r2 | 10 | MAJOR | DEFERRED-16A-2 | P4 |
+| Au r2 | 11 | MAJOR | DEFERRED-16A-2 | P1 |
+| Au r2 | 12 | MAJOR | DEFERRED-16A-2 | P1 |
+| Au r2 | 13 | MAJOR | DEFERRED-16A-2 | P2 |
+| Au r2 | 14 | MAJOR | FIXED | Item 1 scanner (explicit sources, Q-needles only); (i) clean report |
+| Au r2 | 15 | MAJOR | DEFERRED-16A-2 | P3; OS-1 Q5 |
+| Au r2 | 16 | MAJOR | DEFERRED-16A-2 | P2, P3 |
+| Au r2 | 17 | MAJOR | DEFERRED-16A-2 | P2; OS-1 Q2–Q4 |
+| Au r2 | 18 | MAJOR | FIXED | OS-1 Q1; ordering rule (no private data before 16A-2's gate) |
+| Au r2 | 19 | MAJOR | FIXED | Item 1 `--merge-gate` targets; (i); D-entry wording → P4 |
+| Au r2 | 20 | MAJOR | DEFERRED-16A-2 | P3 |
+| Au r2 | 21 | MINOR | DEFERRED-16A-2 | P4 |
+| Au r2 | 22 | MINOR | DEFERRED-16A-2 | P5 |
+| Au r2 | 23 | MINOR | FIXED | Item 3 first commit; (n) |
+| Au r2 | 24 | MINOR | DEFERRED-16A-2 | P2 |
+| Au r2 | 25 | MINOR | FIXED | Item 7; (l) |
+| Au r2 | 26 | MINOR | FIXED | Lanes; real-row checks and the heldout sha256 are [C] |
+| Au r2 | 27 | MINOR | FIXED | Item 1 `classify` (6) |
+| Au r2 | 28 | MINOR | DEFERRED-16A-2 | P8 |
+| Au r2 | 29 | MINOR | DEFERRED-16A-2 | P5 |
+| Au r3 | 1 | BLOCKER | FIXED | Item 4 `twins` contract (every batch pair covered); (h); producing edges → P2 |
+| Au r3 | 2 | MAJOR | DEFERRED-16A-2 | P3 |
+| Au r3 | 3 | MAJOR | DEFERRED-16A-2 | P3; OS-1 Q3, Q5 |
+| Au r3 | 4 | MAJOR | DEFERRED-16A-2 | P6 |
+| Au r3 | 5 | MAJOR | DEFERRED-16A-2 | P6 |
+| Au r3 | 6 | MAJOR | FIXED | Item 1 marker scope, explicit needle sources, fixtures registered `fixture`; (c), (i) |
+| Au r3 | 7 | MAJOR | FIXED | Item 1 hit report (private needles); sealed hits → P4 |
+| Au r3 | 8 | MAJOR | DEFERRED-16A-2 | P5 |
+| Au r3 | 9 | MAJOR | FIXED | Item 8 `SpendLimitReached`; (m) |
+| Au r3 | 10 | MAJOR | FIXED | Item 8 wiring, eval only; (m) |
+| Au r3 | 11 | MAJOR | FIXED | Item 1 range blobs, pre-push rule, incident stop; (i); residual in D65 |
+| Au r3 | 12 | MAJOR | DEFERRED-16A-2 | P3 (item 2 leaves the rule unnarrowed) |
+| Au r3 | 13 | MAJOR | DEFERRED-16A-2 | P1 |
+| Au r3 | 14 | MAJOR | FIXED | Item 1 Q-needles (short question = whole needle only); (i); eligibility → P1 |
+| Au r3 | 15 | MAJOR | FIXED | Item 2 inventory check, item 7 inventory; (g), (l); applied to new labels → P2 |
+| Au r3 | 16 | MAJOR | FIXED | Item 3 `is_gap_statement`; (f) |
+| Au r3 | 17 | MAJOR | DEFERRED-16A-2 | P7 (in 16A-1 no v6 run writes `eval/results.md`, (d)) |
+| Au r3 | 18 | MAJOR | FIXED | Item 8 ledger redirect and guard; (m); slot state → P5 |
+| Au r3 | 19 | MINOR | FIXED | P0 |
+| Au r3 | 20 | MINOR | FIXED | Item 4 `preassigned`, `min_share`; (h); values → P2 |
+| Au r3 | 21 | MINOR | DEFERRED-16A-2 | P2, P5 |
+| Au r3 | 22 | MINOR | DEFERRED-16A-2 | P2 |
+| Au r3 | 23 | MINOR | DEFERRED-16A-2 | P4 |
+| Au r3 | 24 | MINOR | FIXED | Item 8 (`max_retries=0`, out-of-tree ledger); (m) |
+| Au r3 | 25 | MINOR | FIXED | (j) both sidednesses, α = 0.0125; Tier-2 MDE and D57 threshold → P8 |
+| Au r3 | 26 | MINOR | FIXED | No unmarking or trusted processors in 16A-1; complete refusal list; one lane per item |
+| Au r3 | 27 | MINOR | FIXED | Item 6 (item 9 is [C]) |
+| Au r3 | 28 | MINOR | FIXED | Item 7, D69 rationale |
+| Au r3 | 29 | MINOR | FIXED | OS-1 Q6 (D64 hard stop) |
+| Au r3 | 30 | MINOR | DEFERRED-16A-2 | P7 |
+| Au r3 | 31 | MINOR | DEFERRED-16A-2 | P1 |
 
 ## Cut list (v2)
 
