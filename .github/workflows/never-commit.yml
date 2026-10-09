@@ -1,0 +1,36 @@
+name: never-commit
+
+# Server-side backstop for CLAUDE.md's hard rule (the repo is public; the corpus is copyrighted):
+# fail if the tree, or any commit in the pushed / PR range, adds data/, a PDF, .env, a Chroma index,
+# bake-off artefacts, logs, tutorial documents or the judge review dump. Runs on pushes to EVERY branch
+# (a push to any branch of a public repo publishes it) and is a required status check on main.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  never-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check never-commit paths
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then
+            python scripts/check_never_commit.py --range "$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            python scripts/check_never_commit.py --range "$BEFORE..HEAD"
+          else
+            python scripts/check_never_commit.py --range HEAD
+          fi

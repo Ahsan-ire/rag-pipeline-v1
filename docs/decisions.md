@@ -6,7 +6,7 @@
 
 **Current phase: integrity hotfix H (`integrity-hotfix` → v2.2.1, D62), then the global harness (Track B) and Phase 16A — see docs/designs/003-roadmap-and-next-actions.md**
 
-**Next: D63** (D60 is reserved for the third-party lane / global harness decision; D61 and D62 landed).  (Update this line in the same commit as each new entry.)
+**Next: D64** (D60 is reserved for the third-party lane / global harness decision; D61–D63 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1844,4 +1844,12 @@ instrument is binding.
 - A `--mode` flag. Research mode's CLI shape is Phase 19.
 - Downgrading outcomes on uncited text without an entailment check.
 - Retrying on a terminal status, which would hide model behaviour from the eval.
+
+## D63 — Server-side never-commit check, required on `main` (9 Oct 2026)
+**Decision:** a `never-commit` GitHub Actions workflow (`scripts/check_never_commit.py`) runs on every push to every branch and on every PR, and is a required status check on `main`. It fails if the tree, or any commit in the pushed/PR range, adds a path the hard rules forbid: `data/`, any PDF, `.env*` (except `.env.example`), the Chroma indexes, `eval/bakeoff/`, `logs/`, `Tutorial_Docs_for_review/`, or `eval/judge_review.jsonl`. It uses stdlib only, and the full history passes today.
+**Why:** the global harness's git hooks are client-side and can be bypassed by anyone with write access (its residual R25). The repo is public and the corpus is copyrighted, so the content rule needs a check that runs on GitHub. Branch protection (no force-push, no deletion) does not inspect content.
+**Limits:** it detects a bad push to a non-`main` branch after the push has happened, so the branch is already public. The required check stops the content reaching `main`. GitHub push rulesets (`Restrict file paths`), which would reject the push itself, are documented for private/internal repositories on paid plans, not public repos on Free.
+**Rejected:**
+- Relying on client-side hooks alone.
+- GitHub secret scanning alone: it does not recognise corpus files.
 
