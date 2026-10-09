@@ -28,3 +28,4 @@ sample_chroma_db/
 # non-canonical (expansion disabled) and stay untracked.
 chroma_db_arm_*/
 eval/bakeoff/
+.harness/runs/
