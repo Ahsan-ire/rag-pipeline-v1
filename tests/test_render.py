@@ -23,6 +23,7 @@ from src.grounding import (
     UNKNOWN_STATUS_NOTICE,
     WITHHELD_NOTICES,
 )
+from scripts.sample_corpus import TITLE as SAMPLE_TITLE
 from src.pipeline import query
 from src.query_rewrite import REWRITE_MODEL, STATUS_DISABLED, Expansion
 from src.render import (
@@ -191,12 +192,12 @@ class TestSourceLabel:
 
     def test_legislation_and_sample_index_fixtures(self):
         leg = _doc("77", 1, 1, "Succession_Act_1965.html")
-        sample = _doc("1.1", 1, 1, "sample_handbook.txt")
+        sample = _doc("1.1", 1, 1, f"{SAMPLE_TITLE}.txt")
         titles = source_titles(
             {"grounded": [_cite("77", "1"), _cite("1.1", "1")], "ungrounded": []},
             _retrieved(leg, sample),
         )
-        assert titles == ["Succession Act 1965", "sample handbook"]
+        assert titles == ["Sample Conveyancing Handbook", "Succession Act 1965"]
 
     def test_chunk_without_title_adds_nothing(self):
         titles = source_titles(
@@ -405,6 +406,20 @@ def test_blocked_public_result_follows_allowlist():
     assert pub["citations"] == res["citations"]
 
 
+def test_explicit_none_status_is_unknown_and_shows_notice():
+    res = _result(CITED, CITATIONS_VERIFIED, status=None, grounded=[_cite()])
+    r = render(res, RenderFlags(retrieved=_retrieved(_doc())))
+    assert UNKNOWN_STATUS_NOTICE in r.display_text
+    assert r.public_result["generation_status"] == "unknown"
+    assert r.action == "shown"
+
+
+def test_legacy_path_with_none_status_never_shows_unknown_notice():
+    res = _result("Claim.", None, status=None)
+    r = render(res, RenderFlags())
+    assert UNKNOWN_STATUS_NOTICE not in r.display_text
+
+
 def test_terminal_beats_refusal_sentence_and_override():
     res = _result(REFUSAL_PHRASE, REFUSAL, status="truncated")
     r = render(res, RenderFlags(show_unverified=True))
@@ -461,24 +476,59 @@ class TestQueryLeaksAndAudit:
         assert events[0]["action"] == TERMINAL_ACTIONS[TERMINALS[status]]
         assert events[0]["generation_status"] == status
         assert events[0]["stop_reason"] == "max_tokens"
-        assert events[0]["uncited_count"] == 0
+        assert events[0]["uncited_count"] is None  # not computed -> null
+        # The audit length is the DRAFT's, not the (shorter) withheld notice's.
+        assert events[0]["answer_chars"] == len(gen["answer"])
+        assert events[0]["answer_chars"] != len(out_dict["answer"])
 
     @pytest.mark.parametrize("raw_queries", [False, True])
-    @pytest.mark.parametrize("show_unverified", [False, True])
-    def test_shown_outcomes_never_put_text_in_audit(self, monkeypatch, show_unverified, raw_queries):
+    @pytest.mark.parametrize(
+        "case", ["verified", "partial", "override", "refusal"]
+    )
+    def test_shown_outcomes_never_put_text_in_audit(self, monkeypatch, case, raw_queries):
         if raw_queries:
             monkeypatch.setenv("AUDIT_LOG_RAW_QUERIES", "1")
-        gen = _result(
-            f"{CITED} {SENTINEL_UNCITED}", CITATIONS_VERIFIED, grounded=[_cite()]
-        )
-        pub = self._run(gen, show_unverified=show_unverified)
+        draft = f"{CITED} {SENTINEL_UNCITED} {SENTINEL_DRAFT}"
+        kw = {}
+        if case == "verified":
+            gen = _result(draft, CITATIONS_VERIFIED, grounded=[_cite()])
+            action = "shown"
+        elif case == "partial":
+            gen = _result(
+                draft, PARTIALLY_VERIFIED,
+                grounded=[_cite()], ungrounded=[_cite("7.7", "70")],
+            )
+            action = "shown_with_warning"
+        elif case == "override":
+            gen = _result(draft, CITATIONS_UNVERIFIED)
+            kw["show_unverified"] = True
+            action = "shown_unverified_override"
+        else:
+            draft = f"{REFUSAL_PHRASE} SENTINELDRAFT SENTINELUNCITED"
+            gen = _result(draft, REFUSAL)
+            action = "refusal_shown"
+        # The fixture really contains the sentinels the audit must not carry.
+        assert "SENTINELDRAFT" in gen["answer"] and "SENTINELUNCITED" in gen["answer"]
+        pub = self._run(gen, **kw)
         audit = self.log.read_text()
         assert "SENTINELUNCITED" not in audit and "SENTINELDRAFT" not in audit
         assert "Conveyancing" not in audit  # titles are display-only too
         ev = self._events()[0]
-        assert ev["action"] == "shown"
-        assert ev["uncited_count"] == 1 == pub["uncited_count"]
+        assert ev["action"] == action
+        assert ev["answer_chars"] == len(draft)
+        if case == "refusal":
+            assert ev["uncited_count"] is None and pub["uncited_count"] is None
+        else:
+            assert isinstance(ev["uncited_count"], int) and ev["uncited_count"] >= 1
+            assert ev["uncited_count"] == pub["uncited_count"]
         assert ev["generation_status"] == "complete" and ev["stop_reason"] == "end_turn"
+
+    def test_blocked_audit_answer_chars_is_draft_length(self):
+        gen = _result(SENTINEL_DRAFT, CITATIONS_UNVERIFIED, ungrounded=[_cite("7.7", "70")])
+        pub = self._run(gen)
+        ev = self._events()[0]
+        assert ev["answer_chars"] == len(SENTINEL_DRAFT) != len(pub["answer"])
+        assert pub["answer_chars"] == len(SENTINEL_DRAFT)
 
     def test_blocked_default_does_not_leak_stdout_or_return(self, capsys):
         gen = _result(SENTINEL_DRAFT, CITATIONS_UNVERIFIED, ungrounded=[_cite("7.7", "70")])
@@ -486,7 +536,7 @@ class TestQueryLeaksAndAudit:
         assert "SENTINELDRAFT" not in capsys.readouterr().out
         assert "SENTINELDRAFT" not in json.dumps(out_dict, default=str)
         assert self._events()[0]["action"] == "blocked_unverified"
-        assert self._events()[0]["uncited_count"] == 0
+        assert self._events()[0]["uncited_count"] is None
 
     def test_override_audit_counts_uncited_without_text(self, capsys):
         gen = _result(
@@ -508,7 +558,7 @@ class TestQueryLeaksAndAudit:
         ev = self._events()[0]
         assert ev["action"] == "no_results"
         assert ev["generation_status"] == "not_run"
-        assert ev["stop_reason"] is None and ev["uncited_count"] == 0
+        assert ev["stop_reason"] is None and ev["uncited_count"] is None
         assert ev["answer_chars"] == 0
 
     def test_refusal_and_legacy_audit_values(self):
@@ -518,7 +568,8 @@ class TestQueryLeaksAndAudit:
         del legacy["generation_status"]
         self._run(legacy)
         refusal_ev, legacy_ev = self._events()
-        assert refusal_ev["action"] == "refusal_shown" and refusal_ev["uncited_count"] == 0
+        assert refusal_ev["action"] == "refusal_shown" and refusal_ev["uncited_count"] is None
+        assert legacy_ev["uncited_count"] is None
         assert legacy_ev["action"] == "shown"
         assert legacy_ev["generation_status"] == "unknown"
         assert legacy_ev["gate_outcome"] is None

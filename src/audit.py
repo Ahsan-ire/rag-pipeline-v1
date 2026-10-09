@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.grounding import STATUS_UNKNOWN
+
 DEFAULT_LOG_PATH = Path("logs/audit_log.jsonl")
 
 # Action vocabulary: what pipeline.query actually did with the answer. Owned
@@ -97,8 +99,8 @@ def build_event(
     rewrite_status: Optional[str] = None,
     intent_rewrite: Optional[str] = None,
     stop_reason: Optional[str] = None,
-    generation_status: str = "unknown",
-    uncited_count: int = 0,
+    generation_status: str = STATUS_UNKNOWN,
+    uncited_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build one audit record for a single query/answer cycle.
 
@@ -134,8 +136,8 @@ def build_event(
             when generation never ran.
         generation_status: ``complete`` / ``truncated`` / ``declined`` /
             ``incomplete`` / ``unknown``, or ``not_run`` on the no-results path.
-        uncited_count: Count of H2 uncited-statement flags, ``0`` when the hint
-            was not computed. The count only: the sentences are never logged.
+        uncited_count: Count of H2 uncited-statement flags, ``None`` (null in
+            the record) when the hint was not computed. The count only: the sentences are never logged.
 
     Returns:
         A JSON-serializable dict with exactly the keys documented in the

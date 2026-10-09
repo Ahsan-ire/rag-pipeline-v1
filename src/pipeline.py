@@ -10,6 +10,7 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
+from src import grounding
 from src.audit import build_event, log_event
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import (
@@ -205,8 +206,8 @@ def _write_audit(
     answer: str,
     expansion: Optional[Expansion] = None,
     stop_reason: Optional[str] = None,
-    generation_status: str = "unknown",
-    uncited_count: int = 0,
+    generation_status: str = grounding.STATUS_UNKNOWN,
+    uncited_count: Optional[int] = None,
 ) -> None:
     """Build and append exactly one audit event, tolerating log failures.
 
@@ -381,7 +382,7 @@ def query(
     # One audit event per query, after the display decision so `action` is
     # final. The REAL draft answer goes to build_event (it records only the
     # length, never the text — see src/audit.py). uncited_count is None in the
-    # public result when the hint was not computed; the audit records 0.
+    # public result when the hint was not computed; the audit records null too.
     _write_audit(
         question=question,
         top_k=top_k,
@@ -395,7 +396,7 @@ def query(
         expansion=expansion,
         stop_reason=public["stop_reason"],
         generation_status=public["generation_status"],
-        uncited_count=public["uncited_count"] or 0,
+        uncited_count=public["uncited_count"],
     )
     return public
 

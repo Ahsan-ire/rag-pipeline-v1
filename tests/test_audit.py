@@ -147,7 +147,7 @@ class TestBuildEventKeys:
         default = build_event(**kwargs)
         assert default["stop_reason"] is None
         assert default["generation_status"] == "unknown"
-        assert default["uncited_count"] == 0
+        assert default["uncited_count"] is None
         explicit = build_event(
             **kwargs, stop_reason="max_tokens", generation_status="truncated",
             uncited_count=3,

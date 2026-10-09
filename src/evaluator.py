@@ -51,6 +51,8 @@ from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
     INCOMPLETE_STATUSES,
+    STATUS_COMPLETE,
+    STATUS_INCOMPLETE,
     PARTIALLY_VERIFIED,
     REFUSAL,
     STATUS_ERROR,
@@ -473,6 +475,32 @@ def evaluate_retrieval(
     }
 
 
+_KNOWN_STATUSES = (
+    STATUS_COMPLETE,
+    *INCOMPLETE_STATUSES,
+    STATUS_UNKNOWN,
+    STATUS_ERROR,
+)
+
+
+def _refusal_disclosure_lines(ref: Optional[Dict[str, Any]]) -> List[str]:
+    """Report lines disclosing excluded (incomplete) and unknown-status refusal rows."""
+    lines: List[str] = []
+    if ref is not None and ref.get("generation_incomplete_total"):
+        inc = ref["generation_incomplete"]
+        lines.append(
+            f"- generation incomplete on refusal-type questions (excluded "
+            f"from the refusal denominator): {ref['generation_incomplete_total']} "
+            f"({', '.join(f'{st}={inc[st]}' for st in INCOMPLETE_STATUSES)})"
+        )
+    if ref is not None and ref.get("unknown"):
+        lines.append(
+            f"- refusal-type answers with unknown generation status: "
+            f"{ref['unknown']}"
+        )
+    return lines
+
+
 def _normalise_answer(res: Any) -> Tuple[str, str]:
     """Map one answer result to ``(text, generation_status)`` for every scorer.
 
@@ -480,12 +508,23 @@ def _normalise_answer(res: Any) -> Tuple[str, str]:
     carries ``answer`` and an optional ``generation_status`` (absent means
     ``unknown`` — missing metadata is never treated as complete); None (a
     generation that raised) is empty text with status ``error``.
+
+    Fails closed, consistent with ``grounding.generation_outcome``: a present
+    but None status is ``unknown``; a string outside the known vocabulary is
+    ``incomplete`` (so the row is excluded and counted, and blocks a canonical
+    run). A dict with no ``answer`` key raises ``KeyError`` (fail loud, as before
+    H): a malformed result must never be scored as an empty answer.
     """
     if res is None:
         return "", STATUS_ERROR
     if isinstance(res, str):
         return res, STATUS_UNKNOWN
-    return res.get("answer", ""), res.get("generation_status", STATUS_UNKNOWN)
+    status = res.get("generation_status", STATUS_UNKNOWN)
+    if status is None:
+        status = STATUS_UNKNOWN
+    elif status not in _KNOWN_STATUSES:
+        status = STATUS_INCOMPLETE
+    return res["answer"], status
 
 
 def _status_counts(statuses: Sequence[str]) -> Dict[str, int]:
@@ -1349,6 +1388,7 @@ def _format_report(
             f"Refusal accuracy: {refusals['refused']}/{refusals['total']} = "
             f"{refusals['accuracy']:.3f}"
         )
+        lines.extend(_refusal_disclosure_lines(refusals))
     lines.append("")
 
     lines.append("## Per-question detail")
@@ -1363,6 +1403,12 @@ def _format_report(
         )
     if refusals is not None:
         for q in refusals["per_question"]:
+            if q["refused"] is None:
+                lines.append(
+                    f"- [refusal] excluded ({q.get('generation_status')}) "
+                    f":: {q['question']}"
+                )
+                continue
             status = "refused" if q["refused"] else "answered"
             lines.append(f"- [refusal] {status} :: {q['question']}")
 
@@ -1936,7 +1982,7 @@ def run_eval_matrix(
         total_unknown += status_counts[STATUS_UNKNOWN]
         answer_chars = _answer_chars_stats(
             [
-                len(a["result"].get("answer", ""))
+                len(_normalise_answer(a["result"])[0])
                 for a in answers.values()
                 if a["result"] is not None
             ]
@@ -2394,18 +2440,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                 f"{ref['accuracy']:.3f} (95% CI {low:.3f}–{high:.3f}) "
                 f"| {ref['refused']}/{ref['total']} |"
             )
-        if ref is not None and ref.get("generation_incomplete_total"):
-            inc = ref["generation_incomplete"]
-            lines.append(
-                f"- generation incomplete on refusal-type questions (excluded "
-                f"from the refusal denominator): {ref['generation_incomplete_total']} "
-                f"({', '.join(f'{st}={inc[st]}' for st in INCOMPLETE_STATUSES)})"
-            )
-        if ref is not None and ref.get("unknown"):
-            lines.append(
-                f"- refusal-type answers with unknown generation status: "
-                f"{ref['unknown']}"
-            )
+        lines.extend(_refusal_disclosure_lines(ref))
         lines.append("")
         if comp is not None:
             lines.append("Answer quality on the answerable questions:")

@@ -42,6 +42,7 @@ from src.grounding import (
     MODEL_DECLINED,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    STATUS_NOT_RUN,
     STATUS_UNKNOWN,
     TERMINAL_OUTCOMES,
     UNKNOWN_STATUS_NOTICE,
@@ -50,7 +51,6 @@ from src.grounding import (
 )
 
 NO_RESULTS_MESSAGE = "No relevant documents found. Please index some documents first."
-STATUS_NOT_RUN = "not_run"
 
 DISCLAIMER = (
     "Research aid — check the cited paragraphs; not legal advice; the source "
@@ -258,7 +258,8 @@ def render(result: Optional[Dict[str, Any]], flags: RenderFlags) -> Rendered:
     citation_check = result["citation_check"]
     ungrounded = citation_check["ungrounded"]
     # A result with no status (legacy mocks) is `unknown`.
-    status = result.get("generation_status", STATUS_UNKNOWN)
+    # An explicit None status is also `unknown` (fail closed, as in the evaluator).
+    status = result.get("generation_status", STATUS_UNKNOWN) or STATUS_UNKNOWN
     # H1b: a terminal status wins over any gate outcome, even a supplied one.
     outcome = generation_outcome(status) or result.get("gate_outcome")
 

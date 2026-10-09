@@ -3215,6 +3215,69 @@ class TestNormaliseAnswer:
     def test_none_is_error(self):
         assert _normalise_answer(None) == ("", "error")
 
+    def test_present_but_none_status_is_unknown(self):
+        assert _normalise_answer({"answer": "a", "generation_status": None}) == (
+            "a",
+            "unknown",
+        )
+
+    @pytest.mark.parametrize("bogus", ["bogus", "", "COMPLETE", 3])
+    def test_unrecognised_status_fails_closed_to_incomplete(self, bogus):
+        assert _normalise_answer({"answer": "a", "generation_status": bogus}) == (
+            "a",
+            "incomplete",
+        )
+
+    @pytest.mark.parametrize(
+        "st", ["complete", "truncated", "declined", "incomplete", "unknown", "error"]
+    )
+    def test_known_statuses_pass_through(self, st):
+        assert _normalise_answer({"answer": "a", "generation_status": st})[1] == st
+
+    def test_dict_without_answer_fails_loud(self):
+        with pytest.raises(KeyError):
+            _normalise_answer({"generation_status": "complete"})
+
+
+class TestLegacyReportExclusions:
+    """H1c: the legacy run_eval report discloses rows excluded from refusal accuracy."""
+
+    def test_excluded_row_printed_and_disclosed(self, tmp_path):
+        golden = _matrix_golden(
+            tmp_path,
+            "g.jsonl",
+            [
+                {"question": "D1", "type": "direct", "expected_sections": ["14.8.5"]},
+                {"question": "R1", "type": "refusal", "expected_sections": []},
+                {"question": "R2", "type": "refusal", "expected_sections": []},
+                {"question": "R3", "type": "refusal", "expected_sections": []},
+            ],
+        )
+
+        def fake_answer(question):
+            if question == "R1":
+                return {"answer": "cut off mid", "generation_status": "truncated"}
+            if question == "R2":
+                return {"answer": REFUSAL_PHRASE, "generation_status": "complete"}
+            return "legacy string answer"  # R3: status unknown
+
+        result = run_eval(
+            golden,
+            results_path=str(tmp_path / "r.md"),
+            retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
+            answer_fn=fake_answer,
+            provenance_fn=_fake_provenance,
+        )
+        report = (tmp_path / "r.md").read_text(encoding="utf-8")
+        assert "- [refusal] excluded (truncated) :: R1" in report
+        assert "- [refusal] answered :: R1" not in report
+        assert "- [refusal] refused :: R2" in report
+        assert "- [refusal] answered :: R3" in report
+        assert "Refusal accuracy: 1/2 = 0.500" in report
+        assert "generation incomplete on refusal-type questions" in report
+        assert "truncated=1, declined=0, incomplete=0" in report
+        assert "refusal-type answers with unknown generation status: 1" in report
+
 
 class TestGenerationStatusScorers:
     """H1c: incomplete rows are excluded from the refusal/completeness scorers."""
@@ -3446,6 +3509,66 @@ class TestGenerationStatusMatrix:
         assert result["generation_incomplete"] == 0
         report = open(partial, encoding="utf-8").read()
         assert "generation status unknown (no stop reason returned): 2" in report
+
+    def test_explicit_none_status_row_counts_as_unknown(self, tmp_path, monkeypatch):
+        base = self._gen_with()
+
+        def gen(question):
+            res = dict(base(question))
+            if question == "E1":
+                res["generation_status"] = None  # present-but-None, not absent
+            return res
+
+        result, _, partial = self._run(tmp_path, monkeypatch, gen)
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_unknown"] == 2
+        assert result["generation_incomplete"] == 0
+
+    def test_bogus_status_row_fails_closed_to_incomplete(self, tmp_path, monkeypatch):
+        result, _, partial = self._run(
+            tmp_path, monkeypatch, self._gen_with(E1="bogus")
+        )
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_incomplete_by_status"]["incomplete"] == 2
+        assert result["generation_unknown"] == 0
+
+    def test_malformed_result_without_answer_fails_loud(self, tmp_path, monkeypatch):
+        base = self._gen_with()
+
+        def gen(question):
+            res = dict(base(question))
+            if question == "E1":
+                del res["answer"]
+            return res
+
+        with pytest.raises(KeyError):
+            self._run(tmp_path, monkeypatch, gen)
+
+    def test_refusal_type_generation_error_stays_in_denominator(self, tmp_path, monkeypatch):
+        # Main's documented conservative behaviour (see run_eval_matrix's
+        # _answer_fn comment): an errored refusal-type row is scored "not
+        # refused" and stays in the denominator, so it can only deflate accuracy.
+        base = self._gen_with()
+
+        def gen(question):
+            if question == "R1":
+                raise RuntimeError("boom")
+            return base(question)
+
+        result, _, _ = self._run(tmp_path, monkeypatch, gen)
+        assert result["generation_errors"] == 2
+        assert result["generation_unknown"] == 0
+        assert result["is_canonical"] is False
+        for s in result["sets"]:
+            ref = s["refusals"]
+            assert (ref["total"], ref["refused"]) == (1, 0)
+            assert ref["unknown"] == 0
+            assert ref["generation_incomplete_total"] == 0
+            assert s["generation_errors"] == 1
+            assert s["generation_unknown"] == 0
+            assert s["refusal_detail"]["R1"]["generation_status"] == "error"
 
     def test_error_rows_are_errors_not_unknown(self, tmp_path, monkeypatch):
         base = self._gen_with()

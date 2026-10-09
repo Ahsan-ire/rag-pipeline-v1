@@ -40,6 +40,8 @@ STATUS_INCOMPLETE = "incomplete"
 STATUS_UNKNOWN = "unknown"
 STATUS_ERROR = "error"
 # Statuses where the model's output is not a finished, accepted answer.
+# Audit/public-result only: the no-results path never calls the model.
+STATUS_NOT_RUN = "not_run"
 INCOMPLETE_STATUSES = (STATUS_TRUNCATED, STATUS_DECLINED, STATUS_INCOMPLETE)
 
 _STOP_REASON_STATUS = {
