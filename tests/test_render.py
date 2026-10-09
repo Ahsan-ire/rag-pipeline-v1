@@ -192,7 +192,7 @@ class TestSourceLabel:
 
     def test_legislation_and_sample_index_fixtures(self):
         leg = _doc("77", 1, 1, "Succession_Act_1965.html")
-        sample = _doc("1.1", 1, 1, f"{SAMPLE_TITLE}.txt")
+        sample = _doc("1.1", 1, 1, SAMPLE_TITLE)  # the sample index stores no extension
         titles = source_titles(
             {"grounded": [_cite("77", "1"), _cite("1.1", "1")], "ungrounded": []},
             _retrieved(leg, sample),
@@ -432,6 +432,7 @@ def test_falsey_unrecognised_status_withholds_draft(status, outcome, override):
     assert r.public_result["answer"] == WITHHELD_NOTICES[GENERATION_INCOMPLETE]
     assert SENTINEL_DRAFT not in r.display_text
     assert SENTINEL_DRAFT not in json.dumps(r.public_result, default=str)
+    assert r.public_result["generation_status"] == "incomplete"  # closed vocabulary
 
 
 def test_terminal_beats_refusal_sentence_and_override():

@@ -849,7 +849,7 @@ class TestQuery:
         # only resolves each locator to a retrieved passage, and explicitly
         # disclaims verifying that the passage supports the claim.
         assert "resolve to a retrieved passage" in out
-        assert "does not verify the passage supports the claim" in out
+        assert "does not verify the exact paragraph or that the passage supports the claim" in out
         assert spy.call_args.args[0]["action"] == "shown"
 
     def test_refusal_outcome_shows_no_warnings(self, capsys):

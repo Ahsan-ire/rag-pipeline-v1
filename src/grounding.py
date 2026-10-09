@@ -1,7 +1,10 @@
 """Grounding gate: classify how well an answer's citations are verified.
 
-The gate names ONLY what the system actually VERIFIES — the answer's citation
-locators against the paragraphs/pages of the chunks that were retrieved. It says
+The gate names ONLY what the system actually VERIFIES — that each citation falls
+inside a retrieved chunk: the cited paragraph and the chunk's section are equal or
+one nests the other, and the cited page lies in the chunk's page span (see
+``generator._citation_matches_chunk``). It does not prove the exact paragraph
+exists, nor that the passage supports the claim. It says
 nothing about whether the underlying legal claims are correct; that is not
 something this pipeline can check. The outcome vocabulary is deliberately about
 *citation verification* ("VERIFIED"), never about legal validity, so a consumer

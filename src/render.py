@@ -39,9 +39,12 @@ from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
     GENERATION_INCOMPLETE,
+    INCOMPLETE_STATUSES,
     MODEL_DECLINED,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    STATUS_COMPLETE,
+    STATUS_INCOMPLETE,
     STATUS_NOT_RUN,
     STATUS_UNKNOWN,
     TERMINAL_OUTCOMES,
@@ -51,6 +54,8 @@ from src.grounding import (
 )
 
 NO_RESULTS_MESSAGE = "No relevant documents found. Please index some documents first."
+# Statuses a generation result may carry (``error`` is evaluator-only).
+KNOWN_STATUSES = (STATUS_COMPLETE, *INCOMPLETE_STATUSES, STATUS_UNKNOWN)
 
 DISCLAIMER = (
     "Research aid — check the cited paragraphs; not legal advice; the source "
@@ -264,6 +269,10 @@ def render(result: Optional[Dict[str, Any]], flags: RenderFlags) -> Rendered:
     status = result.get("generation_status", STATUS_UNKNOWN)
     if status is None:
         status = STATUS_UNKNOWN
+    elif status not in KNOWN_STATUSES:
+        # Close the vocabulary for the public result and the audit, as the
+        # evaluator does: an unrecognised status is `incomplete`.
+        status = STATUS_INCOMPLETE
     # H1b: a terminal status wins over any gate outcome, even a supplied one.
     outcome = generation_outcome(status) or result.get("gate_outcome")
 
@@ -320,9 +329,9 @@ def render(result: Optional[Dict[str, Any]], flags: RenderFlags) -> Rendered:
         lines += _answer_block(draft, result["sources"]) + unknown_line
         if outcome == CITATIONS_VERIFIED:
             lines.append(
-                "\n✓ All citations resolve to a retrieved passage (locator "
-                "and page checked — this does not verify the passage "
-                "supports the claim)."
+                "\n✓ All citations resolve to a retrieved passage (related "
+                "section and page checked — this does not verify the exact "
+                "paragraph or that the passage supports the claim)."
             )
             action = ACTION_SHOWN
         else:
