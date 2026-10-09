@@ -7,10 +7,13 @@ something this pipeline can check. The outcome vocabulary is deliberately about
 *citation verification* ("VERIFIED"), never about legal validity, so a consumer
 can never read "CITATIONS_VERIFIED" as "the law is stated correctly".
 
-The four outcomes are mutually exclusive; ``classify`` returns exactly one.
+The four citation outcomes are mutually exclusive; ``classify`` returns exactly
+one. Three further TERMINAL outcomes (H1b) name a generation that did not finish
+normally; ``generation_outcome`` maps the generation status to them and they take
+precedence over every citation outcome.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Outcome vocabulary. These are the only strings ``classify`` returns; consumers
 # (display policy lives in pipeline.py) branch on them.
@@ -18,6 +21,84 @@ REFUSAL = "REFUSAL"
 CITATIONS_VERIFIED = "CITATIONS_VERIFIED"
 PARTIALLY_VERIFIED = "PARTIALLY_VERIFIED"
 CITATIONS_UNVERIFIED = "CITATIONS_UNVERIFIED"
+
+# Terminal outcomes (H1b): the draft is cut off, declined or abnormally ended, so
+# it is never displayed or returned, whatever its citations look like.
+ANSWER_TRUNCATED = "ANSWER_TRUNCATED"
+MODEL_DECLINED = "MODEL_DECLINED"
+GENERATION_INCOMPLETE = "GENERATION_INCOMPLETE"
+TERMINAL_OUTCOMES = (ANSWER_TRUNCATED, MODEL_DECLINED, GENERATION_INCOMPLETE)
+
+# Generation status vocabulary (H1). ``error`` is evaluator-only: a row whose
+# generation raised, counted in ``generation_errors`` and never as ``unknown``.
+STATUS_COMPLETE = "complete"
+STATUS_TRUNCATED = "truncated"
+STATUS_DECLINED = "declined"
+STATUS_INCOMPLETE = "incomplete"
+STATUS_UNKNOWN = "unknown"
+STATUS_ERROR = "error"
+# Statuses where the model's output is not a finished, accepted answer.
+INCOMPLETE_STATUSES = (STATUS_TRUNCATED, STATUS_DECLINED, STATUS_INCOMPLETE)
+
+_STOP_REASON_STATUS = {
+    "end_turn": STATUS_COMPLETE,
+    "stop_sequence": STATUS_COMPLETE,
+    "max_tokens": STATUS_TRUNCATED,
+    "model_context_window_exceeded": STATUS_TRUNCATED,
+    "refusal": STATUS_DECLINED,
+}
+
+# Exact user-facing texts (spec amendment 2): used verbatim as the display text
+# and as the public ``answer`` of a withheld result.
+WITHHELD_NOTICES = {
+    ANSWER_TRUNCATED: (
+        "WITHHELD \u2014 ANSWER INCOMPLETE: the answer was cut off before it was "
+        "complete and has been withheld. Try a narrower question."
+    ),
+    MODEL_DECLINED: (
+        "WITHHELD \u2014 the model declined to answer this request. Rephrase the "
+        "question or consult the handbook directly."
+    ),
+    GENERATION_INCOMPLETE: (
+        "WITHHELD \u2014 answer generation did not complete normally and the "
+        "answer has been withheld. Please retry."
+    ),
+}
+UNKNOWN_STATUS_NOTICE = (
+    "\u26a0 Completion status could not be confirmed (no stop reason returned) "
+    "\u2014 check this answer with extra care."
+)
+
+
+def status_from_stop_reason(stop_reason: Optional[str]) -> str:
+    """Map an Anthropic ``stop_reason`` to a generation status.
+
+    ``end_turn``/``stop_sequence`` are ``complete``; ``max_tokens`` and
+    ``model_context_window_exceeded`` are ``truncated``; ``refusal`` is
+    ``declined``; any other value (e.g. ``pause_turn``) is ``incomplete``; an
+    absent or None stop reason is ``unknown``.
+    """
+    if stop_reason is None:
+        return STATUS_UNKNOWN
+    return _STOP_REASON_STATUS.get(stop_reason, STATUS_INCOMPLETE)
+
+
+def generation_outcome(status: Optional[str]) -> Optional[str]:
+    """Return the terminal outcome for a generation status, else None.
+
+    ``truncated`` -> ``ANSWER_TRUNCATED``, ``declined`` -> ``MODEL_DECLINED``,
+    ``incomplete`` -> ``GENERATION_INCOMPLETE``. ``complete``, ``unknown`` and
+    None (a legacy result with no status) return None: the caller falls through
+    to ``classify``. Any other unrecognised string fails closed to
+    ``GENERATION_INCOMPLETE``.
+    """
+    if status in (None, STATUS_COMPLETE, STATUS_UNKNOWN):
+        return None
+    if status == STATUS_TRUNCATED:
+        return ANSWER_TRUNCATED
+    if status == STATUS_DECLINED:
+        return MODEL_DECLINED
+    return GENERATION_INCOMPLETE
 
 
 def classify(

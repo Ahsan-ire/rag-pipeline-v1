@@ -6,10 +6,14 @@ from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.grounding import classify
+from src.grounding import (
+    STATUS_UNKNOWN,
+    classify,
+    generation_outcome,
+    status_from_stop_reason,
+)
 from src.retriever import format_context
 
 load_dotenv()
@@ -350,6 +354,23 @@ def validate_citations(
     return {"grounded": grounded, "ungrounded": ungrounded}
 
 
+def _message_text(content: Any) -> str:
+    """Extract answer text from an AIMessage ``content``.
+
+    A str passes through; a list of content blocks yields the joined ``text``
+    blocks (an empty list gives ""), so thinking/tool blocks never leak in.
+    """
+    if isinstance(content, str):
+        return content
+    parts: List[str] = []
+    for block in content or []:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+    return "".join(parts)
+
+
 def generate(question: str, context: str) -> Dict[str, Any]:
     """Generate an answer to a legal question using the provided context.
 
@@ -358,19 +379,26 @@ def generate(question: str, context: str) -> Dict[str, Any]:
         context: Formatted context string from retrieved documents.
 
     Returns:
-        Dict with 'answer', 'citations' (list of {para, page, raw}), and
-        'sources' (the raw display strings, kept for backward compatibility).
+        Dict with 'answer', 'citations' (list of {para, page, raw}), 'sources'
+        (the raw display strings, kept for backward compatibility),
+        'stop_reason' (the model's ``response_metadata["stop_reason"]``, or
+        None when absent) and 'generation_status' (complete / truncated /
+        declined / incomplete / unknown — see ``status_from_stop_reason``).
     """
     llm = get_llm()
-    chain = PROMPT_TEMPLATE | llm | StrOutputParser()
+    chain = PROMPT_TEMPLATE | llm
 
-    answer = chain.invoke({"question": question, "context": context})
+    message = chain.invoke({"question": question, "context": context})
 
+    answer = _message_text(message.content)
+    stop_reason = (getattr(message, "response_metadata", None) or {}).get("stop_reason")
     citations = extract_citations(answer)
     return {
         "answer": answer,
         "citations": citations,
         "sources": [c["raw"] for c in citations],
+        "stop_reason": stop_reason,
+        "generation_status": status_from_stop_reason(stop_reason),
     }
 
 
@@ -385,10 +413,13 @@ def generate_with_sources(
 
     Returns:
         Dict with 'answer', 'citations', 'sources', 'source_documents',
-        'citation_check' ({grounded, ungrounded}), and 'gate_outcome' keys.
-        'gate_outcome' is the grounding-gate classification (see
-        src.grounding.classify) and reaches every consumer; the display policy
-        that decides what to do with each outcome stays in pipeline.py.
+        'citation_check' ({grounded, ungrounded}), 'generation_status',
+        'stop_reason' and 'gate_outcome' keys. 'gate_outcome' is the
+        grounding-gate classification (see src.grounding.classify) and reaches
+        every consumer; a terminal generation status (truncated / declined /
+        incomplete) takes precedence over it (H1b, extends D35) via
+        src.grounding.generation_outcome. The display policy that decides what
+        to do with each outcome stays in pipeline.py.
     """
     context = format_context(retrieved_results)
     result = generate(question, context)
@@ -396,7 +427,11 @@ def generate_with_sources(
     result["citation_check"] = validate_citations(
         result["citations"], retrieved_results
     )
-    result["gate_outcome"] = classify(
+    # A generate() result with no status (legacy mocks or fakes) is `unknown`.
+    result.setdefault("generation_status", STATUS_UNKNOWN)
+    result.setdefault("stop_reason", None)
+    terminal = generation_outcome(result["generation_status"])
+    result["gate_outcome"] = terminal or classify(
         result["answer"], result["citations"], result["citation_check"]
     )
     return result

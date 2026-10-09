@@ -34,6 +34,9 @@ from src.grounding import (
     CITATIONS_VERIFIED,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    TERMINAL_OUTCOMES,
+    WITHHELD_NOTICES,
+    generation_outcome,
 )
 from src.ingest import (
     load_directory,
@@ -429,6 +432,9 @@ def query(
     citation_check = result["citation_check"]
     ungrounded = citation_check["ungrounded"]
     outcome = result.get("gate_outcome")
+    # H1b: a terminal generation status wins over any gate outcome, even one a
+    # mock or legacy caller supplied; a result with no status is `unknown`.
+    outcome = generation_outcome(result.get("generation_status")) or outcome
 
     # Default: pass generate_with_sources' dict through unchanged. Only the
     # gated-block branch replaces it with a withheld-draft dict; every other
@@ -462,6 +468,26 @@ def query(
             for citation in ungrounded:
                 print(f"  - {citation['raw']}")
         action = ACTION_SHOWN
+
+    elif outcome in TERMINAL_OUTCOMES:
+        # Terminal generation outcome (H1b): the draft is cut off, declined or
+        # abnormally ended, so it is never printed or returned. Interim handling
+        # until src/render.py (stage B): same allowlist as the blocked branch,
+        # with the exact WITHHELD notice, no sources, and no override hint. The
+        # audit action reuses blocked_unverified until H6 adds terminal actions.
+        print(f"\n{WITHHELD_NOTICES[outcome]}")
+        action = ACTION_BLOCKED_UNVERIFIED
+        return_value = {
+            "answer": WITHHELD_NOTICES[outcome],
+            "gate_outcome": outcome,
+            "citations": citations,
+            "sources": result["sources"],
+            "citation_check": citation_check,
+            "source_documents": result["source_documents"],
+            "answer_chars": len(draft_answer),
+            "generation_status": result.get("generation_status", "unknown"),
+            "stop_reason": result.get("stop_reason"),
+        }
 
     elif outcome == REFUSAL:
         # The answer IS the refusal sentence — print it as-is, no warnings.

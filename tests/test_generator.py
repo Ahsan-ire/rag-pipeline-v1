@@ -2,10 +2,14 @@
 
 import hashlib
 import os
+from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.documents import Document
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
 from src.generator import (
     CAVEAT_PREFIX,
@@ -25,6 +29,7 @@ from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
     PARTIALLY_VERIFIED,
+    REFUSAL,
     classify,
 )
 
@@ -745,3 +750,135 @@ class TestClientTimeoutCanary:
             llm = get_rewrite_llm()
             assert llm.default_request_timeout == 60.0
             assert llm.max_retries == 3
+
+
+class _FakeStopReasonChat(BaseChatModel):
+    """Fake chat model for the real ``PROMPT_TEMPLATE | llm`` seam.
+
+    Returns one ChatGeneration; ``llm_output`` carries ``stop_reason``. In
+    langchain-core 1.4.8 a single-generation ``llm_output`` is merged into the
+    AIMessage's ``response_metadata`` by ``_generate_with_cache`` — the same
+    place ChatAnthropic puts ``stop_reason`` — so the generator reads it the
+    way it does in production.
+    """
+
+    content: Any = "ok"
+    llm_output: Optional[Dict[str, Any]] = None
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake-stop-reason"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=self.content))],
+            llm_output=self.llm_output,
+        )
+
+
+def _fake_llm(content, stop_reason="__absent__"):
+    """Build the fake; the default sentinel omits ``stop_reason`` entirely."""
+    llm_output = None if stop_reason == "__absent__" else {"stop_reason": stop_reason}
+    return _FakeStopReasonChat(content=content, llm_output=llm_output)
+
+
+class TestGenerationStatus:
+    """H1: stop_reason -> generation_status through the real chain seam."""
+
+    @pytest.mark.parametrize(
+        "stop_reason,status",
+        [
+            ("end_turn", "complete"),
+            ("stop_sequence", "complete"),
+            ("max_tokens", "truncated"),
+            ("model_context_window_exceeded", "truncated"),
+            ("refusal", "declined"),
+            ("pause_turn", "incomplete"),
+            ("some_future_reason", "incomplete"),
+            (None, "unknown"),
+            ("__absent__", "unknown"),
+        ],
+    )
+    def test_status_mapping(self, stop_reason, status):
+        with patch("src.generator.get_llm", return_value=_fake_llm("text", stop_reason)):
+            result = generate("q", "ctx")
+        assert result["generation_status"] == status
+        assert result["stop_reason"] == (None if stop_reason == "__absent__" else stop_reason)
+        assert result["answer"] == "text"
+
+    def test_refusal_with_empty_list_content(self):
+        with patch("src.generator.get_llm", return_value=_fake_llm([], "refusal")):
+            result = generate("q", "ctx")
+        assert result["answer"] == ""
+        assert result["generation_status"] == "declined"
+        assert result["citations"] == []
+
+    def test_list_content_joins_only_text_blocks(self):
+        blocks = [
+            {"type": "thinking", "thinking": "hidden"},
+            {"type": "text", "text": "Part one. "},
+            {"type": "text", "text": "Part two [Handbook, para 14.8.5, p.412]."},
+        ]
+        with patch("src.generator.get_llm", return_value=_fake_llm(blocks, "end_turn")):
+            result = generate("q", "ctx")
+        assert result["answer"] == "Part one. Part two [Handbook, para 14.8.5, p.412]."
+        assert [c["para"] for c in result["citations"]] == ["14.8.5"]
+
+    def test_max_tokens_stays_2048(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key-123"}, clear=False):
+            assert get_llm().max_tokens == 2048
+
+    @pytest.mark.parametrize(
+        "stop_reason,outcome",
+        [
+            ("max_tokens", "ANSWER_TRUNCATED"),
+            ("model_context_window_exceeded", "ANSWER_TRUNCATED"),
+            ("refusal", "MODEL_DECLINED"),
+            ("pause_turn", "GENERATION_INCOMPLETE"),
+        ],
+    )
+    def test_terminal_status_beats_verified_citations(
+        self, handbook_retrieved_results, stop_reason, outcome
+    ):
+        draft = "The priority entry protects a purchaser [Handbook, para 14.8.5, p.412]."
+        with patch("src.generator.get_llm", return_value=_fake_llm(draft, stop_reason)):
+            result = generate_with_sources("q", handbook_retrieved_results)
+        assert result["citation_check"]["grounded"]  # would be VERIFIED otherwise
+        assert result["gate_outcome"] == outcome
+
+    @pytest.mark.parametrize(
+        "stop_reason,outcome",
+        [
+            ("max_tokens", "ANSWER_TRUNCATED"),
+            ("refusal", "MODEL_DECLINED"),
+            ("pause_turn", "GENERATION_INCOMPLETE"),
+            ("end_turn", REFUSAL),
+            ("stop_sequence", REFUSAL),
+            (None, REFUSAL),
+        ],
+    )
+    def test_exact_refusal_sentence_precedence(
+        self, handbook_retrieved_results, stop_reason, outcome
+    ):
+        with patch(
+            "src.generator.get_llm",
+            return_value=_fake_llm(REFUSAL_PHRASE, stop_reason),
+        ):
+            result = generate_with_sources("q", handbook_retrieved_results)
+        assert result["gate_outcome"] == outcome
+
+    def test_complete_and_unknown_fall_through_to_classify(self, handbook_retrieved_results):
+        draft = "The priority entry protects a purchaser [Handbook, para 14.8.5, p.412]."
+        for stop_reason, status in (("end_turn", "complete"), (None, "unknown")):
+            with patch("src.generator.get_llm", return_value=_fake_llm(draft, stop_reason)):
+                result = generate_with_sources("q", handbook_retrieved_results)
+            assert result["generation_status"] == status
+            assert result["gate_outcome"] == CITATIONS_VERIFIED
+
+    def test_legacy_generate_without_status_is_unknown(self, handbook_retrieved_results):
+        legacy = {"answer": "A.", "citations": [], "sources": []}
+        with patch("src.generator.generate", return_value=legacy):
+            result = generate_with_sources("q", handbook_retrieved_results)
+        assert result["generation_status"] == "unknown"
+        assert result["stop_reason"] is None
+        assert result["gate_outcome"] == CITATIONS_UNVERIFIED
