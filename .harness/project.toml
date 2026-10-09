@@ -1,0 +1,30 @@
+# .harness/project.toml - rag-pipeline-v1 (reviewed by the owner at enrolment)
+schema = 1
+name = "rag-pipeline-v1"
+check = ".venv/bin/python -m pytest tests/ -q"
+lint = ""
+python = ".venv/bin/python"
+
+# CLAUDE.md hard rule: never commit data/, any PDF, .env, chroma_db/ (corpus is copyrighted; repo is public).
+never_commit = [
+  "^data/",
+  "\\.pdf$",
+  "^chroma_db/",
+  "^chroma_db_arm_[^/]*/",
+  "^sample_chroma_db/",
+  "^eval/bakeoff/",
+  "^logs/",
+  "^Tutorial_Docs_for_review/",
+  "^eval/judge_review\\.jsonl$",
+]
+never_commit_allow = []
+
+# Never sent to Codex or third-party workers (corpus text, indexes, held-out questions, logs).
+restricted_read = [
+  "data", "chroma_db", "chroma_db_arm_*", "sample_chroma_db", "eval/bakeoff",
+  "eval/heldout_set.jsonl", "eval/judge_review.jsonl", "logs", "Tutorial_Docs_for_review",
+  ".env*", "*.pdf",
+]
+allow_ignored_adds = false
+worker_allow = []
+codex_clause = ""
