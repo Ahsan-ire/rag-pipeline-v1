@@ -1107,6 +1107,11 @@ These amendments override v3 where they conflict.
 11. **003 `## Review`:** gets a per-round finding → disposition line. All findings are
     ACCEPTED; none are rebutted. Round-3 #8 (divergences from the approved 003 §3) is
     **escalated to the owner for sign-off before implementation.**
+12. **Owner sign-off (9 Oct 2026):** all three divergences are approved — H2 display-only,
+    H5 as source label plus disclaimer (no system-prompt change), and the (j) offline check
+    narrowed to a retrieval-row canary. Implementation may start. Same date: GitHub branch
+    protection is on for `main` (no force-push, no deletion, admins included; harness
+    Layer 3).
 
 ## Cut list (v2)
 
