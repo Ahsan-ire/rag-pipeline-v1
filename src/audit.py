@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.grounding import STATUS_UNKNOWN
+
 DEFAULT_LOG_PATH = Path("logs/audit_log.jsonl")
 
 # Action vocabulary: what pipeline.query actually did with the answer. Owned
@@ -47,6 +49,11 @@ ACTION_BLOCKED_UNVERIFIED = "blocked_unverified"
 ACTION_REFUSAL_SHOWN = "refusal_shown"
 ACTION_SHOWN_UNVERIFIED_OVERRIDE = "shown_unverified_override"
 ACTION_NO_RESULTS = "no_results"
+# H6: terminal generation outcomes (H1b) — the draft was withheld because the
+# generation did not finish normally.
+ACTION_WITHHELD_TRUNCATED = "withheld_truncated"
+ACTION_WITHHELD_DECLINED = "withheld_declined"
+ACTION_WITHHELD_INCOMPLETE = "withheld_incomplete"
 
 
 @functools.lru_cache(maxsize=1)
@@ -91,6 +98,9 @@ def build_event(
     rewrites: Optional[List[str]] = None,
     rewrite_status: Optional[str] = None,
     intent_rewrite: Optional[str] = None,
+    stop_reason: Optional[str] = None,
+    generation_status: str = STATUS_UNKNOWN,
+    uncited_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build one audit record for a single query/answer cycle.
 
@@ -105,7 +115,8 @@ def build_event(
             (e.g. ``CITATIONS_VERIFIED``), or ``None`` if the gate did not run.
         action: What the caller actually did with the answer — one of
             ``shown`` / ``shown_with_warning`` / ``blocked_unverified`` /
-            ``refusal_shown`` / ``shown_unverified_override`` / ``no_results``.
+            ``refusal_shown`` / ``shown_unverified_override`` / ``no_results`` /
+            ``withheld_truncated`` / ``withheld_declined`` / ``withheld_incomplete``.
         citation_check: ``{"grounded": [...], "ungrounded": [...]}`` citation
             dicts, as produced by the generator's citation validation.
         citations: All extracted citation dicts (each with a ``"raw"`` display
@@ -121,6 +132,12 @@ def build_event(
         intent_rewrite: The ``Expansion.intent_rewrite`` reframe for this query
             (Phase 14, D50), or ``None`` when the model produced/kept none.
             Never stored verbatim unless ``AUDIT_LOG_RAW_QUERIES=1``.
+        stop_reason: The model's ``stop_reason`` (H6), or ``None`` when absent or
+            when generation never ran.
+        generation_status: ``complete`` / ``truncated`` / ``declined`` /
+            ``incomplete`` / ``unknown``, or ``not_run`` on the no-results path.
+        uncited_count: Count of H2 uncited-statement flags, ``None`` (null in
+            the record) when the hint was not computed. The count only: the sentences are never logged.
 
     Returns:
         A JSON-serializable dict with exactly the keys documented in the
@@ -186,6 +203,9 @@ def build_event(
         "citation_locators": [c["raw"] for c in citations],
         "generation_model": GENERATION_MODEL,
         "answer_chars": len(answer),
+        "stop_reason": stop_reason,
+        "generation_status": generation_status,
+        "uncited_count": uncited_count,
     }
 
     if os.environ.get("AUDIT_LOG_RAW_QUERIES") == "1":

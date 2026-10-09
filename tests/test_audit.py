@@ -31,6 +31,9 @@ EXPECTED_KEYS = {
     "citation_locators",
     "generation_model",
     "answer_chars",
+    "stop_reason",
+    "generation_status",
+    "uncited_count",
 }
 
 
@@ -134,6 +137,25 @@ class TestBuildEventKeys:
             answer="The priority period is 30 days [para 14.8.5, p.412].",
         )
         assert set(record.keys()) == EXPECTED_KEYS
+
+    def test_h6_fields_default_and_explicit(self, results, citation_check, citations):
+        kwargs = dict(
+            question="q", top_k=6, document_type=None, results=results,
+            gate_outcome="ANSWER_TRUNCATED", action="withheld_truncated",
+            citation_check=citation_check, citations=citations, answer="x" * 7,
+        )
+        default = build_event(**kwargs)
+        assert default["stop_reason"] is None
+        assert default["generation_status"] == "unknown"
+        assert default["uncited_count"] is None
+        explicit = build_event(
+            **kwargs, stop_reason="max_tokens", generation_status="truncated",
+            uncited_count=3,
+        )
+        assert explicit["stop_reason"] == "max_tokens"
+        assert explicit["generation_status"] == "truncated"
+        assert explicit["uncited_count"] == 3
+        assert explicit["answer_chars"] == 7
 
     def test_no_query_text_key_by_default(self, monkeypatch, results, citation_check, citations):
         monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)

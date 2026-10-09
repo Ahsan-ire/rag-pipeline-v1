@@ -17,11 +17,14 @@ from src.evaluator import (
     CHROMA_PERSIST_DIR,
     DEFAULT_RESULTS_PATH,
     EVAL_MODES,
+    GATE_OUTCOMES,
     HIT_KS,
     PARTIAL_RESULTS_PATH,
     REALISTIC_LABEL_TOKEN,
     RETRIEVAL_MODES,
     REWRITE_MODE,
+    _answer_chars_stats,
+    _normalise_answer,
     _resolve_results_path,
     _sha256_file,
     _wilson_ci,
@@ -79,7 +82,7 @@ def _matrix_golden(tmp_path, name, entries):
 
 def _answer_entry(
     answer, citations=None, grounded=None, ungrounded=None, gate_outcome=None,
-    error=None, has_result=True,
+    error=None, has_result=True, generation_status="complete",
 ):
     """Build one answers-cache entry (the shape generate_answers produces).
 
@@ -97,6 +100,7 @@ def _answer_entry(
                 "ungrounded": ungrounded or [],
             },
             "gate_outcome": gate_outcome,
+            "generation_status": generation_status,
         },
         "error": None,
     }
@@ -1200,9 +1204,15 @@ class TestEvaluateRefusals:
         assert report["accuracy"] == 1.0
         assert report["per_question"][0]["refused"] is True
         # The raw answer must not leak out of the result contract (D30): the
-        # per-question row carries only the question and the refusal flag.
+        # per-question row carries only the question, the refusal flag and the
+        # generation status (H1c).
         assert "answer" not in report["per_question"][0]
-        assert set(report["per_question"][0]) == {"question", "refused"}
+        assert set(report["per_question"][0]) == {
+            "question",
+            "refused",
+            "generation_status",
+        }
+        assert report["per_question"][0]["generation_status"] == "unknown"
 
     def test_phrase_with_citation_is_not_refused(self):
         """A hedge that still cites a source is an answer, not a refusal (is_refusal
@@ -1806,6 +1816,7 @@ class TestRunEvalMatrix:
                     "source_documents": [],
                     "citation_check": {"grounded": [], "ungrounded": []},
                     "gate_outcome": REFUSAL,
+                    "generation_status": "complete",
                 }
             sec = "3.2" if question == "D1" else "5.1"
             doc = _matrix_doc(sec)
@@ -1817,6 +1828,7 @@ class TestRunEvalMatrix:
                 "source_documents": [doc],
                 "citation_check": {"grounded": [cite], "ungrounded": []},
                 "gate_outcome": CITATIONS_VERIFIED,
+                "generation_status": "complete",
             }
 
         return gen
@@ -1885,6 +1897,41 @@ class TestRunEvalMatrix:
         assert result["include_types"] == []
         # Not canonical (skipped passes) -> partial path.
         assert result["results_path"].endswith("results_partial.md")
+
+    def test_keyed_environment_offline_run_makes_zero_model_calls(
+        self, tmp_path, monkeypatch
+    ):
+        """H (j): with a live-looking API key in the environment, the offline
+        shape (both skips, no judge) must still construct NO model client — not
+        for generation, and not for Haiku query expansion (the REAL expand_query
+        runs here, unpatched, so a regression that built the rewrite LLM would
+        trip the spy)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-keyed-env-fixture")
+        constructed = []
+
+        def spy(*a, **k):
+            constructed.append((a, k))
+            raise AssertionError("model client constructed in an offline run")
+
+        monkeypatch.setattr("src.generator.ChatAnthropic", spy)
+        monkeypatch.setattr("src.query_rewrite.ChatAnthropic", spy)
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        calls = []
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn(calls),
+            provenance_fn=self._prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+
+        assert constructed == []
+        assert calls == []
+        assert result["expansion_enabled"] is False
 
     def test_matrix_report_disambiguates_report_only_dirty(self, tmp_path, monkeypatch):
         """Merge-gate finding #4 (15 Jul): the matrix formatter must render the
@@ -2089,12 +2136,12 @@ class TestRunEvalMatrix:
             if question == "R1":
                 return {"answer": REFUSAL_PHRASE, "citations": [], "sources": [],
                         "source_documents": [], "citation_check": {"grounded": [], "ungrounded": []},
-                        "gate_outcome": REFUSAL}
+                        "gate_outcome": REFUSAL, "generation_status": "complete"}
             doc = _matrix_doc("5.1")
             cite = _cite("5.1", 5)
             return {"answer": "A [Handbook, para 5.1, p.5].", "citations": [cite], "sources": [],
                     "source_documents": [doc], "citation_check": {"grounded": [cite], "ungrounded": []},
-                    "gate_outcome": CITATIONS_VERIFIED}
+                    "gate_outcome": CITATIONS_VERIFIED, "generation_status": "complete"}
 
         result = run_eval_matrix(
             [("held-out", gp), ("realistic", realistic)],
@@ -2549,6 +2596,7 @@ class TestRunEvalMatrix:
                 "citations": [], "sources": [], "source_documents": [],
                 "citation_check": {"grounded": [], "ungrounded": []},
                 "gate_outcome": CITATIONS_VERIFIED,
+                "generation_status": "complete",
             },
         )
         heldout = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
@@ -2640,6 +2688,7 @@ class TestRunEvalMatrix:
                 "citations": [], "sources": [], "source_documents": [],
                 "citation_check": {"grounded": [], "ungrounded": []},
                 "gate_outcome": CITATIONS_VERIFIED,
+                "generation_status": "complete",
             },
         )
         gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
@@ -2708,7 +2757,7 @@ class TestRunEvalMatrix:
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
-        assert "# Legal RAG Evaluation Report v4 (held-out + realistic, ablated)" in report
+        assert "# Legal RAG Evaluation Report v5 (held-out + realistic, ablated)" in report
         # The stale v3 title must be gone (merge-gate FIX 6).
         assert "Report v3" not in report
         # D51 / merge-gate FIX 4: with BOTH paths injected the ownership flags
@@ -2812,14 +2861,14 @@ class TestRunEvalMatrix:
             if question == "R1":
                 return {"answer": REFUSAL_PHRASE, "citations": [], "sources": [],
                         "source_documents": [], "citation_check": {"grounded": [], "ungrounded": []},
-                        "gate_outcome": REFUSAL}
+                        "gate_outcome": REFUSAL, "generation_status": "complete"}
             sec = "3.2" if question == "D1" else "5.1"
             doc = _matrix_doc(sec, text="SECRET-CHUNK-PROSE")
             cite = _cite(sec, 5)
             return {"answer": f"SECRET-ANSWER-PROSE [Handbook, para {sec}, p.5].",
                     "citations": [cite], "sources": [], "source_documents": [doc],
                     "citation_check": {"grounded": [cite], "ungrounded": []},
-                    "gate_outcome": CITATIONS_VERIFIED}
+                    "gate_outcome": CITATIONS_VERIFIED, "generation_status": "complete"}
 
         result = run_eval_matrix(
             [("held-out", gp)],
@@ -2865,14 +2914,14 @@ class TestRunEvalMatrix:
             if question == "R1":
                 return {"answer": REFUSAL_PHRASE, "citations": [], "sources": [],
                         "source_documents": [], "citation_check": {"grounded": [], "ungrounded": []},
-                        "gate_outcome": REFUSAL}
+                        "gate_outcome": REFUSAL, "generation_status": "complete"}
             sec = "3.2" if question == "D1" else "5.1"
             doc = _matrix_doc(sec)
             cite = _cite(sec, 5)
             return {"answer": f"A [Handbook, para {sec}, p.5].", "citations": [cite],
                     "sources": [], "source_documents": [doc],
                     "citation_check": {"grounded": [cite], "ungrounded": []},
-                    "gate_outcome": CITATIONS_VERIFIED}
+                    "gate_outcome": CITATIONS_VERIFIED, "generation_status": "complete"}
 
         monkeypatch.setattr("src.evaluator.generate_with_sources", fake_gen)
 
@@ -3092,6 +3141,7 @@ class TestRunEvalMatrix:
                     "source_documents": [_matrix_doc("9.9")],
                     "citation_check": {"grounded": [_cite("9.9", 5)], "ungrounded": []},
                     "gate_outcome": PARTIALLY_VERIFIED,
+                    "generation_status": "complete",
                 }
             sec = "3.2" if question == "D1" else "5.1"
             doc = _matrix_doc(sec)
@@ -3099,7 +3149,7 @@ class TestRunEvalMatrix:
             return {"answer": f"A [Handbook, para {sec}, p.5].", "citations": [cite],
                     "sources": [], "source_documents": [doc],
                     "citation_check": {"grounded": [cite], "ungrounded": []},
-                    "gate_outcome": CITATIONS_VERIFIED}
+                    "gate_outcome": CITATIONS_VERIFIED, "generation_status": "complete"}
 
         result = run_eval_matrix(
             [("held-out", gp)],
@@ -3147,3 +3197,406 @@ class TestRunEvalMatrix:
 
         report = open(result["results_path"], encoding="utf-8").read()
         assert f"- [refusal] refused caveat=False gate={REFUSAL} grounded=0/0 :: R1" in report
+
+
+class TestNormaliseAnswer:
+    """H1c: the one normaliser every scorer uses."""
+
+    def test_str_is_unknown(self):
+        assert _normalise_answer("text") == ("text", "unknown")
+
+    def test_dict_with_and_without_status(self):
+        assert _normalise_answer({"answer": "a", "generation_status": "truncated"}) == (
+            "a",
+            "truncated",
+        )
+        assert _normalise_answer({"answer": "a"}) == ("a", "unknown")
+
+    def test_none_is_error(self):
+        assert _normalise_answer(None) == ("", "error")
+
+    def test_present_but_none_status_is_unknown(self):
+        assert _normalise_answer({"answer": "a", "generation_status": None}) == (
+            "a",
+            "unknown",
+        )
+
+    @pytest.mark.parametrize("bogus", ["bogus", "", "COMPLETE", 3])
+    def test_unrecognised_status_fails_closed_to_incomplete(self, bogus):
+        assert _normalise_answer({"answer": "a", "generation_status": bogus}) == (
+            "a",
+            "incomplete",
+        )
+
+    @pytest.mark.parametrize(
+        "st", ["complete", "truncated", "declined", "incomplete", "unknown", "error"]
+    )
+    def test_known_statuses_pass_through(self, st):
+        assert _normalise_answer({"answer": "a", "generation_status": st})[1] == st
+
+    def test_dict_without_answer_fails_loud(self):
+        with pytest.raises(KeyError):
+            _normalise_answer({"generation_status": "complete"})
+
+
+class TestLegacyReportExclusions:
+    """H1c: the legacy run_eval report discloses rows excluded from refusal accuracy."""
+
+    def test_excluded_row_printed_and_disclosed(self, tmp_path):
+        golden = _matrix_golden(
+            tmp_path,
+            "g.jsonl",
+            [
+                {"question": "D1", "type": "direct", "expected_sections": ["14.8.5"]},
+                {"question": "R1", "type": "refusal", "expected_sections": []},
+                {"question": "R2", "type": "refusal", "expected_sections": []},
+                {"question": "R3", "type": "refusal", "expected_sections": []},
+            ],
+        )
+
+        def fake_answer(question):
+            if question == "R1":
+                return {"answer": "cut off mid", "generation_status": "truncated"}
+            if question == "R2":
+                return {"answer": REFUSAL_PHRASE, "generation_status": "complete"}
+            return "legacy string answer"  # R3: status unknown
+
+        result = run_eval(
+            golden,
+            results_path=str(tmp_path / "r.md"),
+            retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
+            answer_fn=fake_answer,
+            provenance_fn=_fake_provenance,
+        )
+        report = (tmp_path / "r.md").read_text(encoding="utf-8")
+        assert "- [refusal] excluded (truncated) :: R1" in report
+        assert "- [refusal] answered :: R1" not in report
+        assert "- [refusal] refused :: R2" in report
+        assert "- [refusal] answered :: R3" in report
+        assert "Refusal accuracy: 1/2 = 0.500" in report
+        assert "generation incomplete on refusal-type questions" in report
+        assert "truncated=1, declined=0, incomplete=0" in report
+        assert "refusal-type answers with unknown generation status: 1" in report
+
+
+class TestGenerationStatusScorers:
+    """H1c: incomplete rows are excluded from the refusal/completeness scorers."""
+
+    def _refusal_golden(self):
+        return [
+            {"question": f"R{i}", "type": "refusal", "expected_sections": []}
+            for i in range(1, 5)
+        ]
+
+    def test_refusals_exclude_incomplete_rows_from_denominator(self):
+        answers = {
+            "R1": {"answer": REFUSAL_PHRASE, "generation_status": "complete"},
+            "R2": {"answer": "cut off mid", "generation_status": "truncated"},
+            "R3": {"answer": "", "generation_status": "declined"},
+            "R4": {"answer": "x", "generation_status": "incomplete"},
+        }
+        report = evaluate_refusals(self._refusal_golden(), answer_fn=lambda q: answers[q])
+
+        assert (report["refused"], report["total"], report["accuracy"]) == (1, 1, 1.0)
+        assert report["generation_incomplete"] == {
+            "truncated": 1,
+            "declined": 1,
+            "incomplete": 1,
+        }
+        assert report["generation_incomplete_total"] == 3
+        assert report["unknown"] == 0
+        rows = {r["question"]: r for r in report["per_question"]}
+        assert rows["R2"]["refused"] is None
+        assert rows["R2"]["generation_status"] == "truncated"
+
+    def test_refusals_legacy_str_counts_unknown_and_is_scored(self):
+        report = evaluate_refusals(
+            self._refusal_golden()[:2], answer_fn=lambda q: REFUSAL_PHRASE
+        )
+        assert (report["refused"], report["total"]) == (2, 2)
+        assert report["unknown"] == 2
+        assert report["generation_incomplete_total"] == 0
+
+    def test_completeness_excludes_incomplete_from_rates_and_distribution(self):
+        golden = [
+            {"question": "Q1", "type": "direct", "expected_sections": ["3.2"]},
+            {"question": "Q2", "type": "direct", "expected_sections": ["4.1"]},
+            {"question": "Q3", "type": "direct", "expected_sections": ["5.1"]},
+            {"question": "Q4", "type": "direct", "expected_sections": ["6.1"]},
+        ]
+        good = dict(
+            citations=[_cite("3.2", 5)],
+            grounded=[_cite("3.2", 5)],
+            gate_outcome=CITATIONS_VERIFIED,
+        )
+        answers = {
+            "Q1": _answer_entry("Rule A [Handbook, para 3.2, p.5].", **good),
+            # Would be a false block if scored; truncated, so it must not be.
+            "Q2": _answer_entry(
+                "Half a claim",
+                gate_outcome=CITATIONS_UNVERIFIED,
+                generation_status="truncated",
+            ),
+            "Q3": _answer_entry(
+                "Rule B [Handbook, para 3.2, p.5].", generation_status=None, **good
+            ),
+            "Q4": _answer_entry("", has_result=False),
+        }
+        answers["Q3"]["result"].pop("generation_status")
+
+        report = evaluate_completeness(golden, answers)
+
+        assert report["total"] == 2  # Q1 + Q3 scored
+        assert report["errors"] == 1
+        assert report["blocked"] == 0 and report["false_block_rate"] == 0.0
+        assert report["generation_incomplete"] == {
+            "truncated": 1,
+            "declined": 0,
+            "incomplete": 0,
+        }
+        assert report["generation_incomplete_total"] == 1
+        assert report["unknown"] == 1
+        assert sum(report["gate_outcome_distribution"].values()) == 2
+        assert set(report["gate_outcome_distribution"]) == set(GATE_OUTCOMES)
+        rows = {r["question"]: r for r in report["per_question"]}
+        assert rows["Q2"]["generation_status"] == "truncated"
+        assert rows["Q2"]["gate_outcome"] is None
+        assert rows["Q4"]["generation_status"] == "error"
+        assert rows["Q3"]["generation_status"] == "unknown"
+
+    def test_generate_answers_records_status_and_never_retries_on_it(self):
+        golden = [
+            {"question": "D1", "type": "direct", "expected_sections": ["1.1"]},
+            {"question": "D2", "type": "direct", "expected_sections": ["1.2"]},
+            {"question": "D3", "type": "direct", "expected_sections": ["1.3"]},
+        ]
+        calls = []
+
+        def gen(question):
+            calls.append(question)
+            if question == "D3":
+                raise RuntimeError("boom")
+            if question == "D1":
+                return {"answer": "a", "generation_status": "truncated"}
+            return {"answer": "b"}
+
+        answers = generate_answers(
+            golden, ["direct"], gen, retries=2, retry_backoff=0
+        )
+
+        assert calls.count("D1") == 1 and calls.count("D2") == 1  # no retry
+        assert calls.count("D3") == 3  # exceptions are still retried
+        assert answers["D1"]["generation_status"] == "truncated"
+        assert answers["D2"]["generation_status"] == "unknown"
+        assert answers["D3"]["generation_status"] == "error"
+
+
+class TestGenerationStatusMatrix:
+    """H1c at the matrix level. Borrows TestRunEvalMatrix's fakes (plain
+    functions, so they bind as methods here) without inheriting its tests."""
+
+    _prov = TestRunEvalMatrix._prov
+    _golden_entries = TestRunEvalMatrix._golden_entries
+    _retrieve_factory = TestRunEvalMatrix._retrieve_factory
+    _generate_fn = TestRunEvalMatrix._generate_fn
+    _clean_judge_fn = TestRunEvalMatrix._clean_judge_fn
+    _patch_paths = TestRunEvalMatrix._patch_paths
+    _patch_expand = TestRunEvalMatrix._patch_expand
+    _canonical_sets = TestRunEvalMatrix._canonical_sets
+
+    def _gen_with(self, **status_by_question):
+        """Wrap the standard fake so chosen questions carry another status
+        (``None`` removes the key => unknown)."""
+        base = self._generate_fn([])
+
+        def gen(question):
+            res = dict(base(question))
+            if question in status_by_question:
+                st = status_by_question[question]
+                if st is None:
+                    res.pop("generation_status", None)
+                else:
+                    res["generation_status"] = st
+            return res
+
+        return gen
+
+    def _run(self, tmp_path, monkeypatch, gen, judge_fn=None, **kwargs):
+        default, partial = self._patch_paths(monkeypatch, tmp_path)
+        self._patch_expand(monkeypatch)
+        heldout, realistic = self._canonical_sets(tmp_path)
+        result = run_eval_matrix(
+            [("held-out", heldout), ("realistic", realistic)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=gen,
+            provenance_fn=self._prov,
+            judge=True,
+            judge_fn=judge_fn or self._clean_judge_fn(),
+            **kwargs,
+        )
+        return result, default, partial
+
+    def test_all_complete_is_canonical_with_zero_counts(self, tmp_path, monkeypatch):
+        result, default, _ = self._run(tmp_path, monkeypatch, self._gen_with())
+        assert result["is_canonical"] is True
+        assert result["generation_incomplete"] == 0
+        assert result["generation_unknown"] == 0
+        assert result["results_path"] == default
+
+    def test_incomplete_rows_counted_excluded_and_noncanonical(self, tmp_path, monkeypatch):
+        judged = []
+
+        def judge_fn(v):
+            judged.append(v)
+            return json.dumps({"claims": [{"claim": "c", "verdict": "supported"}]})
+
+        # D1 (answerable) truncated; R1 (refusal-type) declined; in BOTH sets.
+        result, _, partial = self._run(
+            tmp_path,
+            monkeypatch,
+            self._gen_with(D1="truncated", R1="declined"),
+            judge_fn=judge_fn,
+        )
+
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_incomplete"] == 4
+        assert result["generation_incomplete_by_status"] == {
+            "truncated": 2,
+            "declined": 2,
+            "incomplete": 0,
+        }
+        assert result["generation_unknown"] == 0
+        assert result["generation_errors"] == 0
+        for s in result["sets"]:
+            assert s["generation_incomplete"] == {
+                "truncated": 1,
+                "declined": 1,
+                "incomplete": 0,
+            }
+            assert s["generation_incomplete_total"] == 2
+            comp, ref = s["completeness"], s["refusals"]
+            # Only E1 is scored among answerable; the refusal pass has no scored row.
+            assert comp["total"] == 1
+            assert comp["generation_incomplete_total"] == 1
+            assert sum(comp["gate_outcome_distribution"].values()) == 1
+            assert (ref["total"], ref["refused"]) == (0, 0)
+            assert ref["generation_incomplete_total"] == 1
+            assert s["refusal_detail"]["R1"]["generation_status"] == "declined"
+            assert s["judge"]["attempted"] == 1  # E1 only; truncated D1 not judged
+        assert len(judged) == 2  # one judged item per set
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert "generation incomplete (excluded" in report
+        assert "truncated=2, declined=2, incomplete=0" in report
+        assert "- [refusal] excluded (generation declined) :: R1" in report
+        assert "(generation truncated)" in report
+
+    @pytest.mark.parametrize("status", ["truncated", "declined", "incomplete"])
+    def test_each_incomplete_status_blocks_canonical(self, tmp_path, monkeypatch, status):
+        result, _, _ = self._run(
+            tmp_path, monkeypatch, self._gen_with(E1=status)
+        )
+        assert result["is_canonical"] is False
+        assert result["generation_incomplete_by_status"][status] == 2
+
+    def test_unknown_status_blocks_canonical_and_is_reported(self, tmp_path, monkeypatch):
+        result, _, partial = self._run(
+            tmp_path, monkeypatch, self._gen_with(E1=None)
+        )
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_unknown"] == 2
+        assert result["generation_incomplete"] == 0
+        report = open(partial, encoding="utf-8").read()
+        assert "generation status unknown (no stop reason returned): 2" in report
+
+    def test_explicit_none_status_row_counts_as_unknown(self, tmp_path, monkeypatch):
+        base = self._gen_with()
+
+        def gen(question):
+            res = dict(base(question))
+            if question == "E1":
+                res["generation_status"] = None  # present-but-None, not absent
+            return res
+
+        result, _, partial = self._run(tmp_path, monkeypatch, gen)
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_unknown"] == 2
+        assert result["generation_incomplete"] == 0
+
+    def test_bogus_status_row_fails_closed_to_incomplete(self, tmp_path, monkeypatch):
+        result, _, partial = self._run(
+            tmp_path, monkeypatch, self._gen_with(E1="bogus")
+        )
+        assert result["is_canonical"] is False
+        assert result["results_path"] == partial
+        assert result["generation_incomplete_by_status"]["incomplete"] == 2
+        assert result["generation_unknown"] == 0
+
+    def test_malformed_result_without_answer_fails_loud(self, tmp_path, monkeypatch):
+        base = self._gen_with()
+
+        def gen(question):
+            res = dict(base(question))
+            if question == "E1":
+                del res["answer"]
+            return res
+
+        with pytest.raises(KeyError):
+            self._run(tmp_path, monkeypatch, gen)
+
+    def test_refusal_type_generation_error_stays_in_denominator(self, tmp_path, monkeypatch):
+        # Main's documented conservative behaviour (see run_eval_matrix's
+        # _answer_fn comment): an errored refusal-type row is scored "not
+        # refused" and stays in the denominator, so it can only deflate accuracy.
+        base = self._gen_with()
+
+        def gen(question):
+            if question == "R1":
+                raise RuntimeError("boom")
+            return base(question)
+
+        result, _, _ = self._run(tmp_path, monkeypatch, gen)
+        assert result["generation_errors"] == 2
+        assert result["generation_unknown"] == 0
+        assert result["is_canonical"] is False
+        for s in result["sets"]:
+            ref = s["refusals"]
+            assert (ref["total"], ref["refused"]) == (1, 0)
+            assert ref["unknown"] == 0
+            assert ref["generation_incomplete_total"] == 0
+            assert s["generation_errors"] == 1
+            assert s["generation_unknown"] == 0
+            assert s["refusal_detail"]["R1"]["generation_status"] == "error"
+
+    def test_error_rows_are_errors_not_unknown(self, tmp_path, monkeypatch):
+        base = self._gen_with()
+
+        def gen(question):
+            if question == "D1":
+                raise RuntimeError("boom")
+            return base(question)
+
+        result, _, _ = self._run(tmp_path, monkeypatch, gen)
+        assert result["generation_errors"] == 2
+        assert result["generation_unknown"] == 0
+        assert result["generation_incomplete"] == 0
+        assert result["is_canonical"] is False
+
+    def test_answer_chars_stats_per_set(self, tmp_path, monkeypatch):
+        result, _, _ = self._run(tmp_path, monkeypatch, self._gen_with())
+        for s in result["sets"]:
+            stats = s["answer_chars"]
+            assert stats["n"] == 3
+            assert stats["max"] == len("A claim [Handbook, para 3.2, p.5].")
+            assert stats["p95"] == stats["max"]
+        report = open(result["results_path"], encoding="utf-8").read()
+        assert "generated answer_chars: n=3" in report
+
+    def test_answer_chars_stats_helper(self):
+        assert _answer_chars_stats([]) is None
+        assert _answer_chars_stats([5]) == {"n": 1, "max": 5, "p95": 5}
+        stats = _answer_chars_stats(list(range(1, 101)))
+        assert stats == {"n": 100, "max": 100, "p95": 95}
+

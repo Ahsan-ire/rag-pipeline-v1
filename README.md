@@ -3,15 +3,20 @@
 [![CI](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahsan-ire/rag-pipeline-v1/actions/workflows/ci.yml)
 &nbsp; **[▶ Live interactive demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — no install, runs in the browser.
 
-Ask a procedure question in plain English. Get a grounded answer with **verified
-chapter/paragraph/page citations**, or an honest refusal. Then open the handbook at the cited
+Ask a procedure question in plain English. Get a grounded answer with **chapter/paragraph/page
+citations whose locators are checked against the retrieved text**, or an honest refusal. Then open the handbook at the cited
 page and reach your own conclusion.
 
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
 first-line sweep before diving into an ~800-page manual. The answer orients you. The
-**citation is the product**: every one is machine-verified against the retrieved text before you
-see it, so `[Handbook, para 6.3.2, p.214]` reliably lands you on the paragraph that actually says
-it. An answer that cannot be verified is **withheld, not shown**. The system fails closed rather
+**citation is the product**: before you see the answer, each citation is matched against the chunks
+retrieved for your question. The cited paragraph and a retrieved chunk's section must be equal, or one
+must nest inside the other, and the cited page must fall within that chunk's pages, so
+`[Handbook, para 6.3.2, p.214]`
+lands you on retrieved text. That check does not prove the exact paragraph number exists, and it does
+not prove the passage supports the claim. A sentence with no citation is not checked at all. An answer
+whose citations cannot be verified is **withheld, not shown**, and an answer that was cut off,
+declined by the model, or otherwise did not finish is withheld too. The system fails closed rather
 than guessing confidently.
 
 ## Why I built this, and how it's used
@@ -34,19 +39,38 @@ won't invent a number. What I can say is that the failures users found became th
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/user-journey-dark.svg">
-  <img alt="User journey: your question is retrieved against the handbook, an answer is drafted with paragraph and page citations, and a grounding gate checks every citation — leading to a verified answer, a warning, a withheld answer, or an exact refusal. You verify at the cited page." src="docs/diagrams/user-journey-light.svg">
+  <img alt="User journey: your question is retrieved against the handbook, an answer is drafted with paragraph and page citations, and a check first confirms generation finished normally (a cut-off, declined or incomplete answer is withheld), then a grounding gate checks every citation — leading to a verified answer, a warning, a withheld answer, or an exact refusal. You verify at the cited page." src="docs/diagrams/user-journey-light.svg">
 </picture>
 
-Four possible outcomes, never a confident unchecked guess:
+Every query ends in exactly one outcome. None of them is a confident, unchecked guess:
 
 | Outcome | When | What you see |
 | --- | --- | --- |
-| ✅ **Verified answer** | The handbook covers it | Answer + citations, each verified against a retrieved chunk |
-| ⚠️ **Partial verification** | Some citations couldn't be checked | Answer + a warning **naming each unverified citation** |
-| ⛔ **Withheld** | No citation could be verified | The draft is blocked; retrieved sources shown so you can still look |
-| 🚫 **Refusal** | The question is outside the corpus | The exact sentence "not covered in the source material" |
+| ✅ **Verified** (`CITATIONS_VERIFIED`) | Every citation resolves to a retrieved chunk | Answer + citations, a `Source:` label naming the handbook title(s), and a research-aid disclaimer |
+| ⚠️ **Partially verified** (`PARTIALLY_VERIFIED`) | Some citations couldn't be checked | Answer + a warning **naming each unverified citation**, plus the `Source:` label and disclaimer |
+| ⛔ **Unverified, blocked** (`CITATIONS_UNVERIFIED`) | No citation could be verified | The draft is withheld; retrieved source headers shown so you can still look. `--show-unverified` reveals the draft, branded as an unverified draft |
+| 🚫 **Refusal** (`REFUSAL`) | The question is outside the corpus | The exact sentence "not covered in the source material" |
+| ✂️ **Answer truncated** (`ANSWER_TRUNCATED`) | The model hit its output limit mid-answer | Withheld, with a notice to try a narrower question. No sources, no override |
+| 🙅 **Model declined** (`MODEL_DECLINED`) | The model declined the request | Withheld, with a notice to rephrase or consult the handbook. No sources, no override |
+| ❓ **Generation incomplete** (`GENERATION_INCOMPLETE`) | Generation stopped for any other abnormal reason | Withheld, with a notice to retry. No sources, no override |
+| (none) `no_results` | Retrieval returned nothing | A no-results message; no answer is generated |
 
-(These are the grounding **gate's** four outcomes, which the demo below illustrates. The answer
+The three withheld terminal outcomes take precedence over every citation outcome, including
+`--show-unverified`: a cut-off or declined draft is never printed. If the model returns no stop
+reason at all, the citation gate still decides whether the answer is shown; when it is shown, it
+carries a warning that its completion status could not be confirmed.
+
+What the verified outcomes do and don't claim: the check matches each cited paragraph/page against
+the chunks retrieved for that question (a related section number, and a page inside that chunk's
+pages). It does **not** check that the exact paragraph exists or that it supports the sentence it
+follows, and it does not check statements that carry no citation. As a display-only hint, the output lists sentences that appear to have no citation
+under "These statements may not be backed by a citation (heuristic)". It is a heuristic, it never
+changes the outcome, and it can miss cases (for example sentences starting in lowercase). Verified
+and partially verified answers, and an unverified draft shown with `--show-unverified`, end with
+"Research aid — check the cited paragraphs; not legal advice; the source edition may predate current
+law." (the `Source:` label appears on the verified and partially verified answers only).
+
+(These are the pipeline's outcomes, the first four of which the demo below illustrates. The answer
 *text* itself is separately graded — direct answer, partial answer naming its gaps, closest-related
 guidance under an explicit caveat, or the refusal — detailed in [`ABOUT.md`](ABOUT.md).)
 
@@ -70,10 +94,14 @@ Why each step exists, in one line each:
    vocabulary gap (skippable with `--no-rewrite`).
 5. **Graded answers** — direct answer, partial answer that names its gaps, closest-related guidance
    under an explicit caveat, or an exact refusal — never a shrug dressed up as an answer.
-6. **The grounding gate** — the step that makes the citations trustworthy: every `(paragraph, page)`
-   the model cites is checked against the chunks actually retrieved. Invented citations don't pass.
-   To be precise about what that proves: the locator resolves to real retrieved text. It does not
-   prove the passage legally supports the claim; that judgment is yours, which is why every answer
+6. **The grounding gate** — the step that makes the citations checkable: every `(paragraph, page)`
+   the model cites is checked against the chunks actually retrieved. A citation pointing outside
+   what was retrieved doesn't pass.
+   Before the gate runs, the generation's stop reason is read: a truncated, declined or otherwise
+   incomplete answer is withheld without being shown.
+   To be precise about what that proves: the citation falls inside real retrieved text (a related
+   section, on a page that chunk covers). It does not prove the exact paragraph number exists, or
+   that the passage legally supports the claim; that judgment is yours, which is why every answer
    ends at the book.
 
 ## Try it — interactive demo, no install
@@ -81,7 +109,7 @@ Why each step exists, in one line each:
 **[Open the live demo](https://ahsan-ire.github.io/rag-pipeline-v1/Demo/demo.html)** — or open
 [`Demo/demo.html`](Demo/demo.html) locally in any browser. It runs the pipeline's logic as a guided
 simulation over the **wholly synthetic sample handbook** (a fictional jurisdiction, no real corpus
-text), and shows all four outcomes above, including watching the gate catch a fabricated citation.
+text), and shows the four citation-gate outcomes above (the three withheld terminal outcomes are not simulated), including watching the gate catch a fabricated citation.
 
 ## Try it — real pipeline, fresh clone (no API key needed)
 

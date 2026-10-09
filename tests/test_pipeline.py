@@ -12,6 +12,7 @@ from src.grounding import (
     CITATIONS_VERIFIED,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    WITHHELD_NOTICES,
 )
 from src.pipeline import index_documents, query
 from src.query_rewrite import Expansion, REWRITE_MODEL, STATUS_DISABLED, STATUS_LIVE
@@ -848,7 +849,7 @@ class TestQuery:
         # only resolves each locator to a retrieved passage, and explicitly
         # disclaims verifying that the passage supports the claim.
         assert "resolve to a retrieved passage" in out
-        assert "does not verify the passage supports the claim" in out
+        assert "does not verify the exact paragraph or that the passage supports the claim" in out
         assert spy.call_args.args[0]["action"] == "shown"
 
     def test_refusal_outcome_shows_no_warnings(self, capsys):
@@ -1221,6 +1222,91 @@ class TestQuery:
         event = spy.call_args.args[0]
         assert "intent_rewrite_sha256" not in event
         assert "intent_rewrite_text" not in event
+
+
+class TestQueryTerminalOutcomes:
+    """H1b via src/render.py: a terminal outcome never prints or returns the
+    draft (full matrix and leak tests live in tests/test_render.py)."""
+
+    SENTINEL = "SENTINEL DRAFT BODY: uncited secret text about registration."
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit_log.jsonl"))
+        monkeypatch.setattr("src.audit._git_sha", lambda: "t3st5ha")
+        monkeypatch.setattr(
+            "src.pipeline.load_retrieval_context", lambda *a, **k: (object(), object())
+        )
+
+    def _run(self, gate_outcome, status, show_unverified=False, **extra):
+        generated = {
+            "answer": self.SENTINEL,
+            "citations": [{"para": "1.2", "page": "1", "raw": "para 1.2, p.1"}],
+            "sources": ["para 1.2, p.1"],
+            "source_documents": [],
+            "citation_check": {"grounded": [], "ungrounded": []},
+            "gate_outcome": gate_outcome,
+            **extra,
+        }
+        if status is not None:
+            generated["generation_status"] = status
+            generated["stop_reason"] = "max_tokens"
+        results = [
+            {
+                "document": Document(page_content="c", metadata={"source": "h.pdf"}),
+                "score": 0.1,
+                "metadata": {},
+            }
+        ]
+        with patch("src.pipeline.retrieve", return_value=results), patch(
+            "src.pipeline.generate_with_sources", return_value=generated
+        ):
+            return query("q", show_unverified=show_unverified)
+
+    @pytest.mark.parametrize(
+        "status,outcome",
+        [
+            ("truncated", "ANSWER_TRUNCATED"),
+            ("declined", "MODEL_DECLINED"),
+            ("incomplete", "GENERATION_INCOMPLETE"),
+        ],
+    )
+    @pytest.mark.parametrize("show_unverified", [False, True])
+    def test_terminal_outcome_withholds_draft(
+        self, capsys, tmp_path, status, outcome, show_unverified
+    ):
+        result = self._run(outcome, status, show_unverified)
+        out = capsys.readouterr().out
+        notice = WITHHELD_NOTICES[outcome]
+        assert self.SENTINEL not in out
+        assert notice in out
+        assert "--show-unverified" not in out
+        assert "Sources" not in out
+        assert result["answer"] == notice
+        assert result["gate_outcome"] == outcome
+        assert result["generation_status"] == status
+        assert result["answer_chars"] == len(self.SENTINEL)
+        assert self.SENTINEL not in repr(result)
+        audit = (tmp_path / "audit_log.jsonl").read_text()
+        assert self.SENTINEL not in audit
+
+    def test_terminal_status_beats_legacy_none_outcome(self, capsys):
+        result = self._run(None, "truncated")
+        assert self.SENTINEL not in capsys.readouterr().out
+        assert result["gate_outcome"] == "ANSWER_TRUNCATED"
+
+    def test_terminal_status_beats_verified_outcome(self, capsys):
+        result = self._run(CITATIONS_VERIFIED, "declined")
+        assert self.SENTINEL not in capsys.readouterr().out
+        assert result["gate_outcome"] == "MODEL_DECLINED"
+
+    def test_legacy_mock_without_status_keeps_v1_display(self, capsys):
+        result = self._run(None, None)
+        out = capsys.readouterr().out
+        assert self.SENTINEL in out
+        assert "could not be confirmed" not in out
+        assert "WITHHELD" not in out
+        assert result["answer"] == self.SENTINEL
 
 
 class TestEvalCli:

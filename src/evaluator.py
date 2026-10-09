@@ -50,8 +50,13 @@ from src.generator import (
 from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
+    INCOMPLETE_STATUSES,
+    STATUS_COMPLETE,
+    STATUS_INCOMPLETE,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    STATUS_ERROR,
+    STATUS_UNKNOWN,
 )
 from src.query_rewrite import (
     REWRITE_MODE,
@@ -470,9 +475,82 @@ def evaluate_retrieval(
     }
 
 
+_KNOWN_STATUSES = (
+    STATUS_COMPLETE,
+    *INCOMPLETE_STATUSES,
+    STATUS_UNKNOWN,
+    STATUS_ERROR,
+)
+
+
+def _refusal_disclosure_lines(ref: Optional[Dict[str, Any]]) -> List[str]:
+    """Report lines disclosing excluded (incomplete) and unknown-status refusal rows."""
+    lines: List[str] = []
+    if ref is not None and ref.get("generation_incomplete_total"):
+        inc = ref["generation_incomplete"]
+        lines.append(
+            f"- generation incomplete on refusal-type questions (excluded "
+            f"from the refusal denominator): {ref['generation_incomplete_total']} "
+            f"({', '.join(f'{st}={inc[st]}' for st in INCOMPLETE_STATUSES)})"
+        )
+    if ref is not None and ref.get("unknown"):
+        lines.append(
+            f"- refusal-type answers with unknown generation status: "
+            f"{ref['unknown']}"
+        )
+    return lines
+
+
+def _normalise_answer(res: Any) -> Tuple[str, str]:
+    """Map one answer result to ``(text, generation_status)`` for every scorer.
+
+    A str (a legacy ``answer_fn``) is text with status ``unknown``; a dict
+    carries ``answer`` and an optional ``generation_status`` (absent means
+    ``unknown`` — missing metadata is never treated as complete); None (a
+    generation that raised) is empty text with status ``error``.
+
+    Fails closed, consistent with ``grounding.generation_outcome``: a present
+    but None status is ``unknown``; a string outside the known vocabulary is
+    ``incomplete`` (so the row is excluded and counted, and blocks a canonical
+    run). A dict with no ``answer`` key raises ``KeyError`` (fail loud, as before
+    H): a malformed result must never be scored as an empty answer.
+    """
+    if res is None:
+        return "", STATUS_ERROR
+    if isinstance(res, str):
+        return res, STATUS_UNKNOWN
+    status = res.get("generation_status", STATUS_UNKNOWN)
+    if status is None:
+        status = STATUS_UNKNOWN
+    elif status not in _KNOWN_STATUSES:
+        status = STATUS_INCOMPLETE
+    return res["answer"], status
+
+
+def _status_counts(statuses: Sequence[str]) -> Dict[str, int]:
+    """Count generation statuses, zero-filled over incomplete/unknown/error."""
+    counts: Dict[str, int] = {
+        **{st: 0 for st in INCOMPLETE_STATUSES},
+        STATUS_UNKNOWN: 0,
+        STATUS_ERROR: 0,
+    }
+    for st in statuses:
+        counts[st] = counts.get(st, 0) + 1
+    return counts
+
+
+def _answer_chars_stats(lengths: Sequence[int]) -> Optional[Dict[str, int]]:
+    """Max and nearest-rank p95 of answer lengths (metadata only); None if empty."""
+    if not lengths:
+        return None
+    ordered = sorted(lengths)
+    p95 = ordered[max(math.ceil(0.95 * len(ordered)) - 1, 0)]
+    return {"n": len(ordered), "max": ordered[-1], "p95": p95}
+
+
 def evaluate_refusals(
     golden: List[Dict[str, Any]],
-    answer_fn: Optional[Callable[[str], str]] = None,
+    answer_fn: Optional[Callable[[str], Any]] = None,
     top_k: int = 6,
     persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
@@ -485,7 +563,11 @@ def evaluate_refusals(
 
     Args:
         golden: Golden-set entries, as returned by ``load_golden_set``.
-        answer_fn: Callable ``(question) -> answer string``. Defaults to None,
+        answer_fn: Callable ``(question) -> answer`` where the answer is either
+            a str (legacy; status ``unknown``) or ``{"answer", "generation_status"}``
+            (see ``_normalise_answer``). Rows whose status is truncated/declined/
+            incomplete are excluded from ``total``/``refused`` and counted in
+            ``generation_incomplete``. Defaults to None,
             in which case the default retrieves ``top_k`` chunks via a
             load-once ``retrieve_fn`` (``_build_default_retrieve_fn`` — the
             same Phase 9 store/BM25-index-built-once pattern used by
@@ -498,41 +580,66 @@ def evaluate_refusals(
             explicitly).
 
     Returns:
-        Dict with ``per_question`` (list of ``{"question", "refused"}``),
-        ``refused``, ``total``, and ``accuracy`` (0.0 when ``total`` is 0).
+        Dict with ``per_question`` (list of ``{"question", "refused",
+        "generation_status"}``; ``refused`` is None for an excluded incomplete
+        row), ``refused``, ``total``, ``accuracy`` (0.0 when ``total`` is 0),
+        ``generation_incomplete`` (status -> count over excluded rows),
+        ``generation_incomplete_total`` and ``unknown``.
         The raw answer is deliberately not carried out of this function: it
         can echo copyrighted corpus prose, so only the refusal flag escapes.
     """
     if answer_fn is None:
         default_retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
-        def answer_fn(question: str) -> str:
+        def answer_fn(question: str) -> Dict[str, Any]:
             """Retrieve via the once-built store/BM25 index, then generate."""
             results = default_retrieve_fn(question)
-            return generate_with_sources(question, results)["answer"]
+            res = generate_with_sources(question, results)
+            return {
+                "answer": res["answer"],
+                "generation_status": res.get("generation_status", STATUS_UNKNOWN),
+            }
 
     per_question: List[Dict[str, Any]] = []
     refused = 0
     total = 0
+    statuses: List[str] = []
 
     for entry in golden:
         if entry["type"] != "refusal":
             continue
 
         question = entry["question"]
-        answer = answer_fn(question)
+        answer, status = _normalise_answer(answer_fn(question))
+        statuses.append(status)
+
+        if status in INCOMPLETE_STATUSES:
+            # A cut-off/declined/abnormal draft is not evidence of (non-)refusal:
+            # exclude it from the accuracy denominator and report it separately.
+            per_question.append(
+                {"question": question, "refused": None, "generation_status": status}
+            )
+            continue
+
         refused_flag = is_refusal(answer)
 
         total += 1
         refused += int(refused_flag)
 
-        per_question.append({"question": question, "refused": refused_flag})
+        per_question.append(
+            {"question": question, "refused": refused_flag, "generation_status": status}
+        )
 
+    counts = _status_counts(statuses)
+    incomplete = {st: counts[st] for st in INCOMPLETE_STATUSES}
     return {
         "per_question": per_question,
         "refused": refused,
         "total": total,
         "accuracy": refused / total if total else 0.0,
+        "generation_incomplete": incomplete,
+        "generation_incomplete_total": sum(incomplete.values()),
+        "unknown": counts[STATUS_UNKNOWN],
     }
 
 
@@ -689,6 +796,12 @@ def evaluate_completeness(
       never a silent 0 or 1.
     - ``gate_outcome_distribution``: counts over the answerable questions with a
       result, zero-filled across all four ``GATE_OUTCOMES``.
+    - ``generation_incomplete`` (H1c): answerable rows whose generation status is
+      truncated/declined/incomplete. They are EXCLUDED from ``total``, every
+      rate, the coverage/grounding sums and the gate distribution (which stays
+      over the four ``GATE_OUTCOMES`` only), and reported as a status -> count
+      dict plus ``generation_incomplete_total``. ``unknown`` counts the scored
+      rows whose result carried no status.
 
     Args:
         golden: Golden-set entries (``load_golden_set`` output).
@@ -703,6 +816,8 @@ def evaluate_completeness(
     per_question: List[Dict[str, Any]] = []
     total = 0
     errors = 0
+    incomplete_counts = {st: 0 for st in INCOMPLETE_STATUSES}
+    unknown = 0
     refused = 0
     blocked = 0
     sum_sentences = 0
@@ -735,12 +850,35 @@ def evaluate_completeness(
                     "n_citations": 0,
                     "n_grounded": 0,
                     "n_ungrounded": 0,
+                    "generation_status": STATUS_ERROR,
                 }
             )
             continue
 
         result = cached["result"]
-        answer = result["answer"]
+        answer, status = _normalise_answer(result)
+        if status in INCOMPLETE_STATUSES:
+            # Cut off / declined / abnormally ended: the draft is not a scorable
+            # answer. Count it on its own line; it never enters any rate or the
+            # gate distribution.
+            incomplete_counts[status] += 1
+            per_question.append(
+                {
+                    "question": question,
+                    "type": entry["type"],
+                    "error": None,
+                    "refused": None,
+                    "gate_outcome": None,
+                    "n_sentences": 0,
+                    "n_cited_sentences": 0,
+                    "n_citations": 0,
+                    "n_grounded": 0,
+                    "n_ungrounded": 0,
+                    "generation_status": status,
+                }
+            )
+            continue
+        unknown += int(status == STATUS_UNKNOWN)
         gate_outcome = result["gate_outcome"]
         citation_check = result.get("citation_check", {})
         n_grounded = len(citation_check.get("grounded", []))
@@ -792,6 +930,7 @@ def evaluate_completeness(
                 "n_citations": n_citations,
                 "n_grounded": n_grounded,
                 "n_ungrounded": n_ungrounded,
+                "generation_status": status,
             }
         )
 
@@ -816,6 +955,9 @@ def evaluate_completeness(
         "sum_cited_sentences": sum_cited_sentences,
         "sum_citations": sum_citations,
         "sum_grounded": sum_grounded,
+        "generation_incomplete": incomplete_counts,
+        "generation_incomplete_total": sum(incomplete_counts.values()),
+        "unknown": unknown,
     }
 
 
@@ -852,8 +994,12 @@ def generate_answers(
 
     Returns:
         ``{question: {"result": <generate_with_sources dict | None>, "error":
-        <str | None>}}``. ``result`` is None exactly when every attempt raised;
-        ``error`` then carries the last exception's ``"Type: message"``.
+        <str | None>, "generation_status": <str>}}``. ``result`` is None exactly
+        when every attempt raised; ``error`` then carries the last exception's
+        ``"Type: message"`` and the status is ``error``. Otherwise the status is
+        the result's ``generation_status`` (``unknown`` when absent). A returned
+        status is only recorded: it never triggers a retry (retries are for
+        exceptions).
 
     Raises:
         ValueError: If two in-scope questions share identical text (they would
@@ -881,7 +1027,11 @@ def generate_answers(
                 error = f"{type(e).__name__}: {e}"
                 if attempt < retries and retry_backoff:
                     time.sleep(retry_backoff * (attempt + 1))
-        answers[question] = {"result": result, "error": error}
+        answers[question] = {
+            "result": result,
+            "error": error,
+            "generation_status": _normalise_answer(result)[1],
+        }
 
     return answers
 
@@ -1238,6 +1388,7 @@ def _format_report(
             f"Refusal accuracy: {refusals['refused']}/{refusals['total']} = "
             f"{refusals['accuracy']:.3f}"
         )
+        lines.extend(_refusal_disclosure_lines(refusals))
     lines.append("")
 
     lines.append("## Per-question detail")
@@ -1252,6 +1403,12 @@ def _format_report(
         )
     if refusals is not None:
         for q in refusals["per_question"]:
+            if q["refused"] is None:
+                lines.append(
+                    f"- [refusal] excluded ({q.get('generation_status')}) "
+                    f":: {q['question']}"
+                )
+                continue
             status = "refused" if q["refused"] else "answered"
             lines.append(f"- [refusal] {status} :: {q['question']}")
 
@@ -1264,7 +1421,7 @@ def run_eval(
     skip_refusals: bool = False,
     results_path: str = PARTIAL_RESULTS_PATH,
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
-    answer_fn: Optional[Callable[[str], str]] = None,
+    answer_fn: Optional[Callable[[str], Any]] = None,
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     persist_directory: str = CHROMA_PERSIST_DIR,
 ) -> Dict[str, Any]:
@@ -1360,16 +1517,22 @@ def run_eval(
     else:
         if answer_fn is None:
 
-            def answer_fn(question: str) -> str:
+            def answer_fn(question: str) -> Dict[str, Any]:
                 """Answer via the run's single load-once retrieve_fn, then generate.
 
                 Derived from the SAME retrieve_fn as the retrieval pass so the
                 whole run opens the store and unpickles the BM25 index exactly
-                once, not once per evaluate_* pass.
+                once, not once per evaluate_* pass. Returns the answer with its
+                generation status (H1c) so the refusal scorer can exclude
+                incomplete drafts.
                 """
-                return generate_with_sources(
+                res = generate_with_sources(
                     question, retrieve_fn(question, top_k=top_k)
-                )["answer"]
+                )
+                return {
+                    "answer": res["answer"],
+                    "generation_status": res.get("generation_status", STATUS_UNKNOWN),
+                }
 
         refusals = evaluate_refusals(
             golden, answer_fn=answer_fn, top_k=top_k, persist_directory=persist_directory
@@ -1449,14 +1612,17 @@ def run_eval_matrix(
     generated iff refusals are scored; in-corpus answers iff completeness is
     scored or the judge is on.
 
-    Canonical guard (Design 5 / D46 v3): with no explicit ``results_path``, the
+    Canonical guard (Design 5 / D46 v3, extended through D51 and H1c to v5): with no explicit ``results_path``, the
     committed ``eval/results.md`` is written ONLY by a fully canonical run — a
     held-out set AND a realistic set both present with answerable hybrid
     results, all four ``EVAL_MODES``, distinct realpaths across every input set,
     refusals AND completeness scored, ``top_k == 6``, zero generation errors,
-    and query expansion actually attempted (>=1) with zero fallbacks. Anything
-    less writes the gitignored ``eval/results_partial.md``. The report is
-    written atomically.
+    zero generation_incomplete rows (truncated/declined/incomplete), zero
+    ``unknown``-status rows, query expansion actually attempted (>=1) with zero
+    fallbacks, the BM25 sidecar loaded whenever a default retrieval path ran
+    (D51), and a judge pass that judged >=1 item per set with zero API/parse
+    errors (D51). Anything less writes the gitignored
+    ``eval/results_partial.md``. The report is written atomically.
 
     Args:
         set_specs: ``[(label, path), ...]`` — one entry per question set. A label
@@ -1656,6 +1822,8 @@ def run_eval_matrix(
 
     sets: List[Dict[str, Any]] = []
     total_generation_errors = 0
+    total_incomplete_by_status = {st: 0 for st in INCOMPLETE_STATUSES}
+    total_unknown = 0
     judge_dump_records: List[Dict[str, Any]] = []
 
     for label, path in set_specs:
@@ -1699,15 +1867,20 @@ def run_eval_matrix(
 
         refusals = None
         if not skip_refusals:
-            def _answer_fn(question: str, _a: Dict[str, Any] = answers) -> str:
+            def _answer_fn(
+                question: str, _a: Dict[str, Any] = answers
+            ) -> Dict[str, Any]:
                 # A generation error yields "" -> is_refusal("")=False -> scored
                 # as "not refused". That is the CONSERVATIVE direction (it can
                 # only DEFLATE refusal accuracy, never inflate it) and a run with
                 # any generation error is already flagged non-canonical and
                 # discloses the error count, so the deflation is never silent.
+                # H1c: also carries the generation status (an errored row is
+                # status "error"; an incomplete one is excluded from the
+                # accuracy denominator by evaluate_refusals).
                 cached = _a.get(question) or {}
-                result = cached.get("result") or {}
-                return result.get("answer", "")
+                text, status = _normalise_answer(cached.get("result"))
+                return {"answer": text, "generation_status": status}
 
             refusals = evaluate_refusals(golden, answer_fn=_answer_fn)
 
@@ -1734,9 +1907,20 @@ def run_eval_matrix(
                         "gate_outcome": None,
                         "n_grounded": 0,
                         "n_citations": 0,
+                        "generation_status": STATUS_ERROR,
                     }
                     continue
-                answer = res.get("answer", "")
+                answer, row_status = _normalise_answer(res)
+                if row_status in INCOMPLETE_STATUSES:
+                    refusal_detail[entry["question"]] = {
+                        "error": None,
+                        "is_caveat": None,
+                        "gate_outcome": None,
+                        "n_grounded": 0,
+                        "n_citations": 0,
+                        "generation_status": row_status,
+                    }
+                    continue
                 citation_check = res.get("citation_check", {})
                 refusal_detail[entry["question"]] = {
                     "error": None,
@@ -1747,6 +1931,7 @@ def run_eval_matrix(
                     "gate_outcome": res.get("gate_outcome"),
                     "n_grounded": len(citation_check.get("grounded", [])),
                     "n_citations": len(res.get("citations", [])),
+                    "generation_status": row_status,
                 }
 
         completeness = None
@@ -1765,6 +1950,8 @@ def run_eval_matrix(
                 result = cached.get("result")
                 if result is None:
                     continue  # generation error — nothing to judge
+                if _normalise_answer(result)[1] in INCOMPLETE_STATUSES:
+                    continue  # cut-off/declined draft — not a judgeable answer
                 if is_refusal(result["answer"]):
                     continue  # judge is conditional on a non-refused answer
                 context = format_context(
@@ -1786,6 +1973,21 @@ def run_eval_matrix(
             for record in judge_result.get("per_item", []):
                 judge_dump_records.append({"set": label, **record})
 
+        row_statuses = [_normalise_answer(a["result"])[1] for a in answers.values()]
+        status_counts = _status_counts(row_statuses)
+        set_incomplete = {st: status_counts[st] for st in INCOMPLETE_STATUSES}
+        total_incomplete_by_status = {
+            st: total_incomplete_by_status[st] + n for st, n in set_incomplete.items()
+        }
+        total_unknown += status_counts[STATUS_UNKNOWN]
+        answer_chars = _answer_chars_stats(
+            [
+                len(_normalise_answer(a["result"])[0])
+                for a in answers.values()
+                if a["result"] is not None
+            ]
+        )
+
         sets.append(
             {
                 "label": label,
@@ -1799,6 +2001,10 @@ def run_eval_matrix(
                 "completeness": completeness,
                 "judge": judge_result,
                 "generation_errors": generation_errors,
+                "generation_incomplete": set_incomplete,
+                "generation_incomplete_total": sum(set_incomplete.values()),
+                "generation_unknown": status_counts[STATUS_UNKNOWN],
+                "answer_chars": answer_chars,
             }
         )
 
@@ -1892,6 +2098,7 @@ def run_eval_matrix(
         and s["judge"].get("parse_errors", 0) == 0
         for s in sets
     )
+    total_incomplete = sum(total_incomplete_by_status.values())
     is_canonical = (
         heldout_has_answerable
         and realistic_has_answerable
@@ -1901,6 +2108,8 @@ def run_eval_matrix(
         and (not skip_completeness)
         and top_k == 6
         and total_generation_errors == 0
+        and total_incomplete == 0
+        and total_unknown == 0
         and rewrite_attempts > 0
         and rewrite_fallbacks == 0
         and (bm25_loaded or not bm25_default_path_in_play)
@@ -1933,6 +2142,9 @@ def run_eval_matrix(
         "generation_ran": generation_ran,
         "include_types": include_types,
         "generation_errors": total_generation_errors,
+        "generation_incomplete": total_incomplete,
+        "generation_incomplete_by_status": total_incomplete_by_status,
+        "generation_unknown": total_unknown,
         "expansion_enabled": expansion_enabled,
         "rewrite_attempts": rewrite_attempts,
         "rewrite_fallbacks": rewrite_fallbacks,
@@ -1990,9 +2202,10 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
     # The report-title version tracks the CANONICAL-DEFINITION version, not a
     # free-running counter: D46 defined v3, D51 extended the canonical guards
     # (ownership-flag disclosure, judge-attempted requirement) and bumped it to
-    # v4 (merge-gate FIX 6). Bump this string only when the canonical definition
-    # itself changes.
-    lines.append("# Legal RAG Evaluation Report v4 (held-out + realistic, ablated)")
+    # v4 (merge-gate FIX 6); H1c added the generation-status guards (zero
+    # incomplete, zero unknown) and bumped it to v5. Bump this string only when
+    # the canonical definition itself changes.
+    lines.append("# Legal RAG Evaluation Report v5 (held-out + realistic, ablated)")
     lines.append("")
     lines.append(f"- Date: {datetime.now().isoformat()}")
     lines.append(f"- top_k: {top_k}")
@@ -2081,6 +2294,19 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             f"- generation errors: {result['generation_errors']} "
             "(run is NON-canonical)"
         )
+    if result.get("generation_incomplete"):
+        by_status = result["generation_incomplete_by_status"]
+        lines.append(
+            f"- generation incomplete (excluded from completeness, judge and "
+            f"refusal accuracy): {result['generation_incomplete']} "
+            f"({', '.join(f'{st}={by_status[st]}' for st in INCOMPLETE_STATUSES)}) "
+            "(run is NON-canonical)"
+        )
+    if result.get("generation_unknown"):
+        lines.append(
+            f"- generation status unknown (no stop reason returned): "
+            f"{result['generation_unknown']} (run is NON-canonical)"
+        )
     lines.append("")
     lines.append("Question sets:")
     for s in sets:
@@ -2101,6 +2327,12 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
         lines.append(f"  - path: {s['path']}")
         lines.append(f"  - sha256: {s['sha256']}")
         lines.append(f"  - question counts: {counts_str} (n={s['n_questions']})")
+        stats = s.get("answer_chars")
+        if stats is not None:
+            lines.append(
+                f"  - generated answer_chars: n={stats['n']}, max={stats['max']}, "
+                f"p95={stats['p95']} (metadata only)"
+            )
     lines.append("")
 
     # ---- Headline -----------------------------------------------------------
@@ -2208,6 +2440,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                 f"{ref['accuracy']:.3f} (95% CI {low:.3f}–{high:.3f}) "
                 f"| {ref['refused']}/{ref['total']} |"
             )
+        lines.extend(_refusal_disclosure_lines(ref))
         lines.append("")
         if comp is not None:
             lines.append("Answer quality on the answerable questions:")
@@ -2235,6 +2468,18 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             if comp["errors"]:
                 lines.append(
                     f"- generation errors on answerable questions: {comp['errors']}"
+                )
+            if comp.get("generation_incomplete_total"):
+                inc = comp["generation_incomplete"]
+                lines.append(
+                    f"- generation incomplete on answerable questions (excluded "
+                    f"from every rate above): {comp['generation_incomplete_total']} "
+                    f"({', '.join(f'{st}={inc[st]}' for st in INCOMPLETE_STATUSES)})"
+                )
+            if comp.get("unknown"):
+                lines.append(
+                    f"- answerable answers with unknown generation status: "
+                    f"{comp['unknown']}"
                 )
             dist = comp["gate_outcome_distribution"]
             dist_str = ", ".join(f"{o}={dist.get(o, 0)}" for o in GATE_OUTCOMES)
@@ -2293,7 +2538,10 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                 extra = ""
                 grow = gate_by_q.get(q["question"])
                 if grow is not None:
-                    extra = f" gate={grow['gate_outcome']}"
+                    if grow.get("generation_status") in INCOMPLETE_STATUSES:
+                        extra = f" (generation {grow['generation_status']})"
+                    else:
+                        extra = f" gate={grow['gate_outcome']}"
                 lines.append(
                     f"- [{q['type']}] strict={strict}(rank={q['first_strict_rank']}) "
                     f"related={related}(rank={q['first_related_rank']}) "
@@ -2309,7 +2557,10 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
             for q in s["refusals"]["per_question"]:
                 status = "refused" if q["refused"] else "answered"
                 d = detail_map.get(q["question"])
-                if d is None:
+                if q["refused"] is None:
+                    status = "excluded"
+                    extra = f" (generation {q.get('generation_status')})"
+                elif d is None:
                     extra = ""
                 elif d["error"] is not None:
                     extra = " (generation error)"

@@ -10,16 +10,8 @@ import logging
 import sys
 from typing import Any, Dict, Optional
 
-from src.audit import (
-    ACTION_BLOCKED_UNVERIFIED,
-    ACTION_NO_RESULTS,
-    ACTION_REFUSAL_SHOWN,
-    ACTION_SHOWN,
-    ACTION_SHOWN_UNVERIFIED_OVERRIDE,
-    ACTION_SHOWN_WITH_WARNING,
-    build_event,
-    log_event,
-)
+from src import grounding
+from src.audit import build_event, log_event
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
 from src.embedder import (
     CHROMA_PERSIST_DIR,
@@ -28,13 +20,7 @@ from src.embedder import (
     sync_documents,
 )
 from src.evaluator import EVAL_MODES
-from src.generator import generate_with_sources, is_refusal
-from src.grounding import (
-    CITATIONS_UNVERIFIED,
-    CITATIONS_VERIFIED,
-    PARTIALLY_VERIFIED,
-    REFUSAL,
-)
+from src.generator import generate_with_sources
 from src.ingest import (
     load_directory,
     load_handbook_pdf,
@@ -42,6 +28,7 @@ from src.ingest import (
     load_pdf,
 )
 from src.query_rewrite import Expansion, expand_query
+from src.render import RenderFlags, render
 from src.retriever import (
     DEFAULT_TOP_K,
     load_retrieval_context,
@@ -218,6 +205,9 @@ def _write_audit(
     citations: list,
     answer: str,
     expansion: Optional[Expansion] = None,
+    stop_reason: Optional[str] = None,
+    generation_status: str = grounding.STATUS_UNKNOWN,
+    uncited_count: Optional[int] = None,
 ) -> None:
     """Build and append exactly one audit event, tolerating log failures.
 
@@ -248,6 +238,9 @@ def _write_audit(
             citation_check=citation_check,
             citations=citations,
             answer=answer,
+            stop_reason=stop_reason,
+            generation_status=generation_status,
+            uncited_count=uncited_count,
         )
         if expansion is not None:
             event_kwargs["rewrites"] = list(expansion.rewrites)
@@ -260,46 +253,6 @@ def _write_audit(
         log_event(build_event(**event_kwargs))
     except Exception as e:  # noqa: BLE001 — an audit hiccup must not fail a query
         print(f"⚠ audit log write failed: {e}")
-
-
-def _print_answer_and_sources(answer: str, sources: list) -> None:
-    """Print the answer body and its extracted citation list.
-
-    The shared opening of every branch that shows the draft (legacy fallback,
-    CITATIONS_VERIFIED, PARTIALLY_VERIFIED) — one owner so the branches
-    cannot drift apart on wording or format.
-    """
-    print(f"\nAnswer:\n{answer}")
-    if sources:
-        print("\nCitations found:")
-        for source in sources:
-            print(f"  - {source}")
-
-
-def _print_retrieved_sources(results: list) -> None:
-    """Print one locator+pages line per retrieved chunk, no chunk text.
-
-    Used by the CITATIONS_UNVERIFIED paths (both the block notice and the
-    ``--show-unverified`` draft) so a reviewer can see what the answer was
-    matched against. Reuses ``locator_label`` (D34) so the APPENDIX grammar
-    stays identical to every other display surface; the page range uses the
-    same en-dash as the chunk prefix and retriever header. ``page_start`` is
-    stored as an explicit ``None`` when OCR found no printed page number, so
-    the missing-page guard must test the value, not the key.
-    """
-    print("\nRetrieved sources (for manual review):")
-    for r in results:
-        meta = r["document"].metadata
-        section = meta.get("section_number") or "—"
-        p_start = meta.get("page_start")
-        p_end = meta.get("page_end")
-        if p_start is None:
-            pages = f"pp.?–{p_end}" if p_end is not None else "p.?"
-        elif p_end and p_end != p_start:
-            pages = f"pp.{p_start}–{p_end}"
-        else:
-            pages = f"p.{p_start}"
-        print(f"  - {locator_label(section)}  {pages}")
 
 
 def query(
@@ -334,15 +287,18 @@ def query(
             ``main()`` already passes it by keyword.
 
     Returns:
-        Dict with answer, citations, sources, source_documents,
-        citation_check ({grounded, ungrounded}), gate_outcome, and
-        answer_chars — the same key set on every path, so callers (e.g. the
-        Phase 5 eval) never need key guards. ``answer_chars`` is the generated
-        draft's length (0 when retrieval was empty and no draft ever existed);
-        ``gate_outcome`` is None for the no-results path and legacy/ungated
-        results. When the gate blocks an answer (CITATIONS_UNVERIFIED without
-        ``show_unverified``), ``answer`` is a block notice and the draft text
-        is withheld — ``answer_chars`` is then the only trace of its size.
+        ``render().public_result`` (src/render.py): the same key set on every
+        path — answer, gate_outcome, citations, sources, citation_check,
+        source_documents, answer_chars, generation_status, stop_reason and
+        uncited_count — so callers (e.g. the Phase 5 eval) never need key
+        guards. ``answer_chars`` is the generated draft's length (0 when
+        retrieval was empty). ``gate_outcome`` is None for no-results and
+        legacy/ungated results. When the answer is withheld (CITATIONS_UNVERIFIED
+        without ``show_unverified``, or a terminal generation outcome),
+        ``answer`` is a synthesised notice and the draft is never returned;
+        ``answer_chars`` is then the only trace of its size. ``uncited_count`` is
+        an int only for shown verified/partial answers and the override draft,
+        else None.
     """
     # Build the store and BM25 sidecar once and inject them (load-once, D37);
     # retrieve() skips its per-call construction when injected, and the shared
@@ -366,8 +322,8 @@ def query(
     )
 
     if not results:
-        msg = "No relevant documents found. Please index some documents first."
-        print(f"\n{msg}")
+        rendered = render(None, RenderFlags(no_results=True))
+        print(rendered.display_text)
         # The gate never ran (there was nothing to ground against), so the audit
         # record carries gate_outcome=None and the no_results action.
         _write_audit(
@@ -376,24 +332,17 @@ def query(
             document_type=document_type,
             results=[],
             gate_outcome=None,
-            action=ACTION_NO_RESULTS,
-            citation_check={"grounded": [], "ungrounded": []},
+            action=rendered.action,
+            citation_check=rendered.public_result["citation_check"],
             citations=[],
             # Generation never ran — record a zero-length draft, not the
             # length of this UI notice, so log analysis can't mistake
             # no_results rows for real answers.
             answer="",
             expansion=expansion,
+            generation_status=rendered.public_result["generation_status"],
         )
-        return {
-            "answer": msg,
-            "citations": [],
-            "sources": [],
-            "source_documents": [],
-            "citation_check": {"grounded": [], "ungrounded": []},
-            "gate_outcome": None,
-            "answer_chars": 0,
-        }
+        return rendered.public_result
 
     logger.info("Retrieved %d relevant chunks", len(results))
 
@@ -421,149 +370,35 @@ def query(
 
     # Generate answer with citations
     result = generate_with_sources(question, results)
-    # Direct indexing on purpose: generate_with_sources always sets these
-    # keys, and a defensive default here would mask an upstream regression as
-    # a fully-unverified answer instead of raising at the real bug.
-    draft_answer = result["answer"]
-    citations = result["citations"]
-    citation_check = result["citation_check"]
-    ungrounded = citation_check["ungrounded"]
-    outcome = result.get("gate_outcome")
-
-    # Default: pass generate_with_sources' dict through unchanged. Only the
-    # gated-block branch replaces it with a withheld-draft dict; every other
-    # outcome (and the legacy fallback) returns the real result untouched.
-    return_value: Dict[str, Any] = result
-
-    if outcome is None:
-        # FALLBACK (belt and braces): no gate outcome means a legacy caller or a
-        # mock that predates the grounding gate. Reproduce the exact v1 display —
-        # answer + citations + zero-citation warning + ungrounded warning — and
-        # log it as a plain "shown". Real generate_with_sources always sets
-        # gate_outcome, so production never reaches this branch. (Remove it when
-        # the legacy-mock fixtures in tests/test_pipeline.py migrate to
-        # gate_outcome-carrying mocks — it exists for them, not for production.)
-        _print_answer_and_sources(draft_answer, result["sources"])
-        # A non-refusal answer with no extractable citations is invisible to
-        # citation_check (there is nothing to validate), so it needs its own
-        # flag: otherwise it reads exactly like a grounded answer even though a
-        # reader has no locator to check it against.
-        if not is_refusal(draft_answer) and not citations:
-            print(
-                "\n⚠ WARNING: this answer contains no citations and could not be "
-                "verified\n  against the retrieved sources — treat it as "
-                "unverified."
-            )
-        # Ungrounded citations are a correctness signal, not a debugging aid —
-        # always show them so an invented locator is never mistaken for a real
-        # one just because --verbose was left off.
-        if ungrounded:
-            print("\n⚠ Ungrounded citations (not matched to any retrieved chunk):")
-            for citation in ungrounded:
-                print(f"  - {citation['raw']}")
-        action = ACTION_SHOWN
-
-    elif outcome == REFUSAL:
-        # The answer IS the refusal sentence — print it as-is, no warnings.
-        print(f"\nAnswer:\n{draft_answer}")
-        action = ACTION_REFUSAL_SHOWN
-
-    elif outcome == CITATIONS_VERIFIED:
-        _print_answer_and_sources(draft_answer, result["sources"])
-        print(
-            "\n✓ All citations resolve to a retrieved passage (locator and page "
-            "checked — this does not verify the passage supports the claim)."
-        )
-        action = ACTION_SHOWN
-
-    elif outcome == PARTIALLY_VERIFIED:
-        _print_answer_and_sources(draft_answer, result["sources"])
-        # Name every unverified citation so a reader knows exactly which
-        # locators to double-check before relying on them.
-        print(
-            f"\n⚠ {len(ungrounded)} of {len(citations)} citations could not be "
-            "verified against the retrieved sources — check these before relying "
-            "on them:"
-        )
-        for citation in ungrounded:
-            print(f"  - {citation['raw']}")
-        action = ACTION_SHOWN_WITH_WARNING
-
-    else:  # CITATIONS_UNVERIFIED
-        if show_unverified:
-            # Explicit operator override: show the draft, clearly branded as
-            # unverified, plus the retrieved sources it was matched against.
-            print("\nUNVERIFIED DRAFT — do not rely on this text")
-            print(f"\nAnswer:\n{draft_answer}")
-            _print_retrieved_sources(results)
-            action = ACTION_SHOWN_UNVERIFIED_OVERRIDE
-            # return_value stays as the real result (draft included).
-        else:
-            # Fail closed: the draft's citations could not be verified, so the
-            # answer body is withheld. Show only the retrieved source headers
-            # (no chunk text) so a reader can review the ground manually.
-            print("\n🚫 BLOCKED — CITATIONS UNVERIFIED")
-            print(
-                "This answer's citations could not be verified against the "
-                "retrieved sources, so it is withheld. This does NOT mean the "
-                "answer is absent from the corpus."
-            )
-            # Name the locators that failed verification — an operator triaging
-            # a block needs to see WHICH citations the draft tried to rely on
-            # (locator strings only, never draft text).
-            if ungrounded:
-                print("\nUnverified citations in the withheld draft:")
-                for citation in ungrounded:
-                    print(f"  - {citation['raw']}")
-            _print_retrieved_sources(results)
-            print(
-                "\nTry rephrasing the question, raising --top-k, or use "
-                "--show-unverified to see the unverified draft."
-            )
-            action = ACTION_BLOCKED_UNVERIFIED
-            # Build a NEW dict so the draft text never leaves this function.
-            # Deliberate key-by-key allowlist, NOT {**result, ...}: a spread
-            # would silently forward any future key that carries draft text —
-            # fail-open. New keys must be consciously added here.
-            # answer_chars lets a caller see a draft existed without seeing it.
-            return_value = {
-                "answer": (
-                    "BLOCKED — CITATIONS UNVERIFIED: the answer was withheld "
-                    "because its citations could not be verified against the "
-                    "retrieved sources."
-                ),
-                "gate_outcome": outcome,
-                "citations": citations,
-                "sources": result["sources"],
-                "citation_check": citation_check,
-                "source_documents": result["source_documents"],
-                "answer_chars": len(draft_answer),
-            }
+    # The verbose chunk-score print above stays before rendering; everything the
+    # user sees about the answer, the audit action and the returned dict come
+    # from one pure function (src/render.py) so they cannot drift apart.
+    rendered = render(
+        result, RenderFlags(show_unverified=show_unverified, retrieved=results)
+    )
+    print(rendered.display_text)
+    public = rendered.public_result
 
     # One audit event per query, after the display decision so `action` is
     # final. The REAL draft answer goes to build_event (it records only the
-    # length, never the text — see src/audit.py).
+    # length, never the text — see src/audit.py). uncited_count is None in the
+    # public result when the hint was not computed; the audit records null too.
     _write_audit(
         question=question,
         top_k=top_k,
         document_type=document_type,
         results=results,
-        gate_outcome=outcome,
-        action=action,
-        citation_check=citation_check,
-        citations=citations,
-        answer=draft_answer,
+        gate_outcome=public["gate_outcome"],
+        action=rendered.action,
+        citation_check=public["citation_check"],
+        citations=public["citations"],
+        answer=result["answer"],
         expansion=expansion,
+        stop_reason=public["stop_reason"],
+        generation_status=public["generation_status"],
+        uncited_count=public["uncited_count"],
     )
-
-    # Uniform return shape: every path carries answer_chars (the generated
-    # draft's length — 0 on the no-results path, where no draft ever existed)
-    # and gate_outcome (None for legacy/ungated results). On shown paths
-    # answer_chars equals len(answer); on the blocked path it is the only
-    # trace of the withheld draft's size.
-    return_value.setdefault("answer_chars", len(draft_answer))
-    return_value.setdefault("gate_outcome", None)
-    return return_value
+    return public
 
 
 def main():

@@ -6,13 +6,20 @@ it imports lazily (``src.generator.is_refusal``) is exercised through the real
 string, not a mock.
 """
 
+import pytest
+
 from src.generator import CAVEAT_PREFIX, REFUSAL_PHRASE
 from src.grounding import (
     CITATIONS_UNVERIFIED,
     CITATIONS_VERIFIED,
     PARTIALLY_VERIFIED,
     REFUSAL,
+    TERMINAL_OUTCOMES,
+    UNKNOWN_STATUS_NOTICE,
+    WITHHELD_NOTICES,
     classify,
+    generation_outcome,
+    status_from_stop_reason,
 )
 
 # A grounded/ungrounded citation dict, shaped like extract_citations output.
@@ -121,3 +128,53 @@ class TestClassifyCaveatForm:
             answer, [], {"grounded": [], "ungrounded": []}
         )
         assert outcome == CITATIONS_UNVERIFIED
+
+
+class TestGenerationOutcome:
+    @pytest.mark.parametrize(
+        "status,outcome",
+        [
+            ("truncated", "ANSWER_TRUNCATED"),
+            ("declined", "MODEL_DECLINED"),
+            ("incomplete", "GENERATION_INCOMPLETE"),
+            ("complete", None),
+            ("unknown", None),
+            (None, None),
+            ("bogus", "GENERATION_INCOMPLETE"),  # fails closed
+        ],
+    )
+    def test_mapping(self, status, outcome):
+        assert generation_outcome(status) == outcome
+
+    def test_status_from_stop_reason_table(self):
+        table = {
+            "end_turn": "complete",
+            "stop_sequence": "complete",
+            "max_tokens": "truncated",
+            "model_context_window_exceeded": "truncated",
+            "refusal": "declined",
+            "pause_turn": "incomplete",
+            "tool_use": "incomplete",
+            None: "unknown",
+        }
+        for reason, status in table.items():
+            assert status_from_stop_reason(reason) == status
+
+    def test_exact_notice_texts(self):
+        assert set(WITHHELD_NOTICES) == set(TERMINAL_OUTCOMES)
+        assert WITHHELD_NOTICES["ANSWER_TRUNCATED"] == (
+            "WITHHELD \u2014 ANSWER INCOMPLETE: the answer was cut off before it was "
+            "complete and has been withheld. Try a narrower question."
+        )
+        assert WITHHELD_NOTICES["MODEL_DECLINED"] == (
+            "WITHHELD \u2014 the model declined to answer this request. Rephrase the "
+            "question or consult the handbook directly."
+        )
+        assert WITHHELD_NOTICES["GENERATION_INCOMPLETE"] == (
+            "WITHHELD \u2014 answer generation did not complete normally and the "
+            "answer has been withheld. Please retry."
+        )
+        assert UNKNOWN_STATUS_NOTICE == (
+            "\u26a0 Completion status could not be confirmed (no stop reason "
+            "returned) \u2014 check this answer with extra care."
+        )

@@ -34,9 +34,16 @@ this chunker; but an arbitrary PDF will not suffice.
         │                     reciprocal rank fusion (rewrites capped below the original's vote)
         ▼  src/generator.py   Claude drafts a graded answer citing [Handbook, para 3.2.1, p.87]
         │
-        ▼  src/grounding.py   fail-closed gate: every citation checked against a retrieved chunk.
+        ▼  src/grounding.py   fail-closed gate: every citation must fall inside a retrieved chunk
+        │                     (section equal or nested either way, page within the chunk's pages);
+        │                     not proof the exact paragraph exists or supports the claim; uncited
+        │                     statements are not checked. Terminal outcomes first: truncated / declined /
+        │                     incomplete generation → WITHHELD, no sources, no override.
         │                     none verified → answer WITHHELD (sources shown, draft on request);
-        │                     some verified → shown with a warning naming the unverified ones
+        │                     some verified → shown with a warning naming the unverified ones;
+        │                     verified/partial answers get a Source label, a display-only
+        │                     uncited-statement hint and a research-aid disclaimer (an override
+        │                     draft gets the hint and disclaimer; a refusal gets none)
         ▼  src/audit.py       append-only event log (query + rewrite HASHES + retrieval + gate
                               outcome; no text)
 ```
@@ -103,8 +110,8 @@ Negatives hold the Phase 13 calibration total (11/14), with the boundary rows sh
 sets (the sampling sensitivity D44 documents). Since Phase 14 the answer style is synthesis-first
 (D49): comparison questions get an organized comparative answer (basis of comparison, both sides,
 explicit contrast, unsupported points named as gaps) with a bracketed locator still on every
-sentence, and the ✓-display now states exactly what the gate checks (locator resolution, not
-entailment).
+sentence, and the ✓-display now states exactly what the gate checks (locator resolution against a related
+section and its page span, not exact-paragraph existence or entailment).
 
 The refusal rows are reported with their reasoning, not hidden: the three negatives that answer
 instead of refusing in run #3 (tenancy-termination notice and compulsory-purchase compensation on
