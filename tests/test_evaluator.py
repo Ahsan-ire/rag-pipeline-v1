@@ -1898,6 +1898,41 @@ class TestRunEvalMatrix:
         # Not canonical (skipped passes) -> partial path.
         assert result["results_path"].endswith("results_partial.md")
 
+    def test_keyed_environment_offline_run_makes_zero_model_calls(
+        self, tmp_path, monkeypatch
+    ):
+        """H (j): with a live-looking API key in the environment, the offline
+        shape (both skips, no judge) must still construct NO model client — not
+        for generation, and not for Haiku query expansion (the REAL expand_query
+        runs here, unpatched, so a regression that built the rewrite LLM would
+        trip the spy)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-keyed-env-fixture")
+        constructed = []
+
+        def spy(*a, **k):
+            constructed.append((a, k))
+            raise AssertionError("model client constructed in an offline run")
+
+        monkeypatch.setattr("src.generator.ChatAnthropic", spy)
+        monkeypatch.setattr("src.query_rewrite.ChatAnthropic", spy)
+        self._patch_paths(monkeypatch, tmp_path)
+        gp = _matrix_golden(tmp_path, "heldout_set.jsonl", self._golden_entries())
+        calls = []
+
+        result = run_eval_matrix(
+            [("held-out", gp)],
+            retrieve_fn_factory=self._retrieve_factory(),
+            generate_fn=self._generate_fn(calls),
+            provenance_fn=self._prov,
+            skip_refusals=True,
+            skip_completeness=True,
+            judge=False,
+        )
+
+        assert constructed == []
+        assert calls == []
+        assert result["expansion_enabled"] is False
+
     def test_matrix_report_disambiguates_report_only_dirty(self, tmp_path, monkeypatch):
         """Merge-gate finding #4 (15 Jul): the matrix formatter must render the
         git_dirty_other disambiguation like the legacy formatter, not a bare
