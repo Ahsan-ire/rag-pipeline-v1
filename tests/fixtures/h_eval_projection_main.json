@@ -1,0 +1,10251 @@
+{
+ "main_sha": "85a42831331124f5d5667ff7b47e9e1f381737c9",
+ "tests": {
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_all_refusal_answerable_set": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 2,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 1.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 0,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 2
+     },
+     "refused": 2,
+     "rows": [
+      [
+       "Q1",
+       null,
+       true,
+       "REFUSAL",
+       1,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       "Q2",
+       null,
+       true,
+       "REFUSAL",
+       1,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": null,
+     "sum_citations": 0,
+     "sum_cited_sentences": 0,
+     "sum_grounded": 0,
+     "sum_sentences": 0,
+     "total": 2
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_caveat_near_match_one_char_off_not_stripped": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       3,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 0.3333333333333333,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 3,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_caveat_prefix_exempt_from_coverage": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_caveat_prefix_mid_answer_not_stripped": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       3,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 0.3333333333333333,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 3,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_caveat_prefix_twice_at_start_only_first_stripped": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       2,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 0.5,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 2,
+     "total": 1
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_generation_error_row_counted_not_scored": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 1,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "Q2",
+       "api boom",
+       null,
+       null,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_micro_averaged_coverage_and_grounding": {
+   "completeness": [
+    {
+     "blocked": 1,
+     "citation_grounded_fraction": 0.6666666666666666,
+     "coverage_excluded_refusals": 1,
+     "errors": 0,
+     "false_block_rate": 0.3333333333333333,
+     "false_refusal_rate": 0.3333333333333333,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 1,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 1
+     },
+     "refused": 1,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       2,
+       2,
+       2,
+       2,
+       0
+      ],
+      [
+       "Q2",
+       null,
+       true,
+       "REFUSAL",
+       1,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       "Q3",
+       null,
+       false,
+       "CITATIONS_UNVERIFIED",
+       2,
+       1,
+       1,
+       0,
+       1
+      ]
+     ],
+     "sentence_citation_coverage": 0.75,
+     "sum_citations": 3,
+     "sum_cited_sentences": 3,
+     "sum_grounded": 2,
+     "sum_sentences": 4,
+     "total": 3
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_per_question_carries_counts_not_answer_text": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_rates_and_distribution": {
+   "completeness": [
+    {
+     "blocked": 1,
+     "citation_grounded_fraction": 0.6666666666666666,
+     "coverage_excluded_refusals": 1,
+     "errors": 0,
+     "false_block_rate": 0.3333333333333333,
+     "false_refusal_rate": 0.3333333333333333,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 1,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 1
+     },
+     "refused": 1,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       2,
+       2,
+       2,
+       2,
+       0
+      ],
+      [
+       "Q2",
+       null,
+       true,
+       "REFUSAL",
+       1,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       "Q3",
+       null,
+       false,
+       "CITATIONS_UNVERIFIED",
+       2,
+       1,
+       1,
+       0,
+       1
+      ]
+     ],
+     "sentence_citation_coverage": 0.75,
+     "sum_citations": 3,
+     "sum_cited_sentences": 3,
+     "sum_grounded": 2,
+     "sum_sentences": 4,
+     "total": 3
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateCompleteness::test_zero_citation_answer_gives_na_grounding": {
+   "completeness": [
+    {
+     "blocked": 1,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 1.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 1,
+      "CITATIONS_VERIFIED": 0,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "Q1",
+       null,
+       false,
+       "CITATIONS_UNVERIFIED",
+       2,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 0.0,
+     "sum_citations": 0,
+     "sum_cited_sentences": 0,
+     "sum_grounded": 0,
+     "sum_sentences": 2,
+     "total": 1
+    }
+   ],
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestEvaluateRefusals::test_accuracy_zero_when_no_refusal_questions": {
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [],
+     "total": 0
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestEvaluateRefusals::test_canonical_phrase_alone_is_refused": {
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "What is the CGT rate?",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestEvaluateRefusals::test_non_refusal_questions_are_excluded": {
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "Q2",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestEvaluateRefusals::test_phrase_with_citation_is_not_refused": {
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [
+      [
+       "What is the CGT rate?",
+       false
+      ]
+     ],
+     "total": 1
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_atomic_write_failure_preserves_original": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_blocker_zero_generate_calls_when_both_skipped_no_judge": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_bm25_only_matrix_never_opens_chroma_or_checks_manifest": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_bm25_ownership_rule_four_combinations[False-False-True]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_bm25_ownership_rule_four_combinations[False-True-False]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_bm25_ownership_rule_four_combinations[True-False-False]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_bm25_ownership_rule_four_combinations[True-True-False]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_both_skips_disable_expansion_row_still_renders": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_canonical_full_run_writes_default": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_clean_judge_run_is_canonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_completeness_only_generates_in_corpus": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_d30_canaries_absent_from_report_present_in_dump": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "SECRET-ANSWER-PROSE [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nSECRET-CHUNK-PROSE\n---"
+     ],
+     [
+      "E1",
+      "SECRET-ANSWER-PROSE [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nSECRET-CHUNK-PROSE\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_default_factory_loads_each_backend_once_and_threads_mode": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_default_factory_missing_bm25_is_noncanonical_and_disclosed": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_default_factory_rewrite_mode_threads_rewrites": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_default_factory_with_loaded_bm25_is_canonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_duplicate_realpath_across_sets_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_empty_heldout_set_is_not_canonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 0,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [],
+     "sentence_citation_coverage": null,
+     "sum_citations": 0,
+     "sum_cited_sentences": 0,
+     "sum_grounded": 0,
+     "sum_sentences": 0,
+     "total": 0
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 4,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.5,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ],
+      [
+       "R2",
+       false
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [],
+     "total": 0
+    },
+    {
+     "rows": [],
+     "total": 0
+    },
+    {
+     "rows": [],
+     "total": 0
+    },
+    {
+     "rows": [],
+     "total": 0
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_expand_query_called_once_per_unique_question": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 0,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 0,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ],
+      [
+       "E2",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 0,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 0,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 5,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [
+      [
+       "R1",
+       false
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [
+      [
+       "R2",
+       false
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E2",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E2",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E2",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E2",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_expansion_fallback_makes_run_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 1
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_explicit_default_on_partial_run_raises": {
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_fallback_counted_on_bad_status_with_rewrites": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_fallback_counted_on_live_status_zero_rewrites": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_generation_error_makes_run_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 1,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       "RuntimeError: boom",
+       null,
+       null,
+       0,
+       0,
+       0,
+       0,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 1,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 1,
+     "sum_cited_sentences": 1,
+     "sum_grounded": 1,
+     "sum_sentences": 1,
+     "total": 1
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "E1",
+      "A [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 1,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [],
+     "total": 0
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "rows": [
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "rows": [
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "rows": [
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 1
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_generation_runs_once_per_included_question": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_invalid_top_k_rejected[-1]": {
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_invalid_top_k_rejected[0]": {
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_judge_errors_make_run_noncanonical[<lambda>-parse error]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_judge_errors_make_run_noncanonical[_raise_judge_api_error-api error]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_judge_forces_in_corpus_generation": {
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_judge_off_renders_not_run": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_judge_sample_zero_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_matrix_report_disambiguates_report_only_dirty": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_missing_heldout_label_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_mode_hybrid_answer_pass_still_uses_expansion": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": null,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       0,
+       0,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 0,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 0,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [
+      [
+       "R1",
+       false
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_modes_without_rewrite_still_expands_but_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_negative_judge_sample_rejected": {
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_no_judge_run_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_noncanonical_conditions_route_to_partial[kwargs0-not all 4 modes]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_noncanonical_conditions_route_to_partial[kwargs1-refusals skipped]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_noncanonical_conditions_route_to_partial[kwargs2-completeness skipped]": {
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_noncanonical_conditions_route_to_partial[kwargs3-top_k != 6]": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_partial_run_leaves_existing_default_byte_identical": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_realistic_absent_is_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_refusal_row_detail_for_canonical_refusal": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_refusal_row_detail_rendered_without_answer_text": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 0.0,
+     "refused": 0,
+     "rows": [
+      [
+       "R1",
+       false
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_refusals_only_generates_refusal_type": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_report_intent_counts_none_when_no_intent": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_report_shows_intent_weight_and_presence_counts": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_report_title_and_expansion_wording": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": true,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_results_path_equal_to_set_path_refused": {
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_results_path_symlink_alias_of_set_refused": {
+   "outcome": "passed"
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_symlink_aliased_sets_are_not_distinct_noncanonical": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_two_set_report_rendering": {
+   "completeness": [
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    },
+    {
+     "blocked": 0,
+     "citation_grounded_fraction": 1.0,
+     "coverage_excluded_refusals": 0,
+     "errors": 0,
+     "false_block_rate": 0.0,
+     "false_refusal_rate": 0.0,
+     "gate_outcome_distribution": {
+      "CITATIONS_UNVERIFIED": 0,
+      "CITATIONS_VERIFIED": 2,
+      "PARTIALLY_VERIFIED": 0,
+      "REFUSAL": 0
+     },
+     "refused": 0,
+     "rows": [
+      [
+       "D1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ],
+      [
+       "E1",
+       null,
+       false,
+       "CITATIONS_VERIFIED",
+       1,
+       1,
+       1,
+       1,
+       0
+      ]
+     ],
+     "sentence_citation_coverage": 1.0,
+     "sum_citations": 2,
+     "sum_cited_sentences": 2,
+     "sum_grounded": 2,
+     "sum_sentences": 2,
+     "total": 2
+    }
+   ],
+   "judge_inputs": [
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ],
+    [
+     [
+      "D1",
+      "A claim [Handbook, para 3.2, p.5].",
+      "[Handbook, para 3.2, p.5]\nchunk-text\n---"
+     ],
+     [
+      "E1",
+      "A claim [Handbook, para 5.1, p.5].",
+      "[Handbook, para 5.1, p.5]\nchunk-text\n---"
+     ]
+    ]
+   ],
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 3,
+     "rewrite_fallbacks": 3
+    }
+   ],
+   "outcome": "passed",
+   "refusals": [
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    },
+    {
+     "accuracy": 1.0,
+     "refused": 1,
+     "rows": [
+      [
+       "R1",
+       true
+      ]
+     ],
+     "total": 1
+    }
+   ],
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    },
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       1,
+       1
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  },
+  "tests/test_evaluator.py::TestRunEvalMatrix::test_vector_only_matrix_never_loads_bm25": {
+   "matrix": [
+    {
+     "generation_errors": 0,
+     "is_canonical": false,
+     "rewrite_attempts": 0,
+     "rewrite_fallbacks": 0
+    }
+   ],
+   "outcome": "passed",
+   "retrieval": [
+    {
+     "rows": [
+      [
+       "D1",
+       1,
+       1
+      ],
+      [
+       "E1",
+       null,
+       null
+      ]
+     ],
+     "total": 2
+    }
+   ]
+  }
+ }
+}
