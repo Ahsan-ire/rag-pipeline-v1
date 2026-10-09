@@ -1113,6 +1113,439 @@ These amendments override v3 where they conflict.
     protection is on for `main` (no force-push, no deletion, admins included; harness
     Layer 3).
 
+## Phase 16A — eval foundations — `phase-16a1-eval-instrument` → `v2.3.0`, then `phase-16a2-eval-data` → `v2.4.0` (spec v1, 9 Oct 2026)
+
+**Authority:** `docs/designs/003-roadmap-and-next-actions.md` §5 16A (normative) and §1.2 (Q1 scope
+classes, Q3 labeller + second reviewer, Q7 tutorial material private); astra B3, M8–M10; D54 (absorbed
+labels), D57 addendum (re-open condition), D59 (C4 and item 9 deferred here), D61, D64.
+- Runs under the standing go (D64). 16A is split so the instrument (16A-1) never waits on the owner;
+  only the data (16A-2) needs owner time, in **one** batched session.
+- **Ordering rule (003 16A.1):** no private question enters any eval run, cache or judge call until
+  16A-1 is merged.
+- D65–D70 are written during 16A-1, D71–D72 during 16A-2 (see Ledger).
+
+**Lanes** (every work item carries one):
+- **[C] Claude only:** touches corpus, `chroma_db/`, tutorial or private eval content (R1), or is
+  judgment-bearing integration.
+- **[W] worker-eligible (R0):** code that never needs corpus or eval content, built and tested on
+  synthetic fixtures only.
+  - Dispatched through `harness-worker` (Grok primary, DeepSeek/GLM fallback), but only after Track B's
+    B2 escape probes pass and OS-1's `worker_allow` is registered. Otherwise Claude implements it.
+  - Workers never receive real eval rows, `eval/private/`, held-out files or report output.
+  - Integration, the R1 canaries and the commit stay with Claude (`Implemented-by:` trailer).
+
+**Owner hard stops (D64), batched into two pings:**
+- **OS-1 (start of 16A-1; non-blocking):**
+  1. Review the `.harness/project.toml` diff and run `harness-init --refresh` (owner-only). The diff adds
+     `^eval/private/` to `never_commit`, adds `eval/private` to `restricted_read`, and puts the [W] globs in
+     `worker_allow`.
+  2. Say which further tutorials exist for 16A-2 sourcing, and whether colleagues' real queries can be
+     collected (optional).
+
+  If OS-1 goes unanswered, Claude does the [W] items. `eval/private/` is still protected by `.gitignore`,
+  `allow_ignored_adds = false` and the D63 check.
+- **OS-2 (16A-2 step 5; blocks sealing):** the single validation session.
+- Nothing else in 16A pings, except a D64 trigger (see Stop paths).
+
+### 16A-1 — instrument (fully agentic)
+
+**Evidence (checked on `main` 9ce4e07):**
+- **Question text in reports.** It reaches reports at `src/evaluator.py:1402–1413` (legacy
+  `_format_report`) and `:2549`, `:2572` (`_format_matrix_report`; 003's `:2297–2301` drifted after H).
+  Both reports are printed (`:1550`, `:2167`).
+- **Per-row state keyed by text.** Rows are keyed by question text at `:1899–1965` and `:2533–2559`.
+- **Judge dump.** The dump carries the question (`src/judge.py:271`, written per `src/pipeline.py:642`).
+- **Expansion cache.** `scripts/w_sweep.py` caches expansions keyed by question text.
+- **Bake-off report.** `scripts/bakeoff_report.py` parses `:: question` (`:95`), keys flips by text
+  (`:487–508`), and matches the D54 roster by question prefix (`:544`, `:603`).
+- **Schema loss.** `load_golden_set` keeps only `question`, `type` and `expected_sections` (`:200`), and
+  section matching is OR-only (`:397`).
+- **Dev sets today:**
+  - golden: 35 rows (23 direct / 7 exact_token / 5 refusal; 11 multi-section);
+  - realistic: 23 rows (16 / 1 / 6; 11 multi-section);
+  - no row in either set has an `id`.
+
+### Work
+0. **P0 — pre-implementation captures [C]** (H0 precedent; before any code edit).
+   - `scripts/p16_capture_projection.py` (committed) runs both v5 report formatters on `main` over
+     fixture-driven runs (faked retrieve, generate, expand and judge) of the v1 golden, realistic and
+     sample sets.
+   - It writes `tests/fixtures/p16_v5_projection_main.json` (full report text plus `main`'s SHA).
+   - The orchestrator stores H (j)'s offline command output on `./chroma_db` (golden + realistic) at
+     `data/research/p16_offline_baseline_main.md`, with the SHA.
+1. **Set registry + privacy classes (D65).**
+   - **[W] Registry.** `eval/sets.json` (committed) plus `src/eval_sets.py` record per set:
+     - `path`;
+     - `privacy`: `public` / `private` / `sealed`;
+     - `role`: `tuning` / `realistic` / `sealed` / `regression`;
+     - `status`: `active` / `retired`;
+     - `commitment`, for sealed sets only.
+
+     **Any unregistered path is `private` (fail closed).** The public sets are v1 `golden_set`,
+     `realistic_set`, `sample_golden_set` and `heldout_set`.
+   - **[W] Sanitiser.** `src/eval_privacy.py` holds two pure functions:
+     - `row_label(row, privacy)` returns the question text for public sets and the `id` otherwise;
+     - `leak_scan(text, needles)` does exact and whitespace-normalised substring matching, and returns
+       ids, never the needle.
+   - **[C] Wiring:**
+     - Both formatters render non-public rows by `id` only.
+     - Full detail goes to `eval/private/reports/<run>.md`; sealed detail goes to
+       `eval/private/sealed/reports/`.
+     - stdout prints the public report only.
+     - With any non-public set loaded, `[eval]` warnings and per-row exceptions are logged as
+       `id` + exception type, never `str(exc)`.
+     - For non-public sets, the judge dump, expansion caches and `bakeoff_report` / `w_sweep` output
+       key by `id` and live under `eval/private/`.
+     - **Defence in depth:** before any print, or any write outside `eval/private/`, `leak_scan` checks
+       against every non-public question in the run. A hit aborts with the row id and writes nothing.
+   - **[C] Hygiene and rules:**
+     - `.gitignore` gains `eval/private/`.
+     - `scripts/check_never_commit.py` gains `^eval/private/` (extends D63).
+     - The CLAUDE.md do-not-read clause gains `eval/private/`.
+     - New CLAUDE.md hard rule: Claude never opens `eval/private/sealed/`. Only the evaluator reads it.
+2. **Schema v2 (D66) [W].** `src/eval_schema.py` plus `scripts/validate_eval_set.py`, which prints counts
+   and line numbers only, never text.
+   - **Version marker:** rows carry `"schema": 2`, and a file mixing v1 and v2 rows is rejected.
+   - **Identity:**
+     - `id` is unique per set and matches `^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$`;
+     - `family_id` names a scenario and all its paraphrases;
+     - `question` is the text.
+   - **`scope`:** `answer` | `partial` | `refuse`. This is the Handbook-mode scope (D61); Research-mode
+     labels belong to Phase 19.
+   - **`evidence`:** a list of required groups (AND). Each group is a non-empty list of interchangeable
+     sections (OR). It is `[]` if and only if `scope == refuse`.
+   - **`gaps`:** for `partial` rows only, and non-empty there: `[{"id", "keywords": [...]}]`.
+   - **Optional fields:**
+     - `type` (must agree with `scope`);
+     - `register`: `modelled` / `lay` / `terse`;
+     - `source`: `handbook` / `tutorial` / `colleague` / `legacy`;
+     - `label_status`: `draft` / `owner` / `second_reviewed` / `disputed`;
+     - `ambiguous` (bool).
+   - **v1 rows load exactly as today** (`load_golden_set` output is byte-equal). Internally each v1 row
+     gets:
+     - `id = "q:" + sha256(question)[:12]`;
+     - `family_id = id`;
+     - one OR group;
+     - a scope derived from `type`.
+3. **Evidence-group and PARTIAL scoring (D66).**
+   - **[W] `score_evidence(groups, retrieved_sections, mode)`.**
+     - `completion_rank` is the maximum, over groups, of the first rank matching any member of that
+       group. Strict means equal; related uses today's nesting rule.
+     - It is `None` if any group is unmatched. It also reports `groups_covered@k`.
+     - hit@k holds iff `completion_rank ≤ k`. With one group this is identical to today's
+       `first_*_rank`.
+   - **[W] `score_partial(answer, gate_outcome, verified_sections, groups, gaps)`.** A row is correct iff
+     all of these hold:
+     - the answer is not the exact `REFUSAL_PHRASE`;
+     - at least one verified citation related-matches a required group;
+     - every gap is *stated*: some sentence passes H2's narrow gap-statement test (the prefix list,
+       imported from `render.py`, and no hedge words) and contains one of that gap's keywords as a whole
+       word, case-insensitively.
+
+     Gap recall is reported separately. Misses are documented, as in H2.
+   - **[C] Integration.** v2 sets go through the new scorers; v1 sets go through the untouched v5 path.
+   - **Report v6** is used iff any loaded set is schema v2. It adds:
+     - family counts;
+     - a scope confusion table (labelled answer/partial/refuse × observed);
+     - family-level rates with Wilson CIs on families;
+     - the cohort block (item 6).
+   - **Canonical v6** keeps every v5 guard, and adds:
+     - the sealed commitment verifies, on a scheduled slot (item 4);
+     - `eval/preregistration.toml` is signed, and its hash is in the report;
+     - `leak_scan` is clean.
+   - **Runs over v1 sets only stay report v5, byte for byte.**
+4. **Family-first split and sealing (D67).**
+   - **[W] `scripts/eval_split.py`,** with a pure core `split_families(families, seed, quotas, strata)`:
+     - It assigns whole families only, stratified by scope × chapter, with a refusal-share band per
+       split.
+     - `seal` writes `eval/split_manifest.json` (committed): the seed, per-split and per-stratum
+       family/row counts, each split file's sha256, and the sha256 of each split's sorted `family_id`
+       list.
+     - `verify` recomputes all of it.
+     - Re-splitting while a manifest exists is refused (no seed shopping). `--new-epoch` overrides this,
+       and needs its own D-entry.
+   - **[C] Sealed-access guards:**
+     - The evaluator refuses a `sealed` set unless the commitment verifies, `status == active`, and
+       `--sealed-slot N` names an unused slot from the pre-registration.
+     - Each use appends a line to `eval/sealed_ledger.md`: date, commit, slot, purpose, aggregates. No
+       ids, no text.
+     - `bakeoff_report` and `w_sweep` refuse a sealed set by path **or** by hash, whatever the filename
+       (extends the C2 guard).
+     - Any other exposure sets `status = retired` and role `regression`.
+5. **Pre-registered analysis (D68).**
+   - **[W] `src/eval_stats.py`** (stdlib only: `math.comb`, no scipy). It provides:
+     - family collapse (`family_outcome = all | majority`);
+     - an exact two-sided McNemar test on family outcomes;
+     - Durkalski's clustered McNemar test as the sensitivity analysis;
+     - Wilson CIs on families;
+     - exact power and minimum detectable effect for a given family count;
+     - the Holm correction over the bounded schedule;
+     - `critical_verdict`: any strict HIT→MISS on a critical-control family FAILs, whatever the p-value.
+       It is kept apart from `exploratory_verdict`;
+     - deployment variance over R live draws: per-family flip frequency and the range of the family
+       rate.
+
+     Confirmatory verdicts are refused while the pre-registration is `draft`, or when a slot is already
+     spent or outside the schedule.
+   - **[C] `eval/preregistration.toml`** (draft). It fixes:
+     - the unit: the family;
+     - the primary metric: family strict@6, hybrid+rewrite, with cached expansions;
+     - the minimum worthwhile effect (MWE);
+     - family-wise α = 0.05;
+     - the 16B slot schedule: slot 0 is the incumbent baseline (descriptive only), plus K confirmatory
+       slots;
+     - the critical-control family ids, taken from the development side;
+     - R, the number of live draws.
+
+     It is signed at OS-2.
+6. **C4 cohort identity + item-9 backlog (D69).**
+   - **[C] Cohort block and comparisons:**
+     - Report v6 carries a cohort block per set: path, privacy, schema, sha256 (commitment only for
+       sealed sets), rows, families, and `cohort_fp` = sha256 over the sorted `(id, evidence fingerprint,
+       scope)` tuples.
+     - `compare` and `compare_prod_ranks` key rows by `(set sha256, id)`.
+     - They refuse arms whose set hashes, expected sections or `cohort_fp` differ, and they stop matching
+       production rows by position.
+     - The D54 roster moves from question prefixes to ids.
+     - For v5 reports this is a compare-time check only; the report output is unchanged.
+   - **[W] Item 9:**
+     - `w_sweep.py` loses its module-level `chdir` and cwd-relative paths;
+     - duplicated helpers are merged, and the arm roster is single-sourced.
+   - **[W] D62 follow-ups:**
+     - one answer_fn status wrapper replaces today's three copies;
+     - `split_sentences` moves to a shared text module.
+7. **Absorbed-section metadata (D70).**
+   - **[W] Chunker side channel.** The chunker exposes its D20 runt-merge record as a pure side channel
+     (absorbing section → absorbed sections). Chunk text, ids and metadata are unchanged.
+   - **[C] `scripts/absorbed_map.py`.** It runs the side channel on the corpus and commits
+     `eval/absorbed_sections.json` (section numbers only).
+   - **Scoring:** v2 strict scoring may credit an absorbing chunk (`absorbed_match`, v6 only).
+   - **Unchanged:**
+     - D54's manual repairs stay in the v1 files;
+     - production metadata and the grounding gate are untouched (that is the Phase 18 registry).
+8. **Ledger + docs [C].**
+   - D65–D70.
+   - CLAUDE.md: the canonical v5 and v6 conditions, the privacy and sealed rules, and `eval/private/`.
+   - The `docs/harness.md` changelog.
+   - The `Current phase` and `Next:` lines.
+
+### Acceptance (Tier-1)
+- **(a) Suite and CI.** The suite is green, and CI is green, including the `never-commit` check.
+- **(b) Canary leak test** (`tests/test_eval_privacy.py`).
+  - **Setup:** a synthetic private set carries `P16-CANARY-<uuid>` in a question, in gap keywords and
+    in fake-exception messages. All models are faked.
+  - **It runs through:**
+    - `run_eval_matrix` and legacy `run_eval`;
+    - the judge dump;
+    - `w_sweep` and `bakeoff_report`;
+    - `eval_split seal` and `validate_eval_set`;
+    - a malformed-row loader error.
+  - **The canary must be absent** from stdout, stderr, `caplog`, and every file written outside
+    `tmp/eval/private/`.
+  - **It must be present** in the private detail report.
+  - **Failure case:** a formatter forced to inject row text makes `leak_scan` abort the write.
+- **(c) Fail-closed registry.** An unregistered file is treated as private and rendered by ids only.
+- **(d) v5 unchanged:**
+  - `tests/test_p16_projection.py` reproduces `p16_v5_projection_main.json` byte for byte;
+  - `load_golden_set` output is byte-equal on the three v1 files;
+  - the H (j) offline command reproduces the P0 baseline exactly (orchestrator-verified);
+  - the CI greps are unchanged.
+- **(e) Evidence groups:**
+  - two groups both hit: the rank is the later group's first hit;
+  - one group missing: a miss at every k;
+  - OR alternates within a group;
+  - a parent matches under related but not under strict;
+  - a property check: on every v1 golden and realistic row, single-group ranks equal the v5 ranks (fake
+    retriever);
+  - `groups_covered@k` is reported.
+- **(f) PARTIAL:**
+  - a stated gap scores correct;
+  - each of these scores incorrect: a missing gap; a gap keyword in a sentence that is not a gap
+    statement; a whole refusal; no verified citation in any required group;
+  - D32's hedge sentence is not counted as a stated gap.
+- **(g) Schema rejections.** Each rejection names the line and field, never the question. Cases:
+  duplicate id, bad id pattern, mixed schema versions, scope/evidence/gaps incoherence, `type`/`scope`
+  disagreement, an empty group.
+- **(h) Split:**
+  - over 200 seeded random synthetic family sets, no `family_id` appears in two splits;
+  - the same seed gives the same split;
+  - stratum quotas and the refusal band hold;
+  - a re-split with a manifest present is refused;
+  - `verify` fails after a one-byte change to any split file.
+- **(i) Sealed guards:**
+  - the evaluator refuses a sealed set with no slot, a used or unscheduled slot, a hash mismatch, or
+    `retired` status;
+  - `bakeoff_report` and `w_sweep` refuse a sealed file under a neutral name, and refuse it by hash;
+  - ledger lines carry no id or text.
+- **(j) Stats** (hand-checked values):
+  - exact McNemar with b=10, c=2 gives p = 0.0386;
+  - three paraphrases of one family count once;
+  - Durkalski with cluster size 1 equals McNemar;
+  - power is monotone in n and in the effect size;
+  - Holm gives the expected result on a known vector;
+  - a critical-control flip FAILs even with p > 0.5; exploratory flips alone do not FAIL;
+  - a confirmatory call is refused while the pre-registration is a draft.
+- **(k) C4:**
+  - compare refuses a mismatched set hash, mismatched expected sections, or a mismatched `cohort_fp`;
+  - a production-rank fixture with permuted row order still matches by id.
+- **(l) Absorbed:**
+  - a synthetic runt-merge fixture yields the expected map;
+  - the 16-chunk sample corpus is byte-identical;
+  - the 1,470-chunk canary holds (orchestrator-verified);
+  - v5 scoring ignores the map.
+- **(m) Hygiene:**
+  - `git check-ignore eval/private/probe.jsonl` passes;
+  - `check_never_commit.py` rejects `eval/private/x.jsonl`;
+  - `git ls-files eval/private` is empty;
+  - `w_sweep` imports without changing cwd, and runs from a tmp cwd.
+- **(n) Ledger.** D65–D70 are present, and the `Current phase` and `Next:` lines are updated.
+
+### Tier-2
+- **Offline v6 report on v2 copies.** Run the offline v6 report over v2 copies of the public golden and
+  realistic sets (single-group migration). With one family per row, the family-level numbers should equal
+  the v5 row-level numbers. The PR records metadata only.
+- **Worker lane record.** For each [W] item, record the vendor, attempts and reviewer verdict, or
+  "Claude-implemented: workers unavailable". This is B2's first live use on this repo.
+
+### 16A-2 — data + re-baseline
+Starts once 16A-1 is merged.
+- All content lands in `eval/private/` (Q7). Only ids, hashes, counts and the manifest are committed.
+- Tuning v2 and realistic v2 are one private file each. They mix public and tutorial-derived rows, so
+  the stricter privacy class wins.
+
+### Work
+1. **Migrate development data [C].**
+   - Make v2 copies of golden and realistic: ids added, and each golden↔realistic pair shares a
+     `family_id`. OR groups are kept, except that proposed AND splits are flagged for OS-2.
+   - The 24 tutorial rows (T1, T7) are development data, because they have already been through
+     retrieval.
+   - The v1 files stay byte-frozen.
+   - Held-out v1 moves to role `regression` once sealed v2 lands.
+2. **Draft candidate families [C].**
+   - **Who:** fresh-context subagents. `sonnet` drafts; `opus` checks labels against the handbook.
+   - **Blind protocol:** the drafters have no retrieval tool and see no rank output.
+   - **Sources:** the handbook, plus the further tutorials from OS-1.
+   - **What each family gets:** one seed phrasing, plus `evidence`, `scope`, `gaps`, `source` and
+     `ambiguous`.
+   - **Targets, including about 20% surplus for attrition:**
+     - tuning: at least 60 families (migrated families count);
+     - realistic: at least 40 families, in lay register. Colleague queries are additive and never
+       blocking;
+     - sealed: at least 50 families, so draft at least 60 that are blind-eligible.
+   - **Mix:** refusals are 25–30% of each split, and every split has some partial rows.
+   - **Blind-eligible** means: never retrieved, not from T1 or T7, and not a migrated row.
+3. **Split before paraphrasing [C].** Run `eval_split.py` on the family seeds with the committed seed.
+   The realistic quota comes from lay-source families.
+4. **Paraphrase [C].**
+   - Each family gets 2–3 phrasings (`modelled` / `lay` / `terse`).
+   - Sealed paraphrases are written by a separate subagent straight into `eval/private/sealed/`.
+   - No retrieval runs on the sealed side.
+5. **OS-2 — the batched owner session (hard stop, one ping).** The owner gets a private packet in
+   `eval/private/validation/` plus a one-page summary of counts, and is asked to:
+   1. **Validate labels:** every sealed, refusal, partial and `ambiguous` label (evidence groups, scope,
+      gaps), plus the proposed AND splits.
+   2. **Rule on the four flagged items:**
+      - T01-Bb;
+      - the realistic-set refusal label on "planning permission for an extension" (Q1);
+      - the missing secondary labels on T07-Ab and T07-Ba;
+      - the conflicting handbook dates for the pre-1975 architect's-certificate rule.
+   3. **Sign** `eval/preregistration.toml` (MWE, family-outcome rule, slots, critical controls, R) and
+      the canonical v6 guard list.
+   4. **Approve the cost estimate,** only if it exceeds the remaining weekly €40 cap (D64).
+   5. **Forward** the refusal + ambiguous sub-packet to the colleague (Q3). The reply comes back as a
+      file.
+
+   `scripts/apply_validation.py` applies the owner's verdicts and prints counts only. The orchestrator
+   never re-reads sealed text after OS-2.
+6. **Second opinion [C].**
+   - D71 records owner–colleague agreement (raw % and Cohen's κ over answer/partial/refuse), plus the
+     owner's change rate against the drafts.
+   - **Pre-registered fallback (no further ping):** a family whose disagreement isn't resolved, or which
+     lacks a required second opinion, leaves the sealed split for development and is marked `disputed`.
+7. **Seal [C].**
+   - Run `eval_split.py seal`.
+   - Commit the manifest, the registry entry (`sealed`, `active`) and the ledger header.
+   - If fewer than 50 sealed families survive attrition, do not seal (see Stop paths).
+8. **Offline re-baseline [C].**
+   - Run the zero-API ablation on tuning v2 and realistic v2 (a partial v6 report).
+   - The 16A-1 (d) v1 canary still holds.
+9. **Cost estimate, then one canonical run [C].**
+   - **Estimate:** tokens per call, measured by a 3-row dry run on development rows, × planned calls ×
+     current prices. Add R expansion-only live draws on the development sets, for deployment variance.
+   - **Run:** if the estimate is within the cap (or approved at OS-2), make one canonical v6 run. It uses
+     sealed slot 0 (the incumbent baseline) and writes `eval/results.md`.
+10. **Ledger [C].**
+    - **D71:** the data, sources, counts, validation, the disagreement rate and the dispositions of the
+      flagged labels.
+    - **D72:** the re-baseline outcome, cost and variance. The D57 re-open condition becomes testable.
+    - Update the `Current phase` and `Next:` lines.
+
+### Acceptance (Tier-1)
+- **(a) Hygiene.** Suite and CI are green; `git ls-files eval/private` is empty; `eval_split.py verify`
+  passes.
+- **(b) Manifest counts:**
+  - at least 60 tuning, 40 realistic and 50 sealed families;
+  - 2–3 phrasings per family;
+  - refusals at 25–30% of each split;
+  - zero families straddling splits.
+- **(c) Labels.** Every sealed, refusal, partial and ambiguous row is `owner` or `second_reviewed`, as
+  required. There are no `draft` rows in the sealed split, and D71 records the disagreement rate.
+- **(d) Flagged items.** The four flagged items each have a recorded disposition.
+- **(e) Pre-registration.** It is `signed`, and its hash appears in the canonical report.
+- **(f) Canonical run.** The v6 run passes every guard, and the sealed ledger shows slot 0 only.
+- **(g) Leak scan.** `scripts/scan_leaks.py` reports 0. The orchestrator runs it: it reads the private
+  questions locally, greps every tracked file and the PR body, and prints counts only.
+- **(h) Spend.** Actual spend is at most the approved estimate + 20%, logged against the D64 cap.
+- **(i) Ledger.** D71 and D72 are present.
+
+### Tier-2
+- **Incumbent baseline.** Family-level strict@6 (hybrid+rewrite and raw hybrid) on sealed v2, realistic
+  v2 and tuning v2, with Wilson CIs on families. Also the scope confusion table and partial gap recall.
+- **Variance and power.** Deployment variance across the R draws, and the achieved MDE at the sealed
+  family count.
+- **D54 classes.** D54 class counts on the development side.
+- **PR content.** The PR carries aggregates, ids and hashes only.
+
+### Stop paths
+- **Sealed target missed.** If sealed v2 stays under 50 families, or any target would need a changed
+  criterion, follow the negative-result path in `docs/harness.md`:
+  - commit the tooling and the development data;
+  - do not seal;
+  - write the D-entry;
+  - STOP. Changing the eval protocol is a D64 hard stop.
+- **Cost over cap.** If the estimate exceeds the cap and wasn't approved at OS-2, run the offline
+  re-baseline only, defer the canonical run, and record this in D72.
+- **Sealed exposure.** If a sealed detail report is opened, or retrieval runs outside a slot, retire the
+  set to regression (D67), record it, and re-seal before 16B's confirmatory slots.
+
+### Gates
+1. **Plan gate** on this section: plan-auditor + Codex `gpt-6.1-sol`, both read-only, with the re-gate
+   stopping rule.
+2. **16A-1:**
+   1. Implement ([W] items go through `harness-worker` where eligible).
+   2. `/phase-gate 16A-1`.
+   3. Codex merge review.
+   4. PR and CI.
+   5. Merge and tag under D64.
+3. **16A-2:**
+   1. Steps 1–4.
+   2. OS-2.
+   3. Steps 6–9.
+   4. `/phase-gate 16A-2`.
+   5. Codex merge review, on code and committed metadata only (`eval/private/` is in `restricted_read`).
+   6. PR and CI.
+   7. Merge and tag under D64.
+
+### Ledger (from D65)
+- **D65:** privacy-aware eval reporting.
+- **D66:** eval-set schema v2, evidence groups, PARTIAL scoring, report/canonical v6.
+- **D67:** family-first split, sealing, sealed slots and retirement.
+- **D68:** pre-registered analysis (addendum at OS-2 with the signed parameters).
+- **D69:** cohort identity (C4) + item-9 closure.
+- **D70:** absorbed-section metadata (D54 follow-through).
+- **D71:** eval data v2 and label validation.
+- **D72:** re-baseline outcome.
+
 ## Cut list (v2)
 
 **Cut order if behind (Phases 6–12 only; superseded for Phase 13 below):** judge pass →
