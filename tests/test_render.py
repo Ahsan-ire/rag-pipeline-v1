@@ -420,6 +420,20 @@ def test_legacy_path_with_none_status_never_shows_unknown_notice():
     assert UNKNOWN_STATUS_NOTICE not in r.display_text
 
 
+@pytest.mark.parametrize("status", ["", 0, False])
+@pytest.mark.parametrize("outcome", [None, CITATIONS_VERIFIED, CITATIONS_UNVERIFIED])
+@pytest.mark.parametrize("override", [False, True])
+def test_falsey_unrecognised_status_withholds_draft(status, outcome, override):
+    """A falsey, unrecognised status is not `unknown`: render withholds the draft."""
+    res = _result(SENTINEL_DRAFT, outcome, status=status, grounded=[_cite()])
+    r = render(res, RenderFlags(show_unverified=override, retrieved=_retrieved(_doc())))
+    assert r.action == "withheld_incomplete"
+    assert r.public_result["gate_outcome"] == GENERATION_INCOMPLETE
+    assert r.public_result["answer"] == WITHHELD_NOTICES[GENERATION_INCOMPLETE]
+    assert SENTINEL_DRAFT not in r.display_text
+    assert SENTINEL_DRAFT not in json.dumps(r.public_result, default=str)
+
+
 def test_terminal_beats_refusal_sentence_and_override():
     res = _result(REFUSAL_PHRASE, REFUSAL, status="truncated")
     r = render(res, RenderFlags(show_unverified=True))

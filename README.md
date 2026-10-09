@@ -10,8 +10,9 @@ page and reach your own conclusion.
 That last step is the whole point. This tool is **not** built to replace reading the source: it's a
 first-line sweep before diving into an ~800-page manual. The answer orients you. The
 **citation is the product**: before you see the answer, each citation is matched against the chunks
-retrieved for your question. The cited paragraph must be the section of a retrieved chunk (or nest
-inside it), and the cited page must fall within that chunk's pages, so `[Handbook, para 6.3.2, p.214]`
+retrieved for your question. The cited paragraph and a retrieved chunk's section must be equal, or one
+must nest inside the other, and the cited page must fall within that chunk's pages, so
+`[Handbook, para 6.3.2, p.214]`
 lands you on retrieved text. That check does not prove the exact paragraph number exists, and it does
 not prove the passage supports the claim. A sentence with no citation is not checked at all. An answer
 whose citations cannot be verified is **withheld, not shown**, and an answer that was cut off,
