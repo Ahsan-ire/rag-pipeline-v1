@@ -221,6 +221,9 @@ def _write_audit(
     citations: list,
     answer: str,
     expansion: Optional[Expansion] = None,
+    stop_reason: Optional[str] = None,
+    generation_status: str = "unknown",
+    uncited_count: int = 0,
 ) -> None:
     """Build and append exactly one audit event, tolerating log failures.
 
@@ -251,6 +254,9 @@ def _write_audit(
             citation_check=citation_check,
             citations=citations,
             answer=answer,
+            stop_reason=stop_reason,
+            generation_status=generation_status,
+            uncited_count=uncited_count,
         )
         if expansion is not None:
             event_kwargs["rewrites"] = list(expansion.rewrites)
