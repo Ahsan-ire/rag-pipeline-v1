@@ -57,8 +57,9 @@ model's opinion, never on the held-out set.
   entry appended to docs/decisions.md: what / why / what was rejected.
 - If implementation diverges from the approved plan, STOP and return to plan
   mode — do not improvise silently.
-- Scope: one phase of IMPLEMENTATION_PLAN.md per session. Do not start the
-  next phase without being asked.
+- Scope: one phase of IMPLEMENTATION_PLAN.md per branch and PR. Under the
+  standing go (D64) a session may chain phases in roadmap order (design 003
+  §9); without it, do not start the next phase without being asked.
 - No new dependencies without stating why in the plan; pin exact versions in
   requirements.txt.
 

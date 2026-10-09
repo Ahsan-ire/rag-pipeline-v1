@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: integrity hotfix H (`integrity-hotfix` → v2.2.1, D62), then the global harness (Track B) and Phase 16A — see docs/designs/003-roadmap-and-next-actions.md**
+**Current phase: Phase 16A (eval foundations) ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
 
-**Next: D64** (D60 is reserved for the third-party lane / global harness decision; D61–D63 landed).  (Update this line in the same commit as each new entry.)
+**Next: D65** (D60 is reserved for the third-party lane / global harness decision; D61–D64 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1853,3 +1853,28 @@ instrument is binding.
 - Relying on client-side hooks alone.
 - GitHub secret scanning alone: it does not recognise corpus files.
 
+## D64 — Standing go: gated autonomous execution of the roadmap (owner decision, 9 Oct 2026)
+**Decision:** the owner grants a standing "go". The orchestrator merges phase PRs and cuts release tags itself when **every** gate passes:
+- the full suite passes locally and CI passes (including the required `never-commit` check, D63);
+- the pressure-tester returns PASS on the phase's acceptance criteria;
+- the Codex merge-gate leg is COMPLETE, and READY or every finding is fixed or rebutted in the PR description. An INCOMPLETE leg (rate limit, hang) blocks the merge; it never counts as a pass.
+
+"One phase per session" becomes "one phase per branch and PR"; a session may chain phases in roadmap order (design 003 §9).
+
+**Owner hard stops (the orchestrator pings with a 🔴 INPUT NEEDED message and a push notification, then waits):**
+- spend above €40 per week combined (Anthropic API eval runs plus DeepSeek/GLM prepaid; Grok and Codex are flat-fee);
+- anything only the owner can do: logins, `harness-init`, `install.sh` owner operations, key or PAT rotation, billing;
+- legal, licensing and data-protection positions (Phase 20 entry requirements), and anything sent to a person outside the project;
+- a gate that cannot pass without changing an approved acceptance criterion, the data-class floor, or the eval protocol;
+- deleting anything that is not fully merged.
+
+**Codex accounts:** fixed roles. Account 1 runs `gpt-6.1-sol` gates; account 2 (`CODEX_HOME=~/.codex-alt`) runs `gpt-6-astra` architecture reviews and is the overflow for account 1. Each account keeps the ≤2 astra calls per 5 h limit.
+
+**Unchanged:** the data-class floor (no corpus, index, held-out, log or tutorial content to any non-Anthropic model, whatever the vendor), the plan gate before each phase, the eval protocol, and the CLAUDE.md hard rules.
+
+**Why:** the owner asked for the rest of the roadmap to run agentically, with input only when needed. The gates already carry the quality bar; a per-merge ping adds latency, not assurance.
+
+**Rejected:**
+- A per-merge go: one ping per phase for no extra check.
+- Merging on a partial gate (for example with the Codex leg INCOMPLETE).
+- Automatic alternation between Codex accounts.
