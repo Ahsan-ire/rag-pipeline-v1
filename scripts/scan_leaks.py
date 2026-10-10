@@ -543,6 +543,24 @@ def _cat_blobs(repo: Path, shas: Sequence[str]) -> Dict[str, bytes]:
     return out
 
 
+def _object_message(raw: bytes) -> str:
+    """The message of a raw commit or tag object: everything after its header block.
+
+    Decoded with the object's ``encoding`` header when it has one (what
+    ``git log --format=%B`` re-encodes from), else UTF-8; undecodable bytes
+    are replaced, never dropped.
+    """
+    header, _, body = raw.partition(b"\n\n")
+    encoding = "utf-8"
+    for line in header.split(b"\n"):
+        if line.startswith(b"encoding "):
+            encoding = line[len(b"encoding "):].decode("ascii", errors="replace").strip()
+    try:
+        return body.decode(encoding, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
+
+
 def _range_blobs(repo: Path, base: str) -> List[Tuple[str, str, str]]:
     """(blob sha, path, commit) for every blob added or modified in ``base..HEAD``."""
     commits = _git(repo, "rev-list", f"{base}..HEAD").decode().split()
@@ -913,16 +931,16 @@ def merge_gate(
         scanned.add(sha)
         text = blobs.get(sha, b"").decode("utf-8", errors="replace")
         hits.extend(scan_text(text, f"{path}@{commit[:12]}", index))
-    log = _git(repo_path, "log", "--format=%H%x00%B%x1e", f"{base}..HEAD").decode("utf-8", errors="replace")
-    for rec in log.split("\x1e"):
-        sha, _, body = rec.strip("\n").partition("\x00")
-        if sha:
-            hits.extend(scan_text(body, f"commit {sha[:12]}", index))
-    tags = _git(repo_path, "for-each-ref", "refs/tags", "--format=%(objectname)%00%(contents)%1e")
-    for rec in tags.decode("utf-8", errors="replace").split("\x1e"):
-        obj, _, body = rec.strip("\n").partition("\x00")
-        if obj:
-            hits.extend(scan_text(body, f"tag {obj[:12]}", index))
+    # Messages are read object by object (size-delimited ``cat-file --batch``),
+    # never split out of one stream on a delimiter: a message can hold any
+    # delimiter byte, and a split one hides its needles (merge gate, Codex #3).
+    commits = _git(repo_path, "rev-list", f"{base}..HEAD").decode().split()
+    tag_objs = _git(repo_path, "for-each-ref", "refs/tags", "--format=%(objectname)").decode().split()
+    objects = _cat_blobs(repo_path, sorted(set(commits) | set(tag_objs)))
+    for sha in commits:
+        hits.extend(scan_text(_object_message(objects.get(sha, b"")), f"commit {sha[:12]}", index))
+    for obj in tag_objs:
+        hits.extend(scan_text(_object_message(objects.get(obj, b"")), f"tag {obj[:12]}", index))
     # Branch and tag ref NAMES can carry text; scan them, label by object sha only.
     refs = _git(repo_path, "for-each-ref", "refs/heads", "refs/tags", "--format=%(objectname)%00%(refname)%1e")
     for rec in refs.decode("utf-8", errors="replace").split("\x1e"):

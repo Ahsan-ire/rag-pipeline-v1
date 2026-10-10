@@ -357,6 +357,22 @@ def test_merge_gate_finds_needles_everywhere(repo):
     assert [c[:2] for c in gh.calls] == [["pr", "view"], ["api", "--paginate"]]
 
 
+def test_merge_gate_reads_each_message_whole_record_separators_included(repo):
+    """16A-1 merge gate, Codex #3: a commit or tag message holding the old
+    record separator (\\x1e, whitespace to the normaliser) between a needle's
+    tokens is still one message, so the needle is caught."""
+    rs_joined = "\x1e".join(PRIV9.split())
+    git(repo, "commit", "-q", "--allow-empty", "--cleanup=verbatim", "-m", f"subject\n\nwhy: {rs_joined}\n")
+    msg_commit = git(repo, "rev-parse", "HEAD")
+    git(repo, "tag", "-a", "--cleanup=verbatim", "v0.0.2", "-m", f"release {rs_joined}\n")
+    tag_obj = git(repo, "rev-parse", "v0.0.2")
+    assert "\x1e" in git(repo, "cat-file", "-p", msg_commit)  # the separator really is in the message
+    assert len(sl.scan_text(f"why: {rs_joined}", "probe", sl.build_needles(sl.collect_sources(())))) == 1
+    got = {(h.target.split(":")[0], h.needle) for h in sl.merge_gate("base", repo=repo)}
+    assert (f"commit {msg_commit[:12]}", _ids(PRIV9)) in got
+    assert (f"tag {tag_obj[:12]}", _ids(PRIV9)) in got
+
+
 def test_merge_gate_clean_and_pr_skipped_note(repo):
     (repo / "notes.md").write_text(f"public: {PUB_EXACT}\n{PUB_W1}\n", encoding="utf-8")
     git(repo, "add", "notes.md")
