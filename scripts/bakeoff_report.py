@@ -68,6 +68,12 @@ Phase 16A-1 (items 1, 6, 9; D65, D68) adds:
   selection table is then the sidecar's row-level strict/related@6; S5/N4
   role coverage is ``n/a`` (no retrieved sections are recorded). 16A-1 merge
   gate, Codex #5.
+- **Retrieval depth.** A v6 report must declare its ``top_k`` and hit
+  cut-off ``k``, and ``k`` must be the selection's @6 (a shallower run is
+  refused, never re-read at @6). C4 arms must all record the same ``top_k``
+  (a v5 report's ``- top_k:`` header line counts; a pre-16A fixture without
+  one is unknown, and unknown matches only unknown), and none below 6. Merge
+  gate round 2, Codex #2.
 
 Usage::
 
@@ -156,6 +162,9 @@ _SET_LABEL = re.compile(r"^- (?P<label>[^:]+): ")
 # Report v6 (``src.eval_v6.format_v6_report``): title, model line, cohort lines.
 V6_TITLE_PREFIX = "# Legal RAG Evaluation Report v6"
 _V6_MODEL = re.compile(r"^- git sha: .*; embedding model: (?P<model>.+); generation model: .*$")
+_V6_DEPTH = re.compile(r"^- top_k: (?P<top_k>\d+); hit cut-off k = (?P<k>\d+)$")
+# The v5 header's depth line (``src.evaluator``'s v5 and v1 report headers).
+_V5_TOP_K = re.compile(r"^- top_k: (?P<top_k>\d+)$")
 _V6_COHORT = re.compile(
     r"^- (?P<label>.+?): path (?P<path>.+); privacy (?P<privacy>[a-z]+); schema (?P<schema>\d+); "
     r"sha256 (?P<sha256>[0-9a-f]{64}); rows \d+; families \d+; cohort_fp [0-9a-f]{64}$"
@@ -368,7 +377,8 @@ def parse_report(text: str, *, require_offline: bool = True) -> Dict[str, Any]:
 
     Returns:
         ``{"embedding_model": str|None, "expansion_disabled": bool,
-        "sets": {label: {"path", "sha256", "ablation", "questions"}}}`` where
+        "top_k": int|None, "sets": {label: {"path", "sha256", "ablation",
+        "questions"}}}`` (``top_k`` from the header's ``- top_k:`` line) where
         ``questions`` are the ``hybrid+rewrite`` per-question rows (raw hybrid
         by identity on an offline run), each carrying its row ``id``.
 
@@ -396,11 +406,18 @@ def parse_report(text: str, *, require_offline: bool = True) -> Dict[str, Any]:
         )
 
     model: Optional[str] = None
+    top_k: Optional[int] = None
     prov_sets: Dict[str, Dict[str, str]] = {}
     ablations: Dict[str, Dict[str, Dict[str, Any]]] = {}
     details: Dict[str, List[Dict[str, Any]]] = {}
 
     for heading, body in _split_sections(text):
+        if heading == "":
+            for line in body:
+                m = _V5_TOP_K.match(line)
+                if m is not None:
+                    top_k = int(m.group("top_k"))
+            continue
         if heading.startswith("## Provenance"):
             model, prov_sets = _parse_provenance(body)
             _assert_set_provenance(prov_sets)
@@ -431,18 +448,30 @@ def parse_report(text: str, *, require_offline: bool = True) -> Dict[str, Any]:
     # section listed: a report with no provenance block would otherwise yield
     # sets with path=None that the label fallback lets into selection (C2).
     _assert_set_provenance(sets)
-    return {"embedding_model": model, "expansion_disabled": expansion_disabled, "sets": sets}
+    return {
+        "embedding_model": model,
+        "expansion_disabled": expansion_disabled,
+        "top_k": top_k,
+        "sets": sets,
+    }
 
 
 def _parse_v6_report(text: str) -> Dict[str, Any]:
     """Parse a report v6: its sets from the ``## Cohort`` block (ranks come from the sidecar).
 
+    The header's ``- top_k: N; hit cut-off k = K`` line is required and ``K``
+    must be ``HIT_K``: a run retrieved to fewer than 6 chunks has no rank
+    beyond its depth, so reading it at @6 would credit or penalise depth, not
+    retrieval (merge gate round 2, Codex #2).
+
     Raises:
-        C4Error: a v6 report with no cohort lines.
+        C4Error: a v6 report with no cohort lines, no depth line, or a hit
+            cut-off other than ``HIT_K``.
         ValueError: a recorded set that may not enter selection
             (:func:`_assert_set_provenance`).
     """
     model: Optional[str] = None
+    depth: Optional[Tuple[int, int]] = None
     sets: Dict[str, Dict[str, Any]] = {}
     for heading, body in _split_sections(text):
         if heading == "":
@@ -450,6 +479,9 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
                 m = _V6_MODEL.match(line)
                 if m is not None:
                     model = m.group("model").strip()
+                m = _V6_DEPTH.match(line)
+                if m is not None:
+                    depth = (int(m.group("top_k")), int(m.group("k")))
         elif heading.strip() == "## Cohort":
             for line in body:
                 m = _V6_COHORT.match(line)
@@ -462,8 +494,23 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
                     }
     if not sets:
         raise C4Error("v6 report has no cohort lines")
+    if depth is None:
+        raise C4Error("v6 report declares no retrieval depth (its '- top_k: N; hit cut-off k = K' line)")
+    top_k, k = depth
+    if k != HIT_K:
+        raise C4Error(
+            f"v6 report's hit cut-off k = {k} (top_k {top_k}) is not the selection's "
+            f"@{HIT_K}: refused rather than re-read at @{HIT_K}"
+        )
     _assert_set_provenance(sets)
-    return {"embedding_model": model, "expansion_disabled": False, "report_version": 6, "sets": sets}
+    return {
+        "embedding_model": model,
+        "expansion_disabled": False,
+        "report_version": 6,
+        "top_k": top_k,
+        "k": k,
+        "sets": sets,
+    }
 
 
 def _fill_from_sidecar(arm: Dict[str, Any], name: str) -> None:
@@ -1046,6 +1093,25 @@ def _check_report_matches_sidecar(name: str, arm: Mapping[str, Any]) -> None:
         )
 
 
+def _check_depth(arms: Mapping[str, Mapping[str, Any]]) -> None:
+    """All C4 arms share one retrieval depth, deep enough for @``HIT_K`` (round 2, Codex #2).
+
+    Ranks stop at the depth a run retrieved to, so arms retrieved to
+    different depths -- or to fewer than ``HIT_K`` chunks -- give different
+    @6 figures for identical retrieval. ``top_k`` is None only for a v5
+    report without its header line; unknown then matches only unknown.
+
+    Raises:
+        C4Error: a ``top_k`` below ``HIT_K``, or ``top_k`` differing between arms.
+    """
+    depths = {name: arm.get("top_k") for name, arm in arms.items()}
+    for name, top_k in depths.items():
+        if top_k is not None and top_k < HIT_K:
+            raise C4Error(f"arm {name!r}: top_k {top_k} is below the @{HIT_K} hit cut-off")
+    if len(set(depths.values())) > 1:
+        raise C4Error(f"retrieval depth (top_k) differs between arms: {depths}")
+
+
 def compare_c4(
     arms: Mapping[str, Mapping[str, Any]],
     baseline: str,
@@ -1062,13 +1128,14 @@ def compare_c4(
 
     Raises:
         KeyError: if ``baseline`` is not among ``arms``.
-        C4Error: any identity, coverage, report/sidecar or control refusal.
+        C4Error: any identity, depth, coverage, report/sidecar or control refusal.
         ValueError: the v5 vacuous-pass guards (see :func:`compare`).
     """
     if baseline not in arms:
         raise KeyError(f"baseline arm {baseline!r} not among reports: {list(arms)}")
     if controls is not None and not controls:
         raise C4Error("controls must be non-empty")
+    _check_depth(arms)
     table = _table(arms)
     _check_details(arms)
     indexed: Dict[str, Dict[str, Any]] = {}

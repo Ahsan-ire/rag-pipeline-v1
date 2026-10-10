@@ -103,18 +103,19 @@ def _ablation(label, n):
     ]
 
 
-def build_report(sets, ranks, *, labels=None, expansion_line=EXPANSION_OFF, shown=None):
+def build_report(sets, ranks, *, labels=None, expansion_line=EXPANSION_OFF, shown=None, top_k=None):
     """A v5-shaped arm report. ``ranks``: {set label: [strict rank per answerable row]}.
 
     ``labels`` renames set labels in the report (label-mismatch tests);
     ``shown`` maps a question to what the detail row shows (an opaque id on a
-    private report).
+    private report); ``top_k`` adds the v5 header's ``- top_k: N`` line.
     """
     labels = labels or {}
     shown = shown or {}
     lines = [
         "# Legal RAG Evaluation Report v4 (fixture)",
         "",
+        *([] if top_k is None else [f"- top_k: {top_k}", ""]),
         "## Provenance",
         "",
         "- embedding model: fixture/model",
@@ -1311,7 +1312,7 @@ def test_private_bakeoff_run_passes_the_merge_gate_precheck(tmp_path, monkeypatc
 # path on synthetic schema-2 sets, fake retrieval) and its rows sidecar go
 # through the C4 report comparison end to end.
 # ---------------------------------------------------------------------------
-V6_FILLER = ["7.1", "7.2", "7.3", "7.4", "7.5", "7.6"]
+V6_FILLER = ["7.1", "7.2", "7.3", "7.4", "7.5", "7.6", "7.7", "7.8", "7.9", "7.10"]
 
 
 @pytest.fixture
@@ -1341,8 +1342,11 @@ def v2_sets(tmp_path, eval_registry, monkeypatch):
     return out
 
 
-def _v6_arm(directory, name, v2, ranks):
-    """Run the real v6 path; ``ranks``: {row id: strict rank of its section, or None}."""
+def _v6_arm(directory, name, v2, ranks, *, top_k=6, modes=None):
+    """Run the real v6 path; ``ranks``: {row id: strict rank of its section, or None}.
+
+    ``top_k`` and ``modes`` (default: all four) go to ``run_eval_matrix``.
+    """
     from langchain_core.documents import Document
 
     import src.evaluator as ev
@@ -1364,6 +1368,7 @@ def _v6_arm(directory, name, v2, ranks):
     directory.mkdir(parents=True, exist_ok=True)
     report = directory / f"{name}.md"
     ev.run_eval_matrix([("tuning", v2["tuning"]["path"]), ("realistic", v2["realistic"]["path"])],
+                       top_k=top_k, **({} if modes is None else {"modes": modes}),
                        skip_refusals=True, skip_completeness=True, retrieve_fn_factory=factory,
                        provenance_fn=lambda: dict(PROVENANCE), privacy="public", results_path=str(report))
     assert Path(sidecar_path(str(report))).is_file()
@@ -1431,3 +1436,52 @@ def test_v6_report_naming_an_unregistered_set_stays_private(tmp_path, v2_sets):
     forged.write_text(text)
     assert eval_sets.classify(base) == "public"
     assert eval_sets.classify(str(forged)) == "private"
+
+
+# ---------------------------------------------------------------------------
+# Merge gate round 2 (Codex #2-#4): retrieval depth, the declared mode roster
+# and v6 role coverage, all on ACTUAL v6 reports and sidecars.
+# ---------------------------------------------------------------------------
+def test_v6_arms_at_different_retrieval_depths_are_refused(tmp_path, v2_sets):
+    """#2: same retrieval logic, top_k 6 vs 8 (both read @6) -- not comparable."""
+    base = _v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE)
+    cand = _v6_arm(tmp_path / "arms", "cand", v2_sets, V6_BASE, top_k=8)
+    with pytest.raises(C4Error, match="retrieval depth"):
+        bakeoff_report.compare(load_arms(base, cand), "base")
+
+
+@pytest.mark.parametrize("top_ks", [(1, 6), (6, 1), (1, 1), (3, 3)])
+def test_v6_report_whose_cutoff_is_not_6_is_refused(tmp_path, v2_sets, top_ks):
+    """#2: a depth-1 arm read at a hard-coded @6 scored 0.0 vs 1.0 on identical logic."""
+    arms = [_v6_arm(tmp_path / "arms", name, v2_sets, V6_BASE, top_k=k)
+            for name, k in zip(("base", "cand"), top_ks)]
+    with pytest.raises(C4Error, match="cut-off"):
+        bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def _strip_v6_line(tmp_path, v2_sets, prefix):
+    report = Path(_v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE))
+    lines = report.read_text().splitlines()
+    report.write_text("\n".join(line for line in lines if not line.startswith(prefix)) + "\n")
+    return str(report)
+
+
+def test_v6_report_without_its_depth_line_is_refused(tmp_path, v2_sets):
+    with pytest.raises(C4Error, match="declares no retrieval depth"):
+        bakeoff_report.load_arm(_strip_v6_line(tmp_path, v2_sets, "- top_k: "))
+
+
+@pytest.mark.parametrize("top_ks, match", [((6, 10), "retrieval depth"), ((6, None), "retrieval depth"),
+                                           ((3, 3), "cut-off")])
+def test_v5_sidecar_arms_at_other_depths_are_refused(tmp_path, sets, top_ks, match):
+    """#2 for v5 reports with sidecars: their ``- top_k:`` header line is bound too."""
+    arms = [write_arm(tmp_path / "arms", name, sets, BASE_RANKS, top_k=k)
+            for name, k in zip(("base", "cand"), top_ks)]
+    with pytest.raises(C4Error, match=match):
+        bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def test_v5_sidecar_arms_at_the_same_depth_compare(tmp_path, sets):
+    arms = [write_arm(tmp_path / "arms", name, sets, ranks, top_k=6)
+            for name, ranks in (("base", BASE_RANKS), ("cand", CAND_RANKS))]
+    assert bakeoff_report.compare(load_arms(*arms), "base")["c4"] is True
