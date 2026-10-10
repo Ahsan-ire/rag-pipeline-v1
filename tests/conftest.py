@@ -147,3 +147,55 @@ def handbook_retrieved_results(handbook_chunks):
         {"document": handbook_chunks[0], "score": 0.03279, "metadata": handbook_chunks[0].metadata},
         {"document": handbook_chunks[1], "score": 0.01639, "metadata": handbook_chunks[1].metadata},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 16A-1 privacy plumbing (D65)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _private_root_in_tmp(tmp_path, monkeypatch):
+    """Every test's private root is ``tmp_path/eval/private``, never the repo's.
+
+    ``src.eval_privacy.private_root()`` is the only way code finds the private
+    root; this is the only place it moves (spec item 1).
+    """
+    root = tmp_path / "eval" / "private"
+    monkeypatch.setattr("src.eval_privacy.private_root", lambda: root)
+    return root
+
+
+@pytest.fixture
+def eval_registry(monkeypatch):
+    """Register tmp eval sets for one test by patching the registry loader.
+
+    Usage: ``eval_registry.add(path)`` registers ``path`` as public at its
+    current sha256 (``privacy="private"`` for a private set). The committed
+    ``eval/sets.json`` entries stay registered alongside.
+    """
+    import src.eval_sets as eval_sets
+
+    real_loader = eval_sets.load_registry
+    extra = []
+
+    class _Registry:
+        def add(self, path, *, privacy="public", role="fixture", name=None):
+            from pathlib import Path
+
+            p = Path(path).resolve()
+            extra.append(
+                eval_sets.SetEntry(
+                    name=name or f"tmp-{len(extra)}-{p.name}",
+                    path=str(p),
+                    privacy=privacy,
+                    role=role,
+                    status="active",
+                    sha256=eval_sets.sha256_file(p),
+                )
+            )
+            return extra[-1]
+
+        def clear(self):
+            extra.clear()
+
+    monkeypatch.setattr(eval_sets, "load_registry", lambda: [*real_loader(), *extra])
+    return _Registry()
