@@ -116,39 +116,19 @@ def _prompt_messages() -> List[List[str]]:
 
 
 def _client_params() -> Dict[str, Any]:
-    """``max_tokens``, ``temperature`` and ``thinking`` the rewrite client is built with.
+    """``max_tokens``, ``temperature`` and ``thinking`` of the rewrite client.
 
-    Runs ``qr.get_rewrite_llm()`` under a dummy API key with ``qr.ChatAnthropic``
-    swapped for a recorder, so the real constructor kwargs are read without
-    building a client or touching the network; a change to the client
-    construction therefore changes the config hash and cannot drift silently.
-    An absent ``temperature`` is ``None`` (API default) and an absent
-    ``thinking`` is ``"off"`` (Haiku 4.5's default). Falls back to those
-    documented values and ``REWRITE_MAX_TOKENS`` only if the call is impossible.
+    Read from ``src.query_rewrite.rewrite_llm_kwargs()``, the same kwargs
+    ``get_rewrite_llm()`` builds its client with, so a change to the client
+    config changes the config hash and cannot drift silently. An absent
+    ``temperature`` is ``None`` (API default) and an absent ``thinking`` is
+    ``"off"`` (Haiku 4.5's default).
     """
-    seen: Dict[str, Any] = {}
-
-    def recorder(**kwargs: Any) -> None:
-        seen.update(kwargs)
-
-    saved_key = os.environ.get("ANTHROPIC_API_KEY")
-    saved_cls = qr.ChatAnthropic
-    os.environ["ANTHROPIC_API_KEY"] = "dummy-key-for-identity-only"
-    qr.ChatAnthropic = recorder  # type: ignore[assignment]
-    try:
-        qr.get_rewrite_llm()
-    except Exception:  # pragma: no cover - construction impossible: documented constants
-        seen.clear()
-    finally:
-        qr.ChatAnthropic = saved_cls  # type: ignore[assignment]
-        if saved_key is None:
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-        else:
-            os.environ["ANTHROPIC_API_KEY"] = saved_key
+    kwargs = qr.rewrite_llm_kwargs()
     return {
-        "max_tokens": seen.get("max_tokens", qr.REWRITE_MAX_TOKENS),
-        "temperature": seen.get("temperature"),
-        "thinking": seen.get("thinking", "off"),
+        "max_tokens": kwargs["max_tokens"],
+        "temperature": kwargs.get("temperature"),
+        "thinking": kwargs.get("thinking", "off"),
     }
 
 

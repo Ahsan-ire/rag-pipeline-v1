@@ -402,7 +402,7 @@ def query(
     return public
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Legal Document RAG Pipeline",

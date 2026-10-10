@@ -29,7 +29,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -147,6 +147,29 @@ _LEADING_MARKER_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*")
 _QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
 
 
+def rewrite_llm_kwargs() -> Dict[str, Any]:
+    """The ``ChatAnthropic`` kwargs the rewrite client is built with (no key).
+
+    Single source for ``get_rewrite_llm`` and for the expansion artifact's
+    rewrite identity (16A-1, D68): a change here changes the artifact
+    ``config_hash``, so a frozen artifact can never silently outlive the
+    client config that produced it.
+    """
+    return {
+        "model": REWRITE_MODEL,
+        "max_tokens": REWRITE_MAX_TOKENS,
+        # Haiku 4.5 runs with thinking OFF by default — unlike get_llm()'s
+        # Sonnet 5, which runs adaptive thinking on by default — so no
+        # `thinking` kwarg is needed here to keep it off.
+        # Same no-hang contract as get_llm (D52): expansion calls run ~2s,
+        # so 60s is generous; a blocked read times out and retries instead
+        # of wedging the caller. expand_query's never-raise contract turns
+        # an exhausted retry into STATUS_API_ERROR as before.
+        "default_request_timeout": 60.0,
+        "max_retries": 3,
+    }
+
+
 def get_rewrite_llm() -> ChatAnthropic:
     """Create and return a ChatAnthropic LLM instance for query rewriting.
 
@@ -159,19 +182,7 @@ def get_rewrite_llm() -> ChatAnthropic:
             "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
         )
 
-    return ChatAnthropic(
-        model=REWRITE_MODEL,
-        max_tokens=REWRITE_MAX_TOKENS,
-        # Haiku 4.5 runs with thinking OFF by default — unlike get_llm()'s
-        # Sonnet 5, which runs adaptive thinking on by default — so no
-        # `thinking` kwarg is needed here to keep it off.
-        # Same no-hang contract as get_llm (D52): expansion calls run ~2s,
-        # so 60s is generous; a blocked read times out and retries instead
-        # of wedging the caller. expand_query's never-raise contract turns
-        # an exhausted retry into STATUS_API_ERROR as before.
-        default_request_timeout=60.0,
-        max_retries=3,
-    )
+    return ChatAnthropic(**rewrite_llm_kwargs())
 
 
 def _invoke_rewrite(llm: Any, question: str) -> str:
