@@ -703,7 +703,10 @@ def precheck(source_shas: Set[str]) -> List[str]:
                 continue
             kind, sha, rec_path = item.get("kind"), str(item.get("sha256", "")), str(item.get("path", ""))
             if kind == "questions":
-                if sha not in source_shas:
+                # A registered PUBLIC set is not private material: it needs no
+                # needle source (and cannot be one). Same rule as
+                # collect_sources(run_id=...) (16A-1 gate round 4).
+                if sha not in source_shas and sha not in public:
                     offenders.append(f"{inputs_json} -> {rec_path}")
                 continue
             if kind != "derived":

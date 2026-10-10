@@ -102,7 +102,7 @@ def test_v6_refuses_results_md(v6_env, tmp_path, monkeypatch):
     retrieval, _ = v6_env
     canonical = str(tmp_path / "results.md")
     monkeypatch.setattr(ev, "DEFAULT_RESULTS_PATH", canonical)
-    with pytest.raises(ValueError, match="cannot be canonical"):
+    with pytest.raises(ValueError, match="not canonical"):
         ev.run_eval_matrix(
             [("golden", V2["golden"])], results_path=canonical, retrieve_fn_factory=retrieval.factory(6),
             provenance_fn=lambda: dict(PROVENANCE), privacy="public",

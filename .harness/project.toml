@@ -33,6 +33,7 @@ worker_allow = [
   "src/eval_stats.py", "src/expansion_artifact.py", "src/spend.py", "src/text_utils.py", "src/chunker.py",
   "scripts/scan_leaks.py", "scripts/validate_eval_set.py",
   "tests/test_p16w_*.py", "tests/fixtures/p16w_*",
+  # read-only import dependencies (spec: worker_allow "plus" these)
+  "src/generator.py", "src/grounding.py", "src/render.py", "tests/conftest.py",
 ]
-# Read-only import dependencies for those workers: src/generator.py, src/grounding.py, src/render.py, tests/conftest.py.
 codex_clause = "Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, eval/private/, or held-out eval files."

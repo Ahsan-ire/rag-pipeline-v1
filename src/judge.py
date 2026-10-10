@@ -164,7 +164,15 @@ def judge_answer(
             subclasses ``BaseException``, so the ``except Exception`` handler
             never records a spend stop as an API error.
     """
-    llm_fn = llm_fn or _default_llm_fn
+    if llm_fn is None:
+        # D70: the default is a live, unmetered call; refused with a usable key.
+        from src.generator import api_key_usable
+
+        if api_key_usable():
+            from src.spend import SpendMeterRequired
+
+            raise SpendMeterRequired("judge_answer needs a metered llm_fn (D70)")
+        llm_fn = _default_llm_fn
 
     def _error(error_type: str) -> Dict[str, Any]:
         return {

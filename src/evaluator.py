@@ -1631,11 +1631,11 @@ def run_eval(
     if private:
         from pathlib import Path
 
-        write_private(Path(results_path), report)
-        _write_sidecar(results_path, sidecar, private=True)
         write_inputs_json(
             run_dir_path, [{"path": golden_path, "sha256": set_sha, "kind": "questions"}]
         )
+        write_private(Path(results_path), report)
+        _write_sidecar(results_path, sidecar, private=True)
         print(_private_run_eval_summary(run_id, retrieval, refusals))
     else:
         print(report)
@@ -1879,12 +1879,14 @@ def run_eval_matrix(
             _load_any(path)
     # (c) a run known to be non-canonical before it starts (report v6, a
     #     replayed artifact, a private run) may not target eval/results.md.
-    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and (
-        2 in schemas_upfront or expansion_mode == "replay" or private
-    ):
+    # Only the 16A-1 reasons are refused here. The v5 canonical guards keep
+    # D46's write-time refusal, which the H0 lock pins byte for byte (an
+    # owner-level change, not this phase's; recorded in D68).
+    knowably_noncanonical = 2 in schemas_upfront or expansion_mode == "replay" or private
+    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
         raise ValueError(
-            "--results targets the canonical report, but this run cannot be canonical "
-            "(report v6, replayed expansion or private input); refusing before any work"
+            "--results targets the canonical report, but this run is not canonical and "
+            "cannot be (report v6, replayed expansion or private input); refusing before any work"
         )
     # (d) an artifact build needs unique row keys across the run's sets.
     if expansion_mode == "build":
@@ -2114,6 +2116,7 @@ def run_eval_matrix(
             replay_artifact=replay_artifact, replay_count=lambda: rewrite_replayed,
             artifact_path_arg=build_target,
             privacy=privacy, private=private, run_id=run_id, run_dir_path=run_dir_path,
+            metered_generation=bool(gen_kwargs),
             private_report_path=private_report_path if private else None,
             results_path=results_path, provenance_fn=provenance_fn,
             persist_directory=persist_directory, meter=meter,
@@ -2164,7 +2167,10 @@ def run_eval_matrix(
         answers: Dict[str, Dict[str, Any]] = {}
         generation_errors = 0
         if generation_ran:
-            answers = generate_answers(golden, include_types, generate_fn)
+            answers = generate_answers(
+                golden, include_types, generate_fn,
+                **({"retries": 0} if gen_kwargs else {}),
+            )
             generation_errors = sum(
                 1 for a in answers.values() if a["result"] is None
             )
@@ -2487,7 +2493,7 @@ def run_eval_matrix(
     result["expansion_identity"] = expansion_id
     if expansion_mode == "build":
         result["expansion_artifact"] = _build_expansion_artifact(
-            build_target, sets, expansion_cache
+            build_target, sets, expansion_cache, private=private
         )
 
     report = _format_matrix_report(result, privacy=privacy)
@@ -2501,11 +2507,13 @@ def run_eval_matrix(
     if private:
         from pathlib import Path
 
-        write_private(Path(resolved_path), report)
-        _write_sidecar(resolved_path, sidecar, private=True)
+        # inputs.json FIRST: an interrupted run still leaves a run dir the
+        # merge-gate precheck can see and check (gate round 4).
         write_inputs_json(
             run_dir_path, _run_inputs(sets, replay_artifact, result.get("expansion_artifact"))
         )
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
         # The judge dump (claim and question text) stays inside the run dir.
         if judge and judge_dump_records:
             write_private(Path(run_dir_path) / "judge_review.jsonl", "\n".join(dump_lines) + "\n")
@@ -2659,7 +2667,10 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         answers_by_id = None
         if kw["generation_ran"]:
             pseudo = [eval_v6.pseudo_v1(r) for r in rows]
-            cache = generate_answers(pseudo, kw["include_types"], kw["generate_fn"])
+            cache = generate_answers(
+                pseudo, kw["include_types"], kw["generate_fn"],
+                **({"retries": 0} if kw["metered_generation"] else {}),
+            )
             total_errors += sum(1 for a in cache.values() if a["result"] is None)
             answers_by_id = eval_v6.score_answers_v6(rows, cache)
         fams = {r["family_id"] for r in rows}
@@ -2702,7 +2713,9 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
     }
     if kw["expansion_mode"] == "build":
-        result["expansion_artifact"] = _build_expansion_artifact(kw["artifact_path_arg"], sets, cache_exp)
+        result["expansion_artifact"] = _build_expansion_artifact(
+            kw["artifact_path_arg"], sets, cache_exp, private=private
+        )
     report = eval_v6.format_v6_report(result)
     sidecar = build_sidecar(
         privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
@@ -2711,11 +2724,11 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     if private:
         from pathlib import Path
 
-        write_private(Path(resolved_path), report)
-        _write_sidecar(resolved_path, sidecar, private=True)
         write_inputs_json(
             kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], result.get("expansion_artifact"))
         )
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
         print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
               f"({len(sets)} set(s); not canonical)")
     else:
@@ -2740,7 +2753,7 @@ def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:
 
 
 def _build_expansion_artifact(
-    target: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion]
+    target: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion], *, private: bool
 ) -> Dict[str, Any]:
     """Freeze this run's live expansions into an artifact (item 5, ``build:``).
 
@@ -2761,7 +2774,7 @@ def _build_expansion_artifact(
     # A private target is re-resolved through the containment check right
     # before the write (narrows a mid-run swap of eval/private/artifacts to a
     # symlink; the remaining check-to-open race is a disclosed residual, D65).
-    if _privacy.is_under(target, _privacy.private_root()):
+    if private:
         target = str(_privacy.artifact_path(os.path.basename(target)))
     digest = save_artifact(target, artifact)
     return {"path": target, "sha256": digest}

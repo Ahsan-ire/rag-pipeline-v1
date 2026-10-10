@@ -55,6 +55,7 @@ from src.eval_cohort import SCORER_VERSION, SIDECAR_VERSION, v1_cohort  # noqa: 
 from src.eval_privacy import (  # noqa: E402
     PUBLIC,
     SEALED,
+    PrivacyFloorError,
     SealedInputError,
     check_floor,
     public_v1_id,
@@ -107,6 +108,7 @@ def build_cache(
     offline_only: bool = False,
     name_question: Optional[Callable[[str], str]] = None,
     meter: Any = None,
+    privacy: str,
 ) -> Dict[str, Dict[str, Any]]:
     """Load the expansion cache, filling any gap with a live Haiku call.
 
@@ -122,8 +124,13 @@ def build_cache(
         name_question: how the error names the question; defaults to its
             opening 60 characters. A private run passes the row's opaque id.
         meter: a ``src.spend.SpendMeter`` (D70). A live fill expands through
-            its metered rewrite client; with a usable API key and no meter a
-            live fill raises ``SpendMeterRequired`` before any call.
+            its metered rewrite client (one attempt per question: the meter's
+            own loop owns retries); with a usable API key and no meter a live
+            fill raises ``SpendMeterRequired`` before any call.
+        privacy: the class of ``sets`` -- REQUIRED, and must be ``public``,
+            for a live fill: the fill writes question text as JSON keys into
+            ``CACHE``, a tracked file outside the private root (gate round 4).
+            Ignored when ``offline_only`` (nothing is written).
 
     Returns:
         ``{question: {"rewrites": [...], "status": str, "intent": str|None}}``.
@@ -134,12 +141,18 @@ def build_cache(
     """
     describe = name_question or (lambda q: repr(q[:60]))
     rewrite_kwargs: Dict[str, Any] = {}
+    attempts = 3  # zero-fallback requirement: retry twice (unmetered legacy path)
     if not offline_only:
+        if privacy != PUBLIC:
+            raise PrivacyFloorError(
+                "a live cache fill writes the tracked public cache; only public sets may fill it"
+            )
         from src.evaluator import _require_meter
 
         _require_meter(meter, live_paths=(True,))
         if meter is not None:
             rewrite_kwargs = {"llm": meter.rewrite_llm()}
+            attempts = 1
     cache = {}
     if os.path.exists(CACHE):
         with open(CACHE) as f:
@@ -157,7 +170,7 @@ def build_cache(
                     f"(status={status}) for question: {describe(q)} — "
                     f"refusing to call the API; refresh {CACHE} deliberately"
                 )
-            for _attempt in range(3):  # zero-fallback requirement: retry twice
+            for _attempt in range(attempts):
                 exp = expand_query(q, enabled=True, **rewrite_kwargs)
                 if exp.status == STATUS_LIVE:
                     break
@@ -305,6 +318,7 @@ def run_sweep(
         offline_only=True,
         name_question=None if public else (lambda q: any_id.get(q, "<unlisted cache entry>")),
         meter=meter,
+        privacy=privacy,
     )
     non_live = {q: c["status"] for q, c in cache.items() if c["status"] != STATUS_LIVE}
     n_intent = sum(1 for c in cache.values() if c["intent"])

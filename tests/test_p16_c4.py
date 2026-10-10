@@ -1089,7 +1089,7 @@ def test_w_sweep_live_fill_needs_a_meter_with_a_key(monkeypatch, tmp_path):
     called = []
     monkeypatch.setattr(w_sweep, "expand_query", lambda q, **k: called.append(q))
     with pytest.raises(SpendMeterRequired):
-        w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False)
+        w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False, privacy="public")
     assert called == []
 
 
@@ -1110,5 +1110,19 @@ def test_w_sweep_live_fill_uses_the_meter_rewrite_client(monkeypatch, tmp_path):
             return "metered-rewrite-client"
 
     monkeypatch.setattr(w_sweep, "expand_query", expand)
-    w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False, meter=Meter())
+    w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False, meter=Meter(), privacy="public")
     assert seen == ["metered-rewrite-client"]
+
+
+
+def test_w_sweep_live_fill_refuses_non_public_sets(monkeypatch, tmp_path):
+    """Gate round 4: a live fill writes the tracked public cache, so private sets never fill it."""
+    from scripts import w_sweep
+    from src.eval_privacy import PrivacyFloorError
+
+    monkeypatch.setattr(w_sweep, "CACHE", str(tmp_path / "c.json"))
+    called = []
+    monkeypatch.setattr(w_sweep, "expand_query", lambda q, **k: called.append(q))
+    with pytest.raises(PrivacyFloorError):
+        w_sweep.build_cache({"golden": [{"question": "private q"}]}, offline_only=False, privacy="private")
+    assert called == [] and not (tmp_path / "c.json").exists()

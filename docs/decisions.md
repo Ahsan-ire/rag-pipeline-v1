@@ -1913,6 +1913,12 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 
 **Gate round 2 (10 Oct):** private and artifact temp files are created exclusive and no-follow, so a planted `<file>.tmp` symlink cannot redirect a write. Rule 5 applies only to derived files with no `question`/`questions` key at any depth, so a question set cannot declare itself public. An escaped `"\u0073ealed"` key on a malformed line counts as a marker.
 
+**Gate round 4 (10 Oct):**
+- A derived file may carry question text only when every question string in it belongs to a registered public set. A public `w_sweep` dump keeps its legacy `ranks`; anything else stays private.
+- The merge-gate precheck accepts a run's `questions` input whose sha256 is a registered public set. A private run over public sets, e.g. `w_sweep`'s default, now passes; before, it could only pass if its run directory was deleted.
+- Private runs write `inputs.json` before anything else, so an interrupted run is still visible to the precheck.
+- `worker_allow` lists the spec's read-only import dependencies.
+
 **Gate round 3 (10 Oct):**
 - Classify rule 5 applies only to the known derived kinds: an expansion artifact, a rows sidecar, a C4 rank dump, or a `.md` report. Any other JSON, a question-keyed cache included, stays private whatever its `inputs` header says.
 - Retrieval error logs carry the exception type only, because `str(e)` can echo the query. The langchain relevance-score warning, whose text embeds the retrieved Documents, is silenced at its one call, so a private run's stderr carries no retrieval content. Scores and order are unchanged; the P0 and H0 locks pass.
@@ -2016,6 +2022,12 @@ Item 9:
 - a `build:` over duplicate input sets;
 - a public `build:` target that already exists and is not an expansion artifact, which protects the registry, the legacy list and the caches.
 
+**Gate round 4 (10 Oct):**
+- A metered default generator is not retried by `generate_answers`, because the meter's loop owns retries. Before, one question could cost up to 12 worst-case reservations.
+- `w_sweep.build_cache`'s live fill makes one attempt with a meter. It requires a keyword-only `privacy` and refuses any class but public, because it writes question text into the tracked public cache.
+- A public `build:` target under `eval/private/` is written where named, not silently redirected.
+- **Rebutted:** an explicit `--results eval/results.md` on a public v5 run that is non-canonical for v5 reasons (modes, `top_k`, skipped passes and so on) is still refused at write time, after the run. That is D46's behaviour on `main`, and the H0 lock pins it byte for byte, so changing it would change an approved criterion. 16A-1's own reasons (v6, replay, private) are refused up front.
+
 **Not changed, rebutted:**
 - `generate_with_sources` keeps today's call shape when `llm` is `None`, so existing callers and mocks are untouched.
 - The provenance-with-sidecar test checks the mechanism (every sidecar name is git-ignored and porcelain omits ignored files) instead of writing into the repo. The gate's own manual comparison confirmed the claim.
@@ -2096,6 +2108,11 @@ Wiring is eval-only:
 - The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
 - `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
 - **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
+
+**Gate round 4 (10 Oct):**
+- `judge_answer`'s default `llm_fn` raises `SpendMeterRequired` when a usable key is set, matching `judge_answers`.
+- A ledger error while printing totals in the spend-limit handler no longer loses exit 3 or 6.
+- The CLI uses `generator.api_key_usable` directly.
 
 **Gate round 3 (10 Oct):**
 - Meter failures (`LedgerCorrupt`, `LedgerRefused`, `UnpricedModel`, `SpendMeterRequired`) share the base `SpendMeterError`. `expand_query`, `judge_answer` and `generate_answers` re-raise it, so a corrupt or refused ledger stops the run instead of becoming a fallback, an API error or an error row.

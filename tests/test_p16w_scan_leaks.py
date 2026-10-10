@@ -481,3 +481,28 @@ def test_merge_gate_scans_pr_title_and_ref_names(repo):
     assert "PR#4 title:1" in targets
     assert any(t.startswith("ref ") for t in targets)
     assert not any(branch in t for t in targets)
+
+
+def test_precheck_accepts_registered_public_question_inputs(tmp_path, monkeypatch, _private_root_in_tmp):
+    """Gate round 4: a private run over PUBLIC sets (w_sweep's default) passes the merge-gate precheck."""
+    import json as _json
+
+    import src.eval_sets as eval_sets
+    from scripts import scan_leaks
+
+    pub = tmp_path / "pub.jsonl"
+    pub.write_text(_json.dumps({"question": "synthetic public widget question", "type": "direct",
+                                "expected_sections": ["1.1"]}) + "\n")
+    sha = eval_sets.sha256_file(pub)
+    entry = eval_sets.SetEntry(name="pubset", path=str(pub), privacy="public", role="fixture",
+                               status="active", sha256=sha)
+    monkeypatch.setattr(eval_sets, "load_registry", lambda: [entry])
+    run = _private_root_in_tmp / "runs" / "r-pub-1"
+    run.mkdir(parents=True)
+    (run / "inputs.json").write_text(_json.dumps({"version": 1, "inputs": [
+        {"path": str(pub), "sha256": sha, "kind": "questions"}]}))
+    assert scan_leaks.precheck(set()) == []
+    # an unregistered (private) questions input is still refused
+    (run / "inputs.json").write_text(_json.dumps({"version": 1, "inputs": [
+        {"path": str(pub), "sha256": "0" * 64, "kind": "questions"}]}))
+    assert scan_leaks.precheck(set()) != []

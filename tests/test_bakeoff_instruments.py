@@ -513,7 +513,7 @@ def test_build_cache_offline_only_raises_on_a_missing_entry(tmp_path, monkeypatc
 
     question = "A fixture question that was edited after the cache was built?"
     with pytest.raises(RuntimeError) as exc:
-        w_sweep.build_cache(_sets([question]), offline_only=True)
+        w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
     assert question[:60] in str(exc.value)
     assert "absent" in str(exc.value)
 
@@ -530,7 +530,7 @@ def test_build_cache_offline_only_raises_on_a_non_live_entry(tmp_path, monkeypat
     monkeypatch.setattr(w_sweep, "expand_query", _explode)
 
     with pytest.raises(RuntimeError, match="status=fallback"):
-        w_sweep.build_cache(_sets([question]), offline_only=True)
+        w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
 
 
 def test_build_cache_offline_only_returns_a_complete_live_cache(tmp_path, monkeypatch):
@@ -542,7 +542,7 @@ def test_build_cache_offline_only_returns_a_complete_live_cache(tmp_path, monkey
     monkeypatch.setattr(w_sweep, "CACHE", str(cache_path))
     monkeypatch.setattr(w_sweep, "expand_query", _explode)
 
-    cache = w_sweep.build_cache(_sets([question]), offline_only=True)
+    cache = w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
     assert cache[question]["status"] == w_sweep.STATUS_LIVE
     assert cache[question]["rewrites"] == ["rewrite one"]
 

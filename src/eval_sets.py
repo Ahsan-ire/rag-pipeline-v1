@@ -282,6 +282,48 @@ def _is_known_derived(obj: Any) -> bool:
     return isinstance(obj.get("cohorts"), list) and isinstance(obj.get("rows"), list) and "scorer_version" in obj
 
 
+def _question_texts(obj: Any) -> Optional[set]:
+    """Every string under a ``question``/``questions`` key at any depth.
+
+    Returns ``None`` if such a key holds a non-string value (fail closed).
+    """
+    found: set = set()
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for key in ("question", "questions"):
+                if key in cur:
+                    val = cur[key]
+                    vals = val if isinstance(val, list) else [val]
+                    for v in vals:
+                        if not isinstance(v, str):
+                            return None
+                        found.add(v)
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return found
+
+
+def public_questions() -> set:
+    """Question text of every row of every registered public set at its sha256."""
+    out: set = set()
+    for entry in public_entries():
+        p = entry.resolved()
+        if not p.is_file() or sha256_file(p) != entry.sha256:
+            continue
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("question"), str):
+                    out.add(row["question"])
+    return out
+
+
 def _has_question_key(obj: Any) -> bool:
     """True if any object at any depth has a ``question``/``questions`` key."""
     stack = [obj]
@@ -315,7 +357,13 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
         # a rows sidecar or a C4 rank dump -- holding no question text: any
         # other JSON (an eval set, a question-keyed cache) never becomes public
         # through a self-declared "inputs" list (gate rounds 2-3).
-        if not _is_known_derived(obj) or _has_question_key(obj):
+        if not _is_known_derived(obj):
+            return None
+        # A derived file may carry question text only if EVERY question string
+        # in it belongs to a registered public set (e.g. w_sweep's legacy
+        # `ranks` on a public run); otherwise it is never public (round 4).
+        texts = _question_texts(obj)
+        if texts is None or (texts and not texts <= public_questions()):
             return None
         shas = []
         for item in inputs:

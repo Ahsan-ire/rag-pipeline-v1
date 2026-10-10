@@ -486,7 +486,7 @@ def test_replay_or_v6_targeting_results_md_refused_before_any_call(monkeypatch, 
     canonical = tmp_path / "results.md"
     monkeypatch.setattr(ev, "DEFAULT_RESULTS_PATH", str(canonical))
     calls = []
-    with pytest.raises(ValueError, match="cannot be canonical"):
+    with pytest.raises(ValueError, match="not canonical"):
         ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(canonical), expansion=str(art),
                            generate_fn=lambda q: calls.append(q), **common)
     assert calls == [] and not canonical.exists()
@@ -523,3 +523,55 @@ def test_meter_errors_stop_the_run_not_degrade_it():
 
     with pytest.raises(LedgerCorrupt):
         ev.generate_answers([{"question": "q", "type": "direct"}], ["direct"], gen, retry_backoff=0)
+
+
+# --- gate round 4 ----------------------------------------------------------------------
+def test_judge_answer_default_is_refused_with_a_key(monkeypatch):
+    from src.judge import judge_answer
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    with pytest.raises(SpendMeterRequired):
+        judge_answer("q", "a", "c")
+
+
+def test_metered_generation_is_not_retried_by_generate_answers(monkeypatch, tmp_path, fake_index):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    seen = {}
+    real = ev.generate_answers
+
+    def spy(*a, **k):
+        seen.update(k)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ev, "generate_answers", spy)
+    ev.run_eval_matrix([("golden", SAMPLE)], modes=["hybrid"], results_path=str(tmp_path / "r.md"),
+                       provenance_fn=lambda: dict(PROVENANCE), privacy="public", meter=make_meter(_fakes()),
+                       skip_refusals=True)
+    assert seen.get("retries") == 0
+
+
+def test_public_build_under_private_root_is_not_redirected(monkeypatch, tmp_path, _private_root_in_tmp):
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    dest = _private_root_in_tmp / "runs" / "x" / "exp.json"
+    r = ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"), expansion=f"build:{dest}",
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    assert Path(r["expansion_artifact"]["path"]) == dest and dest.exists()
+
+
+def test_spend_totals_failure_keeps_the_exit_code(monkeypatch, capsys):
+    import src.pipeline
+    from src.spend import LedgerCorrupt, SpendLimitReached, SpendMeter
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+
+    def boom(set_specs, **kwargs):
+        raise SpendLimitReached("week")
+
+    monkeypatch.setattr("src.evaluator.run_eval_matrix", boom)
+    monkeypatch.setattr(SpendMeter, "run_total_eur", property(lambda self: (_ for _ in ()).throw(LedgerCorrupt("x"))))
+    monkeypatch.setattr("sys.argv", ["prog", "eval", "--skip-refusals"])
+    with pytest.raises(SystemExit) as exc:
+        src.pipeline.main()
+    assert exc.value.code == 3
+    assert "Traceback" not in capsys.readouterr().err

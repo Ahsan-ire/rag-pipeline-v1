@@ -352,3 +352,17 @@ def test_escaped_sealed_key_on_a_malformed_line_is_sealed(tmp_path):
     p = tmp_path / "esc.jsonl"
     p.write_text('{"question": "q a"}\n{"\\u0073ealed": true, "question": \n')
     assert classify(p) == "sealed"
+
+
+def test_derived_dump_with_public_question_text_is_public(tmp_path, eval_registry):
+    """Round 4: a C4 dump may carry question text only from registered public sets."""
+    pub = _write_jsonl(tmp_path / "pub.jsonl", _rows("synthetic public widget q"))
+    entry = eval_registry.add(pub)
+    base = {"version": 1, "scorer_version": "x", "cohorts": [], "rows": [],
+            "inputs": [{"sha256": entry.sha256}]}
+    ok = tmp_path / "dump.json"
+    ok.write_text(json.dumps({**base, "ranks": {"W=0|golden|0": {"question": "synthetic public widget q"}}}))
+    assert classify(ok) == "public"
+    bad = tmp_path / "dump2.json"
+    bad.write_text(json.dumps({**base, "ranks": {"W=0|golden|0": {"question": "a private question"}}}))
+    assert classify(bad) == "private"

@@ -701,9 +701,9 @@ def _eval_command(args: argparse.Namespace) -> int:
     # key no Claude call can be made at all, so the run degrades as before
     # (expansion falls back, generation records error rows) instead of
     # crashing while building metered clients (D70).
-    from src.evaluator import _api_key_usable
+    from src.generator import api_key_usable
 
-    if live and _api_key_usable():
+    if live and api_key_usable():
         from src.spend import SpendMeter, SpendMeterError, load_prices
 
         try:
@@ -723,12 +723,18 @@ def _eval_command(args: argparse.Namespace) -> int:
             return EXIT_USAGE
 
     def _totals() -> None:
-        if meter is not None:
-            print(
-                f"[eval] spend: run EUR {meter.run_total_eur:.4f}, "
-                f"week EUR {meter.week_total_eur:.4f} (ceiling EUR {meter.ceiling_eur:.2f})",
-                file=sys.stderr,
-            )
+        if meter is None:
+            return
+        try:
+            run_eur, week_eur = meter.run_total_eur, meter.week_total_eur
+        except Exception as exc:  # noqa: BLE001 - never lose the exit code over a total
+            print(f"[eval] spend totals unavailable: {safe_error(exc)}", file=sys.stderr)
+            return
+        print(
+            f"[eval] spend: run EUR {run_eur:.4f}, "
+            f"week EUR {week_eur:.4f} (ceiling EUR {meter.ceiling_eur:.2f})",
+            file=sys.stderr,
+        )
 
     try:
         run_eval_matrix(
