@@ -36,4 +36,5 @@ worker_allow = [
   # read-only import dependencies (spec: worker_allow "plus" these)
   "src/generator.py", "src/grounding.py", "src/render.py", "tests/conftest.py",
 ]
-codex_clause = "Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, eval/private/, or held-out eval files."
+# Empty: the harness generates the clause from restricted_read, so it can never list fewer paths.
+codex_clause = ""
