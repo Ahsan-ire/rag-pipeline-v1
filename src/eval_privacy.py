@@ -231,9 +231,18 @@ def contained_path(root: Path, *parts: str) -> Path:
 
 
 def _check_root(root: Path) -> None:
-    """Refuse a private root (or its eval/ parent chain) that is itself a symlink."""
-    if root.is_symlink():
-        raise PrivatePathError("the private root is a symlink")
+    """Refuse a private root, or its ``eval/`` parent, that is itself a symlink.
+
+    The private root is always ``<repo>/eval/private``, so those two are the
+    whole chain between the repo root and the private root. ``contained_path``
+    only checks components below the root and resolves the root itself, so a
+    symlinked ``eval/`` would otherwise let a run directory resolve outside the
+    repo (final gate, D3). Ancestors above the repo root are not checked: a
+    checkout may legitimately sit under a symlinked directory (``/tmp``).
+    """
+    for level in (root, root.parent):
+        if level.is_symlink():
+            raise PrivatePathError("the private root or its eval/ parent is a symlink")
 
 
 def run_dir(run_id: str, *, create: bool = True) -> Path:

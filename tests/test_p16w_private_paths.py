@@ -58,6 +58,34 @@ def test_symlinked_private_root_refused(tmp_path, monkeypatch):
         run_dir("run-001")
 
 
+def test_symlinked_eval_parent_of_the_private_root_refused(tmp_path, monkeypatch):
+    """Final gate D3: a symlinked eval/ above a real private/ dir is refused too
+    (fails on b290cea: the run dir resolved outside, under the link's target)."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "private").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    os.symlink(elsewhere, repo / "eval")
+    monkeypatch.setattr("src.eval_privacy.private_root", lambda: repo / "eval" / "private")
+    with pytest.raises(PrivatePathError):
+        run_dir("run-003")
+    with pytest.raises(PrivatePathError):
+        artifact_path("x.json")
+    assert not (elsewhere / "private" / "runs").exists()
+    assert not (elsewhere / "private" / "artifacts").exists()
+
+
+def test_private_root_under_a_symlinked_ancestor_above_eval_is_accepted(tmp_path, monkeypatch):
+    """Control: only eval/ and eval/private are checked; a checkout reached
+    through a symlinked directory above it (like /tmp on macOS) still works."""
+    real = tmp_path / "real_checkout"
+    real.mkdir()
+    os.symlink(real, tmp_path / "linked_checkout")
+    monkeypatch.setattr("src.eval_privacy.private_root", lambda: tmp_path / "linked_checkout" / "eval" / "private")
+    d = run_dir("run-004")
+    assert d.is_dir() and (real / "eval" / "private" / "runs" / "run-004").is_dir()
+
+
 def test_write_private_refuses_outside(tmp_path):
     with pytest.raises(PrivatePathError):
         write_private(tmp_path / "not_private.md", "x")

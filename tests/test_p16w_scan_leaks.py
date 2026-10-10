@@ -373,6 +373,38 @@ def test_merge_gate_reads_each_message_whole_record_separators_included(repo):
     assert (f"tag {tag_obj[:12]}", _ids(PRIV9)) in got
 
 
+@pytest.mark.parametrize("enc", ["UTF-16", "punycode", "idna", "ISO-8859-1", "x-no-such-codec"])
+def test_merge_gate_scans_raw_message_bytes_whatever_the_encoding_header(repo, enc):
+    """Final gate D2: git stores a message's bytes as given and only records the
+    ``encoding`` header, so a header that decodes them to noise (UTF-16,
+    punycode) or cannot decode them at all (idna, an unknown codec) must not
+    hide a needle. UTF-16/punycode fail on b290cea (0 hits); idna raised there."""
+    git(repo, "-c", f"i18n.commitEncoding={enc}", "commit", "-q", "--allow-empty", "-m", f"subject\n\nwhy: {PRIV9}\n")
+    msg_commit = git(repo, "rev-parse", "HEAD")
+    # `git tag` never writes an encoding header; a crafted tag object can.
+    tag_body = (f"object {msg_commit}\ntype commit\ntag v0.0.3\ntagger t <t@example.invalid> 0 +0000\n"
+                f"encoding {enc}\n\nrelease {PRIV9}\n")
+    tag_obj = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "tag", "-w", "--stdin"], input=tag_body,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    git(repo, "update-ref", "refs/tags/v0.0.3", tag_obj)
+    for obj in (msg_commit, tag_obj):
+        assert f"encoding {enc}" in git(repo, "cat-file", "-p", obj)  # the header really is there
+    got = [(h.target, h.needle) for h in sl.merge_gate("base", repo=repo)]
+    for label in (f"commit {msg_commit[:12]}:3", f"tag {tag_obj[:12]}:1"):
+        assert got.count((label, _ids(PRIV9))) == 1  # caught, and once, not once per decoding
+
+
+def test_message_stored_in_its_declared_encoding_is_still_caught(sets):
+    """Control: an honest UTF-16 message (bytes really in the declared codec) is
+    caught through the declared decoding; its UTF-8 decoding alone holds no needle."""
+    index = sl.build_needles(sl.collect_sources())
+    raw = b"tree 0\nencoding UTF-16\n\n" + f"why: {PRIV9}\n".encode("utf-16")
+    utf8_only, _declared = sl._object_messages(raw)
+    assert sl.scan_text(utf8_only, "commit c", index) == []
+    assert [h.needle for h in sl._scan_message(raw, "commit c", index)] == [_ids(PRIV9)]
+    assert sl._object_messages(b"tree 0\n\nplain\n") == ["plain\n"]  # no header: UTF-8 only
+
+
 def test_merge_gate_clean_and_pr_skipped_note(repo):
     (repo / "notes.md").write_text(f"public: {PUB_EXACT}\n{PUB_W1}\n", encoding="utf-8")
     git(repo, "add", "notes.md")

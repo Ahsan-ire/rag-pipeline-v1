@@ -543,22 +543,36 @@ def _cat_blobs(repo: Path, shas: Sequence[str]) -> Dict[str, bytes]:
     return out
 
 
-def _object_message(raw: bytes) -> str:
-    """The message of a raw commit or tag object: everything after its header block.
+def _object_messages(raw: bytes) -> List[str]:
+    """Every decoding of a raw commit or tag object's message (the bytes after its header block).
 
-    Decoded with the object's ``encoding`` header when it has one (what
-    ``git log --format=%B`` re-encodes from), else UTF-8; undecodable bytes
-    are replaced, never dropped.
+    Git never transcodes a message to match its ``encoding`` header, so the
+    header is only a claim: a UTF-16 or punycode header on UTF-8 bytes would
+    turn a needle into noise (final gate, D2). The raw bytes are therefore
+    always decoded as UTF-8; when the header names a codec that can decode
+    them, that decoding is scanned too, and a hit in either counts.
+    Undecodable bytes are replaced, never dropped.
     """
     header, _, body = raw.partition(b"\n\n")
-    encoding = "utf-8"
+    texts = [body.decode("utf-8", errors="replace")]
     for line in header.split(b"\n"):
         if line.startswith(b"encoding "):
             encoding = line[len(b"encoding "):].decode("ascii", errors="replace").strip()
-    try:
-        return body.decode(encoding, errors="replace")
-    except LookupError:
-        return body.decode("utf-8", errors="replace")
+            try:
+                declared = body.decode(encoding, errors="replace")
+            except (LookupError, ValueError):  # unknown, non-text or strict-only codec
+                continue
+            if declared not in texts:
+                texts.append(declared)
+    return texts
+
+
+def _scan_message(raw: bytes, target: str, index: NeedleIndex) -> List[Hit]:
+    """:func:`scan_text` over every decoding of one message; a hit is listed once."""
+    hits: List[Hit] = []
+    for text in _object_messages(raw):
+        hits.extend(h for h in scan_text(text, target, index) if h not in hits)
+    return hits
 
 
 def _range_blobs(repo: Path, base: str) -> List[Tuple[str, str, str]]:
@@ -938,9 +952,9 @@ def merge_gate(
     tag_objs = _git(repo_path, "for-each-ref", "refs/tags", "--format=%(objectname)").decode().split()
     objects = _cat_blobs(repo_path, sorted(set(commits) | set(tag_objs)))
     for sha in commits:
-        hits.extend(scan_text(_object_message(objects.get(sha, b"")), f"commit {sha[:12]}", index))
+        hits.extend(_scan_message(objects.get(sha, b""), f"commit {sha[:12]}", index))
     for obj in tag_objs:
-        hits.extend(scan_text(_object_message(objects.get(obj, b"")), f"tag {obj[:12]}", index))
+        hits.extend(_scan_message(objects.get(obj, b""), f"tag {obj[:12]}", index))
     # Branch and tag ref NAMES can carry text; scan them, label by object sha only.
     refs = _git(repo_path, "for-each-ref", "refs/heads", "refs/tags", "--format=%(objectname)%00%(refname)%1e")
     for rec in refs.decode("utf-8", errors="replace").split("\x1e"):

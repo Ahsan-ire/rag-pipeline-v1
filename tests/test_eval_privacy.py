@@ -256,6 +256,131 @@ def test_private_escape_destinations_abort(tmp_path, canaries, private_set, _pri
                                privacy="private", skip_refusals=True, skip_completeness=True)
 
 
+def _recording_runners(calls, *, offline=False):
+    """``run_eval`` and ``run_eval_matrix`` callers whose every retrieval/model hook
+    records a call. Default: every pass on (generation and the judge too);
+    ``offline=True`` runs retrieval only, so a control run completes."""
+    live = {} if offline else {"generate_fn": lambda q: calls.append("gen"),
+                               "judge_fn": lambda v: calls.append("judge"), "judge": True}
+
+    def factory(mode):
+        calls.append(("factory", mode))
+        return lambda q, top_k=6: calls.append(("retrieve", mode)) or []
+
+    def matrix(sets, report, privacy):
+        return ev.run_eval_matrix([("golden", str(s)) for s in sets], results_path=str(report),
+                                  retrieve_fn_factory=factory, provenance_fn=lambda: dict(PROVENANCE),
+                                  privacy=privacy, skip_refusals=offline, skip_completeness=offline, **live)
+
+    def single(sets, report, privacy):
+        return ev.run_eval(str(sets[0]), results_path=str(report),
+                           retrieve_fn=lambda q, top_k=6: calls.append("retrieve") or [],
+                           answer_fn=lambda q: calls.append("answer"), skip_refusals=offline,
+                           provenance_fn=lambda: dict(PROVENANCE), privacy=privacy)
+
+    return {"matrix": matrix, "run_eval": single}
+
+
+def _write_rows(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+# (input set's name in the run dir, report's name in the run dir): each pair
+# makes one of the private run's own writes land on the input.
+_OVERWRITE_CASES = {
+    "report over the set": ("set.jsonl", "set.jsonl"),
+    "report over the set, case variant": ("set.jsonl", "SET.jsonl"),
+    "inputs.json over the set": ("inputs.json", "report.md"),
+    "judge dump over the set": ("judge_review.jsonl", "report.md"),
+    "rows sidecar over the set": ("report.md.rows.json", "report.md"),
+}
+
+
+@pytest.mark.parametrize("runner", ["matrix", "run_eval"])
+@pytest.mark.parametrize("case", sorted(_OVERWRITE_CASES))
+def test_private_write_over_an_input_refused_before_any_call(tmp_path, canaries, private_set,
+                                                             _private_root_in_tmp, runner, case):
+    """Final gate D1: a private run never writes its report, sidecar, inputs.json or
+    judge dump over an input it reads. Fails on b290cea (the set was overwritten)."""
+    _path, rows = private_set
+    set_name, report_name = _OVERWRITE_CASES[case]
+    if report_name != report_name.lower() and not os.path.exists(str(tmp_path).upper()):
+        pytest.skip("case-sensitive filesystem: a case variant is a different file")
+    rdir = _private_root_in_tmp / "runs" / "r20261010-d1"
+    target = _write_rows(rdir / set_name, rows)
+    before = target.read_bytes()
+    calls = []
+    with pytest.raises(ValueError):
+        _recording_runners(calls)[runner]([target], rdir / report_name, "private")
+    assert calls == []
+    assert target.read_bytes() == before
+    assert sorted(p.name for p in rdir.iterdir()) == [set_name]  # nothing else written
+
+
+@pytest.mark.parametrize("runner", ["matrix", "run_eval"])
+@pytest.mark.parametrize("name", ["inputs.json", "judge_review.jsonl", "Inputs.JSON"])
+def test_private_report_named_as_a_run_contract_file_refused(tmp_path, canaries, private_set,
+                                                            _private_root_in_tmp, runner, name):
+    """Final gate D1: the report may not take inputs.json's (the scanner contract's)
+    or the judge dump's name. Fails on b290cea (inputs.json was replaced by the report)."""
+    path, _rows = private_set
+    rdir = _private_root_in_tmp / "runs" / "r20261010-d1c"
+    calls = []
+    with pytest.raises(ValueError):
+        _recording_runners(calls)[runner]([path], rdir / name, "private")
+    assert calls == []
+    assert not rdir.exists() or list(rdir.iterdir()) == []
+
+
+@pytest.mark.parametrize("runner", ["matrix", "run_eval"])
+def test_private_overwrite_guard_controls(tmp_path, canaries, private_set, _private_root_in_tmp,
+                                          eval_registry, runner):
+    """Controls: a private report beside (not over) an input set in the run dir is
+    written, and a public report over its input set is still refused (D38)."""
+    _path, rows = private_set
+    rdir = _private_root_in_tmp / "runs" / "r20261010-d1ok"
+    beside = _write_rows(rdir / "set.jsonl", rows)
+    before = beside.read_bytes()
+    calls = []
+    _recording_runners(calls, offline=True)[runner]([beside], rdir / "report.md", "private")
+    assert calls and beside.read_bytes() == before
+    assert {"inputs.json", "report.md", "report.md.rows.json"} <= {p.name for p in rdir.iterdir()}
+
+    pub = _write_rows(tmp_path / "pub" / "set.jsonl", [{"question": "Alpha bravo charlie delta echo?",
+                                                         "type": "direct", "expected_sections": ["1.1"]}])
+    eval_registry.add(pub)
+    if runner == "matrix":  # run_eval's public path never had the D38 guard (pre-16A)
+        calls.clear()
+        with pytest.raises(ValueError):
+            _recording_runners(calls)[runner]([pub], pub, "public")
+        assert calls == []
+
+
+def test_private_cli_report_over_its_own_set_refused(tmp_path, monkeypatch, capsys, canaries, private_set,
+                                                     _private_root_in_tmp):
+    """Final gate D1 through the CLI: ``pipeline eval --golden X -o X`` on a private X
+    exits 1 with the type only, before any index open, and leaves X intact."""
+    _path, rows = private_set
+    target = _write_rows(_private_root_in_tmp / "runs" / "r20261010-cli" / "set.jsonl", rows)
+    before = target.read_bytes()
+    calls = []
+    monkeypatch.setattr("src.evaluator.get_vector_store", lambda *a, **k: calls.append("store"))
+    monkeypatch.setattr("src.evaluator.load_bm25_index", lambda *a, **k: calls.append("bm25"))
+    monkeypatch.setattr("sys.argv", ["prog", "eval", "--golden", str(target), "-o", str(target),
+                                     "--skip-refusals", "--skip-completeness"])
+    import src.pipeline
+
+    with pytest.raises(SystemExit) as exc:
+        src.pipeline.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr()
+    assert "ValueError" in out.err
+    assert_no_leak(canaries, out.out, out.err, where="(cli overwrite refusal)")
+    assert calls == [] and target.read_bytes() == before
+
+
 def test_public_privacy_on_private_input_raises_before_any_call(tmp_path, canaries, private_set):
     from src.eval_privacy import PrivacyFloorError
 

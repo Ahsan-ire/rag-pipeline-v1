@@ -1252,6 +1252,45 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
     return run_id, str(rdir / rel.parts[1]), rdir
 
 
+# What a private run writes into its run directory besides the report and its
+# rows sidecar: the scanner contract and the judge dump (D65).
+_RUN_CONTRACT_FILES = ("inputs.json", "judge_review.jsonl")
+
+
+def _refuse_private_overwrite(report_path: str, run_dir_path: Any, input_paths: Sequence[str]) -> None:
+    """Refuse a private run whose own writes would destroy an input or a contract file.
+
+    The public path refuses a report over an input set in
+    ``_resolve_results_path`` (D38); a private run never calls it, so this is
+    the private path's guard (final gate, D1). A private run writes its
+    report, ``<report>.rows.json``, ``inputs.json`` and ``judge_review.jsonl``
+    into its run directory. None of them may be (by file identity) an input
+    the run reads, and the report may not take a contract file's name -- on a
+    case-insensitive filesystem a case variant is the same file, so the name
+    is compared casefolded. Called before any retrieval, expansion or model
+    call. The message names no path (private runs print the type only).
+
+    Raises:
+        ValueError: on either collision.
+    """
+    from pathlib import Path
+
+    if Path(report_path).name.casefold() in _RUN_CONTRACT_FILES:
+        raise ValueError(
+            "a private report path names a run-contract file (inputs.json or "
+            "judge_review.jsonl); refusing to overwrite it with a report"
+        )
+    writes = [report_path, sidecar_path(report_path)]
+    writes += [str(Path(run_dir_path) / name) for name in _RUN_CONTRACT_FILES]
+    for target in writes:
+        for p in input_paths:
+            if _same_path(target, p):
+                raise ValueError(
+                    "a private run's report, rows sidecar, inputs.json or judge dump "
+                    "resolves to an input path; refusing to overwrite the input"
+                )
+
+
 def _api_key_usable() -> bool:
     """True when a real-looking ANTHROPIC_API_KEY is set (``generator.api_key_usable``)."""
     from src.generator import api_key_usable
@@ -1537,7 +1576,9 @@ def run_eval(
             by ``run_eval_matrix`` on a canonical run (D46). Guarded up front,
             before any retrieval/generation, so an accidental canonical target
             fails fast and never makes a live API call en route to a refused
-            write.
+            write. Also, on a private run, if a file the run writes would land
+            on ``golden_path`` or the report takes a run-contract file's name
+            (``_refuse_private_overwrite``), before any call.
     """
     # D46 fail-closed: the legacy single-set runner must never write the
     # committed canonical report, even when explicitly targeted — that report is
@@ -1560,6 +1601,7 @@ def run_eval(
     run_dir_path: Any = None
     if private:
         run_id, results_path, run_dir_path = _private_destination(results_path)
+        _refuse_private_overwrite(results_path, run_dir_path, [golden_path])
     elif results_path is None:
         results_path = PARTIAL_RESULTS_PATH
     _require_meter(
@@ -1817,6 +1859,8 @@ def run_eval_matrix(
     run_dir_path: Any = None
     if private:
         run_id, private_report_path, run_dir_path = _private_destination(results_path)
+        # Every input the run opens (sets, and a replayed artifact) is guarded.
+        _refuse_private_overwrite(private_report_path, run_dir_path, floor_paths)
         results_path = None  # the private destination replaces it
     # Fail fast on the dangerous footgun (report over an eval set) BEFORE any
     # expensive generation, even though _resolve_results_path re-guards at write.

@@ -159,14 +159,79 @@ def test_rule5_stripped_header_is_private(tmp_path):
     assert classify(art) == "private"
 
 
+V5_TITLE = "# Legal RAG Evaluation Report v5 (held-out + realistic, ablated)"
+
+
+def _v5_md(set_path, sha, *, title=V5_TITLE, before="", after=""):
+    """A v5-shaped report: title, ``## Provenance`` with one set line, a later block."""
+    return (f"{title}\n\n- top_k: 6\n{before}\n## Provenance\n\n- git sha: abc (clean)\n\nQuestion sets:\n"
+            f"- tuning: x\n  - path: {set_path}\n  - sha256: {sha}\n\n## Headline\n\nnumbers\n{after}")
+
+
 def test_rule5_markdown_report_set_lines(tmp_path, eval_registry):
     p = _write_jsonl(tmp_path / "pub.jsonl", _rows("q a"))
     entry = eval_registry.add(p)
     rep = tmp_path / "report.md"
-    rep.write_text(f"# r\n- tuning: x\n  - path: {p}\n  - sha256: {entry.sha256}\n")
+    rep.write_text(_v5_md(p, entry.sha256))
     assert classify(rep) == "public"
-    rep.write_text(rep.read_text() + f"  - sha256: {'1' * 64}\n")
+    rep.write_text(_v5_md(p, entry.sha256).replace("\n\n## Headline", f"\n  - sha256: {'1' * 64}\n\n## Headline"))
     assert classify(rep) == "private"
+
+
+def test_rule5_markdown_needs_a_recognised_report(tmp_path, eval_registry):
+    """Final gate D4: free text plus one set- or cohort-shaped line of a public sha
+    is not a report, so it stays private (both public on b290cea)."""
+    p = _write_jsonl(tmp_path / "pub.jsonl", _rows("q a"))
+    entry = eval_registry.add(p)
+    cohort = (f"- x: path p; privacy public; schema 2; sha256 {entry.sha256}; rows 1; families 1; "
+              f"cohort_fp {'0' * 64}")
+    for name, text in {
+        "cohort.md": f"PRIVATE QUESTION TEXT xyz?\n{cohort}\n",
+        "setline.md": f"PRIVATE QUESTION TEXT xyz?\n  - sha256: {entry.sha256}\n",
+        "not_first.md": f"notes\n{V5_TITLE}\n## Provenance\n  - sha256: {entry.sha256}\n",
+        "other_title.md": _v5_md(p, entry.sha256, title="# Legal RAG Evaluation Report v9 (x)"),
+    }.items():
+        md = tmp_path / name
+        md.write_text(text)
+        assert classify(md) == "private", name
+
+
+def test_rule5_markdown_counts_only_lines_inside_the_input_block(tmp_path, eval_registry):
+    """Final gate D4: in a recognised report, a set line outside its own block
+    (v5 Provenance, v6 Cohort) does not count; the block's lines decide."""
+    p = _write_jsonl(tmp_path / "pub.jsonl", _rows("q a"))
+    entry = eval_registry.add(p)
+    md = tmp_path / "r.md"
+    # the only set line sits after the Provenance block -> no recorded input -> private
+    md.write_text(f"{V5_TITLE}\n\n## Provenance\n\n- git sha: x\n\n## Notes\n  - sha256: {entry.sha256}\n")
+    assert classify(md) == "private"
+    # a v6 cohort line under a v5 title's Provenance is not a v5 set line
+    cohort = (f"- x: path p; privacy public; schema 2; sha256 {entry.sha256}; rows 1; families 1; "
+              f"cohort_fp {'0' * 64}")
+    md.write_text(f"{V5_TITLE}\n\n## Provenance\n\n{cohort}\n")
+    assert classify(md) == "private"
+    # control: the same cohort line inside a v6 report's ## Cohort block is public
+    from src.eval_v6 import REPORT_TITLE
+
+    md.write_text(f"{REPORT_TITLE}\n\n## Family counts\n\nfree text\n\n## Cohort\n\n{cohort}\n")
+    assert classify(md) == "public"
+
+
+def test_rule5_reads_an_actual_v5_matrix_report(tmp_path, eval_registry):
+    """Pin: a report the v5 matrix runner writes over a public set classifies public
+    (the title and block in ``_MD_REPORT_BLOCKS`` match the formatter)."""
+    import src.evaluator as ev
+    from tests.p16_capture import PROVENANCE, FakeRetrieval
+
+    rows = _rows("Alpha bravo charlie delta echo foxtrot golf?")
+    p = _write_jsonl(tmp_path / "pub.jsonl", rows)
+    eval_registry.add(p)
+    report = tmp_path / "out" / "report.md"
+    ev.run_eval_matrix([("golden", str(p))], results_path=str(report), privacy="public",
+                       retrieve_fn_factory=FakeRetrieval({r["question"]: r["expected_sections"] for r in rows}).factory(6),
+                       provenance_fn=lambda: dict(PROVENANCE), skip_refusals=True, skip_completeness=True)
+    assert report.read_text().splitlines()[0] == V5_TITLE
+    assert classify(report) == "public"
 
 
 # --- rule 6: legacy lookup only with the flag ---------------------------------

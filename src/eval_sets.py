@@ -18,7 +18,9 @@ register. Tests register tmp sets by monkeypatching :func:`load_registry`
 4. a registered public path at its registered sha256 -> ``public``;
 5. a report, cache or artifact whose recorded input sha256s are all registered
    public -> ``public`` (JSON: a top-level ``"inputs": [{"sha256": ...}, ...]``
-   list; Markdown: the v5 report's ``  - sha256: <hex>`` set lines);
+   list; Markdown: only a recognised report -- first line a report title --
+   and only the set lines inside its input block: ``  - sha256: <hex>`` under
+   a v2-v5 report's ``## Provenance``, the cohort lines under v6's ``## Cohort``);
 6. with ``legacy_public=True`` (it enables this lookup, never sets a class), a
    sha256 in ``eval/legacy_public.json`` -> ``public``;
 7. else ``private``.
@@ -60,6 +62,17 @@ _MD_SET_SHA_RE = re.compile(r"^\s+- sha256: ([0-9a-f]{64})\s*$")
 _MD_V6_COHORT_SHA_RE = re.compile(
     r"^- .+; schema \d+; sha256 ([0-9a-f]{64}); rows \d+; families \d+; cohort_fp [0-9a-f]{64}\s*$"
 )
+# Rule 5 reads a Markdown file only when it is a recognised report: its first
+# line is a report title, and only the set lines inside that report's own
+# input block count (final gate, D4). The title's version picks the block: the
+# matrix reports v2-v5 (``evaluator._format_matrix_report`` and its
+# predecessors) record their sets under ``## Provenance``; report v6
+# (``eval_v6.REPORT_TITLE``) under ``## Cohort``.
+_MD_REPORT_TITLE_RE = re.compile(r"^# Legal RAG Evaluation Report v(\d+)(?: |$)")
+_MD_REPORT_BLOCKS = {
+    **{version: ("## Provenance", _MD_SET_SHA_RE) for version in (2, 3, 4, 5)},
+    6: ("## Cohort", _MD_V6_COHORT_SHA_RE),
+}
 
 
 class RegistryError(ValueError):
@@ -393,13 +406,34 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
             shas.append(sha)
         return shas
     if suffix == ".md":
-        shas = [
-            m.group(1)
-            for line in text.splitlines()
-            if (m := _MD_SET_SHA_RE.match(line) or _MD_V6_COHORT_SHA_RE.match(line))
-        ]
-        return shas or None
+        return _md_report_shas(text) or None
     return None
+
+
+def _md_report_shas(text: str) -> List[str]:
+    """The set sha256s a recognised Markdown report records in its input block.
+
+    Empty unless the first line is a report title whose version is in
+    ``_MD_REPORT_BLOCKS``; then only the lines inside that version's block
+    (from its ``## `` heading to the next ``#``/``##`` heading) that match its
+    set-line pattern count. A set-shaped line anywhere else, or in a file that
+    is not a recognised report, is ignored, so free text with one such line
+    stays private (final gate, D4).
+    """
+    lines = text.splitlines()
+    title = _MD_REPORT_TITLE_RE.match(lines[0]) if lines else None
+    if title is None or int(title.group(1)) not in _MD_REPORT_BLOCKS:
+        return []
+    heading, pattern = _MD_REPORT_BLOCKS[int(title.group(1))]
+    shas: List[str] = []
+    inside = False
+    for line in lines[1:]:
+        if line.startswith("# ") or line.startswith("## "):
+            inside = line.rstrip() == heading
+            continue
+        if inside and (m := pattern.match(line)):
+            shas.append(m.group(1))
+    return shas
 
 
 def classify(path: Any, *, legacy_public: bool = False) -> str:
