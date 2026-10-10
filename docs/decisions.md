@@ -1912,11 +1912,12 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
 **Merge gate (Codex, reviewed 82e1568, 10 Oct):**
-- **#1 (blocker): SDK debug logging.** The anthropic SDK logs every request's options at DEBUG (`_base_client._build_request`): the messages, so the question, its context and, for the judge, the answer. `ANTHROPIC_LOG=debug` or any DEBUG-level root logger turns it on, and no report sanitiser can reach that output. Every metered attempt now runs with `logging` disabled process-wide, at every level, for the duration of the SDK call (`spend._logging_off`). The previous threshold is restored when the call returns or raises.
+- **#1 (blocker): SDK debug logging.** The anthropic SDK logs every request's options at DEBUG (`_base_client._build_request`): the messages, so the question, its context and, for the judge, the answer. `ANTHROPIC_LOG=debug` or any DEBUG-level root logger turns it on, and no report sanitiser can reach that output. While any metered attempt is in flight, a filter on the SDK and transport loggers (`anthropic`, `httpx`, `httpcore`, `langchain_anthropic`, children included) drops every record they emit, at every level (`spend._sdk_logging_dropped`). In the pinned versions only `anthropic._base_client` dumps the prompt; httpx and httpcore log the URL, status and headers, and langchain_anthropic has no logger.
   - It applies to every class, not only private runs. Every live eval call is metered (`SpendMeterRequired` otherwise), so a wrong class cannot skip the boundary.
-  - A public eval run loses only the SDK's own debug lines. To debug a request, use `pipeline query`, which is unmetered.
-  - The eval is sequential, so a process-wide switch is safe.
-  - Tested with the actual SDK: a real `ChatAnthropic` over `httpx.MockTransport`, both directly and through a private `run_eval`'s default generation path.
+  - A public eval run loses only those loggers' lines while its calls run. To debug a request, use `pipeline query`, which is unmetered.
+  - **Round 2 (Codex, reviewed ed8a2ea):** the first fix switched `logging.disable` process-wide and restored the saved threshold on exit. Overlapping calls (threads, `Runnable.batch`) restored it while another call was still sending, so that call's prompt was logged. The switch also silenced unrelated warnings and could lower a caller's stronger threshold. The filter is now reference-counted under a lock: the first call in installs it and the last call out removes it. No other logger is touched, and neither is `logging.disable`.
+  - **Residual (disclosed):** the filter covers the loggers that exist when a call enters. httpcore's loggers are created when the first SDK client is built, inside the first call, so they are covered from the next call on. Their records carry no request body.
+  - Tested with the actual SDK: a real `ChatAnthropic` over `httpx.MockTransport`, directly, through a private `run_eval`'s default generation path, with two overlapping threaded calls and through `Runnable.batch`.
 - **#2: controls outside the floor.** `bakeoff_report` opened the `--controls` file without counting it in the floor, so public reports plus a private controls file stayed public, and a malformed control id reached stderr through the public error path. Now:
   - the controls file is in `input_paths`, so it counts in the floor and in the sealed check (run and CLI);
   - a private run lists it in `inputs.json` as a `derived` input whose sources are the sets its `set_sha256` values name.
@@ -2062,7 +2063,9 @@ Item 9:
   - a v6 report gives its sets (label, path and sha256) from its `## Cohort` block, and the held-out exclusion still applies;
   - its ranks come from its rows sidecar, which it always needs: without one it is refused, `--legacy` included;
   - the selection table is the sidecar's row-level strict/related@6;
-  - S5/N4 role coverage is `n/a`, because v6 records no retrieved sections.
+  - S5/N4 role coverage is `n/a` for every role of a v6 arm, matched or not, because v6 records no retrieved sections (round 2, #4: an unmatched id rendered `no`);
+  - **depth (round 2, #2):** a v6 report must declare `top_k` and its hit cut-off `k`, and `k` must be 6, so a shallower run is refused rather than re-read at @6. All C4 arms must record the same `top_k` (a v5 report's `- top_k:` header line counts), and none may be below 6. Before, arms at depths 1 and 6 passed, and identical retrieval scored 0.0 against 1.0;
+  - **modes (round 2, #3):** a v6 report's `- Retrieval modes:` line is its mode roster. It must include `hybrid` (the primary metric) and `hybrid+rewrite` (the flip mode). Its sidecar must cover every declared mode over each cohort's eligible roster and carry no other mode. Before, removing vector, BM25 and hybrid from both sidecars passed, and the headline fell back to hybrid+rewrite.
 
   Classify rule 5 now also reads a v6 report's cohort sha256s, so a v6 report built only from registered public sets classifies public, as a v5 report does. Tested end to end on two arms written by the actual v6 runner.
 
