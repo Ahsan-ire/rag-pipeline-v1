@@ -328,7 +328,10 @@ def parse_rewrites(text: str) -> List[str]:
 def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Expansion:
     """Ask the rewrite LLM for alternative phrasings of ``question``.
 
-    Never raises — see the module's degrade contract. ``enabled=False`` skips
+    Never raises — see the module's degrade contract — with ONE exception
+    (16A-1, D70): ``src.spend.SpendLimitReached`` from a metered ``llm``
+    propagates. It subclasses ``BaseException``, so the ``except Exception``
+    degrade handlers below never turn a spend stop into a fallback. ``enabled=False`` skips
     calling the rewrite LLM entirely (including ``get_rewrite_llm``), which is
     what lets a caller disable expansion without needing an API key at all.
 

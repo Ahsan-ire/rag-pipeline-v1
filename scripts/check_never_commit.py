@@ -2,9 +2,9 @@
 
 Run in CI on every push and pull request. Fails (exit 1) if the checked-out tree, or any commit in the
 pushed/PR range, ADDS a path that must never be committed: anything under ``data/``, any PDF, ``.env``
-files (``.env.example`` allowed), the Chroma indexes, bake-off artefacts, logs, the tutorial documents or
-the judge review dump. Client-side git hooks can be bypassed; this check runs on GitHub and is a required
-status check on ``main``.
+files (``.env.example`` allowed), the Chroma indexes, bake-off artefacts, logs, the tutorial documents,
+the judge review dump or anything under ``eval/private/`` (D65). Client-side git hooks can be bypassed;
+this check runs on GitHub and is a required status check on ``main``.
 
 Usage:
     python scripts/check_never_commit.py [--range BASE..HEAD]
@@ -30,6 +30,7 @@ NEVER_COMMIT = [
     r"^logs/",
     r"^Tutorial_Docs_for_review/",
     r"^eval/judge_review\.jsonl$",
+    r"^eval/private/",
 ]
 _PATTERNS = [re.compile(p, re.IGNORECASE) for p in NEVER_COMMIT]
 

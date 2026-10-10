@@ -1,0 +1,26 @@
+# Anthropic API prices for the eval spend meter (Phase 16A-1 item 8, D70).
+# USD per million tokens. Cache-write and output rates are the 25 Sep 2026
+# cached prices quoted in the 16A-1 spec (Sonnet 5: $2.50 cache write, $10 out;
+# Haiku 4.5: $1.25 cache write, $5 out). Input = cache write / 1.25 and cache
+# read = 0.1 x input, the standard ratios. The owner refreshes this file; an
+# unpriced model is refused when the meter is built.
+price_list_date = 2026-09-25
+
+# Deliberately conservative: 1 USD = 1 EUR overstates EUR spend (the real rate
+# is above 1), so the EUR 40 weekly cap trips early rather than late.
+usd_per_eur = 1.0
+
+# D64: hard weekly cap on Anthropic API eval spend, per owner, per UTC ISO week.
+weekly_cap_eur = 40
+
+[models."claude-sonnet-5"]
+input = 2.0
+output = 10.0
+cache_write = 2.5
+cache_read = 0.2
+
+[models."claude-haiku-4-5"]
+input = 1.0
+output = 5.0
+cache_write = 1.25
+cache_read = 0.1

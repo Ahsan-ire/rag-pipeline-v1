@@ -158,6 +158,11 @@ def judge_answer(
         exception ``ok=False, error_type="api"``; on unparseable/invalid JSON
         ``ok=False, error_type="parse"``. Both error cases zero the counts and
         set ``faithfulness=None``.
+
+    Raises:
+        src.spend.SpendLimitReached: passes straight through (16A-1, D70); it
+            subclasses ``BaseException``, so the ``except Exception`` handler
+            never records a spend stop as an API error.
     """
     llm_fn = llm_fn or _default_llm_fn
 

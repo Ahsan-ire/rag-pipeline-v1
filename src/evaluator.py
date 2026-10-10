@@ -912,6 +912,9 @@ def generate_answers(
     Raises:
         ValueError: If two in-scope questions share identical text (they would
             collide in the cache — fail visibly rather than silently drop one).
+        src.spend.SpendLimitReached: passes straight through (16A-1, D70). It
+            subclasses ``BaseException``, so the per-question ``except
+            Exception`` retry never turns a spend stop into an error row.
     """
     answers: Dict[str, Dict[str, Any]] = {}
     for entry in golden:
@@ -1695,6 +1698,7 @@ def run_eval_matrix(
     *,
     privacy: str,
     meter: Any = None,
+    expansion: str = "live",
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1759,6 +1763,15 @@ def run_eval_matrix(
             call shapes are today's. A default live path with a usable API key
             and no meter raises ``SpendMeterRequired`` before any call.
 
+        expansion: ``"live"`` (default: today's behaviour), ``"build:<path>"``
+            (live expansion, then the run's expansions are frozen into an
+            artifact at ``<path>``; a private run's artifact goes under
+            ``eval/private/artifacts/<basename>``), or the path of a frozen
+            artifact (``src.expansion_artifact``) replayed in every arm: every
+            row is preflighted before any work, a missing entry or identity
+            mismatch fails with zero expansion calls, and a replayed run is
+            never canonical. The artifact's own class joins the privacy floor.
+
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
 
@@ -1781,9 +1794,13 @@ def run_eval_matrix(
         raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
 
     set_paths = [path for _label, path in set_specs]
+    expansion_mode, artifact_path_arg = _parse_expansion_arg(expansion)
+    floor_paths = list(set_paths)
+    if expansion_mode == "replay":
+        floor_paths.append(artifact_path_arg)
     # 16A-1 (D65): the privacy floor is checked before any retrieval, expansion
     # or model call; sealed input raises SealedInputError here.
-    privacy = check_floor(require_class(privacy), _eval_sets.floor(set_paths))
+    privacy = check_floor(require_class(privacy), _eval_sets.floor(floor_paths))
     private = privacy != PUBLIC
     run_id: Optional[str] = None
     run_dir_path: Any = None
@@ -1833,13 +1850,38 @@ def run_eval_matrix(
     # of live-enabled attempts.
     expansion_cache: Dict[str, Expansion] = {}
 
+    # Item 5: a replayed artifact is loaded (sealed refused) and every row of
+    # every set preflighted BEFORE any work, so a missing entry or identity
+    # mismatch fails with zero expansion calls.
+    replay_artifact: Any = None
+    replay_ids: Dict[str, str] = {}
+    if expansion_mode == "replay":
+        from src.expansion_artifact import load_artifact
+
+        if not expansion_enabled:
+            raise ValueError("an expansion artifact needs expansion enabled (not both --skip flags)")
+        replay_artifact = load_artifact(artifact_path_arg)
+        preflight_rows = []
+        for _label, path in set_specs:
+            g = load_golden_set(path)
+            sha = _sha256_file(path)
+            _c, g_ids = v1_cohort(g, path=path, privacy=privacy, sha256=sha)
+            for e in g:
+                rid = _artifact_row_id(sha, g_ids[e["question"]])
+                preflight_rows.append((rid, e["question"]))
+                replay_ids.setdefault(e["question"], rid)
+        replay_artifact.preflight(preflight_rows)
+    if expansion_mode == "build" and not expansion_enabled:
+        raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
+    rewrite_replayed = 0
+
     # D70: refuse an unmetered default live path BEFORE any call, then build
     # each metered client once for the whole run.
     _require_meter(
         meter,
         live_paths=(
             generation_ran and generate_fn is None,
-            expansion_enabled,
+            expansion_enabled and expansion_mode != "replay",
             judge and judge_fn is None,
         ),
     )
@@ -1866,10 +1908,15 @@ def run_eval_matrix(
         all — keeping keyless/offline runs at zero rewrite calls — and never
         populates the cache, so ``rewrite_attempts`` stays 0.
         """
+        nonlocal rewrite_replayed
         if not expansion_enabled:
             return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
         if question not in expansion_cache:
-            expansion_cache[question] = expand_query(question, enabled=True, **rewrite_kwargs)
+            if replay_artifact is not None:
+                expansion_cache[question] = replay_artifact.replay(replay_ids[question], question)
+                rewrite_replayed += 1
+            else:
+                expansion_cache[question] = expand_query(question, enabled=True, **rewrite_kwargs)
         return expansion_cache[question]
 
     # Ownership flags (Codex #8), captured BEFORE the default
@@ -2169,6 +2216,7 @@ def run_eval_matrix(
     # live; ``rewrite_fallbacks`` = those whose status is not STATUS_LIVE or
     # that yielded zero usable rewrites (a degenerate expansion).
     rewrite_attempts = len(expansion_cache)
+    rewrite_live = rewrite_attempts - rewrite_replayed
     rewrite_fallbacks = sum(
         1
         for exp in expansion_cache.values()
@@ -2270,8 +2318,10 @@ def run_eval_matrix(
         and rewrite_fallbacks == 0
         and (bm25_loaded or not bm25_default_path_in_play)
         and judge_ran_clean
-        # 16A-1: a non-public run is never canonical (eval/results.md is public).
+        # 16A-1: a non-public run is never canonical (eval/results.md is public),
+        # and neither is a replayed-expansion run (item 5).
         and not private
+        and expansion_mode != "replay"
     )
 
     if private:
@@ -2324,14 +2374,38 @@ def run_eval_matrix(
         "judge_ran_clean": judge_ran_clean,
         "privacy": privacy,
         "run_id": run_id,
+        "expansion_mode": expansion_mode,
+        "rewrite_live": rewrite_live,
+        "rewrite_replayed": rewrite_replayed,
     }
+
+    expansion_id = _expansion_identity(expansion_enabled, expansion_cache)
+    if replay_artifact is not None:
+        expansion_id = {
+            "kind": "replay",
+            "model": replay_artifact.identity["model"],
+            "digest": replay_artifact.digest,
+            "prompt_sha256": replay_artifact.identity["prompt_sha256"],
+            "config_hash": replay_artifact.identity["config_hash"],
+        }
+    elif expansion_enabled:
+        from src.expansion_artifact import rewrite_identity
+
+        expansion_id.update(
+            {k: v for k, v in rewrite_identity().items() if k != "model"}
+        )
+    result["expansion_identity"] = expansion_id
+    if expansion_mode == "build":
+        result["expansion_artifact"] = _build_expansion_artifact(
+            artifact_path_arg, sets, expansion_cache, private=private
+        )
 
     report = _format_matrix_report(result, privacy=privacy)
     sidecar = build_sidecar(
         privacy=privacy,
         cohorts=[s["cohort"] for s in sets],
         rows=sidecar_rows,
-        expansion=_expansion_identity(expansion_enabled, expansion_cache),
+        expansion=expansion_id,
     )
     dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
     if private:
@@ -2376,6 +2450,52 @@ def _expansion_identity(enabled: bool, cache: Dict[str, Expansion]) -> Dict[str,
     )
     digest = hashlib.sha256(json.dumps(tuples, separators=(",", ":")).encode("utf-8")).hexdigest()
     return {"kind": "live", "model": REWRITE_MODEL, "digest": digest}
+
+
+def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:
+    """``"live"`` | ``"build:<path>"`` | ``<artifact path>`` -> (mode, path)."""
+    if not isinstance(expansion, str) or not expansion:
+        raise ValueError("expansion must be 'live', 'build:<path>' or an artifact path")
+    if expansion == "live":
+        return "live", None
+    if expansion.startswith("build:"):
+        path = expansion[len("build:"):]
+        if not path:
+            raise ValueError("build: needs a destination path")
+        return "build", path
+    return "replay", expansion
+
+
+def _artifact_row_id(set_sha256: str, row_id: str) -> str:
+    """Artifact entry key: unique across sets (a question may sit in two sets)."""
+    return f"{set_sha256[:16]}/{row_id}"
+
+
+def _build_expansion_artifact(
+    dest: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion], *, private: bool
+) -> Dict[str, Any]:
+    """Freeze this run's live expansions into an artifact (item 5, ``build:``).
+
+    A private run's artifact goes under ``eval/private/artifacts/<basename>``
+    (contained); a public one to ``dest``. No question text is written.
+    """
+    from src.expansion_artifact import build_artifact, save_artifact
+
+    rows: List[Tuple[str, str]] = []
+    for s in sets:
+        for question, rid in s["ids"].items():
+            rows.append((_artifact_row_id(s["sha256"], rid), question))
+    artifact = build_artifact(
+        rows,
+        lambda q: cache[q],
+        [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
+    )
+    if private:
+        target = str(_privacy.artifact_path(os.path.basename(dest)))
+    else:
+        target = dest
+    digest = save_artifact(target, artifact)
+    return {"path": target, "sha256": digest}
 
 
 def _private_matrix_summary(result: Dict[str, Any]) -> str:
@@ -2504,6 +2624,17 @@ def _format_matrix_report(result: Dict[str, Any], *, privacy: str) -> str:
         )
     else:
         lines.append("- query expansion: disabled (offline run)")
+    # Item 5: a replayed or built artifact is disclosed (live runs keep the v5
+    # lines byte for byte). Replay is never canonical.
+    if result.get("expansion_mode", "live") != "live":
+        ident = result.get("expansion_identity") or {}
+        lines.append(
+            f"- expansion artifact ({result['expansion_mode']}): digest "
+            f"{(result.get('expansion_artifact') or {}).get('sha256') or ident.get('digest')}; "
+            f"rewrite_live {result.get('rewrite_live')}, rewrite_replayed "
+            f"{result.get('rewrite_replayed')}"
+            + (" (replayed runs are never canonical)" if result["expansion_mode"] == "replay" else "")
+        )
     # BM25-loaded disclosure (WS3 / Codex #8): surface whether the sidecar
     # actually loaded, so a non-canonical run can be traced to this guard. When
     # a default retrieval path was in play but the sidecar did NOT load, say so
