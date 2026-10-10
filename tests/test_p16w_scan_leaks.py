@@ -307,13 +307,13 @@ def repo(tmp_path, sets):
     return tmp_path
 
 
-def _gh_fake(body: str, comments, review_comments):
+def _gh_fake(body: str, comments, review_comments, title: str = "t"):
     calls = []
 
     def run(args):
         calls.append(args)
         if args[:2] == ["pr", "view"]:
-            return json.dumps({"body": body, "comments": [{"body": c} for c in comments], "reviews": []})
+            return json.dumps({"title": title, "body": body, "comments": [{"body": c} for c in comments], "reviews": []})
         assert args[0] == "api" and args[-1].endswith("/comments")
         half = len(review_comments) // 2
         return json.dumps([{"body": c} for c in review_comments[:half]]) + "\n" + json.dumps(
@@ -453,3 +453,31 @@ def test_cli_usage_errors():
     assert sl.main(["--merge-gate"]) == 2
     assert sl.main([]) == 2
     assert sl.main(["--output", "x", "--base", "main"]) == 2
+
+
+# --- review fixes ---------------------------------------------------------------
+def test_jsonl_with_unicode_line_separators_inside_string_is_read(tmp_path):
+    src = tmp_path / "elsewhere" / "sep.jsonl"
+    src.parent.mkdir()
+    rows = [{"question": "alpha beta\x0b\x0c\x1c\x85 gamma"}, {"question": SHORT}]
+    src.write_text("".join(json.dumps(r, ensure_ascii=False) + "\r\n" for r in rows), encoding="utf-8")
+    got = list(sl._iter_questions(src))
+    assert len(got) == 2 and got[1] == SHORT
+
+
+@pytest.mark.parametrize("zw", ["​", "‍", "﻿", "­"])
+def test_format_characters_do_not_split_tokens(zw):
+    assert sl.normalise_tokens(f"ef{zw}fect") == ["effect"]
+    assert sl.normalise_tokens(SHORT.replace("dossivel", f"dos{zw}sivel")) == sl.normalise_tokens(SHORT)
+
+
+def test_merge_gate_scans_pr_title_and_ref_names(repo):
+    branch = "feat-" + "-".join(sl.normalise_tokens(SHORT))
+    git(repo, "branch", branch)
+    git(repo, "tag", "tag-" + "-".join(sl.normalise_tokens(PRIV9)))
+    gh = _gh_fake("ok", [], [], title=f"fix {SHORT}")
+    hits = sl.merge_gate("base", repo=repo, pr=4, gh_runner=gh)
+    targets = {h.target for h in hits}
+    assert "PR#4 title:1" in targets
+    assert any(t.startswith("ref ") for t in targets)
+    assert not any(branch in t for t in targets)

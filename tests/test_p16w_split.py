@@ -603,3 +603,22 @@ def test_budget_exhaustion_raises_not_partial(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(SplitInfeasible) as ei:
         call(pool)
     assert ei.value.counts["search"]["exhausted"] is True
+
+
+@pytest.mark.parametrize("case", ["edge_list_endpoint", "pair_list_element", "batch_list_member"])
+def test_unhashable_twins_elements_refused_not_typeerror(case: str) -> None:
+    """A list where a string belongs is a SplitInputError, never a TypeError."""
+    p = make_pool(3)
+    ids = [r["family_id"] for r in p["families"]]
+    t = p["twins"]
+    if case == "edge_list_endpoint":
+        tw = _bad_twins(p, edges=[[[ids[0]], ids[1]]])
+    elif case == "pair_list_element":
+        tw = _bad_twins(p, pairs_covered=[[["x"], "y"]] + t["pairs_covered"])
+    else:
+        batches = {b: list(v) for b, v in t["batches"].items()}
+        first = sorted(batches)[0]
+        batches[first] = [[ids[0]]] + batches[first][1:]
+        tw = _bad_twins(p, batches=batches)
+    with pytest.raises(SplitInputError):
+        call(p, twins=tw)

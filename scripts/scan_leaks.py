@@ -62,8 +62,8 @@ kind is ``whole`` or ``window`` and source is the registry set name or the
 source path. A window hit that lies inside a whole hit's span on the same
 target is folded into the whole hit. Targets: ``<file>:<line>`` (``--output``
 and tracked files at HEAD), ``<path>@<commit12>:<line>`` (a blob version from
-the range), ``commit <sha12>:<line>``, ``tag <object sha12>:<line>`` (tag names
-are never printed: a name could carry text), ``PR#<n> body:<line>``,
+the range), ``commit <sha12>:<line>``, ``tag <object sha12>:<line>``, ``ref <object sha12>:<line>``
+(branch and tag ref names are scanned but never printed: a name could carry text), ``PR#<n> title:<line>``, ``PR#<n> body:<line>``,
 ``PR#<n> comment[i]:<line>``, ``PR#<n> review[i]:<line>`` and
 ``PR#<n> review-comment[i]:<line>``.
 
@@ -76,9 +76,9 @@ logging and report) before release; any hit aborts with exit 5.
 paths only) and then scans: every tracked file at HEAD; every blob version
 added or modified by any commit in ``base..HEAD`` (merges diffed against each
 parent, so a blob added and deleted inside the range is still scanned); every
-commit message in the range; every tag (annotation, all tags in the repo); and
-with ``--pr <n>`` the PR body, comments, review bodies and review comments via
-``gh`` (``gh pr view <n> --json body,comments,reviews`` and
+commit message in the range; every tag (annotation, all tags in the repo); every branch and tag ref name; and
+with ``--pr <n>`` the PR title, body, comments, review bodies and review comments via
+``gh`` (``gh pr view <n> --json title,body,comments,reviews`` and
 ``gh api --paginate repos/{owner}/{repo}/pulls/<n>/comments``). Without
 ``--pr`` PR items are skipped with a note on stderr. A ``gh`` failure is exit 2
 (the gate cannot vouch for what it did not read). Any hit is exit 5.
@@ -201,6 +201,9 @@ def normalise_tokens(text: str) -> List[str]:
     text = decode_escapes(text)
     text = unicodedata.normalize("NFKC", text)
     text = unicodedata.normalize("NFKC", text.casefold())
+    # Format characters (zero-width space/joiner, BOM, soft hyphen) are
+    # invisible but would split a token; delete them so a needle cannot slip by.
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
     return _NON_WORD.sub(" ", text).split()
 
 
@@ -359,7 +362,11 @@ def _iter_questions(path: Path) -> Iterator[str]:
         rows = rows if isinstance(rows, list) else [rows]
     else:
         rows = []
-        for lineno, line in enumerate(text.splitlines(), 1):
+        # Split on "\n" only: str.splitlines() also breaks on U+2028, U+0085,
+        # \x0b, \x0c and \x1c-\x1e, which may sit raw inside a JSON string.
+        for lineno, line in enumerate(text.split("\n"), 1):
+            if line.endswith("\r"):
+                line = line[:-1]
             if not line.strip():
                 continue
             try:
@@ -600,7 +607,7 @@ def _pr_items(pr: int, gh_runner: GhRunner) -> List[Tuple[str, str]]:
     """(label, text) for the PR body, comments, review bodies and review comments."""
     items: List[Tuple[str, str]] = []
     try:
-        view = json.loads(gh_runner(["pr", "view", str(pr), "--json", "body,comments,reviews"]))
+        view = json.loads(gh_runner(["pr", "view", str(pr), "--json", "title,body,comments,reviews"]))
         review_comments: List[Any] = []
         for page in _json_values(gh_runner(["api", "--paginate", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])):
             review_comments.extend(page if isinstance(page, list) else [page])
@@ -608,6 +615,7 @@ def _pr_items(pr: int, gh_runner: GhRunner) -> List[Tuple[str, str]]:
         raise
     except (ValueError, TypeError, OSError):
         raise ScanRefusal(EXIT_USAGE, "gh output could not be parsed; PR items not read")
+    items.append((f"PR#{pr} title", str(view.get("title") or "")))
     items.append((f"PR#{pr} body", str(view.get("body") or "")))
     for i, c in enumerate(view.get("comments") or []):
         items.append((f"PR#{pr} comment[{i}]", str((c or {}).get("body") or "")))
@@ -784,6 +792,12 @@ def merge_gate(
         obj, _, body = rec.strip("\n").partition("\x00")
         if obj:
             hits.extend(scan_text(body, f"tag {obj[:12]}", index))
+    # Branch and tag ref NAMES can carry text; scan them, label by object sha only.
+    refs = _git(repo_path, "for-each-ref", "refs/heads", "refs/tags", "--format=%(objectname)%00%(refname)%1e")
+    for rec in refs.decode("utf-8", errors="replace").split("\x1e"):
+        obj, _, name = rec.strip("\n").partition("\x00")
+        if obj:
+            hits.extend(scan_text(name, f"ref {obj[:12]}", index))
     if pr is None:
         notes.append("PR items skipped: no --pr given")
     else:

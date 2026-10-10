@@ -113,7 +113,9 @@ from __future__ import annotations
 import email.utils
 import fcntl
 import json
+import math
 import os
+import pwd
 import random
 import time
 import tomllib
@@ -297,7 +299,8 @@ def load_prices(path: os.PathLike[str] | str) -> Prices:
 
 def default_ledger_path() -> Path:
     """The one per-user ledger: ``~/.local/state/claudecode/anthropic_spend.jsonl``."""
-    return Path(os.path.expanduser("~")) / ".local" / "state" / "claudecode" / "anthropic_spend.jsonl"
+    # Keyed on the passwd entry, not $HOME: HOME=/other would otherwise reset the cap.
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "claudecode" / "anthropic_spend.jsonl"
 
 
 def _under_pytest() -> bool:
@@ -535,6 +538,11 @@ def _locked(path: Path, *, exclusive: bool) -> Iterator[int]:
         os.close(fd)  # closing the descriptor releases the flock
 
 
+_MONEY_FIELDS = (
+    "usd", "eur", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens",
+)
+
+
 def _read_lines(fd: int) -> Tuple[List[Dict[str, Any]], int]:
     """Parse the ledger; return (records, length of the complete-line prefix).
 
@@ -568,6 +576,16 @@ def _read_lines(fd: int) -> Tuple[List[Dict[str, Any]], int]:
                     raise LedgerCorrupt(f"ledger line {i}: reserve without {key!r}")
         elif "eur" not in rec:
             raise LedgerCorrupt(f"ledger line {i}: settle without 'eur'")
+        for key in _MONEY_FIELDS:
+            if key in rec:
+                val = rec[key]
+                if (
+                    isinstance(val, bool)
+                    or not isinstance(val, (int, float))
+                    or not math.isfinite(val)
+                    or val < 0
+                ):
+                    raise LedgerCorrupt(f"ledger line {i}: {key!r} must be a finite number >= 0")
         records.append(rec)
     return records, complete_len
 

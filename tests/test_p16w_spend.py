@@ -709,8 +709,38 @@ def test_cc_spend_ledger_outside_pytest_is_refused(monkeypatch):
         SpendMeter(load_prices(PRICES_PATH), None, None, models=MODELS)
 
 
+def _fake_home(monkeypatch, tmp_path):
+    """Point the passwd-entry home (what default_ledger_path uses) at tmp_path/home."""
+    import types
+
+    monkeypatch.setattr(
+        spend.pwd, "getpwuid", lambda uid: types.SimpleNamespace(pw_dir=str(tmp_path / "home"))
+    )
+
+
+def test_default_ledger_ignores_home_env(monkeypatch, tmp_path):
+    _fake_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "other"))
+    expected = tmp_path / "home" / ".local" / "state" / "claudecode" / "anthropic_spend.jsonl"
+    assert default_ledger_path() == expected
+
+
+@pytest.mark.parametrize("field", ["usd", "eur", "input_tokens"])
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-1", '"1"'])
+def test_non_finite_or_negative_ledger_values_are_corrupt(field, bad):
+    rec = {"event": "reserve", "rid": "r1", "week": "2026-W41", "run_id": "x",
+           "eur": 1.0, "usd": 1.0, "input_tokens": 5}
+    text = json.dumps(rec).replace(f'"{field}": {json.dumps(rec[field])}', f'"{field}": {bad}')
+    assert bad in text
+    ledger_path().write_text(text + "\n")
+    fakes = make_fakes()
+    with pytest.raises(spend.LedgerCorrupt):
+        make_meter(fakes).generation_llm().invoke(MESSAGES)
+    assert fakes["generation"].sent == []
+
+
 def test_outside_pytest_only_the_default_ledger(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _fake_home(monkeypatch, tmp_path)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("CC_SPEND_LEDGER", raising=False)
     expected = tmp_path / "home" / ".local" / "state" / "claudecode" / "anthropic_spend.jsonl"
@@ -722,7 +752,7 @@ def test_outside_pytest_only_the_default_ledger(monkeypatch, tmp_path):
 
 
 def test_default_ledger_refused_under_pytest(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # belt and braces: never the real home
+    _fake_home(monkeypatch, tmp_path)  # never the real home
     with pytest.raises(LedgerRefused):
         check_ledger_path(default_ledger_path())
     with pytest.raises(LedgerRefused):

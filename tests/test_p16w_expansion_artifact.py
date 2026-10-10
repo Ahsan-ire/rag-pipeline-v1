@@ -277,3 +277,18 @@ def test_live_digest_ignores_status_and_original():
     e = entries["syn-001"]
     alt = dict(entries, **{"syn-001": Expansion("other", e.rewrites, e.model, STATUS_PARSE_ERROR, e.intent_rewrite)})
     assert live_digest(alt) == live_digest(entries)
+
+
+@pytest.mark.parametrize("field,value", [("temperature", 0.5), ("thinking", {"type": "enabled"}), ("max_tokens", 7)])
+def test_identity_derives_client_params_from_the_client(monkeypatch, field, value):
+    """Changing a value on the client get_rewrite_llm builds changes config_hash."""
+    base = rewrite_identity()
+
+    def fake_get_rewrite_llm():
+        # Looks up qr.ChatAnthropic at call time, like the real function.
+        return ea.qr.ChatAnthropic(**{"model": "m", "max_tokens": 300, field: value})
+
+    monkeypatch.setattr(ea.qr, "get_rewrite_llm", fake_get_rewrite_llm)
+    changed = rewrite_identity()
+    assert changed["config_hash"] != base["config_hash"]
+    assert changed["prompt_sha256"] == base["prompt_sha256"]

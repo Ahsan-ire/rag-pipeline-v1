@@ -275,6 +275,8 @@ def _validate_records(families: Any, splits: Sequence[str]) -> Dict[str, Dict[st
 def _pair(value: Any, where: str) -> Tuple[Any, Any]:
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or len(value) != 2:
         raise SplitInputError(f"{where}: must be a 2-element pair")
+    if not (isinstance(value[0], str) and isinstance(value[1], str)):
+        raise SplitInputError(f"{where}: both pair elements must be strings")
     return value[0], value[1]
 
 
@@ -300,6 +302,8 @@ def _validate_twins(twins: Any, ids: Sequence[str]) -> List[Tuple[str, str]]:
         if not members:
             raise SplitInputError(f"twins.batches[{bid!r}] is empty")
         for fid in members:
+            if not isinstance(fid, str):
+                raise SplitInputError(f"twins.batches[{bid!r}]: family ids must be strings")
             if fid not in id_set:
                 raise SplitInputError(f"twins.batches[{bid!r}]: unknown family id {fid!r}")
             if fid in seen:
