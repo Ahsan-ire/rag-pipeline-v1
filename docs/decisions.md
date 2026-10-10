@@ -2136,6 +2136,25 @@ v6 strict scoring credits an alias only through its chunk, and the map hash bind
 
 **Done (10 Oct, orchestrator, [C]):** run on the real corpus and `./chroma_db` (1,470 chunks, 148 mapped chunks, 175 aliases, 1,104 sections; `map_sha256` 61a8b352…cafbfc), both files committed in `fefb206`. The 1,470-chunk canary holds: `chunk_handbook` on the real PDF gives 1,470 chunks with an identical sha256 over every chunk's text and metadata on `main` and on the branch.
 
+**Tier-2 and [C] evidence (orchestrator, 10 Oct 2026, owner's machine; metadata only, no question or answer text).**
+
+All runs used the real `./chroma_db` index (1,470 chunks). The API key was scrubbed and dotenv disabled for every offline run. Records are in the gitignored `data/research/`.
+
+**H (j) offline parity.** `python -m src.pipeline eval --skip-refusals --skip-completeness` was run on the branch, with and without `--realistic eval/realistic_set.jsonl`. Both reports are byte-identical to P0's `main` captures (9ce4e07), excluding the `Date` and `git sha` lines.
+
+**1,470-chunk canary.** `chunk_handbook` on the real PDF gives 1,470 chunks on `main` and on the branch. Both have the same sha256 over every chunk's `page_content` and metadata: `29f6fe9d…adfa25ad`.
+
+**(e) real-row ranks.** v6 `score_evidence` with one group was compared to v5 `first_strict_rank` / `first_related_rank`. The comparison covered every answerable golden and realistic v1 row, on the real retriever in hybrid, vector and bm25 modes: 141 row-mode checks, 0 mismatches.
+
+**Tier-2 offline v6 on the v2 copies** (`tests/fixtures/p16_v2_{golden,realistic}.jsonl`, run on the real index):
+- **Empty absorbed map.** Family-level strict@6 and related@6 equal v5's row-level numbers in every mode.
+  - Golden: hybrid 25/30 and 27/30; vector 24/30 and 25/30; bm25 25/30 and 27/30; hybrid+rewrite equals hybrid.
+  - Realistic: hybrid 6/17 and 10/17; vector 6/17 and 10/17; bm25 2/17 and 7/17.
+- **Real map.** No @6 row changes, so the set of alias credits is empty.
+- **Defect this run surfaced.** It first failed because the real inventory refused two migrated parent labels. That is fixed in `d073a64` (the dotted-ancestor rule, D66).
+
+**Metered live smoke** (`SpendMeter(run_limit_eur=0.25)`, public golden row 1): one Haiku rewrite (no fallback), one generation (`complete`) and one judge call (no error). Real usage settled at **€0.0200**, with the week total from €0.0000 to €0.0200. No limit latched, and nothing was sent above the run limit.
+
 **Rejected:** D54's chunk-metadata route, re-deferred as a Phase 18 candidate. It would change production metadata, citations, the index and the gate, which this phase keeps byte-stable.
 
 ## D70 — Eval-only API spend meter and the €40 weekly cap (item 8)
