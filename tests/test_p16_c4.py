@@ -459,7 +459,7 @@ def _hybrid_rows(doc):
 
 def test_missing_row_fails(tmp_path, sets):
     doc = _with_rows(sets, CAND_RANKS, lambda d: d["rows"].remove(_hybrid_rows(d)[0]))
-    with pytest.raises(C4Error, match="missing rows"):
+    with pytest.raises(C4Error, match="missing rows|roster mismatch"):
         _compare_docs(tmp_path, sets, doc)
 
 
@@ -467,8 +467,71 @@ def test_extra_row_fails(tmp_path, sets):
     def add(d):
         d["rows"].append(dict(_hybrid_rows(d)[0], id="q:ffffffffffff"))
 
-    with pytest.raises(C4Error, match="extra rows"):
+    with pytest.raises(C4Error, match="extra rows|roster mismatch"):
         _compare_docs(tmp_path, sets, _with_rows(sets, CAND_RANKS, add))
+
+
+# 16A-1 merge gate, Codex #4: the SAME gap in both arms (arm-vs-arm agreement
+# holds) must still fail against the cohort's eligible roster.
+def _drop_golden_hit(doc, sets):
+    """Remove golden row 0 (a baseline HIT -> MISS flip) from every mode."""
+    doc["rows"] = [r for r in doc["rows"] if r["id"] != gid(sets, 0)]
+
+
+def _swap_golden_hit(doc, sets):
+    """Replace golden row 0's id with an id outside the set, in every mode."""
+    for r in doc["rows"]:
+        if r["id"] == gid(sets, 0):
+            r["id"] = "q:ffffffffffff"
+
+
+@pytest.mark.parametrize("edit", [_drop_golden_hit, _swap_golden_hit], ids=["deletion", "substitution"])
+def test_symmetric_roster_gap_in_sidecars_fails(tmp_path, sets, edit):
+    base_doc, cand_doc = build_c4(sets, BASE_RANKS), build_c4(sets, CAND_RANKS)
+    edit(base_doc, sets)
+    edit(cand_doc, sets)
+    def keys(doc):
+        return sorted((r["set_sha256"], r["mode"], r["id"]) for r in doc["rows"])
+
+    assert keys(base_doc) == keys(cand_doc)  # the two arms still agree with each other
+    base = write_arm(tmp_path, "base", sets, BASE_RANKS, sidecar_doc=base_doc)
+    with pytest.raises(C4Error, match="roster mismatch"):
+        cand = write_arm(tmp_path, "cand", sets, CAND_RANKS, sidecar_doc=cand_doc)
+        bakeoff_report.compare(load_arms(base, cand), "base")
+
+
+@pytest.mark.parametrize("edit", [_drop_golden_hit, _swap_golden_hit], ids=["deletion", "substitution"])
+def test_symmetric_roster_gap_in_prod_rank_dumps_fails(sets, edit):
+    base, arm = _dump(sets, BASE_RANKS), _dump(sets, CAND_RANKS)
+    edit(base, sets)
+    edit(arm, sets)
+    with pytest.raises(C4Error, match="roster mismatch"):
+        bakeoff_report.compare_prod_ranks(base, arm)
+
+
+def test_symmetric_roster_gap_in_v1_cohort_from_two_answerable_rows_fails(tmp_path, eval_registry):
+    """Codex's probe: a v1_cohort over two answerable rows, one eligible row
+    removed from BOTH production dumps."""
+    rows = [{"question": _q("pair", i), "expected_sections": ["9.1"], "type": "direct"} for i in range(2)]
+    path = _write_jsonl(tmp_path / "pair" / "golden_set.jsonl", rows)
+    sha = eval_sets.sha256_file(path)
+    block, ids = v1_cohort(rows, path=str(path), privacy="public", sha256=sha)
+    block["label"] = "golden"
+
+    def dump(rank):
+        return build_sidecar(privacy="public", cohorts=[block], expansion={"kind": "cache", "digest": "a" * 64},
+                             rows=[{"set_sha256": sha, "id": ids[rows[0]["question"]], "mode": "W=0.25",
+                                    "strict_rank": rank, "related_rank": rank, "completion_rank": rank}])
+
+    with pytest.raises(C4Error, match="roster mismatch"):
+        bakeoff_report.compare_prod_ranks(dump(1), dump(1))
+
+
+def test_cohort_block_without_its_roster_is_refused(tmp_path, sets):
+    doc = build_c4(sets, CAND_RANKS)
+    del doc["cohorts"][0]["eligible_fp"]
+    with pytest.raises(C4Error, match="eligible roster"):
+        bakeoff_report.index_rows(doc, "cand")
 
 
 def test_duplicate_row_fails(tmp_path, sets):
@@ -489,7 +552,7 @@ def test_sidecar_disagreeing_with_its_report_fails(tmp_path, sets):
         row = next(r for r in d["rows"] if r["mode"] == "hybrid+rewrite")
         d["rows"].remove(row)
 
-    with pytest.raises(C4Error, match="golden rows differ|missing rows"):
+    with pytest.raises(C4Error, match="golden rows differ|missing rows|roster mismatch"):
         _compare_docs(tmp_path, sets, _with_rows(sets, CAND_RANKS, drop))
 
 
@@ -524,7 +587,7 @@ def test_prod_ranks_missing_baseline_hit_row_fails(sets):
     arm = _dump(sets, CAND_RANKS)
     hit_id = gid(sets, 2)  # strict rank 4 in the baseline: a HIT
     arm["rows"] = [r for r in arm["rows"] if not (r["id"] == hit_id and r["mode"] == "W=0.25")]
-    with pytest.raises(C4Error, match="missing rows"):
+    with pytest.raises(C4Error, match="missing rows|roster mismatch"):
         bakeoff_report.compare_prod_ranks(_dump(sets, BASE_RANKS), arm)
 
 

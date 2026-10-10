@@ -86,7 +86,7 @@ if _REPO not in sys.path:
 
 from src import eval_privacy as _privacy  # noqa: E402
 from src import eval_sets as _eval_sets  # noqa: E402
-from src.eval_cohort import sidecar_path  # noqa: E402
+from src.eval_cohort import eligible_fp, sidecar_path  # noqa: E402
 from src.eval_privacy import (  # noqa: E402
     PUBLIC,
     SEALED,
@@ -643,6 +643,10 @@ def index_rows(doc: Mapping[str, Any], name: str) -> Dict[Tuple[str, str], Dict[
         sha = cohort.get("sha256") if isinstance(cohort, Mapping) else None
         if not isinstance(sha, str) or not _SHA256.match(sha) or "cohort_fp" not in cohort:
             raise C4Error(f"arm {name!r}: a cohort block lacks sha256 or cohort_fp")
+        if not _is_count(cohort.get("eligible")) or not (
+            isinstance(cohort.get("eligible_fp"), str) and _SHA256.match(cohort["eligible_fp"])
+        ):
+            raise C4Error(f"arm {name!r}: set {sha[:12]}: cohort block lacks its eligible roster")
         if sha in shas:
             raise C4Error(f"arm {name!r}: set {sha[:12]} has two cohort blocks")
         shas.add(sha)
@@ -672,7 +676,42 @@ def index_rows(doc: Mapping[str, Any], name: str) -> Dict[Tuple[str, str], Dict[
                 f"{row['set_sha256'][:12]} mode {row['mode']}"
             )
         group[row["id"]] = dict(row)
+    _check_roster(cohorts, index, name)
     return index
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _check_roster(
+    cohorts: Sequence[Mapping[str, Any]],
+    index: Mapping[Tuple[str, str], Mapping[str, Any]],
+    name: str,
+) -> None:
+    """Every mode must cover each cohort's eligible roster exactly (16A-1 merge gate #4).
+
+    Exactly once is the duplicate check in :func:`index_rows`; this adds
+    "exactly the eligible ids": a document whose rows lack an eligible row, or
+    carry another id in its place, is refused even when the other arm has the
+    same gap (the arm-vs-arm coverage check cannot see that).
+
+    Raises:
+        C4Error: an eligible cohort with no rows at all, or a (set, mode)
+            group whose ids are not the cohort's roster.
+    """
+    modes = sorted({mode for _sha, mode in index})
+    for cohort in cohorts:
+        sha = cohort["sha256"]
+        if cohort["eligible"] and not modes:
+            raise C4Error(f"arm {name!r}: set {sha[:12]} has eligible rows but the document has none")
+        for mode in modes:
+            ids = index.get((sha, mode), {})
+            if len(ids) != cohort["eligible"] or eligible_fp(ids) != cohort["eligible_fp"]:
+                raise C4Error(
+                    f"arm {name!r}: set {sha[:12]} mode {mode}: rows cover {len(ids)} ids, not "
+                    f"the cohort's {cohort['eligible']} eligible ids (roster mismatch)"
+                )
 
 
 def cohort_labels(doc: Mapping[str, Any]) -> Dict[str, Optional[str]]:
@@ -736,8 +775,8 @@ def check_c4_identity(
     """Refuse two C4 documents whose cohort identity differs.
 
     Checked unconditionally, before expansion: scorer version, absorbed-map
-    hash, set hashes, each set's label and ``cohort_fp`` (plus schema, rows
-    and families). Then expansion identity (:func:`_check_expansion`).
+    hash, set hashes, each set's label and ``cohort_fp`` (plus schema, rows,
+    families and the eligible roster). Then expansion identity (:func:`_check_expansion`).
 
     Raises:
         C4Error: on the first mismatch.
@@ -760,7 +799,7 @@ def check_c4_identity(
                 f"arm {name!r}: set {sha[:12]} is labelled {arm_labels.get(sha)!r}, "
                 f"the baseline {base_labels.get(sha)!r}"
             )
-        for key in ("cohort_fp", "schema", "rows", "families"):
+        for key in ("cohort_fp", "schema", "rows", "families", "eligible", "eligible_fp"):
             if base_sets[sha].get(key) != arm_sets[sha].get(key):
                 raise C4Error(
                     f"arm {name!r}: set {sha[:12]} {key} differs from the baseline's"

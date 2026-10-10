@@ -14,6 +14,12 @@ A **cohort block** identifies one input set: ``path``, ``privacy``,
 the sorted ``(id, evidence fingerprint, scope)`` tuples. Two arms are
 comparable only when their cohorts match (``scripts/bakeoff_report.py``).
 
+It also binds the set's **eligible roster** -- the ids every retrieval mode
+must score (scope ``answer`` or ``partial``; a v1 non-refusal row):
+``eligible`` (their count) and ``eligible_fp`` (:func:`eligible_fp` of them).
+The comparison checks each document's rows against it, so rows dropped or
+swapped identically in both arms cannot pass (16A-1 merge gate, Codex #4).
+
 Row ids: a public v1 row is ``"q:" + sha256(question)[:12]``; a private v1 row
 is salted by its file's sha256 (``src.eval_privacy``); a v2 row carries its own
 ``id``. A set whose ids collide (a duplicated v1 question) is refused.
@@ -85,6 +91,11 @@ def v1_ids(golden: Sequence[Mapping[str, Any]], *, privacy: str, set_sha256: str
     return ids
 
 
+def eligible_fp(ids: Iterable[str]) -> str:
+    """sha256 of the sorted retrieval-eligible ids (the cohort's roster)."""
+    return _sha256_text(json.dumps(sorted(ids), separators=(",", ":")))
+
+
 def cohort_block(
     *,
     path: str,
@@ -96,15 +107,19 @@ def cohort_block(
     """Build one cohort block.
 
     Args:
-        rows: ``(id, family_id, evidence groups, scope)`` per row.
+        rows: ``(id, family_id, evidence groups, scope)`` per row. Rows whose
+            scope is not ``refuse`` form the eligible roster.
     """
     tuples = []
     families = set()
+    eligible = []
     n = 0
     for rid, family_id, groups, scope in rows:
         n += 1
         families.add(family_id)
         tuples.append([rid, evidence_fingerprint(groups), scope])
+        if scope != "refuse":
+            eligible.append(rid)
     tuples.sort()
     return {
         "path": str(path),
@@ -114,6 +129,8 @@ def cohort_block(
         "rows": n,
         "families": len(families),
         "cohort_fp": _sha256_text(json.dumps(tuples, separators=(",", ":"))),
+        "eligible": len(eligible),
+        "eligible_fp": eligible_fp(eligible),
     }
 
 
