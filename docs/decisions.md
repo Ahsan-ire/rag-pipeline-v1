@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: Phase 16A (eval foundations) ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
+**Current phase: Phase 16A-1 (eval instrument, D65–D70) on `phase-16a1-eval-instrument` → `v2.3.0`; 16A-2 (eval data) follows its own plan gate ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
 
-**Next: D65** (D60 is reserved for the third-party lane / global harness decision; D61–D64 landed).  (Update this line in the same commit as each new entry.)
+**Next: D71** (D60 is reserved for the third-party lane / global harness decision; D61–D70 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1880,3 +1880,167 @@ instrument is binding.
 - A per-merge go: one ping per phase for no extra check.
 - Merging on a partial gate (for example with the Codex leg INCOMPLETE).
 - Automatic alternation between Codex accounts.
+
+## D65 — Eval privacy classes, the privacy floor and the leak scanner (Phase 16A-1 item 1, 10 Oct 2026)
+**Decision:** every eval input is `public`, `private` or `sealed`. `src/eval_sets.py` holds the registry (`eval/sets.json`: name, path, privacy, role, status, sha256; at merge only public v1 sets and fixtures) and `classify(path)`, seven rules, first match wins:
+1. under `eval/private/sealed/` → sealed;
+2. a JSON/JSONL row (or top-level object) with `"sealed": true`, or an unparseable line containing `"sealed"` → sealed (fail closed);
+3. under `eval/private/` → private;
+4. a registered public path at its registered sha256 → public;
+5. a derived file whose recorded input sha256s are all registered public → public;
+6. with `--legacy-public` only, a sha256 in `eval/legacy_public.json` → public;
+7. else private.
+
+Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_format_matrix_report`, the `w_sweep` and `bakeoff_report` entry functions) takes a keyword-only `privacy` with no default:
+- The floor is the strictest class over every path the runner opens. A weaker caller value raises `PrivacyFloorError` before any retrieval, expansion or model call; a stronger one is honoured. CLIs pass `classify`'s result.
+- Sealed input is refused everywhere in 16A-1 (CLI exit 4).
+- A private run prints aggregates and opaque ids only. Ids are `q:` plus 12 hex: unsalted for public v1, salted by the file's sha256 for private v1.
+- A private run writes only under `eval/private/runs/<run id>/`: report, rows sidecar, judge dump and `inputs.json`. Artifacts go under `eval/private/artifacts/`, and symlink and `..` escapes are refused. Errors print as id plus exception type.
+- `scripts/scan_leaks.py` matches needles (each private question whole, plus every 8-token window, after decoding and normalisation; public questions are exempt by exact hash only). It runs in `--output` mode (exit 5 on a hit) and `--merge-gate` mode (tracked files, every blob in the range, commit messages, tags and PR items; exit 7 if a private input is not a needle source). It never prints a needle.
+
+`.gitignore`, `check_never_commit.py` and the CLAUDE.md do-not-read clause gain `eval/private/`.
+
+**Why:** design 003 16A.1 and astra B3. The evaluator wrote question text into reports and stdout, so no private question could enter a run until this landed.
+
+**Residuals (instruction-enforced, disclosed):**
+- A stripped sealed marker goes undetected.
+- A direct `chromadb` import goes undetected.
+- A skipped pre-push `--merge-gate` scan goes undetected.
+- A deleted `runs/<id>/` goes undetected.
+- A false `--approval-ref` goes undetected.
+- Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
+- Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
+
+**Rejected:**
+- A default `privacy` value: a forgotten argument would silently mean public.
+- Classifying by filename or label: copies and renames would escape.
+- A `registry=`/`classifier=` parameter in production code: AST tests keep it out of `src/` and `scripts/`; tests register sets only through a conftest fixture.
+
+## D66 — Schema v2, evidence groups, scope scorers and report v6 (items 2–3)
+**Decision:** v2 rows carry `"schema": 2`. Their fields:
+- **identity:** `id` and `family_id` (public ids `^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$`; non-public `f[0-9a-f]{8}` and `<family>-<n>`);
+- **`scope`:** `answer`, `partial` or `refuse` (D61);
+- **`evidence`:** AND groups of OR sections, `[]` exactly when the scope is `refuse`;
+- **`gaps`:** on `partial` rows only;
+- optional `type`, `register`, `source`, `ambiguous`, `owner_status` and `second_status`.
+
+Every evidence section must be in `eval/section_inventory.json`. `scripts/validate_eval_set.py` reports line, field and reason, never text, with exit 0, 1, 2 (configuration) or 4 (sealed). v1 rows still load byte-equal through `load_golden_set`.
+
+Scorers in `src/eval_scoring.py`:
+- `score_evidence`: the completion rank is the maximum over groups of each group's first matching rank; absorbed aliases share their chunk's rank.
+- `observed_scope`: unscored → withheld → refuse → partial → answer.
+- `score_partial`: VERIFIED or PARTIAL outcome, a verified citation in a required group, and every gap stated as a gap statement.
+
+`split_sentences`, the gap starts and the hedge rule move to `src/text_utils.py`, so `render` no longer imports the evaluator. `is_gap_statement` strips list markers and emphasis first, closing the D62 list-item follow-up.
+
+Report v6 (`src/eval_v6.py`) is used iff any set is schema 2. Its sections, in order: family counts with eligible denominators, scope confusion (3 × 5), family rates with Wilson CIs under the `all` collapse, cohort blocks, expansion digest, run cost. It names rows by id only. It is never canonical in 16A-1, never writes `eval/results.md`, and refuses the judge.
+
+**Why:** design 003 16A.2. The v5 loader kept three fields and matched OR-only, so it could not express required evidence, scope or stated gaps.
+
+**Evidence:**
+- On the P0 fake retriever, every single-group row's v6 strict and related ranks equal v5's, in all four modes, on v2 copies of golden and realistic (`tests/test_p16_v6.py`).
+- The P0 lock (`tests/test_p16_projection.py`) and the H0 lock both pass, so public v1 reports are byte-identical.
+
+**Choices made in the lanes (documented in each module):**
+- The family rule is `all`.
+- A second or mid-answer caveat prefix is not stripped, so it can read as a gap statement.
+- Gap starts stay case-sensitive.
+- Validator exit 2 is for a missing input or inventory.
+
+**Rejected:**
+- Scoring partial answers on keyword presence alone (D32 hedges).
+- Treating multiple expected sections as AND in v1: that would change v5 numbers.
+
+## D67 — Family split and statistics, data-free (item 4)
+**Decision:** `src/eval_split.py: split_families`:
+- takes content-free records only;
+- validates a `twins` record: a batch partition, a recomputed `families_digest`, and every unordered batch pair covered;
+- merges twin edges into units with union-find;
+- seeds a shuffle and runs a bounded search over exact quotas, per-split stratum minimums (scope × primary chapter), the 25–30% refusal band and `min_share` by source;
+- counts preassigned families towards their split;
+- raises `SplitInfeasible` with per-constraint counts and never returns partial output.
+
+`src/eval_stats.py` provides:
+- family collapse (a tie is a MISS);
+- exact McNemar;
+- Durkalski's clustered χ²;
+- Wilson intervals (`unavailable` when n = 0);
+- exact two-sided and directional power;
+- the directional MDE on a 0.01 grid;
+- Holm;
+- per-family flip frequency.
+
+**Why:** design 003 16A.3 and 16A.5, built before any data exists so 16A-2's protocol runs on tested parts.
+
+**Evidence:** every (j) number reproduces exactly, including the non-monotone power at d = 7 versus d = 8 and the MDE row. The split's property test covers 200 seeded pools, each checked by an independent validator.
+
+**Choices made in the lane:** the unit order is most-constrained first, with the seeded shuffle breaking ties. It still depends only on the seed and not on input order; strictly shuffled order exhausted the search budget on 10 of 200 pools.
+
+**Rejected:** verdict rules, K_max and the minimum worthwhile effect, which are 16A-2 P5/P6.
+
+## D68 — Frozen expansion artifacts, C4 cohort identity and the item-9 backlog (items 5–6)
+**Decision:** expansion artifacts and the rows sidecar.
+- **Artifacts** (`src/expansion_artifact.py`) key entries by row id and question sha256, with no text. Each records an `inputs` header (so a public-built artifact classifies public), the rewrite identity (model, prompt sha256, config hash) and a build record.
+- **`run_eval_matrix(expansion=…)`** takes `live`, `build:<path>` (private → `eval/private/artifacts/`) or an artifact path. An artifact is preflighted for every row before any work, then replayed with zero live calls. A replayed run is never canonical, and non-live reports disclose the digest, `rewrite_live` and `rewrite_replayed`.
+- **The rows sidecar:** every run writes `<report>.rows.json` (gitignored). It holds the cohort blocks (path, privacy, schema, sha256, rows, families, `cohort_fp`), the scorer version, the absorbed-map hash, the expansion identity and the per-row ranks keyed by set sha256 and id.
+- **`bakeoff_report`** compares arms by `(set sha256, id)`. It requires exact coverage and equal set hashes, `cohort_fp`, scorer version and map hash. Expansion identity must match, except that two live arms may differ in draw digest, and `--rewrite-candidate <hash>` allows the one declared config difference.
+- **Legacy reports** without a sidecar are compared under v5 rules only with `--legacy`, with a printed note. `--controls` reports control flips separately.
+
+Item 9:
+- `w_sweep` loses its module-level `chdir`;
+- the rank helper is single-sourced;
+- one roster (`src/eval_roster.py`), keyed by row id, serves both scripts;
+- the three answer_fn status wrappers become `_status_answer`.
+
+**Re-deferred:** the status recompute in `run_eval_matrix` (it touches a canonical guard), and `test_h_projection`'s subprocess cost. The new P0 lock runs in-process and adds no subprocess.
+
+**Why:** design 003 16A.5–16A.6 and astra C4. Comparisons had keyed rows by question text or list position, and replay was impossible.
+
+**Rejected:**
+- Keying C4 rows by question text: it is private for private sets.
+- Accepting a sidecar-less arm silently: a deleted sidecar must not downgrade a comparison unnoticed.
+
+## D69 — Absorbed-section map and section inventory, out of band (item 7)
+**Decision:** the chunker gains an opt-in side channel (`chunk_handbook_with_absorption`). It records each D20 runt merge and appendix-stub absorption (absorbing section, absorbed section, trimmed span) and each final chunk's span through the oversize re-split. Chunks are byte-identical with and without it.
+
+`absorbed_sections_by_chunk` credits a chunk only when an absorbed span lies wholly inside the chunk's own span. Oversize siblings that split the span get nothing, and find-miss sub-chunks get nothing. A span inside the splitter overlap credits both sub-chunks, under the literal rule.
+
+`scripts/absorbed_map.py` writes `eval/absorbed_sections.json` (keyed by production chunk id, hashed) and `eval/section_inventory.json` (every indexed `section_number` plus every alias). Every key must exist in the index.
+
+v6 strict scoring credits an alias only through its chunk, and the map hash binds comparisons.
+
+**Why:** D54's comparability boundary. Expected sections absorbed into another chunk were unmatchable under strict scoring.
+
+**Evidence:** on the synthetic sample corpus and `sample_chroma_db`, the map has one alias (2.4.1 on the 2.4 chunk), every key is in the index, and the inventory covers all 16 sections.
+
+**Pending (owner's machine, [C]):** running it on the real corpus and `./chroma_db`, committing both files, and the 1,470-chunk canary.
+
+**Rejected:** D54's chunk-metadata route, re-deferred as a Phase 18 candidate. It would change production metadata, citations, the index and the gate, which this phase keeps byte-stable.
+
+## D70 — Eval-only API spend meter and the €40 weekly cap (item 8)
+**Decision:** `src/spend.py: SpendMeter` builds the eval's generation, rewrite and judge clients. They are today's `ChatAnthropic` settings with `max_retries=0`, driven by the meter's own loop. The loop mirrors anthropic 0.116.0's retry predicate (`_base_client.py:784–900`): connection errors, timeouts and `RetryableError`; `x-should-retry` first; then 408, 409, 429 and every status ≥ 500; `retry-after` honoured in (0, 60] s, else jittered backoff.
+
+Every attempt reserves a worst case before sending, under an exclusive `flock` on a per-owner ledger (`~/.local/state/claudecode/anthropic_spend.jsonl`; `CC_SPEND_LEDGER` only under pytest):
+- the worst case is the prompt bytes plus 64 per message, priced at the higher of the input and cache-write rates, plus `max_tokens` of output;
+- if a call would cross the €40 UTC-ISO-week ceiling or the run limit, the meter raises `SpendLimitReached` (a `BaseException`) and latches, and nothing is sent;
+- otherwise real usage settles the reservation; an error or crash leaves the worst case charged;
+- ledger lines never carry text.
+
+`config/api_prices.toml` holds the 25 Sep cached prices with `usd_per_eur = 1.0`, deliberately conservative.
+
+Wiring is eval-only:
+- `generate`/`generate_with_sources` gain `llm=`; `run_eval`/`run_eval_matrix` gain `meter=`.
+- A default live path with a usable key and no meter raises `SpendMeterRequired` before any call.
+- `pipeline eval` builds a meter iff the run is live. It exits 3 on the weekly cap (a D64 owner stop) and 6 on the run limit, and prints run and week totals.
+- `pipeline query` is never metered: production spend is outside D64's eval cap.
+
+**Choices made in the lane:**
+- `--owner-approved-eur X` replaces the ceiling; X and `--approval-ref` must be given together.
+- The week check runs before the run check.
+- A torn last ledger line is truncated under the lock; any other unreadable line refuses.
+- `LedgerRefused` and `LedgerCorrupt` are ordinary exceptions.
+
+**Rejected:**
+- SDK retries: unmetered attempts.
+- Metering after the fact: a call can cross the cap before it is counted.
+- A per-checkout ledger: worktrees and `git clean` would reset the cap.
