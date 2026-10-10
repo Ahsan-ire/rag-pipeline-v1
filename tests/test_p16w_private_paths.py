@@ -92,7 +92,8 @@ def test_relative_to_root_accepts_a_samefile_alias(tmp_path, monkeypatch, _priva
     alias_root = tmp_path / "eval" / "PRIVATE"
     real = os.path.samefile
     monkeypatch.setattr(os.path, "samefile", lambda a, b: real(str(a).replace("PRIVATE", "private"), b))
-    alias_root.mkdir(parents=True)
+    # On a case-insensitive filesystem (macOS APFS default) eval/PRIVATE *is* eval/private, already created above.
+    alias_root.mkdir(parents=True, exist_ok=True)
     assert relative_to_root(alias_root / "runs" / "r1" / "report.md", _private_root_in_tmp) == \
         __import__("pathlib").Path("runs/r1/report.md")
     with pytest.raises(PrivatePathError):

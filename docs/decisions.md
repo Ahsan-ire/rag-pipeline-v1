@@ -1967,7 +1967,7 @@ The artifact exemption now uses the exact artifact schema (`expansion_artifact._
 - **`gaps`:** on `partial` rows only;
 - optional `type`, `register`, `source`, `ambiguous`, `owner_status` and `second_status`.
 
-Every evidence section must be in `eval/section_inventory.json`. `scripts/validate_eval_set.py` reports line, field and reason, never text, with exit 0, 1, 2 (configuration) or 4 (sealed). v1 rows still load byte-equal through `load_golden_set`.
+Every evidence section must be in `eval/section_inventory.json` (its sections or aliases), or be a dotted ancestor of one: no chunk carries a parent heading such as `1.7.2` when its children were chunked, but related matching reaches it through them. This was found on the real inventory, where two migrated golden rows carry such parent labels; a sibling that no chunk carries is still refused. `scripts/validate_eval_set.py` reports line, field and reason, never text, with exit 0, 1, 2 (configuration) or 4 (sealed). v1 rows still load byte-equal through `load_golden_set`.
 
 Scorers in `src/eval_scoring.py`:
 - `score_evidence`: the completion rank is the maximum over groups of each group's first matching rank; absorbed aliases share their chunk's rank.

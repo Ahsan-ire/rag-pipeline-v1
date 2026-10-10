@@ -252,6 +252,13 @@ def test_uninventoried_section(tmp_path):
     assert _errors(p) == [(2, "evidence[1][1]", "section not in inventory")]
 
 
+def test_dotted_ancestor_of_an_inventoried_section_is_accepted(tmp_path):
+    # "902.7" and "902" are parents of inventoried "902.7.3"; "901.2" is inventoried via alias "901.2.4" too.
+    # "902.8" is a sibling, not an ancestor, so it stays an error (the D54 unreachable-label class).
+    p = _write(tmp_path / "s.jsonl", [_row(0, evidence=[["902.7", "902"]]), _row(1, evidence=[["902.8"]])])
+    assert _errors(p) == [(2, "evidence[0][0]", "section not in inventory")]
+
+
 def test_unknown_key_reported_without_its_name(tmp_path):
     p = _write(tmp_path / "s.jsonl", [_row(0, **{f"{CANARY}_key": 1})])
     assert _errors(p) == [(1, "<unknown>", "unknown key")]

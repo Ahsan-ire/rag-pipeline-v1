@@ -213,8 +213,10 @@ def detect_schema(path: Any) -> int:
 def inventory_sections(inventory: Any) -> frozenset:
     """Validate an inventory dict and return its inventoried labels.
 
-    Inventoried = in either ``sections`` or ``aliases`` (item 7). Ordering is
-    item 7's concern and is not enforced here.
+    Inventoried = in either ``sections`` or ``aliases`` (item 7), or a dotted
+    ancestor of one (``1.7.2`` for ``1.7.2.3``): related matching reaches a
+    parent heading through its chunked children. Ordering is item 7's concern
+    and is not enforced here.
 
     Raises:
         InventoryError: wrong top-level keys, ``version`` != 1, a non-hex
@@ -240,6 +242,11 @@ def inventory_sections(inventory: Any) -> frozenset:
         labels.update(s.strip() for s in items)
     if errors:
         raise InventoryError(errors)
+    # A dotted ancestor of an inventoried label is reachable too: no chunk carries "1.7.2" itself when the
+    # handbook chunked its children, but related matching credits a child (D54's parent labels in v1 rows).
+    for label in list(labels):
+        parts = label.split(".")
+        labels.update(".".join(parts[:i]) for i in range(1, len(parts)))
     return frozenset(labels)
 
 
