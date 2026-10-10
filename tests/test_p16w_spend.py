@@ -12,6 +12,8 @@ import json
 import logging
 import multiprocessing
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -1016,3 +1018,92 @@ def test_batched_metered_sdk_calls_log_no_prompt(monkeypatch, caplog, anthropic_
     assert [m.content for m in replies] == ["ok"] * 6
     assert all(any(c in body for body in seen) for c in canaries)
     assert not any(c in caplog.text for c in canaries)
+
+
+# ---------------------------------------------------------------------------
+# Logging boundary, merge gate round 3 (Codex): in a COLD process httpcore's
+# loggers are created inside the first metered call (httpx imports httpcore
+# lazily), and httpcore's failed-trace record quotes h11's parser error, which
+# quotes the received bytes. The boundary must hold however late an SDK-family
+# logger is created. tests/p16_cold_sdk_child.py runs the real SDK through a
+# real meter over httpx.HTTPTransport + httpcore's MockBackend in a fresh
+# interpreter (httpx.MockTransport would bypass the parser).
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.parametrize("prime", ["1", "0"], ids=["primed", "handler-filter-only"])
+def test_cold_process_metered_sdk_call_logs_no_response_content(tmp_path, prime):
+    from tests.p16_canary import assert_no_leak
+
+    body_canary = "P16-COLD-BODY-" + uuid.uuid4().hex
+    prompt_canary = "P16-COLD-PROMPT-" + uuid.uuid4().hex
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC_")}
+    env.update(
+        P16_COLD_BODY_CANARY=body_canary, P16_COLD_PROMPT_CANARY=prompt_canary,
+        P16_COLD_OUT=str(tmp_path), P16_COLD_PRIME=prime, PYTHONDONTWRITEBYTECODE="1",
+    )
+    proc = subprocess.run(
+        [sys.executable, "-m", "tests.p16_cold_sdk_child"],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert result["cold_at_start"] and result["cold_at_invoke"]  # else the test proves nothing
+    assert result["metered_error"] == "APIConnectionError"  # the malformed body reached the parser
+    metered_log = (tmp_path / "metered.log").read_text(encoding="utf-8")
+    assert_no_leak([body_canary, prompt_canary], metered_log, proc.stdout, proc.stderr,
+                   where="cold metered SDK call")
+    # primed: the boundary loaded httpcore before listing the loggers;
+    # unprimed: httpcore.http11 is created mid-call and only the handler
+    # filter holds.
+    assert result["httpcore_loaded_in_call"] is (prime == "1")
+    assert result["ledger_events"] == ["reserve"]  # the attempt was metered
+    assert result["depth_after"] == 0
+    # Positive control: outside the boundary the same response IS logged with
+    # its body, so the path is real and the filter was removed on exit.
+    assert result["control_error"] == "APIConnectionError"
+    assert "httpcore.http11" in result["control_body_loggers"]
+    assert body_canary in (tmp_path / "control.log").read_text(encoding="utf-8")
+
+
+class _ListHandler(logging.Handler):
+    """Keeps every record's message."""
+
+    def __init__(self, level: int = logging.NOTSET) -> None:
+        super().__init__(level)
+        self.messages: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+def test_sdk_logger_created_inside_the_call_is_dropped_on_propagation(caplog, monkeypatch):
+    """Round 3: a child logger created mid-call has no logger filter of its own.
+
+    Its records must still be dropped by the filter on the handlers they
+    reach (root's here; ``logging.lastResort`` for a non-propagating one),
+    while unrelated records pass and everything is detached on exit.
+    """
+    caplog.set_level(logging.DEBUG)
+    last_resort = _ListHandler(logging.WARNING)
+    monkeypatch.setattr(logging, "lastResort", last_resort)
+    suffix = uuid.uuid4().hex
+    with spend._sdk_logging_dropped():
+        late = logging.getLogger(f"httpcore.p16_late_{suffix}")  # created inside the call
+        orphan = logging.getLogger(f"h11.p16_orphan_{suffix}")
+        orphan.propagate = False  # no handler on its chain: logging.lastResort gets it
+        late.debug("late child record in flight")
+        orphan.warning("orphan record in flight")
+        logging.getLogger("p16.unrelated").warning("unrelated record in flight")
+    assert "late child record in flight" not in caplog.text
+    assert last_resort.messages == []
+    assert "unrelated record in flight" in caplog.text
+    # detached from every handler and logger on exit
+    assert spend._sdk_drop_depth == 0 and spend._sdk_drop_targets == {}
+    assert all(spend._SDK_DROP not in h.filters for h in logging.getLogger().handlers)
+    assert spend._SDK_DROP not in last_resort.filters
+    late.debug("late child after the call")
+    orphan.warning("orphan after the call")
+    assert "late child after the call" in caplog.text
+    assert last_resort.messages == ["orphan after the call"]

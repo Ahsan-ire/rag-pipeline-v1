@@ -110,26 +110,39 @@ error row, a fallback, or a retry.
 Logging boundary
 ----------------
 While any metered attempt is in flight, every record from the SDK and
-transport logger families (``anthropic``, ``httpx``, ``httpcore``,
-``langchain_anthropic``, children included) is dropped, at every level, by a
-filter on those loggers (:func:`_sdk_logging_dropped`). The anthropic SDK logs
-each request's options -- the messages, i.e. the question, its context and,
-for the judge, the answer -- at DEBUG (``_base_client._build_request``), which
+transport logger families (``anthropic``, ``httpx``, ``httpcore``, ``h11``,
+``langchain_anthropic``, children included) is dropped, at every level
+(:func:`_sdk_logging_dropped`). The anthropic SDK logs each request's options
+-- the messages, i.e. the question, its context and, for the judge, the
+answer -- at DEBUG (``_base_client._build_request``), which
 ``ANTHROPIC_LOG=debug`` or any DEBUG-level root logger turns on; report
-sanitisation cannot reach that output (16A-1 merge gate, Codex #1).
+sanitisation cannot reach that output (16A-1 merge gate, Codex #1). httpcore
+logs ``repr(exception)`` when a step fails, and h11's parser errors quote the
+bytes received, so a malformed response's content reaches DEBUG output too
+(merge gate round 3, Codex).
+
+The records are dropped in two layers. The SDK and transport modules are
+imported first, so the loggers they create exist, and a filter goes on every
+SDK-family logger. The same filter goes on the handlers those records can
+reach -- the root logger's, the SDK-family loggers' and ``logging.lastResort``
+-- where it drops records by logger name; so a logger created during the call
+(in a cold process httpx imports httpcore inside the first request) is still
+filtered when its records propagate. Records from every other logger pass
+through unchanged.
 
 The filter is reference-counted under a lock: the first attempt to enter
 installs it, the last to leave removes it, so overlapping calls (threads,
 ``Runnable.batch``) cannot reopen the SDK's logging while another call is still
-sending. No other logger and not the process-wide ``logging.disable``
-threshold is touched (merge gate round 2, Codex #1). Every live eval call goes
-through a meter (``SpendMeterRequired`` otherwise), so this covers every class.
+sending. The process-wide ``logging.disable`` threshold is not touched (merge
+gate round 2, Codex #1). Every live eval call goes through a meter
+(``SpendMeterRequired`` otherwise), so this covers every class.
 """
 
 from __future__ import annotations
 
 import email.utils
 import fcntl
+import importlib
 import json
 import logging
 import math
@@ -767,64 +780,135 @@ class _MeterCallback(BaseCallbackHandler):
         )
 
 
-# The logger families whose records can carry request content. In the pinned
-# versions only ``anthropic._base_client`` logs the request options (the
-# prompt, DEBUG); httpx and httpcore log the URL, status and headers, and
-# langchain_anthropic defines no logger. All four families are covered so a
-# version bump that adds a body dump is covered too.
-_SDK_LOGGER_FAMILIES = ("anthropic", "httpx", "httpcore", "langchain_anthropic")
+# The logger families whose records can carry request or response content.
+# ``anthropic._base_client`` logs the request options (the prompt) at DEBUG.
+# httpcore's trace logs ``repr(exception)`` when a step fails, and h11's parser
+# errors quote the bytes received (``illegal chunk header: b'...'``), i.e.
+# response content (merge gate round 3, Codex). httpx logs the URL and status;
+# h11 and langchain_anthropic define no logger in the pinned versions. Every
+# family is covered so a version bump that adds a logger or a body dump is
+# covered too.
+_SDK_LOGGER_FAMILIES = ("anthropic", "httpx", "httpcore", "h11", "langchain_anthropic")
+
+# Imported before the boundary first lists the SDK-family loggers, so that the
+# loggers these modules create already exist. httpx imports httpcore lazily,
+# inside the first ``httpx.HTTPTransport()``: in a cold process that is inside
+# the first metered call, after the list was taken. The http2 and socks modules
+# need optional extras (h2, socksio) and are skipped when those are absent; a
+# module that cannot be imported creates no logger.
+_SDK_PRIME_MODULES = (
+    "anthropic",
+    "httpx",
+    "httpcore",
+    "h11",
+    "httpcore._sync.http2",
+    "httpcore._sync.socks_proxy",
+    "httpcore._async.http2",
+    "httpcore._async.socks_proxy",
+)
 
 
-class _DropAll(logging.Filter):
-    """A logger filter that rejects every record."""
+def _is_sdk_logger_name(name: str) -> bool:
+    """True for a logger name in ``_SDK_LOGGER_FAMILIES`` (a family or a child of one)."""
+    return any(name == family or name.startswith(family + ".") for family in _SDK_LOGGER_FAMILIES)
+
+
+class _DropSDKRecords(logging.Filter):
+    """Rejects every record from an SDK-family logger; passes every other record.
+
+    On an SDK-family logger it rejects everything created there; on a handler
+    (root's, or ``logging.lastResort``) it rejects only SDK-family records, so
+    unrelated records reach that handler unchanged.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 - logging's API name
-        return False
+        return not _is_sdk_logger_name(record.name)
 
 
-_SDK_DROP = _DropAll()
+_SDK_DROP = _DropSDKRecords()
 _sdk_drop_lock = threading.Lock()
 _sdk_drop_depth = 0  # metered attempts currently in flight; guarded by _sdk_drop_lock
+# Every logger and handler carrying _SDK_DROP, by id; guarded by _sdk_drop_lock.
+_sdk_drop_targets: Dict[int, logging.Filterer] = {}
+_sdk_primed = False
 
 
-def _sdk_loggers() -> List[logging.Logger]:
-    """Every existing logger in ``_SDK_LOGGER_FAMILIES`` (placeholders skipped).
+def _prime_sdk_loggers() -> None:
+    """Import ``_SDK_PRIME_MODULES`` once, so their loggers exist before the first listing.
 
-    A logger filter applies only to records created on that logger, not to
-    records its children propagate, so each child is listed itself.
+    Runs outside ``_sdk_drop_lock``: an import must never wait on that lock.
     """
-    out = []
-    for name, obj in list(logging.root.manager.loggerDict.items()):
-        if isinstance(obj, logging.Logger) and any(
-            name == family or name.startswith(family + ".") for family in _SDK_LOGGER_FAMILIES
-        ):
-            out.append(obj)
-    return out
+    global _sdk_primed
+    if _sdk_primed:
+        return
+    for module in _SDK_PRIME_MODULES:
+        try:
+            importlib.import_module(module)
+        except ImportError:  # an optional extra (h2, socksio) is not installed
+            pass
+    _sdk_primed = True
+
+
+def _sdk_filter_targets() -> List[logging.Filterer]:
+    """Where :data:`_SDK_DROP` goes: SDK-family loggers and the handlers their records reach.
+
+    A logger filter sees only records created on that logger, not records its
+    children propagate, so every existing SDK-family logger is listed itself
+    (placeholders skipped). A logger created later -- inside a call -- has no
+    filter, but its records still propagate to the handlers of its ancestors,
+    which are SDK-family loggers and the root, or, when none has a handler,
+    go to ``logging.lastResort``. Those handlers are listed too, so such a
+    record is dropped by name whatever order the loggers were created in.
+    """
+    loggers = [
+        obj
+        for name, obj in list(logging.root.manager.loggerDict.items())
+        if isinstance(obj, logging.Logger) and _is_sdk_logger_name(name)
+    ]
+    targets: List[logging.Filterer] = list(loggers)
+    for logger in (logging.root, *loggers):
+        targets.extend(logger.handlers)
+    if logging.lastResort is not None:
+        targets.append(logging.lastResort)
+    return targets
 
 
 @contextmanager
 def _sdk_logging_dropped() -> Iterator[None]:
     """Drop every SDK/transport log record while any metered attempt is in flight.
 
-    Reference-counted under a lock, so concurrent and nested attempts share
-    one boundary: each entry attaches :data:`_SDK_DROP` to every SDK-family
-    logger that exists by then (``addFilter`` is idempotent), and the last
-    exit detaches it from all of them. Only those loggers are touched; other
-    loggers and ``logging.disable`` keep whatever the caller set.
+    Two layers, both reference-counted under one lock, so concurrent and
+    nested attempts share one boundary:
+
+    * the SDK and transport modules are imported first
+      (:func:`_prime_sdk_loggers`), so the loggers they create exist when
+      the filter is attached to every SDK-family logger;
+    * the same filter goes on the root logger's handlers, on the handlers of
+      the SDK-family loggers and on ``logging.lastResort``, where it drops
+      SDK-family records by logger name -- so a child logger created during
+      the call is still filtered when its records propagate.
+
+    Each entry attaches :data:`_SDK_DROP` to every target that exists by then
+    (``addFilter`` is idempotent) and records it; the last exit detaches it
+    from every recorded target. Records from other loggers pass through
+    unchanged, and ``logging.disable`` keeps whatever the caller set.
     """
     global _sdk_drop_depth
+    _prime_sdk_loggers()
     with _sdk_drop_lock:
         _sdk_drop_depth += 1
-        for logger in _sdk_loggers():
-            logger.addFilter(_SDK_DROP)
+        for target in _sdk_filter_targets():
+            target.addFilter(_SDK_DROP)
+            _sdk_drop_targets[id(target)] = target
     try:
         yield
     finally:
         with _sdk_drop_lock:
             _sdk_drop_depth -= 1
             if _sdk_drop_depth == 0:
-                for logger in _sdk_loggers():
-                    logger.removeFilter(_SDK_DROP)
+                for target in _sdk_drop_targets.values():
+                    target.removeFilter(_SDK_DROP)
+                _sdk_drop_targets.clear()
 
 
 def _with_handler(config: Optional[RunnableConfig], handler: BaseCallbackHandler) -> RunnableConfig:
