@@ -1,0 +1,24 @@
+# Synthetic price file for tests/test_p16w_spend.py (NOT real prices).
+# Round numbers so expected costs can be checked by hand; usd_per_eur = 2 so
+# the USD -> EUR conversion is visible (1:1 would hide it).
+price_list_date = 2026-01-01
+usd_per_eur = 2.0
+weekly_cap_eur = 40
+
+[models."fake-gen"]
+input = 1.0
+output = 10.0
+cache_write = 2.0
+cache_read = 0.5
+
+[models."fake-rewrite"]
+input = 1.0
+output = 10.0
+cache_write = 1.0
+cache_read = 0.1
+
+[models."fake-judge"]
+input = 4.0
+output = 20.0
+cache_write = 5.0
+cache_read = 0.4

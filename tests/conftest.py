@@ -34,6 +34,18 @@ def _no_live_api_key(monkeypatch):
     monkeypatch.delenv("ALLOW_CHUNK_TRUNCATION", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _tmp_spend_ledger(monkeypatch, tmp_path):
+    """Point the spend meter at a per-test ledger (Phase 16A-1 item 8, D70).
+
+    src.spend honours CC_SPEND_LEDGER only under pytest and refuses the
+    default per-user ledger (~/.local/state/claudecode/anthropic_spend.jsonl)
+    under pytest, so with this fixture the suite can never read or charge the
+    owner's real weekly cap.
+    """
+    monkeypatch.setenv("CC_SPEND_LEDGER", str(tmp_path / "spend_ledger.jsonl"))
+
+
 @pytest.fixture
 def sample_document():
     """A sample legal document for testing."""
