@@ -1981,6 +1981,21 @@ The artifact exemption now uses the exact artifact schema (`expansion_artifact._
 
 **Gate round 1 (10 Oct):** every eval-set loader (`load_golden_set` and `eval_schema`) refuses `.md` and `.py` inputs. Rule 2 exempts marker text in those suffixes (reports and code mention `"sealed"`), so without this a sealed set renamed to `.md` would load as private. Rule 2 also counts any `"sealed": true` pair, so duplicate keys are caught; scans every non-`.md`/`.py` suffix as JSONL; and the private and sealed roots match case-variant spellings by `samefile`.
 
+**Final gate (pressure-tester, reviewed b290cea, 10 Oct):** every acceptance criterion passed. Four defects were fixed, each with a regression test that fails on b290cea:
+- **D1 (regression of D38).** A private run set its report path aside before the input-set check and never reached `_resolve_results_path`, so it would write a report over an input set (`pipeline eval --golden X -o X` with X under `runs/<id>/`). A report path of `runs/<id>/inputs.json` also replaced the scanner contract. `run_eval` and `run_eval_matrix` now call `_refuse_private_overwrite` right after the private destination is fixed, before any retrieval, expansion or model call. It refuses two things, by file identity:
+  - any of the run's own writes (report, rows sidecar, `inputs.json`, `judge_review.jsonl`) landing on an input the run opens (sets, and a replayed artifact);
+  - a report named `inputs.json` or `judge_review.jsonl`, compared casefolded because on macOS a case variant is the same file.
+
+  The public path is unchanged and still refuses through D38. **Pre-existing, disclosed:** `run_eval`'s public path never had the D38 guard (neither had `main`'s). The CLI uses `run_eval_matrix`.
+- **D2 (regression from 24c7bb0).** The merge gate decoded commit and tag messages with the object's `encoding` header. Git records that header but never transcodes the bytes, so a UTF-16 or punycode header on UTF-8 bytes turned a needle into noise, and an `idna` header raised. The raw bytes are now always decoded as UTF-8 and scanned. When the header names a codec that can decode them, that decoding is scanned too. A hit in either counts, once.
+- **D3.** `_check_root` said it covered the `eval/` parent but checked only the private root. A symlinked `eval/` let `run_dir` and `artifact_path` resolve outside the repo, because `contained_path` resolves the root itself. Both `eval/private` and `eval/` are now refused when they are symlinks. Ancestors above the repo root are not checked, since a checkout may sit under a symlinked directory such as `/tmp`.
+- **D4.** Rule 5 accepted any `.md` holding one sha256- or cohort-shaped line anywhere, so free text plus one such line classified public. Rule 5 now reads a `.md` only when its first line is a report title (`# Legal RAG Evaluation Report v<N>`). It counts only the set lines inside that version's input block: `## Provenance` for v2–v5 and `## Cohort` for v6. A test pins the title and block to an actual v5 matrix report; the v6 pin was already in place.
+- **Residuals (instruction-enforced, disclosed):**
+  - `--merge-gate` decodes tracked files and blobs as UTF-8 only, so a UTF-16-encoded file hides its needles.
+  - It does not scan author or committer names, git notes (`refs/notes/*`), or a tag annotation that only another tag object reaches (it reads only the objects that `refs/tags` point to).
+  - The precheck accepts a derived input keyed by question text on its recorded sources alone, when they are approved.
+  - Classify rule 1 is location-only. A hard link or copy of an unmarked file under `eval/private/sealed/` that sits elsewhere classifies private, not sealed. A symlink resolves into the sealed root and stays sealed.
+
 **Rejected:**
 - A default `privacy` value: a forgotten argument would silently mean public.
 - Classifying by filename or label: copies and renames would escape.
@@ -2165,6 +2180,7 @@ All runs used the real `./chroma_db` index (1,470 chunks). The API key was scrub
 - **Defect this run surfaced.** It first failed because the real inventory refused two migrated parent labels. That is fixed in `d073a64` (the dotted-ancestor rule, D66).
 
 **Metered live smoke** (`SpendMeter(run_limit_eur=0.25)`, public golden row 1): one Haiku rewrite (no fallback), one generation (`complete`) and one judge call (no error). Real usage settled at **€0.0200**, with the week total from €0.0000 to €0.0200. No limit latched, and nothing was sent above the run limit.
+- **Recorded deviation (final gate, 10 Oct):** the smoke built `SpendMeter(run_limit_eur=0.25)` directly, which is equivalent to `--approved-eur 0.25`. It did not print the meter's worst-case sum for its real prompts first, as the plan's Tier-2 text asks. The limit, the settlement and the metadata above are unaffected.
 
 **Rejected:** D54's chunk-metadata route, re-deferred as a Phase 18 candidate. It would change production metadata, citations, the index and the gate, which this phase keeps byte-stable.
 
