@@ -26,13 +26,32 @@ import json
 import math
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from src import eval_privacy as _privacy
+from src import eval_sets as _eval_sets
 from src.bm25_index import load_bm25_index
+from src.eval_cohort import (
+    build_sidecar,
+    dump_sidecar,
+    rank_rows,
+    sidecar_path,
+    v1_cohort,
+)
+from src.eval_privacy import (
+    PUBLIC,
+    PrivatePathError,
+    check_floor,
+    rank as _privacy_rank,
+    require_class,
+    write_inputs_json,
+    write_private,
+)
 from src.embedder import (
     CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
@@ -153,6 +172,8 @@ def load_golden_set(path: str) -> List[Dict[str, Any]]:
         ValueError: If a line violates the schema above; the message names
             the offending 1-indexed line number.
     """
+    # 16A-1 (D65): sealed input is refused before the file is parsed.
+    _eval_sets.refuse_sealed([path])
     golden: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line_number, raw_line in enumerate(f, start=1):
@@ -1287,6 +1308,108 @@ def _dirty_provenance_str(provenance: Dict[str, Any]) -> str:
     return "dirty"
 
 
+
+# ---------------------------------------------------------------------------
+# Phase 16A-1 privacy plumbing (D65)
+# ---------------------------------------------------------------------------
+_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$")
+
+
+def _new_run_id() -> str:
+    """A fresh private run id: UTC timestamp + 8 random hex (no question text)."""
+    stamp = datetime.now(timezone.utc).strftime("r%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{secrets.token_hex(4)}"
+
+
+def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
+    """``(run_id, report_path, run_dir)`` for a private run.
+
+    A private run writes only under ``eval/private/runs/<run id>/``. An explicit
+    ``results_path`` is accepted only inside ``eval/private/runs/<id>/`` (its
+    directory then is the run directory); anything else is refused before any
+    work is done.
+
+    Raises:
+        PrivatePathError: for a destination outside the private runs tree.
+    """
+    runs_root = _privacy.private_root() / "runs"
+    if results_path is None:
+        run_id = _new_run_id()
+        rdir = _privacy.run_dir(run_id)
+        return run_id, str(rdir / "report.md"), rdir
+    if not _privacy.is_under(results_path, runs_root):
+        raise PrivatePathError(
+            "a private run writes reports only under eval/private/runs/<run id>/"
+        )
+    from pathlib import Path
+
+    rel = Path(results_path).resolve().relative_to(runs_root.resolve())
+    if len(rel.parts) != 2:
+        raise PrivatePathError("a private report path must be eval/private/runs/<run id>/<file>")
+    run_id = rel.parts[0]
+    rdir = _privacy.run_dir(run_id)
+    return run_id, str(rdir / rel.parts[1]), rdir
+
+
+def _api_key_usable() -> bool:
+    """True when a real-looking ANTHROPIC_API_KEY is set (same rule as get_llm)."""
+    key = os.getenv("ANTHROPIC_API_KEY")
+    return bool(key) and key != "your-api-key-here"
+
+
+def _require_meter(meter: Any, *, live_paths: Sequence[bool]) -> None:
+    """Refuse a default live path with a usable key and no spend meter (D70).
+
+    Called before any call is made. ``live_paths`` flags each default (not
+    injected) path that would make a Claude API call on this run.
+
+    Raises:
+        src.spend.SpendMeterRequired: when a live path would run unmetered.
+    """
+    if meter is None and any(live_paths) and _api_key_usable():
+        from src.spend import SpendMeterRequired
+
+        raise SpendMeterRequired(
+            "a live eval path needs a spend meter (D70); the CLI builds one"
+        )
+
+
+def _meter_llm_kwargs(meter: Any) -> Dict[str, Any]:
+    """``{"llm": <metered generation client>}`` given a meter, else ``{}``.
+
+    Runners call this ONCE and reuse the result for every question.
+    """
+    return {} if meter is None else {"llm": meter.generation_llm()}
+
+
+def _check_formatter_privacy(privacy: str, data_privacy: str) -> str:
+    """A formatter refuses a class weaker than the result's (D65)."""
+    privacy = require_class(privacy)
+    if _privacy_rank(privacy) < _privacy_rank(data_privacy):
+        raise _privacy.PrivacyFloorError(
+            f"formatter privacy {privacy!r} is weaker than the result's {data_privacy!r}"
+        )
+    return privacy
+
+
+def _safe_label(label: str, index: int) -> str:
+    """A set label safe for private stdout: short plain labels, else ``set<i>``."""
+    return label if _SAFE_LABEL_RE.match(label) else f"set{index}"
+
+
+def _write_sidecar(report_path: str, doc: Dict[str, Any], private: bool) -> str:
+    """Write ``<report>.rows.json`` beside the report (private: contained)."""
+    path = sidecar_path(report_path)
+    content = dump_sidecar(doc)
+    if private:
+        from pathlib import Path
+
+        write_private(Path(path), content)
+    else:
+        _atomic_write(path, content)
+    return path
+
+
 def _format_report(
     golden_path: str,
     top_k: int,
@@ -1294,8 +1417,17 @@ def _format_report(
     refusals: Optional[Dict[str, Any]],
     provenance: Dict[str, Any],
     golden: List[Dict[str, Any]],
+    *,
+    privacy: str,
+    data_privacy: str = PUBLIC,
+    ids: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render the retrieval + refusal results as a Markdown report.
+
+    16A-1 (D65): ``privacy`` is keyword-only with no default; a class weaker
+    than ``data_privacy`` (the result's) is refused. A public report is the v5
+    report byte for byte; a non-public report shows each row's opaque id
+    (``ids``: question -> id) where the question text would go.
 
     Copyright rule (CLAUDE.md D30): only question text, section numbers,
     metrics, and provenance appear here — never chunk ``page_content`` or full
@@ -1311,6 +1443,13 @@ def _format_report(
         golden: The loaded golden set, used only to report per-type question
             counts (not any answer or chunk text).
     """
+    privacy = _check_formatter_privacy(privacy, data_privacy)
+    if privacy != PUBLIC and ids is None:
+        raise ValueError("a non-public report needs row ids")
+
+    def _q(question: str) -> str:
+        return question if privacy == PUBLIC else ids[question]
+
     # Per-type counts of the loaded golden set (e.g. direct=8, exact_token=5,
     # refusal=5), so the report states the shape of the set it scored.
     type_counts: Dict[str, int] = {}
@@ -1399,18 +1538,18 @@ def _format_report(
         lines.append(
             f"- [{q['type']}] strict={strict} related={related} "
             f"expected={q['expected_sections']} "
-            f"retrieved={q['retrieved_sections']} :: {q['question']}"
+            f"retrieved={q['retrieved_sections']} :: {_q(q['question'])}"
         )
     if refusals is not None:
         for q in refusals["per_question"]:
             if q["refused"] is None:
                 lines.append(
                     f"- [refusal] excluded ({q.get('generation_status')}) "
-                    f":: {q['question']}"
+                    f":: {_q(q['question'])}"
                 )
                 continue
             status = "refused" if q["refused"] else "answered"
-            lines.append(f"- [refusal] {status} :: {q['question']}")
+            lines.append(f"- [refusal] {status} :: {_q(q['question'])}")
 
     return "\n".join(lines) + "\n"
 
@@ -1419,11 +1558,14 @@ def run_eval(
     golden_path: str,
     top_k: int = 6,
     skip_refusals: bool = False,
-    results_path: str = PARTIAL_RESULTS_PATH,
+    results_path: Optional[str] = None,
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     answer_fn: Optional[Callable[[str], Any]] = None,
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
+    privacy: str,
+    meter: Any = None,
 ) -> Dict[str, Any]:
     """Run the full Phase 5/6 evaluation and report the results.
 
@@ -1451,9 +1593,10 @@ def run_eval(
         top_k: Number of chunks to retrieve per question.
         skip_refusals: If True, skip the (API-calling) refusal pass.
         results_path: Where to write the Markdown report; parent directory
-            is created if missing. Defaults to the gitignored
-            ``PARTIAL_RESULTS_PATH`` — the canonical ``eval/results.md`` is
-            matrix-runner-only now (D46).
+            is created if missing. ``None`` (default) means the gitignored
+            ``PARTIAL_RESULTS_PATH`` on a public run — the canonical
+            ``eval/results.md`` is matrix-runner-only (D46) — and
+            ``eval/private/runs/<run id>/report.md`` on a private run.
         retrieve_fn: Optional override for retrieval (see
             ``evaluate_retrieval``); mainly for tests.
         answer_fn: Optional override for answer generation (see
@@ -1471,6 +1614,15 @@ def run_eval(
             load-once retrieval); ignored by either pass whose ``retrieve_fn``
             / ``answer_fn`` was given explicitly, since only their own default
             builders consult it.
+        privacy: keyword-only, no default (16A-1, D65). The run's floor is
+            the strictest ``classify`` over ``golden_path``; a weaker value
+            raises ``PrivacyFloorError`` before any retrieval or model call, a
+            stronger one is honoured. A private run prints aggregates only and
+            writes its report, rows sidecar and ``inputs.json`` under
+            ``eval/private/runs/<run id>/``.
+        meter: a ``src.spend.SpendMeter``; given one, the default answer path
+            generates with its metered client. A default live path with a
+            usable API key and no meter raises ``SpendMeterRequired``.
 
     Returns:
         Dict with ``retrieval`` (evaluate_retrieval's return value),
@@ -1489,7 +1641,7 @@ def run_eval(
     # committed canonical report, even when explicitly targeted — that report is
     # matrix-runner-only. Guard by FILE IDENTITY (_same_path) so a case-variant
     # or symlink alias of eval/results.md is caught too.
-    if _same_path(results_path, DEFAULT_RESULTS_PATH):
+    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH):
         raise ValueError(
             f"run_eval refuses to write the canonical report "
             f"{DEFAULT_RESULTS_PATH!r}: the committed report is written ONLY by "
@@ -1497,6 +1649,21 @@ def run_eval(
             f"a different results_path (the default is the gitignored "
             f"{PARTIAL_RESULTS_PATH!r})."
         )
+
+    # 16A-1 (D65): the privacy floor is checked first — before any retrieval,
+    # expansion or model call. Sealed input raises SealedInputError here.
+    privacy = check_floor(require_class(privacy), _eval_sets.floor([golden_path]))
+    private = privacy != PUBLIC
+    run_id: Optional[str] = None
+    run_dir_path: Any = None
+    if private:
+        run_id, results_path, run_dir_path = _private_destination(results_path)
+    elif results_path is None:
+        results_path = PARTIAL_RESULTS_PATH
+    _require_meter(
+        meter,
+        live_paths=(not skip_refusals and answer_fn is None,),
+    )
 
     golden = load_golden_set(golden_path)
 
@@ -1516,6 +1683,7 @@ def run_eval(
         refusals = None
     else:
         if answer_fn is None:
+            gen_kwargs = _meter_llm_kwargs(meter)
 
             def answer_fn(question: str) -> Dict[str, Any]:
                 """Answer via the run's single load-once retrieve_fn, then generate.
@@ -1527,7 +1695,7 @@ def run_eval(
                 incomplete drafts.
                 """
                 res = generate_with_sources(
-                    question, retrieve_fn(question, top_k=top_k)
+                    question, retrieve_fn(question, top_k=top_k), **gen_kwargs
                 )
                 return {
                     "answer": res["answer"],
@@ -1544,15 +1712,35 @@ def run_eval(
         )
     provenance = provenance_fn()
 
+    set_sha = _sha256_file(golden_path)
+    cohort, ids = v1_cohort(golden, path=golden_path, privacy=privacy, sha256=set_sha)
     report = _format_report(
-        golden_path, top_k, retrieval, refusals, provenance, golden
+        golden_path, top_k, retrieval, refusals, provenance, golden,
+        privacy=privacy, data_privacy=privacy, ids=ids,
     )
-    print(report)
+    sidecar = build_sidecar(
+        privacy=privacy,
+        cohorts=[cohort],
+        rows=rank_rows(retrieval, mode="raw", set_sha256=set_sha, ids=ids),
+        expansion={"kind": "none"},
+    )
 
-    # Atomic write (temp file + os.replace) — same convention as the matrix
-    # runner and the BM25 sidecar: an interrupted write leaves any pre-existing
-    # report byte-identical rather than half-overwritten.
-    _atomic_write(results_path, report)
+    if private:
+        from pathlib import Path
+
+        write_private(Path(results_path), report)
+        _write_sidecar(results_path, sidecar, private=True)
+        write_inputs_json(
+            run_dir_path, [{"path": golden_path, "sha256": set_sha, "kind": "questions"}]
+        )
+        print(_private_run_eval_summary(run_id, retrieval, refusals))
+    else:
+        print(report)
+        # Atomic write (temp file + os.replace) — same convention as the matrix
+        # runner and the BM25 sidecar: an interrupted write leaves any
+        # pre-existing report byte-identical rather than half-overwritten.
+        _atomic_write(results_path, report)
+        _write_sidecar(results_path, sidecar, private=False)
 
     return {
         "retrieval": retrieval,
@@ -1560,7 +1748,29 @@ def run_eval(
         "provenance": provenance,
         "golden_path": golden_path,
         "top_k": top_k,
+        "privacy": privacy,
+        "results_path": results_path,
+        "run_id": run_id,
+        "ids": ids,
+        "cohort": cohort,
     }
+
+
+def _private_run_eval_summary(
+    run_id: Optional[str], retrieval: Dict[str, Any], refusals: Optional[Dict[str, Any]]
+) -> str:
+    """Aggregates-only stdout for a private ``run_eval`` (no text, no sections)."""
+    lines = [
+        f"[eval] private run {run_id}: report under eval/private/runs/{run_id}/",
+        f"- retrieval: strict {retrieval['hits_strict']}/{retrieval['total']}, "
+        f"related {retrieval['hits_related']}/{retrieval['total']}",
+    ]
+    if refusals is not None:
+        lines.append(
+            f"- refusals: {refusals['refused']}/{refusals['total']} "
+            f"(excluded {refusals['generation_incomplete_total']})"
+        )
+    return "\n".join(lines)
 
 
 def _atomic_write(path: str, content: str) -> None:
@@ -1595,6 +1805,9 @@ def run_eval_matrix(
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     judge_dump_path: Optional[str] = None,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
+    privacy: str,
+    meter: Any = None,
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1647,6 +1860,20 @@ def run_eval_matrix(
             (including claim text) are written here as JSONL for local review —
             gitignored; never committed, never in the report (D30).
         persist_directory: index directory for the default retrieval/generation.
+        privacy: keyword-only, no default (16A-1, D65). The floor is the
+            strictest ``classify`` over every set path; a weaker value raises
+            ``PrivacyFloorError`` before any retrieval, expansion or model call
+            (sealed input raises ``SealedInputError``), a stronger one is
+            honoured. A non-public run is never canonical, prints aggregates
+            and opaque ids only, and writes its report, rows sidecar, judge
+            dump and ``inputs.json`` only under ``eval/private/runs/<run id>/``.
+        meter: a ``src.spend.SpendMeter``. Given one, the default generation,
+            query expansion and judge use its metered clients; without one,
+            call shapes are today's. A default live path with a usable API key
+            and no meter raises ``SpendMeterRequired`` before any call.
+
+    Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
+    cohort blocks and per-row ranks that machine comparisons read.
 
     Returns:
         A dict with ``sets`` (per-set results), ``modes``, ``top_k``,
@@ -1667,6 +1894,15 @@ def run_eval_matrix(
         raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
 
     set_paths = [path for _label, path in set_specs]
+    # 16A-1 (D65): the privacy floor is checked before any retrieval, expansion
+    # or model call; sealed input raises SealedInputError here.
+    privacy = check_floor(require_class(privacy), _eval_sets.floor(set_paths))
+    private = privacy != PUBLIC
+    run_id: Optional[str] = None
+    run_dir_path: Any = None
+    if private:
+        run_id, private_report_path, run_dir_path = _private_destination(results_path)
+        results_path = None  # the private destination replaces it
     # Fail fast on the dangerous footgun (report over an eval set) BEFORE any
     # expensive generation, even though _resolve_results_path re-guards at write.
     # Compare by FILE IDENTITY (_same_path) so abs/rel/symlink AND case-variant
@@ -1710,6 +1946,31 @@ def run_eval_matrix(
     # of live-enabled attempts.
     expansion_cache: Dict[str, Expansion] = {}
 
+    # D70: refuse an unmetered default live path BEFORE any call, then build
+    # each metered client once for the whole run.
+    _require_meter(
+        meter,
+        live_paths=(
+            generation_ran and generate_fn is None,
+            expansion_enabled,
+            judge and judge_fn is None,
+        ),
+    )
+    gen_kwargs = _meter_llm_kwargs(meter) if generate_fn is None else {}
+    rewrite_kwargs: Dict[str, Any] = (
+        {} if meter is None or not expansion_enabled else {"llm": meter.rewrite_llm()}
+    )
+    if judge and judge_fn is None and meter is not None:
+        from langchain_core.output_parsers import StrOutputParser
+
+        from src.judge import JUDGE_PROMPT
+
+        _judge_chain = JUDGE_PROMPT | meter.judge_llm() | StrOutputParser()
+
+        def judge_fn(prompt_vars: Dict[str, str]) -> str:
+            """Judge through the meter's metered client."""
+            return _judge_chain.invoke(prompt_vars)
+
     def _expand(question: str) -> Expansion:
         """Expand ``question`` once, reusing the shared cache (Phase 13, D46).
 
@@ -1721,7 +1982,7 @@ def run_eval_matrix(
         if not expansion_enabled:
             return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
         if question not in expansion_cache:
-            expansion_cache[question] = expand_query(question, enabled=True)
+            expansion_cache[question] = expand_query(question, enabled=True, **rewrite_kwargs)
         return expansion_cache[question]
 
     # Ownership flags (Codex #8), captured BEFORE the default
@@ -1818,7 +2079,7 @@ def run_eval_matrix(
                 # WITH the intent reframe threaded in (same _expand cache).
                 intent_rewrite=exp.intent_rewrite,
             )
-            return generate_with_sources(question, results)
+            return generate_with_sources(question, results, **gen_kwargs)
 
     sets: List[Dict[str, Any]] = []
     total_generation_errors = 0
@@ -1826,8 +2087,11 @@ def run_eval_matrix(
     total_unknown = 0
     judge_dump_records: List[Dict[str, Any]] = []
 
+    sidecar_rows: List[Dict[str, Any]] = []
     for label, path in set_specs:
         golden = load_golden_set(path)
+        set_sha = _sha256_file(path)
+        cohort, ids = v1_cohort(golden, path=path, privacy=privacy, sha256=set_sha)
         counts: Dict[str, int] = {}
         for entry in golden:
             counts[entry["type"]] = counts.get(entry["type"], 0) + 1
@@ -1853,6 +2117,9 @@ def run_eval_matrix(
                 retrieve_fn=retrieve_fn_factory(mode),
                 top_k=top_k,
                 persist_directory=persist_directory,
+            )
+            sidecar_rows.extend(
+                rank_rows(retrieval_by_mode[mode], mode=mode, set_sha256=set_sha, ids=ids)
             )
 
         # One shared generation pass, only if a consuming pass is active.
@@ -1992,7 +2259,9 @@ def run_eval_matrix(
             {
                 "label": label,
                 "path": path,
-                "sha256": _sha256_file(path),
+                "sha256": set_sha,
+                "ids": ids,
+                "cohort": cohort,
                 "counts": counts,
                 "n_questions": len(golden),
                 "retrieval": retrieval_by_mode,
@@ -2114,13 +2383,18 @@ def run_eval_matrix(
         and rewrite_fallbacks == 0
         and (bm25_loaded or not bm25_default_path_in_play)
         and judge_ran_clean
+        # 16A-1: a non-public run is never canonical (eval/results.md is public).
+        and not private
     )
 
-    resolved_path, warnings = _resolve_results_path(
-        results_path, is_canonical, set_paths
-    )
-    for warning in warnings:
-        print(f"[eval] {warning}", file=sys.stderr)
+    if private:
+        resolved_path = private_report_path
+    else:
+        resolved_path, warnings = _resolve_results_path(
+            results_path, is_canonical, set_paths
+        )
+        for warning in warnings:
+            print(f"[eval] {warning}", file=sys.stderr)
 
     if provenance_fn is None:
         provenance_fn = lambda: collect_provenance(
@@ -2161,18 +2435,87 @@ def run_eval_matrix(
         "bm25_default_path_in_play": bm25_default_path_in_play,
         "bm25_loaded": bm25_loaded,
         "judge_ran_clean": judge_ran_clean,
+        "privacy": privacy,
+        "run_id": run_id,
     }
 
-    report = _format_matrix_report(result)
-    print(report)
-    _atomic_write(resolved_path, report)
+    report = _format_matrix_report(result, privacy=privacy)
+    sidecar = build_sidecar(
+        privacy=privacy,
+        cohorts=[s["cohort"] for s in sets],
+        rows=sidecar_rows,
+        expansion=_expansion_identity(expansion_enabled, expansion_cache),
+    )
+    dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
+    if private:
+        from pathlib import Path
 
-    # Write the gitignored judge review dump (claim text lives ONLY here).
-    if judge and judge_dump_path and judge_dump_records:
-        dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
-        _atomic_write(judge_dump_path, "\n".join(dump_lines) + "\n")
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
+        write_inputs_json(
+            run_dir_path,
+            [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
+        )
+        # The judge dump (claim and question text) stays inside the run dir.
+        if judge and judge_dump_records:
+            write_private(Path(run_dir_path) / "judge_review.jsonl", "\n".join(dump_lines) + "\n")
+        print(_private_matrix_summary(result))
+    else:
+        print(report)
+        _atomic_write(resolved_path, report)
+        _write_sidecar(resolved_path, sidecar, private=False)
+        # Write the gitignored judge review dump (claim text lives ONLY here).
+        if judge and judge_dump_path and judge_dump_records:
+            _atomic_write(judge_dump_path, "\n".join(dump_lines) + "\n")
 
     return result
+
+
+def _expansion_identity(enabled: bool, cache: Dict[str, Expansion]) -> Dict[str, Any]:
+    """Expansion identity for the rows sidecar (item 5/6): kind, model, live digest.
+
+    Live arms record sha256 over the sorted ``(question sha256, rewrite
+    sha256s, intent sha256)`` tuples -- hashes only, never text.
+    """
+    if not enabled:
+        return {"kind": "disabled", "model": REWRITE_MODEL}
+    tuples = sorted(
+        [
+            hashlib.sha256(q.encode("utf-8")).hexdigest(),
+            sorted(hashlib.sha256(r.encode("utf-8")).hexdigest() for r in exp.rewrites),
+            hashlib.sha256((exp.intent_rewrite or "").encode("utf-8")).hexdigest(),
+        ]
+        for q, exp in cache.items()
+    )
+    digest = hashlib.sha256(json.dumps(tuples, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"kind": "live", "model": REWRITE_MODEL, "digest": digest}
+
+
+def _private_matrix_summary(result: Dict[str, Any]) -> str:
+    """Aggregates-only stdout for a private matrix run (D65 serialiser).
+
+    Allowlist: run id, set labels (plain short labels only), counts and rates.
+    Never a question, section, path, rewrite, answer or exception text.
+    """
+    rid = result.get("run_id")
+    lines = [
+        f"[eval] private run {rid}: report under eval/private/runs/{rid}/ (not canonical)",
+        f"- modes: {', '.join(result['modes'])}; top_k {result['top_k']}",
+        f"- generation errors {result['generation_errors']}, incomplete "
+        f"{result['generation_incomplete']}, unknown {result['generation_unknown']}; "
+        f"expansion attempted {result['rewrite_attempts']}, fallbacks {result['rewrite_fallbacks']}",
+    ]
+    for i, s in enumerate(result["sets"]):
+        parts = [f"- {_safe_label(s['label'], i)}: n={s['n_questions']}"]
+        for mode, r in s["retrieval"].items():
+            parts.append(f"{mode} strict {r['hits_strict']}/{r['total']}")
+        if s["refusals"] is not None:
+            parts.append(f"refused {s['refusals']['refused']}/{s['refusals']['total']}")
+        if s["completeness"] is not None:
+            c = s["completeness"]
+            parts.append(f"false refusals {c['refused']}/{c['total']}, blocked {c['blocked']}/{c['total']}")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
 
 
 def _mrr_label(top_k: int) -> str:
@@ -2185,13 +2528,22 @@ def _fmt_opt_rate(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.3f}"
 
 
-def _format_matrix_report(result: Dict[str, Any]) -> str:
+def _format_matrix_report(result: Dict[str, Any], *, privacy: str) -> str:
     """Render the Phase 10 v2 report (D38); honors D30 (no chunk/answer/claim text).
 
     Only question text, section numbers, counts, rates, gate outcomes, and
     provenance appear. The headline is strict hit@6 on the held-out set, with a
     count and a Wilson 95% interval so its small-n uncertainty is explicit.
+
+    16A-1 (D65): ``privacy`` is keyword-only, no default; a class weaker than
+    ``result["privacy"]`` is refused. A public report is v5 byte for byte; a
+    non-public one shows each row's opaque id in place of its question.
     """
+    privacy = _check_formatter_privacy(privacy, result.get("privacy", PUBLIC))
+
+    def _q(s: Dict[str, Any], question: str) -> str:
+        return question if privacy == PUBLIC else s["ids"][question]
+
     sets = result["sets"]
     modes = result["modes"]
     top_k = result["top_k"]
@@ -2546,7 +2898,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                     f"- [{q['type']}] strict={strict}(rank={q['first_strict_rank']}) "
                     f"related={related}(rank={q['first_related_rank']}) "
                     f"expected={q['expected_sections']} "
-                    f"retrieved={q['retrieved_sections']}{extra} :: {q['question']}"
+                    f"retrieved={q['retrieved_sections']}{extra} :: {_q(s, q['question'])}"
                 )
         # Refusal-type per-question rows (from the refusal pass). Each carries
         # the D30-safe detail (caveat flag, gate outcome, grounded/citation
@@ -2569,7 +2921,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                         f" caveat={d['is_caveat']} gate={d['gate_outcome']} "
                         f"grounded={d['n_grounded']}/{d['n_citations']}"
                     )
-                lines.append(f"- [refusal] {status}{extra} :: {q['question']}")
+                lines.append(f"- [refusal] {status}{extra} :: {_q(s, q['question'])}")
         lines.append("")
 
     return "\n".join(lines) + "\n"

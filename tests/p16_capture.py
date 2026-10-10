@@ -307,24 +307,36 @@ def _judge_fn(mode: str) -> Callable[[Dict[str, str]], str]:
     return _fn
 
 
+class _InertClient:
+    """A metered-client stand-in that fails the capture if it is ever invoked."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def invoke(self, *_a: Any, **_k: Any) -> Any:
+        raise CaptureError(f"p16_capture: fake meter client {self.name!r} was invoked")
+
+    __call__ = invoke
+
+
 class _FakeMeter:
     """Meter stand-in for runners that accept ``meter=`` (16A-1 item 8).
 
-    Exposes the client attributes a metered runner hands to generation, the
-    rewrite and the judge; with every model seam injected they are never used,
-    so each is a sentinel that raises if anything calls it.
+    Hands out inert clients for generation, rewrite and judge; with every model
+    seam faked, none may ever be invoked (an invocation fails the capture).
     """
 
     run_total_eur = 0.0
     week_total_eur = 0.0
 
-    def __getattr__(self, name: str) -> Any:
-        """Any client the runner asks for is an inert sentinel."""
+    def generation_llm(self) -> _InertClient:
+        return _InertClient("generation")
 
-        def _sentinel(*_a: Any, **_k: Any) -> Any:
-            raise CaptureError(f"p16_capture: fake meter client {name!r} was used")
+    def rewrite_llm(self) -> _InertClient:
+        return _InertClient("rewrite")
 
-        return _sentinel
+    def judge_llm(self) -> _InertClient:
+        return _InertClient("judge")
 
 
 def _runner_kwargs(fn: Callable[..., Any]) -> Dict[str, Any]:

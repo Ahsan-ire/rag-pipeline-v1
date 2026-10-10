@@ -194,8 +194,33 @@ def eval_registry(monkeypatch):
             )
             return extra[-1]
 
+        def add_tree(self, root):
+            """Register every ``*.jsonl`` under ``root`` as public, re-scanned at
+            each registry load (so a set written later in the test, at its final
+            bytes, is registered too)."""
+            trees.append(root)
+
         def clear(self):
             extra.clear()
+            trees.clear()
 
-    monkeypatch.setattr(eval_sets, "load_registry", lambda: [*real_loader(), *extra])
+    trees = []
+
+    def _loader():
+        from pathlib import Path
+
+        dynamic = []
+        for root in trees:
+            for p in sorted(Path(root).rglob("*.jsonl")):
+                if p.is_file() and not p.is_symlink() and not eval_sets.has_sealed_marker(p):
+                    dynamic.append(
+                        eval_sets.SetEntry(
+                            name=f"tree-{len(dynamic)}-{p.name}", path=str(p.resolve()),
+                            privacy="public", role="fixture", status="active",
+                            sha256=eval_sets.sha256_file(p),
+                        )
+                    )
+        return [*real_loader(), *extra, *dynamic]
+
+    monkeypatch.setattr(eval_sets, "load_registry", _loader)
     return _Registry()

@@ -294,6 +294,12 @@ def classify(path: Any, *, legacy_public: bool = False) -> str:
     return PRIVATE
 
 
+def is_sealed(path: Any) -> bool:
+    """Rules 1-2 only: under the sealed root, or carrying a sealed marker."""
+    p = Path(path).resolve()
+    return is_under(p, _privacy.private_root() / "sealed") or has_sealed_marker(p)
+
+
 def floor(paths: Iterable[Any], *, legacy_public: bool = False) -> str:
     """The strictest :func:`classify` result over ``paths`` (public if none)."""
     return strictest(classify(p, legacy_public=legacy_public) for p in paths)
@@ -302,7 +308,7 @@ def floor(paths: Iterable[Any], *, legacy_public: bool = False) -> str:
 def refuse_sealed(paths: Iterable[Any]) -> None:
     """Raise :class:`SealedInputError` if any path classifies sealed (CLI exit 4)."""
     for p in paths:
-        if classify(p) == SEALED:
+        if is_sealed(p):
             raise SealedInputError("sealed eval input is refused in 16A-1 (exit 4)")
 
 
