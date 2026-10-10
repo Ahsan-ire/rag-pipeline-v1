@@ -59,7 +59,6 @@ def test_entry_privacy_is_keyword_only_without_default(rel, names):
         assert "privacy" not in [a.arg for a in fn.args.args], name
 
 
-@pytest.mark.xfail(strict=True, reason="w_sweep/bakeoff_report privacy floor and chdir removal land with the C4/item-9 commit; strict, so this flips to a failure once they do")
 def test_scripts_entry_functions_take_privacy_keyword_only():
     for rel in ("scripts/w_sweep.py", "scripts/bakeoff_report.py"):
         tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
@@ -101,7 +100,6 @@ def test_render_does_not_import_evaluator():
     assert out.stdout.strip() == "False", out.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="w_sweep/bakeoff_report privacy floor and chdir removal land with the C4/item-9 commit; strict, so this flips to a failure once they do")
 def test_w_sweep_has_no_module_level_chdir():
     tree = ast.parse((ROOT / "scripts" / "w_sweep.py").read_text(encoding="utf-8"))
     for node in tree.body:
