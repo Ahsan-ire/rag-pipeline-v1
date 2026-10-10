@@ -4,6 +4,34 @@
   {
    "path": "eval/w_sweep_expansions_20260717.json",
    "sha256": "0bc3bf9c5045b8a1dfc0cfb5866659f882c015daea70601c8a4bbe5644436148"
+  },
+  {
+   "path": "eval/bakeoff/baseline-minilm.md",
+   "sha256": "00f83bf5b343974a7ff59e9625621d9ae6d026f74da0e9d8da54923f062e8eff"
+  },
+  {
+   "path": "eval/bakeoff/granite.md",
+   "sha256": "6fff40f3bee5717e478abf48323a0cb8bc53351a96fdb52e743f107134252795"
+  },
+  {
+   "path": "eval/bakeoff/gte.md",
+   "sha256": "a0bb6df883675ad4a51933dd6f822735f30bfbde42d83b9da5a7f7d8c1afb6b6"
+  },
+  {
+   "path": "eval/bakeoff/manifest.json",
+   "sha256": "81f69803bdb3aba1651f4b4b3ccc173c340bf3ea011e1b420c02b2918e75692f"
+  },
+  {
+   "path": "eval/bakeoff/ranks_baseline.json",
+   "sha256": "519f209bdd5df6dffa36c3687bd51318f35a92175152174de0a0015763ecb57c"
+  },
+  {
+   "path": "eval/bakeoff/ranks_granite.json",
+   "sha256": "268be04ba020a8fe9f499142b8c17b7122bbe21e2c857aee89f62425ee8f9a0e"
+  },
+  {
+   "path": "eval/bakeoff/ranks_gte.json",
+   "sha256": "6337bd7fc24dc2a407edebe63c2ef5402e9acab75f11075f8f39f864ee378d99"
   }
  ]
 }
