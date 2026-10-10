@@ -383,7 +383,13 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
 
     try:
         raw = _invoke_rewrite(llm, question)
-    except Exception:  # noqa: BLE001 — any rewrite-call failure degrades, never raises
+    except Exception as exc:  # noqa: BLE001 — any rewrite-call failure degrades, never raises
+        # ...except a spend-meter failure (16A-1, D70): a corrupt or refused
+        # ledger stops the run instead of degrading into a fallback.
+        from src.spend import SpendMeterError
+
+        if isinstance(exc, SpendMeterError):
+            raise
         logger.warning("Query expansion failed: the rewrite LLM call raised.")
         return Expansion(question, (), REWRITE_MODEL, STATUS_API_ERROR)
 

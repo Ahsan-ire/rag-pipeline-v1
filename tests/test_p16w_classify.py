@@ -133,8 +133,16 @@ def test_rule5_json_inputs_all_public(tmp_path, eval_registry):
     p = _write_jsonl(tmp_path / "pub.jsonl", _rows("q a"))
     entry = eval_registry.add(p)
     art = tmp_path / "art.json"
-    art.write_text(json.dumps({"inputs": [{"path": str(p), "sha256": entry.sha256}], "entries": []}))
+    art.write_text(json.dumps({"kind": "expansion_artifact", "inputs": [{"path": str(p), "sha256": entry.sha256}],
+                               "entries": {}}))
     assert classify(art) == "public"
+    # the same header on an unknown kind (or a bare {inputs, entries}) stays private (gate round 3)
+    bare = tmp_path / "bare.json"
+    bare.write_text(json.dumps({"inputs": [{"path": str(p), "sha256": entry.sha256}], "entries": []}))
+    assert classify(bare) == "private"
+    cache = tmp_path / "cache.json"
+    cache.write_text(json.dumps({"inputs": [{"sha256": entry.sha256}], "a private question as a key?": {"rewrites": []}}))
+    assert classify(cache) == "private"
 
 
 def test_rule5_mixed_public_and_unmatched_is_private(tmp_path, eval_registry):

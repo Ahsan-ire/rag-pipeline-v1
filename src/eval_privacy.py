@@ -131,6 +131,15 @@ def safe_error(exc: BaseException, row_id: Optional[str] = None) -> str:
 # --------------------------------------------------------------------------
 # Private destinations
 # --------------------------------------------------------------------------
+def new_run_id() -> str:
+    """A fresh private run id: UTC timestamp + 8 random hex (no question text)."""
+    import secrets
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("r%Y%m%dT%H%M%SZ")
+    return f"{stamp}-{secrets.token_hex(4)}"
+
+
 def private_root() -> Path:
     """The private root, ``eval/private/`` under the repo.
 

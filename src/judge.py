@@ -27,7 +27,6 @@ claims themselves.
 """
 
 import json
-import os
 import random
 import re
 from typing import Any, Callable, Dict, List, Optional
@@ -183,9 +182,14 @@ def judge_answer(
         raw = llm_fn(
             {"question": question, "answer": answer, "context": context}
         )
-    except Exception:
+    except Exception as exc:
         # Any llm_fn failure (network, rate limit, auth) is an API error, held
-        # apart from parse errors so the report can attribute failures.
+        # apart from parse errors so the report can attribute failures --
+        # except a spend-meter failure, which stops the run (16A-1, D70).
+        from src.spend import SpendMeterError
+
+        if isinstance(exc, SpendMeterError):
+            raise
         return _error("api")
 
     try:
@@ -265,8 +269,9 @@ def judge_answers(
     if llm_fn is None and items:
         # D70: the default llm_fn is a live, unmetered Claude call. With a
         # usable key it is refused; the eval passes a metered llm_fn.
-        key = os.getenv("ANTHROPIC_API_KEY")
-        if key and key != "your-api-key-here":
+        from src.generator import api_key_usable
+
+        if api_key_usable():
             from src.spend import SpendMeterRequired
 
             raise SpendMeterRequired("judge_answers needs a metered llm_fn (D70)")

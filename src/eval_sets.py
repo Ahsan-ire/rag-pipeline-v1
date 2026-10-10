@@ -273,6 +273,15 @@ def public_sha256s() -> set:
 # --------------------------------------------------------------------------
 # Classification
 # --------------------------------------------------------------------------
+def _is_known_derived(obj: Any) -> bool:
+    """An expansion artifact, or a rows sidecar / C4 rank dump (``cohorts`` + ``rows``)."""
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("kind") == "expansion_artifact" and isinstance(obj.get("entries"), dict):
+        return True
+    return isinstance(obj.get("cohorts"), list) and isinstance(obj.get("rows"), list) and "scorer_version" in obj
+
+
 def _has_question_key(obj: Any) -> bool:
     """True if any object at any depth has a ``question``/``questions`` key."""
     stack = [obj]
@@ -302,10 +311,11 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
         inputs = obj.get("inputs") if isinstance(obj, dict) else None
         if not isinstance(inputs, list) or not inputs:
             return None
-        # Rule 5 is for DERIVED files (artifacts, sidecars, rank dumps) only:
-        # a document holding question text anywhere is an eval set whose
-        # self-declared "inputs" must never make it public (gate round 2).
-        if _has_question_key(obj):
+        # Rule 5 is for the known DERIVED kinds only -- an expansion artifact,
+        # a rows sidecar or a C4 rank dump -- holding no question text: any
+        # other JSON (an eval set, a question-keyed cache) never becomes public
+        # through a self-declared "inputs" list (gate rounds 2-3).
+        if not _is_known_derived(obj) or _has_question_key(obj):
             return None
         shas = []
         for item in inputs:

@@ -26,11 +26,10 @@ import json
 import math
 import os
 import re
-import secrets
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src import eval_privacy as _privacy
@@ -951,6 +950,10 @@ def generate_answers(
                 error = None
                 break
             except Exception as e:  # noqa: BLE001 — record and (maybe) retry any failure
+                from src.spend import SpendMeterError
+
+                if isinstance(e, SpendMeterError):
+                    raise  # a meter failure stops the run (D70), never an error row
                 error = f"{type(e).__name__}: {e}"
                 if attempt < retries and retry_backoff:
                     time.sleep(retry_backoff * (attempt + 1))
@@ -1221,12 +1224,6 @@ def _dirty_provenance_str(provenance: Dict[str, Any]) -> str:
 _SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$")
 
 
-def _new_run_id() -> str:
-    """A fresh private run id: UTC timestamp + 8 random hex (no question text)."""
-    stamp = datetime.now(timezone.utc).strftime("r%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{secrets.token_hex(4)}"
-
-
 def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
     """``(run_id, report_path, run_dir)`` for a private run.
 
@@ -1240,7 +1237,7 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
     """
     runs_root = _privacy.private_root() / "runs"
     if results_path is None:
-        run_id = _new_run_id()
+        run_id = _privacy.new_run_id()
         rdir = _privacy.run_dir(run_id, create=False)
         return run_id, str(rdir / "report.md"), rdir
     if not _privacy.is_under(results_path, runs_root):
@@ -1258,9 +1255,10 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
 
 
 def _api_key_usable() -> bool:
-    """True when a real-looking ANTHROPIC_API_KEY is set (same rule as get_llm)."""
-    key = os.getenv("ANTHROPIC_API_KEY")
-    return bool(key) and key != "your-api-key-here"
+    """True when a real-looking ANTHROPIC_API_KEY is set (``generator.api_key_usable``)."""
+    from src.generator import api_key_usable
+
+    return api_key_usable()
 
 
 def _require_meter(meter: Any, *, live_paths: Sequence[bool]) -> None:
@@ -1859,18 +1857,40 @@ def run_eval_matrix(
                         "build:<path> resolves to an input set or a report; refusing to overwrite it"
                     )
             build_target = artifact_path_arg
+            # Never overwrite an existing file that is not an expansion
+            # artifact (the registry, legacy list, caches, other JSON).
+            if os.path.lexists(build_target) and not _is_expansion_artifact(build_target):
+                raise ValueError(
+                    "build:<path> names an existing file that is not an expansion artifact; "
+                    "refusing to overwrite it"
+                )
     # (b) every v1 set must form a cohort (no repeated question) up front.
     from src.eval_schema import detect_schema as _detect_schema
-
     from src.eval_schema import load_any as _load_any
 
+    schemas_upfront = []
     for _label, path in set_specs:
-        if _detect_schema(path) == 1:
+        schemas_upfront.append(_detect_schema(path))
+        if schemas_upfront[-1] == 1:
             v1_cohort(load_golden_set(path), path=path, privacy=privacy, sha256=_sha256_file(path))
         else:
             # Full schema-2 validation (ids, families, inventory) before any
             # set is expanded or generated.
             _load_any(path)
+    # (c) a run known to be non-canonical before it starts (report v6, a
+    #     replayed artifact, a private run) may not target eval/results.md.
+    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and (
+        2 in schemas_upfront or expansion_mode == "replay" or private
+    ):
+        raise ValueError(
+            "--results targets the canonical report, but this run cannot be canonical "
+            "(report v6, replayed expansion or private input); refusing before any work"
+        )
+    # (d) an artifact build needs unique row keys across the run's sets.
+    if expansion_mode == "build":
+        keys = [k for _l, path in set_specs for _q, k in _artifact_keys(path)]
+        if len(keys) != len(set(keys)):
+            raise ValueError("build:<path> needs distinct input sets (duplicate artifact row keys)")
 
     # Which passes run, and therefore which answers to generate (Design 2).
     generation_ran = (not skip_refusals) or (not skip_completeness) or judge
@@ -2738,8 +2758,23 @@ def _build_expansion_artifact(
         lambda q: cache[q],
         [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
     )
+    # A private target is re-resolved through the containment check right
+    # before the write (narrows a mid-run swap of eval/private/artifacts to a
+    # symlink; the remaining check-to-open race is a disclosed residual, D65).
+    if _privacy.is_under(target, _privacy.private_root()):
+        target = str(_privacy.artifact_path(os.path.basename(target)))
     digest = save_artifact(target, artifact)
     return {"path": target, "sha256": digest}
+
+
+def _is_expansion_artifact(path: str) -> bool:
+    """True if ``path`` is an existing expansion artifact (safe to rebuild)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("kind") == "expansion_artifact"
 
 
 def _private_matrix_summary(result: Dict[str, Any]) -> str:

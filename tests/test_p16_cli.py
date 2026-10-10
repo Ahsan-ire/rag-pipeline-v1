@@ -105,3 +105,12 @@ def test_public_error_still_raises(monkeypatch):
 def test_expansion_flag_threads(monkeypatch):
     code, c = _run(monkeypatch, ["--skip-refusals", "--expansion", "build:x.json"])
     assert c["kwargs"]["expansion"] == "build:x.json"
+
+
+@pytest.mark.parametrize("argv", [["--approved-eur", "nan"], ["--approved-eur", "0"],
+                                  ["--owner-approved-eur", "100"]])
+def test_bad_meter_arguments_exit_2_without_traceback(monkeypatch, capsys, argv):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    code, c = _run(monkeypatch, ["--skip-refusals", *argv])
+    assert code == 2 and c == {}
+    assert "Traceback" not in capsys.readouterr().err

@@ -74,9 +74,7 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -1566,9 +1564,8 @@ def build_manifest(
 
 
 def new_run_id() -> str:
-    """A fresh private run id: UTC timestamp + 8 random hex (no question text)."""
-    stamp = datetime.now(timezone.utc).strftime("r%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{secrets.token_hex(4)}"
+    """A fresh private run id (``src.eval_privacy.new_run_id``)."""
+    return _privacy.new_run_id()
 
 
 def private_output_path(requested: str) -> Tuple[Path, Path]:
@@ -1585,7 +1582,7 @@ def private_output_path(requested: str) -> Tuple[Path, Path]:
     """
     runs_root = _privacy.private_root() / "runs"
     if _privacy.is_under(requested, runs_root):
-        rel = Path(requested).resolve().relative_to(runs_root.resolve())
+        rel = _privacy.relative_to_root(requested, runs_root)
         if len(rel.parts) == 2:
             rdir = _privacy.run_dir(rel.parts[0])
             return rdir, rdir / rel.parts[1]

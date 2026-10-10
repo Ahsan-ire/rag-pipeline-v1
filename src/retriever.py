@@ -1,6 +1,7 @@
 """Hybrid (BM25 + vector) retrieval module, fused by reciprocal rank fusion (D6)."""
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from langchain_chroma import Chroma
@@ -341,9 +342,18 @@ def retrieve(
         for i, sub_q in enumerate(sub_queries):
             vector_ranked_ids: List[str] = []
             try:
-                vector_results = vector_store.similarity_search_with_relevance_scores(
-                    sub_q, k=candidate_k, filter=filter_dict
-                )
+                # langchain warns when a relevance score falls outside [0, 1]
+                # and the warning text embeds the retrieved Documents (chunk
+                # text + metadata). Scores are only used for ordering here, so
+                # that one warning is silenced at this call (16A-1, D65: a
+                # private eval run's stderr carries no retrieval content).
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message="Relevance scores must be between 0 and 1"
+                    )
+                    vector_results = vector_store.similarity_search_with_relevance_scores(
+                        sub_q, k=candidate_k, filter=filter_dict
+                    )
                 for doc, _score in vector_results:
                     if doc.id is None:
                         continue
@@ -352,7 +362,8 @@ def retrieve(
             except Exception as e:
                 if strict_errors:
                     raise
-                logger.error("Error during vector retrieval: %s", e)
+                # Exception type only: str(e) can echo the query (16A-1, D65).
+                logger.error("Error during vector retrieval: %s", type(e).__name__)
             ranked_lists.append(vector_ranked_ids)
             list_weights.append(sub_query_weights[i])
 
@@ -374,7 +385,7 @@ def retrieve(
                 except Exception as e:
                     if strict_errors:
                         raise
-                    logger.error("Error during BM25 retrieval: %s", e)
+                    logger.error("Error during BM25 retrieval: %s", type(e).__name__)
                 ranked_lists.append(bm25_ranked_ids)
                 list_weights.append(sub_query_weights[i])
         else:

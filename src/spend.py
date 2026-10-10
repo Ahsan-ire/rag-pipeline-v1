@@ -176,19 +176,28 @@ class SpendLimitReached(BaseException):
         super().__init__(message or f"spend limit reached ({kind})")
 
 
-class SpendMeterRequired(Exception):
+class SpendMeterError(Exception):
+    """Base for meter failures that must stop an eval run, never degrade it.
+
+    ``expand_query``, ``judge_answer`` and ``generate_answers`` re-raise it
+    (their broad ``except Exception`` would otherwise turn a corrupt or
+    refused ledger into a silent fallback, API-error or error row).
+    """
+
+
+class SpendMeterRequired(SpendMeterError):
     """A live eval path with a usable API key was started without a meter."""
 
 
-class LedgerRefused(Exception):
+class LedgerRefused(SpendMeterError):
     """The ledger path breaks the location rules (see module docstring)."""
 
 
-class LedgerCorrupt(Exception):
+class LedgerCorrupt(SpendMeterError):
     """A ledger line could not be parsed; the meter fails closed."""
 
 
-class UnpricedModel(Exception):
+class UnpricedModel(SpendMeterError):
     """A model has no entry in the price file; the meter refuses to build."""
 
 

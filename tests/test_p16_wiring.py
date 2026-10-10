@@ -428,3 +428,98 @@ def test_bakeoff_rank_must_be_positive():
 
     assert _is_rank(None) and _is_rank(1) and _is_rank(6)
     assert not _is_rank(0) and not _is_rank(-1) and not _is_rank(True)
+
+
+# --- gate round 3 ----------------------------------------------------------------------
+def test_retriever_error_logs_carry_no_query_text(caplog):
+    """Default (non-strict) retrieval logs the exception TYPE only (str(e) can echo the query)."""
+    import logging
+
+    from src.retriever import retrieve
+
+    class Boom:
+        def similarity_search_with_relevance_scores(self, q, **k):
+            raise RuntimeError("P16-CANARY-retrieval " + q)
+
+    caplog.set_level(logging.DEBUG)
+    retrieve("zqxj private question about widgets", top_k=3, vector_store=Boom(), bm25_index=None,
+             mode="vector")
+    assert "zqxj" not in caplog.text and "CANARY" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_relevance_score_warning_is_silenced(recwarn):
+    from langchain_core.documents import Document
+
+    from src.retriever import retrieve
+
+    class Store:
+        def similarity_search_with_relevance_scores(self, q, **k):
+            import warnings
+
+            warnings.warn("Relevance scores must be between 0 and 1, got [chunk text]", UserWarning)
+            return [(Document(page_content="chunk", metadata={"section_number": "1.1"}, id="c1"), 1.5)]
+
+    retrieve("q", top_k=1, vector_store=Store(), bm25_index=None, mode="vector")
+    assert not [w for w in recwarn if "Relevance scores" in str(w.message)]
+
+
+@pytest.mark.parametrize("dest", ["eval/sets.json", "eval/legacy_public.json"])
+def test_build_never_overwrites_committed_json(monkeypatch, dest):
+    monkeypatch.chdir(ROOT)
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    with pytest.raises(ValueError, match="not an expansion artifact"):
+        ev.run_eval_matrix([("golden", SAMPLE)], expansion=f"build:{dest}",
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_replay_or_v6_targeting_results_md_refused_before_any_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    art = tmp_path / "exp.json"
+    common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                  privacy="public", skip_completeness=True)
+    ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"), expansion=f"build:{art}",
+                       generate_fn=lambda q: {"answer": "x"}, **common)
+    canonical = tmp_path / "results.md"
+    monkeypatch.setattr(ev, "DEFAULT_RESULTS_PATH", str(canonical))
+    calls = []
+    with pytest.raises(ValueError, match="cannot be canonical"):
+        ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(canonical), expansion=str(art),
+                           generate_fn=lambda q: calls.append(q), **common)
+    assert calls == [] and not canonical.exists()
+
+
+def test_build_with_duplicate_sets_refused_before_any_call(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    with pytest.raises(ValueError, match="distinct input sets"):
+        ev.run_eval_matrix([("golden", SAMPLE), ("realistic", SAMPLE)], expansion=f"build:{tmp_path / 'a.json'}",
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: calls.append(q),
+                           results_path=str(tmp_path / "r.md"))
+    assert calls == []
+
+
+def test_meter_errors_stop_the_run_not_degrade_it():
+    from src.judge import judge_answer
+    from src.query_rewrite import expand_query
+    from src.spend import LedgerCorrupt
+
+    boom = FakeChat(model="fake-rewrite", script=[LedgerCorrupt("x")])
+    with pytest.raises(LedgerCorrupt):
+        expand_query("synthetic question", llm=boom)
+
+    def llm_fn(v):
+        raise LedgerCorrupt("x")
+
+    with pytest.raises(LedgerCorrupt):
+        judge_answer("q", "a", "c", llm_fn=llm_fn)
+
+    def gen(q):
+        raise LedgerCorrupt("x")
+
+    with pytest.raises(LedgerCorrupt):
+        ev.generate_answers([{"question": "q", "type": "direct"}], ["direct"], gen, retry_backoff=0)

@@ -137,14 +137,23 @@ CITATION_RE = re.compile(
 )
 
 
+def api_key_usable() -> bool:
+    """True when ``ANTHROPIC_API_KEY`` is set to something other than the placeholder.
+
+    The single source of the usable-key rule (``get_llm``, the eval's spend-meter
+    guards and the judge all use it).
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    return bool(api_key) and api_key != "your-api-key-here"
+
+
 def get_llm() -> ChatAnthropic:
     """Create and return a ChatAnthropic LLM instance.
 
     Raises:
         ValueError: If ANTHROPIC_API_KEY is not set.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or api_key == "your-api-key-here":
+    if not api_key_usable():
         raise ValueError(
             "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
         )

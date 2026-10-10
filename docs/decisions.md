@@ -1913,6 +1913,12 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 
 **Gate round 2 (10 Oct):** private and artifact temp files are created exclusive and no-follow, so a planted `<file>.tmp` symlink cannot redirect a write. Rule 5 applies only to derived files with no `question`/`questions` key at any depth, so a question set cannot declare itself public. An escaped `"\u0073ealed"` key on a malformed line counts as a marker.
 
+**Gate round 3 (10 Oct):**
+- Classify rule 5 applies only to the known derived kinds: an expansion artifact, a rows sidecar, a C4 rank dump, or a `.md` report. Any other JSON, a question-keyed cache included, stays private whatever its `inputs` header says.
+- Retrieval error logs carry the exception type only, because `str(e)` can echo the query. The langchain relevance-score warning, whose text embeds the retrieved Documents, is silenced at its one call, so a private run's stderr carries no retrieval content. Scores and order are unchanged; the P0 and H0 locks pass.
+- A private artifact target is re-resolved through containment just before the write.
+- **Residual:** a swap of `eval/private/artifacts` (or of any private directory) for a symlink between that check and the open, mid-run, by another local process. Instruction-enforced.
+
 **Gate round 1 (10 Oct):** every eval-set loader (`load_golden_set` and `eval_schema`) refuses `.md` and `.py` inputs. Rule 2 exempts marker text in those suffixes (reports and code mention `"sealed"`), so without this a sealed set renamed to `.md` would load as private. Rule 2 also counts any `"sealed": true` pair, so duplicate keys are caught; scans every non-`.md`/`.py` suffix as JSONL; and the private and sealed roots match case-variant spellings by `samefile`.
 
 **Rejected:**
@@ -2005,6 +2011,17 @@ Item 9:
 - A private `build:` destination with an empty basename is refused before any call.
 - **Deferred (efficiency, no behaviour change):** each v1 set is loaded and hashed up to three times per run. Loading each once is a follow-up.
 
+**Gate round 3 (10 Oct):** these refusals also now happen before any paid call:
+- `--results eval/results.md` on a run that cannot be canonical (v6, replay or private);
+- a `build:` over duplicate input sets;
+- a public `build:` target that already exists and is not an expansion artifact, which protects the registry, the legacy list and the caches.
+
+**Not changed, rebutted:**
+- `generate_with_sources` keeps today's call shape when `llm` is `None`, so existing callers and mocks are untouched.
+- The provenance-with-sidecar test checks the mechanism (every sidecar name is git-ignored and porcelain omits ignored files) instead of writing into the repo. The gate's own manual comparison confirmed the claim.
+
+**Deferred:** `classify` reloads the registry on every call (efficiency only).
+
 **Gate round 2 (10 Oct):**
 - Every refusal now happens before any paid call: `run_eval` checks its cohort up front, and the matrix validates every schema-2 set up front.
 - A `build:` target must be a `.json` file and may not be any input set, report, sidecar or judge dump.
@@ -2079,6 +2096,11 @@ Wiring is eval-only:
 - The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
 - `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
 - **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
+
+**Gate round 3 (10 Oct):**
+- Meter failures (`LedgerCorrupt`, `LedgerRefused`, `UnpricedModel`, `SpendMeterRequired`) share the base `SpendMeterError`. `expand_query`, `judge_answer` and `generate_answers` re-raise it, so a corrupt or refused ledger stops the run instead of becoming a fallback, an API error or an error row.
+- Bad meter arguments exit 2 from the CLI with no traceback, and with the exception type only on a non-public run.
+- The usable-key rule is single-sourced in `generator.api_key_usable()`, and the private run id in `eval_privacy.new_run_id()`.
 
 **Gate round 2 (10 Oct):** `evaluate_refusals`' default `answer_fn` and `judge_answers`' default `llm_fn` raise `SpendMeterRequired` when a usable key is set.
 

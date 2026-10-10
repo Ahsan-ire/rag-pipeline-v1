@@ -651,6 +651,7 @@ Examples:
 EXIT_SPEND_WEEK = 3
 EXIT_SEALED = 4
 EXIT_SPEND_RUN = 6
+EXIT_USAGE = 2
 
 
 def _eval_command(args: argparse.Namespace) -> int:
@@ -703,15 +704,23 @@ def _eval_command(args: argparse.Namespace) -> int:
     from src.evaluator import _api_key_usable
 
     if live and _api_key_usable():
-        from src.spend import SpendMeter, load_prices
+        from src.spend import SpendMeter, SpendMeterError, load_prices
 
-        meter = SpendMeter(
-            load_prices(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_prices.toml")),
-            None,
-            args.approved_eur,
-            owner_approved_eur=args.owner_approved_eur,
-            approval_ref=args.approval_ref,
-        )
+        try:
+            meter = SpendMeter(
+                load_prices(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_prices.toml")),
+                None,
+                args.approved_eur,
+                owner_approved_eur=args.owner_approved_eur,
+                approval_ref=args.approval_ref,
+            )
+        except (ValueError, SpendMeterError) as exc:
+            # Bad limits, a missing approval reference, an unpriced model or a
+            # refused/corrupt ledger: a defined exit, never a traceback, and
+            # never str(exc) on a non-public run.
+            detail = str(exc) if privacy == PUBLIC else safe_error(exc)
+            print(f"[eval] spend meter could not be built: {detail}", file=sys.stderr)
+            return EXIT_USAGE
 
     def _totals() -> None:
         if meter is not None:

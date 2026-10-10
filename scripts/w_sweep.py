@@ -42,7 +42,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
@@ -102,7 +102,7 @@ def load_set_files(set_paths: Sequence[Tuple[str, str]]) -> Dict[str, Dict[str, 
 
 
 def build_cache(
-    sets,
+    sets: Mapping[str, Sequence[Mapping[str, Any]]],
     *,
     offline_only: bool = False,
     name_question: Optional[Callable[[str], str]] = None,
