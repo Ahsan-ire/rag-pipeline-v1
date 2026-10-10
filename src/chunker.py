@@ -11,8 +11,8 @@ Two strategies, routed by ``document_type`` (D3):
 import logging
 import re
 import string
-from dataclasses import dataclass, replace
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field, replace
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -237,14 +237,39 @@ def chunk_handbook(
         ValueError: if no ``CHAPTER N`` markers are present — a loud failure so a
             mis-routed ``--type`` cannot silently fall through (the D3 lesson).
     """
+    return _chunk_handbook_impl(
+        clean_text, page_map, metadata, chunk_size, chunk_overlap, None
+    )
+
+
+def _chunk_handbook_impl(
+    clean_text: str,
+    page_map: List[PageSpan],
+    metadata: dict,
+    chunk_size: int,
+    chunk_overlap: int,
+    log: Optional["AbsorptionLog"],
+) -> List[Document]:
+    """The one handbook code path, shared by :func:`chunk_handbook` and
+    :func:`chunk_handbook_with_absorption`.
+
+    ``log`` is the optional absorption side channel (Phase 16A-1 item 7). When it
+    is ``None`` every helper takes exactly its pre-16A path; when it is given,
+    the helpers only *append observations* to it — they never read it back, so
+    the segments and Documents produced are identical either way.
+    """
     markers = _find_chapter_markers(clean_text)
     body_end = _find_body_end(clean_text, markers)
     segments = _segment_body(clean_text, markers, body_end)
-    segments = _merge_appendix_stubs(segments)
-    segments = _merge_runts(segments)
-    segments = _merge_trailing_runts(segments)
+    if log is not None:
+        log._begin(clean_text, segments)
+    segments = _merge_appendix_stubs(segments, log)
+    segments = _merge_runts(segments, log)
+    segments = _merge_trailing_runts(segments, log)
+    if log is not None:
+        log._resolve(segments)
     return _build_documents(
-        segments, clean_text, page_map, metadata, chunk_size, chunk_overlap
+        segments, clean_text, page_map, metadata, chunk_size, chunk_overlap, log
     )
 
 
@@ -377,7 +402,9 @@ def _is_heading_line(line: str, chapter: int) -> bool:
 
 # --- Segment reconciliation (D20) ---------------------------------------------
 
-def _merge_appendix_stubs(segments: List[_Segment]) -> List[_Segment]:
+def _merge_appendix_stubs(
+    segments: List[_Segment], log: Optional["AbsorptionLog"] = None
+) -> List[_Segment]:
     """Fold title-only ``APPENDIX`` lines backward into the preceding segment.
 
     The appendix form facsimiles are not in the text layer (D17), so an appendix
@@ -393,13 +420,17 @@ def _merge_appendix_stubs(segments: List[_Segment]) -> List[_Segment]:
             and seg.length < APPENDIX_STUB_CHAR_THRESHOLD
             and result[-1].chap == seg.chap
         ):
+            if log is not None:
+                log._absorbed(KIND_APPENDIX_STUB, "appendix_backward", seg)
             result[-1].end = seg.end
         else:
             result.append(replace(seg))
     return result
 
 
-def _merge_runts(segments: List[_Segment]) -> List[_Segment]:
+def _merge_runts(
+    segments: List[_Segment], log: Optional["AbsorptionLog"] = None
+) -> List[_Segment]:
     """Merge runt (<600 char) segments forward (D20).
 
     A furniture chapter intro absorbs its first real section and *adopts that
@@ -419,11 +450,16 @@ def _merge_runts(segments: List[_Segment]) -> List[_Segment]:
             if nxt.chap != cur.chap:
                 break  # never merge forward across a chapter seam
             if cur.is_intro:
+                if log is not None:
+                    # The intro's (empty) label is the one that disappears.
+                    log._absorbed(KIND_RUNT_MERGE, "intro_adopt", cur)
                 cur.secnum, cur.heading, cur.is_intro = nxt.secnum, nxt.heading, nxt.is_intro
                 cur.end = nxt.end
                 i += 1
                 continue
             if cur.secnum and nxt.secnum.startswith(cur.secnum + "."):
+                if log is not None:
+                    log._absorbed(KIND_RUNT_MERGE, "descendant_forward", nxt)
                 cur.end = nxt.end  # descendant merge: keep the parent's identity
                 i += 1
                 continue
@@ -433,7 +469,9 @@ def _merge_runts(segments: List[_Segment]) -> List[_Segment]:
     return result
 
 
-def _merge_trailing_runts(segments: List[_Segment]) -> List[_Segment]:
+def _merge_trailing_runts(
+    segments: List[_Segment], log: Optional["AbsorptionLog"] = None
+) -> List[_Segment]:
     """Merge a runt that is the *last* segment of its chapter backward (D20).
 
     Runs to a fixed point so a chain of trailing runts collapses into the last
@@ -448,6 +486,8 @@ def _merge_trailing_runts(segments: List[_Segment]) -> List[_Segment]:
             last_in_chapter = i == len(result) - 1 or result[i + 1].chap != seg.chap
             prev = result[i - 1]
             if seg.length < RUNT_CHAR_THRESHOLD and last_in_chapter and prev.chap == seg.chap:
+                if log is not None:
+                    log._absorbed(KIND_RUNT_MERGE, "trailing_backward", seg)
                 prev.end = seg.end
                 result.pop(i)
                 changed = True
@@ -464,6 +504,7 @@ def _build_documents(
     metadata: dict,
     chunk_size: int,
     chunk_overlap: int,
+    log: Optional["AbsorptionLog"] = None,
 ) -> List[Document]:
     """Turn reconciled segments into prefixed, page-cited Document chunks.
 
@@ -485,7 +526,7 @@ def _build_documents(
     base = {k: metadata.get(k) for k in ("source", "title", "document_type", "date")}
 
     docs: List[Document] = []
-    for seg in segments:
+    for seg_index, seg in enumerate(segments):
         seg_text = clean_text[seg.start:seg.end]
         seg_pages = _page_citation(page_map, seg.start, seg.end)
         if len(seg_text) > OVERSIZE_CHAR_THRESHOLD:
@@ -503,8 +544,19 @@ def _build_documents(
                     cursor = max(pos + 1, pos + len(piece) - char_overlap)
                 else:
                     pages = seg_pages  # inherit the parent's range on a find-miss
+                if log is not None:
+                    # The side channel records only a hit inside this segment:
+                    # an unbounded find() can land in a later segment with the
+                    # same text, which would credit the wrong sections. Pages
+                    # (production metadata) are unchanged (gate round 5, CR7).
+                    if pos != -1 and seg.start <= pos and pos + len(piece) <= seg.end:
+                        log._chunk(seg_index, seg, ORIGIN_OVERSIZE_SPLIT, pos, pos + len(piece))
+                    else:
+                        log._chunk(seg_index, seg, ORIGIN_FIND_MISS, None, None)
                 docs.append(_make_doc(piece.strip(), base, seg, doc_title, pages))
         else:
+            if log is not None:
+                log._chunk(seg_index, seg, ORIGIN_SEGMENT, seg.start, seg.end)
             docs.append(_make_doc(seg_text.strip(), base, seg, doc_title, seg_pages))
     return docs
 
@@ -564,6 +616,284 @@ def _prefix(
     if page:
         parts.append(page)
     return "[" + ", ".join(parts) + "] "
+
+
+# --- Absorption side channel (Phase 16A-1 item 7, D69) -------------------------
+#
+# D20's reconciliation passes fold some sections' text into a neighbouring chunk
+# whose ``section_number`` is a different label (D54's "absorbed labels"). The
+# text is retrievable; only the label is gone. Rather than change chunk metadata
+# (D54's route, re-deferred: it would move production metadata, citations, the
+# index and the gate), the eval instrument gets a SIDE CHANNEL: an opt-in log of
+# every absorption and of every final chunk's span, built by observing the one
+# real chunking code path. Chunks, their order, text, metadata and ids are
+# byte-identical with or without it (tests/test_p16w_absorbed.py proves it).
+#
+# Semantics relied on (src/chunker.py reconciliation passes, in run order):
+#
+# * ``_merge_appendix_stubs`` — an ``APPENDIX`` segment shorter than 50 chars is
+#   folded backward into the preceding same-chapter segment, which keeps its
+#   label. Absorbed label: the ``APPENDIX N.M`` stub.        rule "appendix_backward"
+# * ``_merge_runts`` — a runt (<600 chars) merges forward:
+#   - a chapter intro (label ``""``) absorbs the next section and ADOPTS its
+#     label, so the label that disappears is the intro's empty one. Recorded for
+#     completeness; never an alias (an intro has no section number). "intro_adopt"
+#   - any other runt absorbs a *descendant* (``next.startswith(cur + ".")``) and
+#     keeps its own label. Absorbed label: the descendant.  "descendant_forward"
+# * ``_merge_trailing_runts`` — a runt that is the last segment of its chapter
+#   merges backward into the preceding same-chapter segment (to a fixed point).
+#   Absorbed label: the trailing runt.                     "trailing_backward"
+#
+# The ABSORBED SPAN is the absorbed label's OWN text — its segment exactly as
+# ``_segment_body`` cut it, before any reconciliation (so a stub that an absorbed
+# section had itself absorbed is not part of that section's span) — trimmed of
+# surrounding whitespace, as ``[start, end)`` offsets into ``clean_text``. The
+# ABSORBING section is the label of the FINAL reconciled segment that holds the
+# span (merges chain: 3.2.1 → 3.2 → 3.1 resolves 3.2.1's absorber to 3.1).
+#
+# Each final chunk's span is recorded through the D20 oversize re-split: a
+# whole segment's trimmed span; an oversize sub-chunk's located span (the same
+# ``clean_text.find`` position production uses for its page range); and, on a
+# find-miss, no span at all.
+
+KIND_RUNT_MERGE = "runt_merge"
+KIND_APPENDIX_STUB = "appendix_stub"
+
+ORIGIN_SEGMENT = "segment"                # the whole reconciled segment, unsplit
+ORIGIN_OVERSIZE_SPLIT = "oversize_split"  # a located sub-chunk of an oversize segment
+ORIGIN_FIND_MISS = "find_miss"            # a sub-chunk find() could not locate
+
+
+@dataclass(frozen=True)
+class Absorption:
+    """One D20 absorption: a section whose label no chunk carries any more.
+
+    Attributes:
+        kind: ``"runt_merge"`` or ``"appendix_stub"``.
+        rule: which D20 rule fired — ``"appendix_backward"``, ``"intro_adopt"``,
+            ``"descendant_forward"`` or ``"trailing_backward"``.
+        absorbed_section: the label that disappeared (``""`` for a chapter
+            intro, ``"APPENDIX 6.1"`` for a stub, else a decimal number).
+        absorbing_section: the label of the final segment that now holds it.
+        chapter: the chapter number (merges never cross a chapter seam).
+        start: trimmed span start (offset into ``clean_text``).
+        end: trimmed span end (exclusive).
+        segment_index: index of the final reconciled segment holding the span.
+    """
+
+    kind: str
+    rule: str
+    absorbed_section: str
+    absorbing_section: str
+    chapter: int
+    start: int
+    end: int
+    segment_index: int
+
+
+@dataclass(frozen=True)
+class ChunkSpan:
+    """Where one final chunk's body sits in ``clean_text``.
+
+    Attributes:
+        chunk_index: position in the returned chunk list.
+        segment_index: the final reconciled segment the chunk came from.
+        section: the chunk's ``section_number`` (the segment's label).
+        origin: ``"segment"``, ``"oversize_split"`` or ``"find_miss"``.
+        start: trimmed body span start, or ``None`` on a find-miss.
+        end: trimmed body span end (exclusive), or ``None`` on a find-miss.
+    """
+
+    chunk_index: int
+    segment_index: int
+    section: str
+    origin: str
+    start: Optional[int]
+    end: Optional[int]
+
+
+@dataclass
+class AbsorptionLog:
+    """The side channel filled by :func:`chunk_handbook_with_absorption`.
+
+    ``absorptions`` is in the order the passes fired; ``chunks`` is aligned
+    one-to-one with the returned chunk list. The underscore methods are the
+    chunker's write hooks; nothing in the chunker ever reads the log back.
+    """
+
+    absorptions: List[Absorption] = field(default_factory=list)
+    chunks: List[ChunkSpan] = field(default_factory=list)
+    _text: str = field(default="", repr=False)
+    _originals: List[Tuple[int, int, str, bool]] = field(default_factory=list, repr=False)
+    _pending: List[Tuple[str, str, str, int, int, int]] = field(
+        default_factory=list, repr=False
+    )
+
+    # -- write hooks (called from the chunking path) --------------------------
+
+    def _begin(self, clean_text: str, segments: Sequence[_Segment]) -> None:
+        """Snapshot the pre-reconciliation segments (each label's own text)."""
+        if self._originals or self.absorptions or self.chunks:
+            raise RuntimeError("an AbsorptionLog records exactly one chunking run")
+        self._text = clean_text
+        self._originals = [(s.start, s.end, s.secnum, s.is_intro) for s in segments]
+
+    def _absorbed(self, kind: str, rule: str, seg: _Segment) -> None:
+        """Record that ``seg``'s label is being absorbed (span resolved later)."""
+        own_start, own_end = self._own_span(seg)
+        start, end = _trimmed_span(self._text, own_start, own_end)
+        self._pending.append((kind, rule, seg.secnum, seg.chap, start, end))
+
+    def _resolve(self, final_segments: Sequence[_Segment]) -> None:
+        """Attach each absorption to the final segment that holds its span."""
+        for kind, rule, absorbed, chap, start, end in self._pending:
+            index = next(
+                (
+                    i for i, s in enumerate(final_segments)
+                    if s.start <= start and end <= s.end
+                ),
+                None,
+            )
+            if index is None:
+                raise RuntimeError(
+                    f"absorbed span [{start}, {end}) of {absorbed!r} is in no "
+                    "final segment — the D20 passes are no longer contiguous"
+                )
+            self.absorptions.append(
+                Absorption(
+                    kind, rule, absorbed, final_segments[index].secnum, chap,
+                    start, end, index,
+                )
+            )
+        self._pending = []
+
+    def _chunk(
+        self,
+        segment_index: int,
+        seg: _Segment,
+        origin: str,
+        raw_start: Optional[int],
+        raw_end: Optional[int],
+    ) -> None:
+        """Record the next chunk's span (trimmed exactly as its body is)."""
+        if raw_start is None or raw_end is None:
+            start: Optional[int] = None
+            end: Optional[int] = None
+        else:
+            start, end = _trimmed_span(self._text, raw_start, raw_end)
+        self.chunks.append(
+            ChunkSpan(len(self.chunks), segment_index, seg.secnum, origin, start, end)
+        )
+
+    def _own_span(self, seg: _Segment) -> Tuple[int, int]:
+        """The original (pre-merge) slice of the segment that carries ``seg``'s label.
+
+        A merged segment's label always comes from one original segment inside
+        its range: its own first one, or — after an intro adopts a section's
+        label — the adopted section, which is the first original carrying that
+        label after the intro. So the first original in range with the same
+        ``(secnum, is_intro)`` is the label's own text.
+        """
+        for o_start, o_end, secnum, is_intro in self._originals:
+            if seg.start <= o_start < seg.end and secnum == seg.secnum and is_intro == seg.is_intro:
+                return o_start, o_end
+        raise RuntimeError(f"no original segment carries label {seg.secnum!r}")
+
+
+def _trimmed_span(text: str, start: int, end: int) -> Tuple[int, int]:
+    """Shrink ``[start, end)`` past leading/trailing whitespace (``str.strip`` rules)."""
+    piece = text[start:end]
+    stripped = piece.strip()
+    if not stripped:
+        return start, start
+    lead = len(piece) - len(piece.lstrip())
+    return start + lead, start + lead + len(stripped)
+
+
+def chunk_handbook_with_absorption(
+    clean_text: str,
+    page_map: List[PageSpan],
+    metadata: dict,
+    chunk_size: int = 600,
+    chunk_overlap: int = 120,
+) -> Tuple[List[Document], AbsorptionLog]:
+    """Chunk exactly as :func:`chunk_handbook` and also return the absorption log.
+
+    The chunks are byte-identical to ``chunk_handbook(clean_text, page_map,
+    metadata, chunk_size, chunk_overlap)`` — same code path, the log only
+    observes. Feed the result to :func:`absorbed_sections_by_chunk` together
+    with :func:`production_chunk_ids` to get the per-chunk alias map.
+
+    Returns:
+        ``(chunks, log)``; ``log.chunks[i]`` describes ``chunks[i]``.
+    """
+    log = AbsorptionLog()
+    docs = _chunk_handbook_impl(
+        clean_text, page_map, metadata, chunk_size, chunk_overlap, log
+    )
+    if len(log.chunks) != len(docs):  # defensive: the alignment is the contract
+        raise RuntimeError("absorption log is not aligned with the chunk list")
+    return docs, log
+
+
+def production_chunk_ids(chunks: Iterable[Document]) -> List[str]:
+    """The ids the index stores these chunks under (``src/embedder.py``).
+
+    Delegates to :func:`src.embedder.compute_chunk_id` with the chunk's own
+    ``metadata["source"]`` — the same call ``add_documents`` makes, and the same
+    value ``sync_documents`` uses (it refuses a chunk whose source differs from
+    its scope). Imported lazily: ``src.embedder`` pulls in Chroma and
+    HuggingFace, which plain chunking must not need.
+    """
+    from src.embedder import compute_chunk_id
+
+    return [compute_chunk_id(c.metadata.get("source", ""), c.page_content) for c in chunks]
+
+
+def absorbed_sections_by_chunk(
+    log: AbsorptionLog, chunk_ids: Sequence[str]
+) -> Dict[str, List[str]]:
+    """Map each chunk id to the absorbed section labels it may be credited with.
+
+    A chunk lists an absorbed section only if the WHOLE trimmed absorbed span
+    lies inside the chunk's own trimmed span, within the same final segment.
+    Consequences: an unsplit absorbing chunk lists all its segment's absorbed
+    labels; of an oversize segment's sub-chunks only those containing the whole
+    span are credited (a span split across sub-chunks credits none); a
+    find-miss sub-chunk (no located span) is credited nothing. An intro's empty
+    label and a label equal to the absorbing chunk's own are never listed.
+
+    Args:
+        log: the log from :func:`chunk_handbook_with_absorption`.
+        chunk_ids: one id per chunk, aligned with ``log.chunks`` — normally
+            ``production_chunk_ids(chunks)``.
+
+    Returns:
+        ``{chunk_id: sorted unique labels}``, only for chunks with at least one
+        label. Chunks sharing an id (identical text) pool their labels.
+
+    Raises:
+        ValueError: if ``chunk_ids`` is not aligned with ``log.chunks``.
+    """
+    if len(chunk_ids) != len(log.chunks):
+        raise ValueError(
+            f"{len(chunk_ids)} chunk ids for {len(log.chunks)} logged chunks"
+        )
+    found: Dict[str, set] = {}
+    for span, chunk_id in zip(log.chunks, chunk_ids):
+        if span.start is None or span.end is None:
+            continue  # find-miss sub-chunk: its position is unknown, no credit
+        for a in log.absorptions:
+            if (
+                a.segment_index == span.segment_index
+                and a.absorbed_section
+                and a.absorbed_section != span.section
+                and a.start < a.end
+                and span.start <= a.start
+                and a.end <= span.end
+            ):
+                found.setdefault(chunk_id, set()).add(a.absorbed_section)
+    return {cid: sorted(labels) for cid, labels in sorted(found.items())}
 
 
 # --- Small helpers ------------------------------------------------------------

@@ -16,6 +16,7 @@ never_commit = [
   "^logs/",
   "^Tutorial_Docs_for_review/",
   "^eval/judge_review\\.jsonl$",
+  "^eval/private/",
 ]
 never_commit_allow = []
 
@@ -23,8 +24,17 @@ never_commit_allow = []
 restricted_read = [
   "data", "chroma_db", "chroma_db_arm_*", "sample_chroma_db", "eval/bakeoff",
   "eval/heldout_set.jsonl", "eval/judge_review.jsonl", "logs", "Tutorial_Docs_for_review",
-  ".env*", "*.pdf",
+  ".env*", "*.pdf", "eval/private",
 ]
 allow_ignored_adds = false
-worker_allow = []
+# Phase 16A-1 [W] lane (spec item list "worker_allow"); synthetic fixtures only.
+worker_allow = [
+  "src/eval_sets.py", "src/eval_schema.py", "src/eval_privacy.py", "src/eval_scoring.py", "src/eval_split.py",
+  "src/eval_stats.py", "src/expansion_artifact.py", "src/spend.py", "src/text_utils.py", "src/chunker.py",
+  "scripts/scan_leaks.py", "scripts/validate_eval_set.py",
+  "tests/test_p16w_*.py", "tests/fixtures/p16w_*",
+  # read-only import dependencies (spec: worker_allow "plus" these)
+  "src/generator.py", "src/grounding.py", "src/render.py", "tests/conftest.py",
+]
+# Empty: the harness generates the clause from restricted_read, so it can never list fewer paths.
 codex_clause = ""

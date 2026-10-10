@@ -42,6 +42,11 @@ rejected, and how to carry the whole thing into a new project. Project
 | `eval/golden_set.jsonl` | Tuning set — the judge for bake-offs and iteration |
 | `eval/heldout_set.jsonl` | Headline set — never used for tuning or candidate selection |
 | `.github/workflows/ci.yml` | Keyless CI: full suite + offline smoke eval with hard assertions |
+| `eval/sets.json`, `src/eval_sets.py` | Eval-set registry and `classify()` → the privacy floor every eval entry point checks (D65) |
+| `eval/private/` (gitignored, never committed) | Private and sealed eval material; private runs write only under `runs/<id>/` |
+| `scripts/scan_leaks.py` | Needle scanner: `--output` before releasing a private run, `--merge-gate` before a push when private sets exist, with `--pr <n>` once a PR exists (D65) |
+| `src/spend.py`, `config/api_prices.toml` | Eval-only spend meter; the €40/UTC-week cap is a D64 owner stop (D70) |
+| `tests/p16_capture.py` + `tests/test_p16_projection.py` | P0 lock: v5 reports byte-identical to main's capture (the H0 pattern, in-process) |
 
 ## The workflow
 
@@ -87,6 +92,37 @@ first dispatch). The corpus ban in CLAUDE.md binds every vendor, not just Codex.
 *This section is a summary; the fuller harness update (changelog, re-gate stopping
 rule, Tier-1/Tier-2 vocabulary, negative-result phase path) is item 3 of the re-draft
 list in `docs/work-state.md`.*
+
+### Changelog
+- **10 Oct 2026 — Phase 16A-1 (D65–D70).** Eval privacy is structural rather than
+  procedural: classes, a no-default `privacy` keyword with a computed floor, AST
+  tests keeping registry/classifier parameters out of production code, a leak
+  scanner wired into the pre-push rule, and `eval/private/` in the never-commit
+  check, `.gitignore`, the do-not-read clause and `.harness/project.toml`
+  (`never_commit`, `restricted_read`, `codex_clause`, `worker_allow`; the owner
+  adopts it with `harness-init --refresh`). Live eval calls are metered against
+  the D64 cap. The [W] lane ran on Claude subagents in isolated worktrees
+  (harness-worker unavailable), each on synthetic fixtures with a file allowlist
+  and an `Implemented-by:` trailer; [C] integration and every real-row check stayed
+  with the orchestrator.
+
+**Worker-lane record, 16A-1 (Tier-2).** harness-worker was unavailable in the cloud session, so every [W] item fell back to a Claude subagent: isolated git worktree, synthetic fixtures only, a file allowlist inside the spec's `worker_allow`, no eval/ rows read, and the orchestrator reviewing, integrating and committing with an `Implemented-by:` trailer.
+
+| [W] item | Lane | Commit(s) | Files |
+|---|---|---|---|
+| 1, registry and `classify` | orchestrator, in lane | `2613497` | `src/eval_sets.py`, `src/eval_privacy.py` |
+| 1, leak scanner | Claude subagent (Opus) | `be1cb25` | `scripts/scan_leaks.py` |
+| 2, schema v2 and validator | Claude subagent (Opus) | `8e66710` | `src/eval_schema.py`, `scripts/validate_eval_set.py` |
+| 3, `text_utils` move and scorers | Claude subagent (Opus) | `430d9fc`, `98b661d` | `src/text_utils.py`, `src/eval_scoring.py`, `src/render.py` |
+| 4, statistics | Claude subagent (Opus) | `5b9f032` | `src/eval_stats.py` |
+| 4, family split | Claude subagent (Opus) | `32364f3` | `src/eval_split.py` |
+| 5, expansion artifact | Claude subagent (Opus) | `37b8614` | `src/expansion_artifact.py` |
+| 7, chunker side channel | Claude subagent (Opus) | `3d47aa3` | `src/chunker.py` |
+| 8, spend meter core | Claude subagent (Opus) | `188d914` | `src/spend.py` |
+| review fixes (items 1, 4, 5, 8) | Claude subagent (Sonnet) | `e9b3642` | scanner, split, spend, artifact |
+| gate canary tests | Claude subagent (Sonnet) | `d939aec` | `tests/test_p16_c4.py`, `tests/test_p16_v6.py` |
+
+Read-only review legs (Sonnet ×3, Haiku ×1) and the fresh-context pressure-tester ran alongside. None of them wrote to the tree.
 
 ## Deliberately rejected (do not rebuild these)
 

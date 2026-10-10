@@ -7,6 +7,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from typing import Any, Dict, Optional
 
@@ -401,7 +402,7 @@ def query(
     return public
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Legal Document RAG Pipeline",
@@ -588,6 +589,32 @@ Examples:
         f"{CHROMA_PERSIST_DIR}); Phase 11's sample-index smoke eval points "
         "this at sample_chroma_db/",
     )
+    # Phase 16A-1 (D68, D70): frozen expansion artifacts and the spend meter.
+    eval_parser.add_argument(
+        "--expansion",
+        default="live",
+        help="'live' (default), 'build:<path>' to freeze this run's expansions, "
+        "or a frozen artifact path to replay in every arm (never canonical)",
+    )
+    eval_parser.add_argument(
+        "--approved-eur",
+        type=float,
+        default=None,
+        help="Run spend limit in EUR (default: what is left of the EUR 40 weekly "
+        "cap); a live run is always metered",
+    )
+    eval_parser.add_argument(
+        "--owner-approved-eur",
+        type=float,
+        default=None,
+        help="Owner-approved weekly ceiling in EUR (lifts the cap); requires "
+        "--approval-ref and the owner's prior approval (D64)",
+    )
+    eval_parser.add_argument(
+        "--approval-ref",
+        default=None,
+        help="Reference to the owner's approval of --owner-approved-eur",
+    )
 
     args = parser.parse_args()
 
@@ -613,23 +640,103 @@ Examples:
             no_rewrite=args.no_rewrite,
         )
     elif args.command == "eval":
-        from src.evaluator import run_eval_matrix
+        code = _eval_command(args)
+        if code:
+            sys.exit(code)
 
-        # Build the (label, path) set list. The default golden path is the
-        # tuning set (used to select D31 fusion constants) — label it so the
-        # report can honestly flag it as NOT held-out; a non-default --golden
-        # is just "golden". The held-out set, then the realistic slice, are
-        # appended when given — a canonical run needs BOTH (D46).
-        set_specs = [
-            ("tuning" if args.golden == "eval/golden_set.jsonl" else "golden", args.golden)
-        ]
-        if args.heldout:
-            set_specs.append(("held-out", args.heldout))
-        if args.realistic:
-            set_specs.append(("realistic", args.realistic))
 
-        modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
 
+# Exit codes of `pipeline eval` (16A-1): 3 = the weekly spend cap was reached
+# (a D64 owner stop), 4 = sealed input refused, 6 = this run's own spend limit.
+EXIT_SPEND_WEEK = 3
+EXIT_SEALED = 4
+EXIT_SPEND_RUN = 6
+EXIT_USAGE = 2
+
+
+def _eval_command(args: argparse.Namespace) -> int:
+    """Run ``pipeline eval``: classify inputs, meter live runs, map exit codes.
+
+    The privacy class passed to the runner is ``classify``'s floor over the set
+    paths (the CLI never chooses a class itself). Sealed input exits 4 before
+    anything else runs. A live run (any pass other than the both-skips offline
+    form, or --judge) builds a spend meter from ``config/api_prices.toml``; the
+    offline command builds none. On a private run an unexpected error prints
+    only its exception type.
+    """
+    from src.eval_privacy import PUBLIC, SealedInputError, safe_error
+    from src.eval_sets import floor
+    from src.evaluator import run_eval_matrix
+    from src.spend import SpendLimitReached, SpendMeterError
+
+    # Build the (label, path) set list. The default golden path is the
+    # tuning set (used to select D31 fusion constants) — label it so the
+    # report can honestly flag it as NOT held-out; a non-default --golden
+    # is just "golden". The held-out set, then the realistic slice, are
+    # appended when given — a canonical run needs BOTH (D46).
+    set_specs = [
+        ("tuning" if args.golden == "eval/golden_set.jsonl" else "golden", args.golden)
+    ]
+    if args.heldout:
+        set_specs.append(("held-out", args.heldout))
+    if args.realistic:
+        set_specs.append(("realistic", args.realistic))
+    modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
+
+    paths = [p for _l, p in set_specs]
+    if args.expansion != "live" and not args.expansion.startswith("build:"):
+        paths.append(args.expansion)
+    try:
+        privacy = floor(paths)
+    except SealedInputError:
+        print("[eval] sealed input refused (16A-1)", file=sys.stderr)
+        return EXIT_SEALED
+    if privacy == "sealed":
+        print("[eval] sealed input refused (16A-1)", file=sys.stderr)
+        return EXIT_SEALED
+
+    live = (not (args.skip_refusals and args.skip_completeness)) or args.judge
+    meter = None
+    # A meter is built iff the run is live AND a usable key exists. Without a
+    # key no Claude call can be made at all, so the run degrades as before
+    # (expansion falls back, generation records error rows) instead of
+    # crashing while building metered clients (D70).
+    from src.generator import api_key_usable
+
+    if live and api_key_usable():
+        from src.spend import SpendMeter, load_prices
+
+        try:
+            meter = SpendMeter(
+                load_prices(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_prices.toml")),
+                None,
+                args.approved_eur,
+                owner_approved_eur=args.owner_approved_eur,
+                approval_ref=args.approval_ref,
+            )
+        except (ValueError, SpendMeterError) as exc:
+            # Bad limits, a missing approval reference, an unpriced model or a
+            # refused/corrupt ledger: a defined exit, never a traceback, and
+            # never str(exc) on a non-public run.
+            detail = str(exc) if privacy == PUBLIC else safe_error(exc)
+            print(f"[eval] spend meter could not be built: {detail}", file=sys.stderr)
+            return EXIT_USAGE
+
+    def _totals() -> None:
+        if meter is None:
+            return
+        try:
+            run_eur, week_eur = meter.run_total_eur, meter.week_total_eur
+        except (Exception, SpendMeterError) as exc:  # noqa: BLE001 - never lose the exit code over a total
+            print(f"[eval] spend totals unavailable: {safe_error(exc)}", file=sys.stderr)
+            return
+        print(
+            f"[eval] spend: run EUR {run_eur:.4f}, "
+            f"week EUR {week_eur:.4f} (ceiling EUR {meter.ceiling_eur:.2f})",
+            file=sys.stderr,
+        )
+
+    try:
         run_eval_matrix(
             set_specs,
             modes=modes,
@@ -641,7 +748,31 @@ Examples:
             results_path=args.results_path,
             judge_dump_path="eval/judge_review.jsonl" if args.judge else None,
             persist_directory=args.persist_directory,
+            privacy=privacy,
+            meter=meter,
+            expansion=args.expansion,
         )
+    except SpendLimitReached as exc:
+        _totals()
+        print(f"[eval] spend limit reached ({exc.kind}); no report written", file=sys.stderr)
+        return EXIT_SPEND_WEEK if exc.kind == "week" else EXIT_SPEND_RUN
+    except SealedInputError:
+        print("[eval] sealed input refused (16A-1)", file=sys.stderr)
+        return EXIT_SEALED
+    except SpendMeterError as exc:
+        # a refused/corrupt ledger or a missing meter mid-run: a defined exit
+        # (it is a BaseException, so the generic handler below never sees it)
+        _totals()
+        detail = f"{type(exc).__name__}: {exc}" if privacy == PUBLIC else safe_error(exc)
+        print(f"[eval] spend meter failed: {detail}; no report written", file=sys.stderr)
+        return EXIT_USAGE
+    except Exception as exc:  # noqa: BLE001 - private runs must not print str(exc)
+        if privacy != PUBLIC:
+            print(f"[eval] error: {safe_error(exc)}", file=sys.stderr)
+            return 1
+        raise
+    _totals()
+    return 0
 
 
 if __name__ == "__main__":

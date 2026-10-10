@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: Phase 16A (eval foundations) ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
+**Current phase: Phase 16A-1 (eval instrument, D65–D70) on `phase-16a1-eval-instrument` → `v2.3.0`; 16A-2 (eval data) follows its own plan gate ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
 
-**Next: D65** (D60 is reserved for the third-party lane / global harness decision; D61–D64 landed).  (Update this line in the same commit as each new entry.)
+**Next: D71** (D60 is reserved for the third-party lane / global harness decision; D61–D70 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -1880,3 +1880,364 @@ instrument is binding.
 - A per-merge go: one ping per phase for no extra check.
 - Merging on a partial gate (for example with the Codex leg INCOMPLETE).
 - Automatic alternation between Codex accounts.
+
+## D65 — Eval privacy classes, the privacy floor and the leak scanner (Phase 16A-1 item 1, 10 Oct 2026)
+**Decision:** every eval input is `public`, `private` or `sealed`. `src/eval_sets.py` holds the registry (`eval/sets.json`: name, path, privacy, role, status, sha256; at merge only public v1 sets and fixtures) and `classify(path)`, seven rules, first match wins:
+1. under `eval/private/sealed/` → sealed;
+2. a JSON/JSONL row (or top-level object) with `"sealed": true`, or an unparseable line containing `"sealed"` → sealed (fail closed);
+3. under `eval/private/` → private;
+4. a registered public path at its registered sha256 → public;
+5. a derived file whose recorded input sha256s are all registered public → public;
+6. with `--legacy-public` only, a sha256 in `eval/legacy_public.json` → public;
+7. else private.
+
+Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_format_matrix_report`, the `w_sweep` and `bakeoff_report` entry functions) takes a keyword-only `privacy` with no default:
+- The floor is the strictest class over every path the runner opens. A weaker caller value raises `PrivacyFloorError` before any retrieval, expansion or model call; a stronger one is honoured. CLIs pass `classify`'s result.
+- Sealed input is refused everywhere in 16A-1 (CLI exit 4).
+- A private run prints aggregates and opaque ids only. Ids are `q:` plus 12 hex: unsalted for public v1, salted by the file's sha256 for private v1.
+- A private run writes only under `eval/private/runs/<run id>/`: report, rows sidecar, judge dump and `inputs.json`. Artifacts go under `eval/private/artifacts/`, and symlink and `..` escapes are refused. Errors print as id plus exception type.
+- `scripts/scan_leaks.py` matches needles (each private question whole, plus every 8-token window, after decoding and normalisation; public questions are exempt by exact hash only). It runs in `--output` mode (exit 5 on a hit) and `--merge-gate` mode (tracked files, every blob in the range, commit messages, tags and PR items; exit 7 if a private input is not a needle source). It never prints a needle.
+
+`.gitignore`, `check_never_commit.py` and the CLAUDE.md do-not-read clause gain `eval/private/`.
+
+**Why:** design 003 16A.1 and astra B3. The evaluator wrote question text into reports and stdout, so no private question could enter a run until this landed.
+
+**Residuals (instruction-enforced, disclosed):**
+- A stripped sealed marker goes undetected.
+- A direct `chromadb` import goes undetected.
+- A skipped pre-push `--merge-gate` scan goes undetected.
+- A deleted `runs/<id>/` goes undetected.
+- A false `--approval-ref` goes undetected.
+- Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
+- Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
+
+**Merge gate (Codex, reviewed 82e1568, 10 Oct):**
+- **#1 (blocker): SDK debug logging.** The anthropic SDK logs every request's options at DEBUG (`_base_client._build_request`): the messages, so the question, its context and, for the judge, the answer. `ANTHROPIC_LOG=debug` or any DEBUG-level root logger turns it on, and no report sanitiser can reach that output. While any metered attempt is in flight, a filter drops every record from the SDK and transport loggers (`anthropic`, `httpx`, `httpcore`, `h11`, `langchain_anthropic`, children included), at every level (`spend._sdk_logging_dropped`). In the pinned versions `anthropic._base_client` dumps the prompt, and httpcore's failed-trace records quote response bytes (round 3 below). httpx logs the URL and status; h11 and langchain_anthropic have no logger.
+  - It applies to every class, not only private runs. Every live eval call is metered (`SpendMeterRequired` otherwise), so a wrong class cannot skip the boundary.
+  - A public eval run loses only those loggers' lines while its calls run. To debug a request, use `pipeline query`, which is unmetered.
+  - **Round 2 (Codex, reviewed ed8a2ea):** the first fix switched `logging.disable` process-wide and restored the saved threshold on exit. Overlapping calls (threads, `Runnable.batch`) restored it while another call was still sending, so that call's prompt was logged. The switch also silenced unrelated warnings and could lower a caller's stronger threshold. The filter is now reference-counted under a lock: the first call in installs it and the last call out removes it. No other logger is touched, and neither is `logging.disable`.
+  - **Round 3 (Codex, reviewed 03b8142):** the round-2 filter covered only the loggers that existed when a call entered. That left a first-call gap, disclosed as content-free, which was wrong:
+    - httpx imports httpcore lazily, inside the first `HTTPTransport()`. In a cold process, httpcore's loggers (`httpcore.http11` …) are therefore created inside the first metered call.
+    - httpcore logs `repr(exception)` when a step fails, and h11's "illegal chunk header" error quotes the bytes received. A malformed response's content reached the log through `receive_response_body.failed`.
+    - The `ChatAnthropic` path happens to be warm, because langsmith imports httpcore. That masked the gap locally.
+
+    Two independent layers now close it:
+    - **Priming.** The boundary imports the pinned SDK and transport modules (`anthropic`, `httpx`, `httpcore`, `h11`, and httpcore's http2/socks modules when their extras are installed) before it lists the SDK-family loggers.
+    - **Handler filter.** The same filter goes on the handlers those records can reach: the root logger's, the SDK-family loggers' and `logging.lastResort`. There it drops records by logger name, so a logger created during the call is still filtered when its records propagate. Records from other loggers pass unchanged.
+
+    Both layers use the same lock and reference count, and the last call out detaches the filter from every logger and handler it was put on. `logging.disable` is still untouched. The first-call gap is closed, and its disclosure is withdrawn.
+  - Tested with the actual SDK:
+    - a real `ChatAnthropic` over `httpx.MockTransport`: directly, through a private `run_eval`'s default generation path, with two overlapping threaded calls, and through `Runnable.batch`;
+    - a cold subprocess (`tests/p16_cold_sdk_child.py`, httpcore not yet imported) that sends a real SDK request through a real `SpendMeter` over `httpx.HTTPTransport` and httpcore's `MockBackend`, with a malformed chunked response that carries a canary. It runs with priming on and with priming off, so the handler filter is tested alone too. A positive control outside the boundary must quote the canary. The test fails on 03b8142.
+- **#2: controls outside the floor.** `bakeoff_report` opened the `--controls` file without counting it in the floor, so public reports plus a private controls file stayed public, and a malformed control id reached stderr through the public error path. Now:
+  - the controls file is in `input_paths`, so it counts in the floor and in the sealed check (run and CLI);
+  - a private run lists it in `inputs.json` as a `derived` input whose sources are the sets its `set_sha256` values name.
+  - **Disclosed:** a controls file is neither a registered set nor a known derived kind, so classify rule 7 makes every `--controls` run private: ids only, with the manifest under `eval/private/runs/`. P6 (16A-2), which chooses controls, decides whether a controls file bound to real public rows may classify public.
+- **#3: commit and tag framing.** `--merge-gate` read commit and tag messages from one `git log` / `for-each-ref` stream split on `\x1e`. A message can hold that byte, and the normaliser treats it as whitespace, so a needle spaced with it was split across records and missed. Messages are now read object by object through the size-delimited `git cat-file --batch`, honouring the object's `encoding` header. Hit labels are unchanged (`commit <sha>:<message line>`).
+
+Each fix has a regression test that fails on fefb206.
+
+**Gate round 7 (10 Oct):** a narrow re-test of round 6 found that "cannot parse" counted as "no question keys". It also found that artifact entries were bound only by the header's self-declared sha, and that crafted input could crash the precheck with a traceback. Fixed:
+- A traced non-`.md` file must parse as duplicate-key-free JSON. A `.jsonl`, a BOM, a truncated file or a duplicate key fails closed and is never traced. Rule 5 in `classify` also rejects duplicate keys, because `json.loads` keeps the last one.
+- An artifact (under `artifacts/` or as a run input) is accepted only if every header set is approved and found on disk at its sha256. Every entry key and `question_sha256` must also be exactly those of a real row of those sets (`evaluator._artifact_keys`). Free text can then sit only in the rewrites, intent and model of real rows: model output for a real question, which spec (i) accepts.
+- Deep nesting, a non-list `sources` and unreadable files give an offender (exit 7), not a traceback.
+
+Each probe is a regression test that fails on the round-6 code. An honest private `build:` then replay through `run_eval_matrix` passes the precheck, and a single tampered entry key fails it.
+- **Residual (instruction-enforced):** the rewrites and intent text inside a hand-edited, row-bound artifact, and a `.md` derived input whose recorded sources are false. Only the eval tools write these.
+- **Disclosed:** on a filesystem without hard links, `os.link` fails, so a private `build:` fails closed there.
+
+**Gate round 6 (10 Oct):** round 5's source tracing trusted `inputs.json` metadata. Six synthetic probes passed private text that the round-4 code refused. Tracing now requires all of the following:
+- the recorded file exists with its recorded sha256 (a missing or drifted file is accepted only as a needle source or a legacy entry);
+- every recorded source that exists on disk hashes to its recorded sha256;
+- a traced file with a `question`/`questions` key anywhere must `classify` public (rule 5 checks every question string).
+
+The artifact exemption now uses the exact artifact schema (`expansion_artifact._validate`), so text under any other key fails it. Files under `eval/private/artifacts/` are no longer skipped: each must be a valid artifact built only from approved sources, so an interrupted build's unreferenced artifact is still checked. Each probe is a regression test, and each fails on the round-5 scanner. An end-to-end private `bakeoff_report --prod-ranks` run passes the precheck and failed it before round 5.
+- **Residual (instruction-enforced, like a deleted run directory):** a hand-edited `inputs.json` that names approved sources for a sha-matching file without question keys (a `.md`, or JSON holding text under other keys) is trusted. Only the eval tools write `inputs.json`, and they record the true sources.
+- **Pre-existing, disclosed:** a file under `runs/<id>/` that no `inputs.json` lists is not refused (the same at the round-4 head).
+
+**Gate round 5 (10 Oct):**
+- The merge-gate precheck accepts a `derived` input whose recorded sources are all approved: needle sources, registered public sets or legacy entries. Before, a private `bakeoff_report --prod-ranks` run (public arm reports, their sidecars, `w_sweep` dumps) could pass only if its run directory was deleted. An artifact-shaped input (a JSON object with `entries`) is still accepted only when it is sha256-keyed and has no question key, however its sources trace. Round 6 found this held only when the recorded sha matched, and fixed it.
+- The sha256-keyed artifact exemption no longer requires `eval/private/artifacts/`: a public-built artifact replayed in a private run (D68) passes.
+- `w_sweep`, `bakeoff_report --manifest-out` and a private `build:` now write `inputs.json` before their dump, manifest or artifact. This makes the round-4 claim true on every path; a `build:` rewrites `inputs.json` with the artifact's entry afterwards.
+- **Done (10 Oct, orchestrator on the owner's machine, `fefb206`):** `eval/legacy_public.json` gains sha256 entries for the 7 pre-16A `eval/bakeoff/` artifacts named by rule 6 (paths and hashes only).
+- **Residual (not fixed in 16A-1):** LangSmith tracing (`langsmith` 0.9.7 is installed with LangChain) would send prompts, including corpus and private question text, to a third party if `LANGSMITH_TRACING`/`LANGCHAIN_TRACING_V2` and an API key were set in the environment. Neither is set on the owner's machine or in CI. Tracing is Phase 18's scope, which must disable or self-host it explicitly.
+- **Disclosed:** `--merge-gate` without `--pr` scans no PR text and says so (`PR items skipped`). Once a PR exists, `--pr <n>` is required by instruction (CLAUDE.md and docs/harness.md), not by code. The scanner cannot know a PR exists without `gh`.
+- **Rebutted:** retrieval error logs carry the exception type only (round 3). The detail lost is the query, i.e. private question text, so type-only is the floor and not a regression. Debugging uses a public set.
+- **Pre-existing, not 16A-1:** `w_sweep` with no index opens an empty Chroma store at the default path and reports 0 hits. Out of this phase's scope.
+
+**Gate round 2 (10 Oct):** private and artifact temp files are created exclusive and no-follow, so a planted `<file>.tmp` symlink cannot redirect a write. Rule 5 applies only to derived files with no `question`/`questions` key at any depth, so a question set cannot declare itself public. An escaped `"\u0073ealed"` key on a malformed line counts as a marker.
+
+**Gate round 4 (10 Oct):**
+- A derived file may carry question text only when every question string in it belongs to a registered public set. A public `w_sweep` dump keeps its legacy `ranks`; anything else stays private.
+- The merge-gate precheck accepts a run's `questions` input whose sha256 is a registered public set. A private run over public sets, e.g. `w_sweep`'s default, now passes; before, it could only pass if its run directory was deleted.
+- Private runs write `inputs.json` before anything else, so an interrupted run is still visible to the precheck.
+- `worker_allow` lists the spec's read-only import dependencies.
+
+**Gate round 3 (10 Oct):**
+- Classify rule 5 applies only to the known derived kinds: an expansion artifact, a rows sidecar, a C4 rank dump, or a `.md` report. Any other JSON, a question-keyed cache included, stays private whatever its `inputs` header says.
+- Retrieval error logs carry the exception type only, because `str(e)` can echo the query. The langchain relevance-score warning, whose text embeds the retrieved Documents, is silenced at its one call, so a private run's stderr carries no retrieval content. Scores and order are unchanged; the P0 and H0 locks pass.
+- A private artifact target is re-resolved through containment just before the write.
+- **Residual:** a swap of `eval/private/artifacts` (or of any private directory) for a symlink between that check and the open, mid-run, by another local process. Instruction-enforced.
+
+**Gate round 1 (10 Oct):** every eval-set loader (`load_golden_set` and `eval_schema`) refuses `.md` and `.py` inputs. Rule 2 exempts marker text in those suffixes (reports and code mention `"sealed"`), so without this a sealed set renamed to `.md` would load as private. Rule 2 also counts any `"sealed": true` pair, so duplicate keys are caught; scans every non-`.md`/`.py` suffix as JSONL; and the private and sealed roots match case-variant spellings by `samefile`.
+
+**Final gate (pressure-tester, reviewed b290cea, 10 Oct):** every acceptance criterion passed. Four defects were fixed, each with a regression test that fails on b290cea:
+- **D1 (regression of D38).** A private run set its report path aside before the input-set check and never reached `_resolve_results_path`, so it would write a report over an input set (`pipeline eval --golden X -o X` with X under `runs/<id>/`). A report path of `runs/<id>/inputs.json` also replaced the scanner contract. `run_eval` and `run_eval_matrix` now call `_refuse_private_overwrite` right after the private destination is fixed, before any retrieval, expansion or model call. It refuses two things, by file identity:
+  - any of the run's own writes (report, rows sidecar, `inputs.json`, `judge_review.jsonl`) landing on an input the run opens (sets, and a replayed artifact);
+  - a report named `inputs.json` or `judge_review.jsonl`, compared casefolded because on macOS a case variant is the same file.
+
+  The public path is unchanged and still refuses through D38. **Pre-existing, disclosed:** `run_eval`'s public path never had the D38 guard (neither had `main`'s). The CLI uses `run_eval_matrix`.
+- **D2 (regression from 24c7bb0).** The merge gate decoded commit and tag messages with the object's `encoding` header. Git records that header but never transcodes the bytes, so a UTF-16 or punycode header on UTF-8 bytes turned a needle into noise, and an `idna` header raised. The raw bytes are now always decoded as UTF-8 and scanned. When the header names a codec that can decode them, that decoding is scanned too. A hit in either counts, once.
+- **D3.** `_check_root` said it covered the `eval/` parent but checked only the private root. A symlinked `eval/` let `run_dir` and `artifact_path` resolve outside the repo, because `contained_path` resolves the root itself. Both `eval/private` and `eval/` are now refused when they are symlinks. Ancestors above the repo root are not checked, since a checkout may sit under a symlinked directory such as `/tmp`.
+- **D4.** Rule 5 accepted any `.md` holding one sha256- or cohort-shaped line anywhere, so free text plus one such line classified public. Rule 5 now reads a `.md` only when its first line is a report title (`# Legal RAG Evaluation Report v<N>`). It counts only the set lines inside that version's input block: `## Provenance` for v2–v5 and `## Cohort` for v6. A test pins the title and block to an actual v5 matrix report; the v6 pin was already in place.
+- **Residuals (instruction-enforced, disclosed):**
+  - `--merge-gate` decodes tracked files and blobs as UTF-8 only, so a UTF-16-encoded file hides its needles.
+  - It does not scan author or committer names, git notes (`refs/notes/*`), or a tag annotation that only another tag object reaches (it reads only the objects that `refs/tags` point to).
+  - The precheck accepts a derived input keyed by question text on its recorded sources alone, when they are approved.
+  - Classify rule 1 is location-only. A hard link or copy of an unmarked file under `eval/private/sealed/` that sits elsewhere classifies private, not sealed. A symlink resolves into the sealed root and stays sealed.
+
+**Rejected:**
+- A default `privacy` value: a forgotten argument would silently mean public.
+- Classifying by filename or label: copies and renames would escape.
+- A `registry=`/`classifier=` parameter in production code: AST tests keep it out of `src/` and `scripts/`; tests register sets only through a conftest fixture.
+
+## D66 — Schema v2, evidence groups, scope scorers and report v6 (items 2–3)
+**Decision:** v2 rows carry `"schema": 2`. Their fields:
+- **identity:** `id` and `family_id` (public ids `^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$`; non-public `f[0-9a-f]{8}` and `<family>-<n>`);
+- **`scope`:** `answer`, `partial` or `refuse` (D61);
+- **`evidence`:** AND groups of OR sections, `[]` exactly when the scope is `refuse`;
+- **`gaps`:** on `partial` rows only;
+- optional `type`, `register`, `source`, `ambiguous`, `owner_status` and `second_status`.
+
+Every evidence section must be in `eval/section_inventory.json` (its sections or aliases), or be a dotted ancestor of one: no chunk carries a parent heading such as `1.7.2` when its children were chunked, but related matching reaches it through them. This was found on the real inventory, where two migrated golden rows carry such parent labels; a sibling that no chunk carries is still refused. `scripts/validate_eval_set.py` reports line, field and reason, never text, with exit 0, 1, 2 (configuration) or 4 (sealed). v1 rows still load byte-equal through `load_golden_set`.
+
+Scorers in `src/eval_scoring.py`:
+- `score_evidence`: the completion rank is the maximum over groups of each group's first matching rank; absorbed aliases share their chunk's rank.
+- `observed_scope`: unscored → withheld → refuse → partial → answer.
+- `score_partial`: VERIFIED or PARTIAL outcome, a verified citation in a required group, and every gap stated as a gap statement.
+
+`split_sentences`, the gap starts and the hedge rule move to `src/text_utils.py`, so `render` no longer imports the evaluator. `is_gap_statement` strips list markers and emphasis first, closing the D62 list-item follow-up.
+
+Report v6 (`src/eval_v6.py`) is used iff any set is schema 2. Its sections, in order: family counts with eligible denominators, scope confusion (3 × 5), family rates with Wilson CIs under the `all` collapse, cohort blocks, expansion digest, run cost. It names rows by id only. It is never canonical in 16A-1, never writes `eval/results.md`, and refuses the judge.
+
+**Why:** design 003 16A.2. The v5 loader kept three fields and matched OR-only, so it could not express required evidence, scope or stated gaps.
+
+**Evidence:**
+- On the P0 fake retriever, every single-group row's v6 strict and related ranks equal v5's, in all four modes, on v2 copies of golden and realistic (`tests/test_p16_v6.py`).
+- The P0 lock (`tests/test_p16_projection.py`) and the H0 lock both pass, so public v1 reports are byte-identical.
+
+**Choices made in the lanes (documented in each module):**
+- The family rule is `all`.
+- A second or mid-answer caveat prefix is not stripped, so it can read as a gap statement.
+- Gap starts stay case-sensitive.
+- Validator exit 2 is for a missing input or inventory.
+
+**Rejected:**
+- Scoring partial answers on keyword presence alone (D32 hedges).
+- Treating multiple expected sections as AND in v1: that would change v5 numbers.
+
+## D67 — Family split and statistics, data-free (item 4)
+**Decision:** `src/eval_split.py: split_families`:
+- takes content-free records only;
+- validates a `twins` record: a batch partition, a recomputed `families_digest`, and every unordered batch pair covered;
+- merges twin edges into units with union-find;
+- seeds a shuffle and runs a bounded search over exact quotas, per-split stratum minimums (scope × primary chapter), the 25–30% refusal band and `min_share` by source;
+- counts preassigned families towards their split;
+- raises `SplitInfeasible` with per-constraint counts and never returns partial output.
+
+`src/eval_stats.py` provides:
+- family collapse (a tie is a MISS);
+- exact McNemar;
+- Durkalski's clustered χ²;
+- Wilson intervals (`unavailable` when n = 0);
+- exact two-sided and directional power;
+- the directional MDE on a 0.01 grid;
+- Holm;
+- per-family flip frequency.
+
+**Why:** design 003 16A.3 and 16A.5, built before any data exists so 16A-2's protocol runs on tested parts.
+
+**Evidence:** every (j) number reproduces exactly, including the non-monotone power at d = 7 versus d = 8 and the MDE row. The split's property test covers 200 seeded pools, each checked by an independent validator.
+
+**Choices made in the lane:** the unit order is most-constrained first, with the seeded shuffle breaking ties. It still depends only on the seed and not on input order; strictly shuffled order exhausted the search budget on 10 of 200 pools.
+
+**Rejected:** verdict rules, K_max and the minimum worthwhile effect, which are 16A-2 P5/P6.
+
+## D68 — Frozen expansion artifacts, C4 cohort identity and the item-9 backlog (items 5–6)
+**Decision:** expansion artifacts and the rows sidecar.
+- **Artifacts** (`src/expansion_artifact.py`) key entries by row id and question sha256, with no text. Each records an `inputs` header (so a public-built artifact classifies public), the rewrite identity (model, prompt sha256, config hash) and a build record.
+- **`run_eval_matrix(expansion=…)`** takes `live`, `build:<path>` (private → `eval/private/artifacts/`) or an artifact path. An artifact is preflighted for every row before any work, then replayed with zero live calls. A replayed run is never canonical, and non-live reports disclose the digest, `rewrite_live` and `rewrite_replayed`.
+- **The rows sidecar:** every run writes `<report>.rows.json` (gitignored). It holds the cohort blocks (path, privacy, schema, sha256, rows, families, `cohort_fp`), the scorer version, the absorbed-map hash, the expansion identity and the per-row ranks keyed by set sha256 and id.
+- **`bakeoff_report`** compares arms by `(set sha256, id)`. It requires exact coverage and equal set hashes, `cohort_fp`, scorer version and map hash. Expansion identity must match, except that two live arms may differ in draw digest, and `--rewrite-candidate <hash>` allows the one declared config difference.
+- **Legacy reports** without a sidecar are compared under v5 rules only with `--legacy`, with a printed note. `--controls` reports control flips separately.
+
+Item 9:
+- `w_sweep` loses its module-level `chdir`;
+- the rank helper is single-sourced;
+- one roster (`src/eval_roster.py`), keyed by row id, serves both scripts;
+- the three answer_fn status wrappers become `_status_answer`.
+
+**Re-deferred:** the status recompute in `run_eval_matrix` (it touches a canonical guard), and `test_h_projection`'s subprocess cost. The new P0 lock runs in-process and adds no subprocess.
+
+**Merge gate (Codex, reviewed 82e1568, 10 Oct):**
+- **#4: coverage of the eligible set.** C4 checked that the two arms agree, not that they cover the eligible set. One eligible row dropped, or swapped for another id, identically in both arms passed. Each cohort block now binds its eligible roster:
+  - `eligible` is the count of rows whose scope is not `refuse` (the rows every retrieval mode scores; for v1, non-refusal rows);
+  - `eligible_fp` is the sha256 of the sorted eligible ids.
+
+  `index_rows` refuses a sidecar or dump in which any (set, mode) group is not exactly that roster, and the identity check compares both fields between arms. Sidecars and dumps written before this fix lack the fields and are refused, so earlier 16A-1 outputs must be regenerated before they are compared.
+- **#5: v6 reports in the comparison.** `bakeoff_report` read only v5 provenance, ablation and detail sections, so an actual v6 report parsed into zero sets. Now:
+  - a v6 report gives its sets (label, path and sha256) from its `## Cohort` block, and the held-out exclusion still applies;
+  - its ranks come from its rows sidecar, which it always needs: without one it is refused, `--legacy` included;
+  - the selection table is the sidecar's row-level strict/related@6;
+  - S5/N4 role coverage is `n/a` for every role of a v6 arm, matched or not, because v6 records no retrieved sections (round 2, #4: an unmatched id rendered `no`);
+  - **depth (round 2, #2):** a v6 report must declare `top_k` and its hit cut-off `k`, and `k` must be 6, so a shallower run is refused rather than re-read at @6. All C4 arms must record the same `top_k` (a v5 report's `- top_k:` header line counts), and none may be below 6. Before, arms at depths 1 and 6 passed, and identical retrieval scored 0.0 against 1.0;
+  - **modes (round 2, #3):** a v6 report's `- Retrieval modes:` line is its mode roster. It must include `hybrid` (the primary metric) and `hybrid+rewrite` (the flip mode). Its sidecar must cover every declared mode over each cohort's eligible roster and carry no other mode. Before, removing vector, BM25 and hybrid from both sidecars passed, and the headline fell back to hybrid+rewrite.
+
+  Classify rule 5 now also reads a v6 report's cohort sha256s, so a v6 report built only from registered public sets classifies public, as a v5 report does. Tested end to end on two arms written by the actual v6 runner.
+
+**Gate round 1 (10 Oct):**
+- One function, `_run_expansion_identity`, builds the expansion identity for both the v5 and v6 paths. A live run records the rewrite identity (model, prompt sha256, config hash) plus `expansion_artifact.live_digest`, which keeps rewrite order.
+- Artifact row keys are `<set sha256[:16]>/<id>`. A v1 row uses the unsalted public id whatever the run's class, so a public-built artifact replays at a stronger class; the artifact already records each question's full sha256, so this adds no exposure.
+- The rewrite config is single-sourced in `query_rewrite.rewrite_llm_kwargs()`.
+- A private `build:` destination with an empty basename is refused before any call.
+- **Deferred (efficiency, no behaviour change):** each v1 set is loaded and hashed up to three times per run. Loading each once is a follow-up.
+
+**Gate round 3 (10 Oct):** these refusals also now happen before any paid call:
+- `--results eval/results.md` on a run that cannot be canonical (v6, replay or private);
+- a `build:` over duplicate input sets;
+- a public `build:` target that already exists and is not an expansion artifact, which protects the registry, the legacy list and the caches.
+
+**Gate round 5 (10 Oct):** a private `build:` refuses a target that already exists, before any call. Since round 6 the write itself is exclusive too (`save_artifact(..., exclusive=True)` hard-links the temp file into place, which fails if the name exists), so two builds racing for one name cannot overwrite each other. A private artifact is never overwritten, so an earlier run's recorded replay identity cannot change under it.
+
+**Gate round 4 (10 Oct):**
+- A metered default generator is not retried by `generate_answers`, because the meter's loop owns retries. Before, one question could cost up to 12 worst-case reservations.
+- `w_sweep.build_cache`'s live fill makes one attempt with a meter. It requires a keyword-only `privacy` and refuses any class but public, because it writes question text into the tracked public cache.
+- A public `build:` target under `eval/private/` is written where named, not silently redirected.
+- **Rebutted:** an explicit `--results eval/results.md` on a public v5 run that is non-canonical for v5 reasons (modes, `top_k`, skipped passes and so on) is still refused at write time, after the run. That is D46's behaviour on `main`, and the H0 lock pins it byte for byte, so changing it would change an approved criterion. 16A-1's own reasons (v6, replay, private) are refused up front.
+
+**Not changed, rebutted:**
+- `generate_with_sources` keeps today's call shape when `llm` is `None`, so existing callers and mocks are untouched.
+- The provenance-with-sidecar test checks the mechanism (every sidecar name is git-ignored and porcelain omits ignored files) instead of writing into the repo. The gate's own manual comparison confirmed the claim.
+
+**Deferred:** `classify` reloads the registry on every call (efficiency only).
+
+**Gate round 2 (10 Oct):**
+- Every refusal now happens before any paid call: `run_eval` checks its cohort up front, and the matrix validates every schema-2 set up front.
+- A `build:` target must be a `.json` file and may not be any input set, report, sidecar or judge dump.
+- When the same question appears in two sets, a replay refuses if the two frozen entries differ.
+- Private run directories are created only when a file is written.
+- A private replay or build records the artifact in `inputs.json` as a `derived` input.
+- C4 refuses any rank below 1.
+- On a private floor, `bakeoff_report` prints refusals as their type only, because an id read from a malformed dump can carry text.
+
+**Choices made in the lane (C4 and item 9):**
+- Set labels come from each report's provenance, mapped by set sha256; sidecar cohort blocks carry no label.
+- A sidecar arm no longer needs the offline-expansion marker; the expansion identity check replaces it, so live/live and candidate pairs can be compared. Legacy arms still need the marker.
+- `--rewrite-candidate H` lets the arm whose `config_hash` is H also differ in model, prompt sha256 and digest, because the config hash covers them.
+- `--controls` and `--rewrite-candidate` cannot be combined with legacy arms.
+- On a private floor, `--ranks-out` and `--manifest-out` are redirected into `eval/private/runs/<id>/`.
+- `w_sweep` keeps its question-keyed legacy `ranks` dict only on public runs.
+- A malformed sidecar is refused rather than downgraded to legacy.
+- Relative CLI paths now resolve against the caller's working directory.
+- Refusals exit 2; sealed input exits 4.
+
+**Why:** design 003 16A.5–16A.6 and astra C4. Comparisons had keyed rows by question text or list position, and replay was impossible.
+
+**Rejected:**
+- Keying C4 rows by question text: it is private for private sets.
+- Accepting a sidecar-less arm silently: a deleted sidecar must not downgrade a comparison unnoticed.
+
+## D69 — Absorbed-section map and section inventory, out of band (item 7)
+**Decision:** the chunker gains an opt-in side channel (`chunk_handbook_with_absorption`). It records each D20 runt merge and appendix-stub absorption (absorbing section, absorbed section, trimmed span) and each final chunk's span through the oversize re-split. Chunks are byte-identical with and without it.
+
+`absorbed_sections_by_chunk` credits a chunk only when an absorbed span lies wholly inside the chunk's own span. Oversize siblings that split the span get nothing, and find-miss sub-chunks get nothing. A span inside the splitter overlap credits both sub-chunks, under the literal rule.
+
+`scripts/absorbed_map.py` writes `eval/absorbed_sections.json` (keyed by production chunk id, hashed) and `eval/section_inventory.json` (every indexed `section_number` plus every alias). Every key must exist in the index.
+
+v6 strict scoring credits an alias only through its chunk, and the map hash binds comparisons.
+
+**Why:** D54's comparability boundary. Expected sections absorbed into another chunk were unmatchable under strict scoring.
+
+**Evidence:** on the synthetic sample corpus and `sample_chroma_db`, the map has one alias (2.4.1 on the 2.4 chunk), every key is in the index, and the inventory covers all 16 sections.
+
+**Done (10 Oct, orchestrator, [C]):** run on the real corpus and `./chroma_db` (1,470 chunks, 148 mapped chunks, 175 aliases, 1,104 sections; `map_sha256` 61a8b352…cafbfc), both files committed in `fefb206`. The 1,470-chunk canary holds: `chunk_handbook` on the real PDF gives 1,470 chunks with an identical sha256 over every chunk's text and metadata on `main` and on the branch.
+
+**Tier-2 and [C] evidence (orchestrator, 10 Oct 2026, owner's machine; metadata only, no question or answer text).**
+
+All runs used the real `./chroma_db` index (1,470 chunks). The API key was scrubbed and dotenv disabled for every offline run. Records are in the gitignored `data/research/`.
+
+**H (j) offline parity.** `python -m src.pipeline eval --skip-refusals --skip-completeness` was run on the branch, with and without `--realistic eval/realistic_set.jsonl`. Both reports are byte-identical to P0's `main` captures (9ce4e07), excluding the `Date` and `git sha` lines.
+
+**1,470-chunk canary.** `chunk_handbook` on the real PDF gives 1,470 chunks on `main` and on the branch. Both have the same sha256 over every chunk's `page_content` and metadata: `29f6fe9d…adfa25ad`.
+
+**(e) real-row ranks.** v6 `score_evidence` with one group was compared to v5 `first_strict_rank` / `first_related_rank`. The comparison covered every answerable golden and realistic v1 row, on the real retriever in hybrid, vector and bm25 modes: 141 row-mode checks, 0 mismatches.
+
+**Tier-2 offline v6 on the v2 copies** (`tests/fixtures/p16_v2_{golden,realistic}.jsonl`, run on the real index):
+- **Empty absorbed map.** Family-level strict@6 and related@6 equal v5's row-level numbers in every mode.
+  - Golden: hybrid 25/30 and 27/30; vector 24/30 and 25/30; bm25 25/30 and 27/30; hybrid+rewrite equals hybrid.
+  - Realistic: hybrid 6/17 and 10/17; vector 6/17 and 10/17; bm25 2/17 and 7/17.
+- **Real map.** No @6 row changes, so the set of alias credits is empty.
+- **Defect this run surfaced.** It first failed because the real inventory refused two migrated parent labels. That is fixed in `d073a64` (the dotted-ancestor rule, D66).
+
+**Metered live smoke** (`SpendMeter(run_limit_eur=0.25)`, public golden row 1): one Haiku rewrite (no fallback), one generation (`complete`) and one judge call (no error). Real usage settled at **€0.0200**, with the week total from €0.0000 to €0.0200. No limit latched, and nothing was sent above the run limit.
+- **Recorded deviation (final gate, 10 Oct):** the smoke built `SpendMeter(run_limit_eur=0.25)` directly, which is equivalent to `--approved-eur 0.25`. It did not print the meter's worst-case sum for its real prompts first, as the plan's Tier-2 text asks. The limit, the settlement and the metadata above are unaffected.
+
+**Rejected:** D54's chunk-metadata route, re-deferred as a Phase 18 candidate. It would change production metadata, citations, the index and the gate, which this phase keeps byte-stable.
+
+## D70 — Eval-only API spend meter and the €40 weekly cap (item 8)
+**Decision:** `src/spend.py: SpendMeter` builds the eval's generation, rewrite and judge clients. They are today's `ChatAnthropic` settings with `max_retries=0`, driven by the meter's own loop. The loop mirrors anthropic 0.116.0's retry predicate (`_base_client.py:784–900`): connection errors, timeouts and `RetryableError`; `x-should-retry` first; then 408, 409, 429 and every status ≥ 500; `retry-after` honoured in (0, 60] s, else jittered backoff.
+
+Every attempt reserves a worst case before sending, under an exclusive `flock` on a per-owner ledger (`~/.local/state/claudecode/anthropic_spend.jsonl`; `CC_SPEND_LEDGER` only under pytest):
+- the worst case is the prompt bytes plus 64 per message, priced at the higher of the input and cache-write rates, plus `max_tokens` of output;
+- if a call would cross the €40 UTC-ISO-week ceiling or the run limit, the meter raises `SpendLimitReached` (a `BaseException`) and latches, and nothing is sent;
+- otherwise real usage settles the reservation; an error or crash leaves the worst case charged;
+- ledger lines never carry text.
+
+`config/api_prices.toml` holds the 25 Sep cached prices with `usd_per_eur = 1.0`, deliberately conservative.
+
+Wiring is eval-only:
+- `generate`/`generate_with_sources` gain `llm=`; `run_eval`/`run_eval_matrix` gain `meter=`.
+- A default live path with a usable key and no meter raises `SpendMeterRequired` before any call.
+- `pipeline eval` builds a meter iff the run is live. It exits 3 on the weekly cap (a D64 owner stop) and 6 on the run limit, and prints run and week totals.
+- `pipeline query` is never metered: production spend is outside D64's eval cap.
+
+**Choices made in the lane:**
+- `--owner-approved-eur X` replaces the ceiling; X and `--approval-ref` must be given together.
+- The week check runs before the run check.
+- A torn last ledger line is truncated under the lock; any other unreadable line refuses.
+- `LedgerRefused` and `LedgerCorrupt` are `SpendMeterError`s, which are `BaseException`s since gate round 5.
+
+**Gate round 1 (10 Oct):**
+- Limits and prices must be finite: NaN or inf would switch a ceiling off.
+- The CLI builds a meter only when the run is live and a usable key exists, so a keyless run degrades as before instead of crashing on client construction.
+- The rewrite client is never built for a replay.
+- `w_sweep.build_cache`/`run_sweep` gain `meter=`, and a live cache fill with a key and no meter raises `SpendMeterRequired`.
+- The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
+- `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
+- **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
+
+**Gate round 5 (10 Oct):**
+- `SpendMeterError` subclasses `BaseException`, like `SpendLimitReached`. No broad `except Exception`, present or future, can degrade a meter failure. The per-site re-raises in `expand_query`, `judge_answer` and `generate_answers` are gone. The CLI maps it to exit 2, printing the type only on a non-public run.
+- `expand_query` and `get_rewrite_llm` use `generator.api_key_usable()`, and the duplicate guard in `judge_answers` is gone (`judge_answer` refuses before any call).
+- The chunker's absorption side channel records a sub-chunk's position only when `find()` lands inside its own segment; otherwise it records a find-miss. Production chunks and pages are unchanged (byte-identity tests).
+- **Disclosed (round 6):** for such a sub-chunk the production `page_start`/`page_end` still come from the out-of-segment hit, so the side channel (find-miss, no credit) and the page metadata disagree. Changing production pages is outside 16A-1: the P0 and H0 locks and the 1,470-chunk canary pin them.
+- Round 6 removed a duplicate, unreachable meter handler around `floor()` in the CLI.
+
+**Gate round 4 (10 Oct):**
+- `judge_answer`'s default `llm_fn` raises `SpendMeterRequired` when a usable key is set, matching `judge_answers`.
+- A ledger error while printing totals in the spend-limit handler no longer loses exit 3 or 6.
+- The CLI uses `generator.api_key_usable` directly.
+
+**Gate round 3 (10 Oct):**
+- Meter failures (`LedgerCorrupt`, `LedgerRefused`, `UnpricedModel`, `SpendMeterRequired`) share the base `SpendMeterError`. `expand_query`, `judge_answer` and `generate_answers` re-raise it, so a corrupt or refused ledger stops the run instead of becoming a fallback, an API error or an error row.
+- Bad meter arguments exit 2 from the CLI with no traceback, and with the exception type only on a non-public run.
+- The usable-key rule is single-sourced in `generator.api_key_usable()`, and the private run id in `eval_privacy.new_run_id()`.
+
+**Gate round 2 (10 Oct):** `evaluate_refusals`' default `answer_fn` and `judge_answers`' default `llm_fn` raise `SpendMeterRequired` when a usable key is set.
+
+**Resolved (gate round 3, D65):** the retriever's relevance-score `UserWarning`, which printed chunk text to stderr, is silenced at its one call.
+
+**Rejected:**
+- SDK retries: unmetered attempts.
+- Metering after the fact: a call can cross the cap before it is counted.
+- A per-checkout ledger: worktrees and `git clean` would reset the cap.

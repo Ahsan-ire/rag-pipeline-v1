@@ -55,6 +55,18 @@ from src.grounding import (
 from src.retriever import INTENT_LIST_WEIGHT
 
 
+
+@pytest.fixture(autouse=True)
+def _register_tmp_sets(eval_registry, tmp_path):
+    """16A-1 (D65): register each test's tmp eval sets as public.
+
+    The runners derive a privacy floor from classify(); tests run public, so
+    every ``*.jsonl`` under the test's tmp_path is registered at its final bytes
+    (re-scanned at each registry load).
+    """
+    eval_registry.add_tree(tmp_path)
+
+
 def _cite(para, page):
     """One extracted-citation dict in generate_with_sources' shape."""
     return {"para": para, "page": str(page), "raw": f"para {para}, p.{page}"}
@@ -1293,7 +1305,7 @@ class TestRunEval:
             results_path=str(results_path),
             retrieve_fn=fake_retrieve,
             answer_fn=fake_answer,
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
 
         assert results_path.exists()
@@ -1322,7 +1334,7 @@ class TestRunEval:
             skip_refusals=True,
             results_path=str(results_path),
             retrieve_fn=fake_retrieve,
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
 
         captured = capsys.readouterr()
@@ -1364,7 +1376,7 @@ class TestRunEval:
             golden_path,
             top_k=6,
             results_path=str(results_path),
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
 
         assert context_calls == [CHROMA_PERSIST_DIR]  # built once, default dir
@@ -1384,7 +1396,7 @@ class TestRunEval:
             run_eval(
                 str(tmp_path / "ignored_golden.jsonl"),
                 results_path=canonical,
-                provenance_fn=_fake_provenance,
+                provenance_fn=_fake_provenance, privacy="public",
             )
 
         # Fail-fast: the guard fired before load_golden_set, so neither the
@@ -1435,7 +1447,7 @@ class TestTopKForwarding:
             results_path=str(results_path),
             retrieve_fn=spy_retrieve,
             answer_fn=spy_answer,
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
 
         # One non-refusal question in the golden set -> exactly one retrieval
@@ -1457,7 +1469,7 @@ class TestProvenanceReport:
             skip_refusals=True,
             results_path=str(results_path),
             retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
 
         content = results_path.read_text(encoding="utf-8")
@@ -1508,7 +1520,7 @@ class TestProvenanceReport:
             skip_refusals=True,
             results_path=str(results_path),
             retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
-            persist_directory="/tmp/custom_pd",
+            persist_directory="/tmp/custom_pd", privacy="public",
         )
 
         # collect_provenance opened the store exactly once, at the run's dir.
@@ -1707,7 +1719,7 @@ class TestShaLineRendering:
             skip_refusals=True,
             results_path=str(results_path),
             retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
-            provenance_fn=lambda: provenance,
+            provenance_fn=lambda: provenance, privacy="public",
         )
 
         return results_path.read_text(encoding="utf-8")
@@ -1889,7 +1901,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert calls == []  # zero generation calls
@@ -1926,7 +1938,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert constructed == []
@@ -1954,7 +1966,7 @@ class TestRunEvalMatrix:
             provenance_fn=prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
         with open(result["results_path"], encoding="utf-8") as fh:
             content = fh.read()
@@ -1974,7 +1986,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=False,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert result["include_types"] == ["refusal"]
@@ -1994,7 +2006,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=False,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert result["include_types"] == ["direct", "exact_token"]
@@ -2017,7 +2029,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=True,
+            judge=True, privacy="public",
         )
 
         assert result["include_types"] == ["direct", "exact_token"]
@@ -2035,7 +2047,7 @@ class TestRunEvalMatrix:
             [("held-out", gp)],
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn(calls),
-            provenance_fn=self._prov,
+            provenance_fn=self._prov, privacy="public",
         )
 
         # 3 questions (D1, E1, R1), each generated once — not once per pass.
@@ -2056,7 +2068,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["is_canonical"] is True
@@ -2090,7 +2102,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             judge=True,
             judge_fn=self._clean_judge_fn(),
-            **kwargs,
+            **kwargs, privacy="public",
         )
 
         assert result["is_canonical"] is False, label
@@ -2110,7 +2122,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["is_canonical"] is False
@@ -2149,7 +2161,7 @@ class TestRunEvalMatrix:
             generate_fn=flaky_gen,
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["generation_errors"] == 1
@@ -2171,6 +2183,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             skip_completeness=True,  # -> non-canonical -> partial path
+            privacy="public",
         )
 
         assert open(default, encoding="utf-8").read() == original
@@ -2189,7 +2202,7 @@ class TestRunEvalMatrix:
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]),
                 provenance_fn=self._prov,
-                skip_completeness=True,
+                skip_completeness=True, privacy="public",
             )
 
     def test_results_path_equal_to_set_path_refused(self, tmp_path, monkeypatch):
@@ -2202,7 +2215,7 @@ class TestRunEvalMatrix:
                 results_path=gp,  # would overwrite the eval set with a report
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]),
-                provenance_fn=self._prov,
+                provenance_fn=self._prov, privacy="public",
             )
 
     def test_atomic_write_failure_preserves_original(self, tmp_path, monkeypatch):
@@ -2224,7 +2237,7 @@ class TestRunEvalMatrix:
                 [("held-out", gp)],
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]),
-                provenance_fn=self._prov,
+                provenance_fn=self._prov, privacy="public",
             )
 
         assert open(default, encoding="utf-8").read() == original
@@ -2277,7 +2290,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert len(logs["vector"]) == 1  # store built once, reused
@@ -2310,7 +2323,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert logs["vector"] == []  # get_vector_store never called
@@ -2329,7 +2342,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             skip_refusals=True,
             skip_completeness=True,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         assert logs["bm25"] == []  # load_bm25_index never called
@@ -2353,7 +2366,7 @@ class TestRunEvalMatrix:
                 results_path=str(alias),
                 retrieve_fn_factory=self._retrieve_factory(),
                 generate_fn=self._generate_fn([]),
-                provenance_fn=self._prov,
+                provenance_fn=self._prov, privacy="public",
             )
 
     @pytest.mark.parametrize("bad_top_k", [-1, 0])
@@ -2366,7 +2379,7 @@ class TestRunEvalMatrix:
             run_eval_matrix(
                 [("held-out", gp)], top_k=bad_top_k,
                 retrieve_fn_factory=self._retrieve_factory(),
-                generate_fn=self._generate_fn([]), provenance_fn=self._prov,
+                generate_fn=self._generate_fn([]), provenance_fn=self._prov, privacy="public",
             )
 
     def test_negative_judge_sample_rejected(self, tmp_path, monkeypatch):
@@ -2376,7 +2389,7 @@ class TestRunEvalMatrix:
             run_eval_matrix(
                 [("held-out", gp)], judge_sample=-1,
                 retrieve_fn_factory=self._retrieve_factory(),
-                generate_fn=self._generate_fn([]), provenance_fn=self._prov,
+                generate_fn=self._generate_fn([]), provenance_fn=self._prov, privacy="public",
             )
 
     def test_empty_heldout_set_is_not_canonical(self, tmp_path, monkeypatch):
@@ -2401,7 +2414,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["sets"][0]["retrieval"]["hybrid"]["total"] == 0
@@ -2422,7 +2435,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["is_canonical"] is False
@@ -2441,7 +2454,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["is_canonical"] is False
@@ -2468,7 +2481,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["rewrite_fallbacks"] > 0
@@ -2494,7 +2507,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["is_canonical"] is False
@@ -2518,7 +2531,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         # Every attempt fell back on status alone, despite non-empty rewrites.
@@ -2544,7 +2557,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["rewrite_attempts"] > 0
@@ -2566,7 +2579,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             skip_refusals=True,
-            skip_completeness=True,
+            skip_completeness=True, privacy="public",
         )
 
         assert result["expansion_enabled"] is False
@@ -2612,7 +2625,7 @@ class TestRunEvalMatrix:
 
         run_eval_matrix(
             [("held-out", heldout), ("realistic", realistic)],
-            provenance_fn=self._prov,
+            provenance_fn=self._prov, privacy="public",
         )
 
         # Unique question texts across BOTH sets: D1, E1, R1, E2, R2.
@@ -2634,7 +2647,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),  # injected: isolate ablation retrieves
             provenance_fn=self._prov,
             skip_refusals=True,       # expansion still enabled (only ONE skip)
-            skip_completeness=False,
+            skip_completeness=False, privacy="public",
         )
 
         rewrites_seen = [c["rewrites"] for c in logs["retrieve"]]
@@ -2663,7 +2676,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["expansion_enabled"] is True   # decoupled from the mode set (F4)
@@ -2696,7 +2709,7 @@ class TestRunEvalMatrix:
         result = run_eval_matrix(
             [("held-out", gp)],
             modes=["hybrid"],
-            provenance_fn=self._prov,
+            provenance_fn=self._prov, privacy="public",
         )
 
         assert result["expansion_enabled"] is True
@@ -2718,7 +2731,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             judge_fn=lambda v: json.dumps({"claims": [{"claim": "c", "verdict": "supported"}]}),
             provenance_fn=self._prov,
-            judge=True,
+            judge=True, privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2753,7 +2766,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2790,7 +2803,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2815,7 +2828,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2835,7 +2848,7 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
-            judge=False,
+            judge=False, privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2877,7 +2890,7 @@ class TestRunEvalMatrix:
             judge_fn=lambda v: json.dumps({"claims": [{"claim": "SECRET-CLAIM-TEXT", "verdict": "supported"}]}),
             provenance_fn=self._prov,
             judge=True,
-            judge_dump_path=dump,
+            judge_dump_path=dump, privacy="public",
         )
 
         report = open(result["results_path"], encoding="utf-8").read()
@@ -2940,7 +2953,7 @@ class TestRunEvalMatrix:
             [("held-out", heldout), ("realistic", realistic)],
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["using_default_retrieve_factory"] is True
@@ -2965,7 +2978,7 @@ class TestRunEvalMatrix:
             [("held-out", heldout), ("realistic", realistic)],
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["bm25_default_path_in_play"] is True
@@ -3012,7 +3025,7 @@ class TestRunEvalMatrix:
             provenance_fn=self._prov,
             judge=True,
             judge_fn=self._clean_judge_fn(),
-            **kwargs,
+            **kwargs, privacy="public",
         )
 
         assert result["using_default_retrieve_factory"] is default_retrieve
@@ -3034,6 +3047,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=False,  # the ONLY deviation from canonical
+            privacy="public",
         )
 
         assert result["judge_ran_clean"] is False
@@ -3061,7 +3075,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=judge_fn,
+            judge_fn=judge_fn, privacy="public",
         )
 
         assert result["judge_ran_clean"] is False, label
@@ -3081,7 +3095,7 @@ class TestRunEvalMatrix:
             generate_fn=self._generate_fn([]),
             provenance_fn=self._prov,
             judge=True,
-            judge_fn=self._clean_judge_fn(),
+            judge_fn=self._clean_judge_fn(), privacy="public",
         )
 
         assert result["judge_ran_clean"] is True
@@ -3107,6 +3121,7 @@ class TestRunEvalMatrix:
             judge=True,
             judge_fn=self._clean_judge_fn(),
             judge_sample=0,  # the ONLY deviation from canonical: nothing judged
+            privacy="public",
         )
 
         # Every set judged an empty sample: attempted == 0, no errors reported.
@@ -3157,6 +3172,7 @@ class TestRunEvalMatrix:
             generate_fn=gen,
             provenance_fn=self._prov,
             skip_completeness=True,  # focus on the refusal pass (also -> partial)
+            privacy="public",
         )
 
         # The per-set detail dict carries only flags/counts (D30-safe).
@@ -3186,7 +3202,7 @@ class TestRunEvalMatrix:
             retrieve_fn_factory=self._retrieve_factory(),
             generate_fn=self._generate_fn([]),  # R1 -> REFUSAL_PHRASE, gate REFUSAL
             provenance_fn=self._prov,
-            skip_completeness=True,
+            skip_completeness=True, privacy="public",
         )
 
         detail = result["sets"][0]["refusal_detail"]["R1"]
@@ -3266,7 +3282,7 @@ class TestLegacyReportExclusions:
             results_path=str(tmp_path / "r.md"),
             retrieve_fn=lambda q, top_k=6: [_result("14.8.5")],
             answer_fn=fake_answer,
-            provenance_fn=_fake_provenance,
+            provenance_fn=_fake_provenance, privacy="public",
         )
         report = (tmp_path / "r.md").read_text(encoding="utf-8")
         assert "- [refusal] excluded (truncated) :: R1" in report
@@ -3432,7 +3448,7 @@ class TestGenerationStatusMatrix:
             provenance_fn=self._prov,
             judge=True,
             judge_fn=judge_fn or self._clean_judge_fn(),
-            **kwargs,
+            **kwargs, privacy="public",
         )
         return result, default, partial
 

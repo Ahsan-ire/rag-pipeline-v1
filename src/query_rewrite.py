@@ -26,10 +26,9 @@ built.
 """
 
 import logging
-import os
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -147,21 +146,17 @@ _LEADING_MARKER_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*")
 _QUOTE_PAIRS = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
 
 
-def get_rewrite_llm() -> ChatAnthropic:
-    """Create and return a ChatAnthropic LLM instance for query rewriting.
+def rewrite_llm_kwargs() -> Dict[str, Any]:
+    """The ``ChatAnthropic`` kwargs the rewrite client is built with (no key).
 
-    Raises:
-        ValueError: If ANTHROPIC_API_KEY is not set.
+    Single source for ``get_rewrite_llm`` and for the expansion artifact's
+    rewrite identity (16A-1, D68): a change here changes the artifact
+    ``config_hash``, so a frozen artifact can never silently outlive the
+    client config that produced it.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or api_key == "your-api-key-here":
-        raise ValueError(
-            "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
-        )
-
-    return ChatAnthropic(
-        model=REWRITE_MODEL,
-        max_tokens=REWRITE_MAX_TOKENS,
+    return {
+        "model": REWRITE_MODEL,
+        "max_tokens": REWRITE_MAX_TOKENS,
         # Haiku 4.5 runs with thinking OFF by default — unlike get_llm()'s
         # Sonnet 5, which runs adaptive thinking on by default — so no
         # `thinking` kwarg is needed here to keep it off.
@@ -169,9 +164,25 @@ def get_rewrite_llm() -> ChatAnthropic:
         # so 60s is generous; a blocked read times out and retries instead
         # of wedging the caller. expand_query's never-raise contract turns
         # an exhausted retry into STATUS_API_ERROR as before.
-        default_request_timeout=60.0,
-        max_retries=3,
-    )
+        "default_request_timeout": 60.0,
+        "max_retries": 3,
+    }
+
+
+def get_rewrite_llm() -> ChatAnthropic:
+    """Create and return a ChatAnthropic LLM instance for query rewriting.
+
+    Raises:
+        ValueError: If ANTHROPIC_API_KEY is not set.
+    """
+    from src.generator import api_key_usable
+
+    if not api_key_usable():
+        raise ValueError(
+            "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
+        )
+
+    return ChatAnthropic(**rewrite_llm_kwargs())
 
 
 def _invoke_rewrite(llm: Any, question: str) -> str:
@@ -328,7 +339,10 @@ def parse_rewrites(text: str) -> List[str]:
 def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Expansion:
     """Ask the rewrite LLM for alternative phrasings of ``question``.
 
-    Never raises — see the module's degrade contract. ``enabled=False`` skips
+    Never raises — see the module's degrade contract — with ONE exception
+    (16A-1, D70): ``src.spend.SpendLimitReached`` from a metered ``llm``
+    propagates. It subclasses ``BaseException``, so the ``except Exception``
+    degrade handlers below never turn a spend stop into a fallback. ``enabled=False`` skips
     calling the rewrite LLM entirely (including ``get_rewrite_llm``), which is
     what lets a caller disable expansion without needing an API key at all.
 
@@ -357,8 +371,9 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
         # STATUS_API_ERROR. Previously only ValueError was caught, so a
         # RuntimeError escaped (breaking the never-raises contract) and an
         # unrelated constructor ValueError was mislabeled STATUS_NO_KEY.
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key or api_key == "your-api-key-here":
+        from src.generator import api_key_usable
+
+        if not api_key_usable():
             logger.warning("Query expansion skipped: no ANTHROPIC_API_KEY set.")
             return Expansion(question, (), REWRITE_MODEL, STATUS_NO_KEY)
         try:
@@ -369,7 +384,9 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
 
     try:
         raw = _invoke_rewrite(llm, question)
-    except Exception:  # noqa: BLE001 — any rewrite-call failure degrades, never raises
+    except Exception as exc:  # noqa: BLE001 — any rewrite-call failure degrades, never raises
+        # (a spend-meter failure is a BaseException and is not caught here:
+        # a corrupt or refused ledger stops the run, 16A-1 D70)
         logger.warning("Query expansion failed: the rewrite LLM call raised.")
         return Expansion(question, (), REWRITE_MODEL, STATUS_API_ERROR)
 

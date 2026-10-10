@@ -1,0 +1,61 @@
+{
+ "version": 1,
+ "sets": [
+  {
+   "name": "golden-v1",
+   "path": "eval/golden_set.jsonl",
+   "privacy": "public",
+   "role": "tuning",
+   "status": "active",
+   "sha256": "d3e3e432890a2c8471086fa12113058a88e62cfa85c806a00edc5fefe2c1d283"
+  },
+  {
+   "name": "realistic-v1",
+   "path": "eval/realistic_set.jsonl",
+   "privacy": "public",
+   "role": "realistic",
+   "status": "active",
+   "sha256": "ec488b571e4fbda7b92e318f250e18fe7e72d8f3c4070f1eb84870e0f94494fe"
+  },
+  {
+   "name": "sample-v1",
+   "path": "eval/sample_golden_set.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "869bd981ab97ba8ee84491a71b8e8c24eaf04704b1dbb8e36b5c5a9287eae3d1"
+  },
+  {
+   "name": "heldout-v1",
+   "path": "eval/heldout_set.jsonl",
+   "privacy": "public",
+   "role": "regression",
+   "status": "frozen",
+   "sha256": "601a81c0a3e36aa5d90afb7904fdebad7704d3fff506871c0b9032d7576dcfe6"
+  },
+  {
+   "name": "p16-synthetic-heldout",
+   "path": "tests/fixtures/p16_synthetic_heldout.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "27e873bd8653b40e9a1db39dd76ca6625fe81d6db0cce7c5b79dc56addc66c26"
+  },
+  {
+   "name": "p16-v2-golden",
+   "path": "tests/fixtures/p16_v2_golden.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "5374e8bed0f7422440ef9adbd5311e298357110d445a2b86588a7470e47b7b1e"
+  },
+  {
+   "name": "p16-v2-realistic",
+   "path": "tests/fixtures/p16_v2_realistic.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "833ecb780762e87167f8d030ddce135edb28bdff5b2a81a9a0ba01aa1ab7a879"
+  }
+ ]
+}

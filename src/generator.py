@@ -137,14 +137,23 @@ CITATION_RE = re.compile(
 )
 
 
+def api_key_usable() -> bool:
+    """True when ``ANTHROPIC_API_KEY`` is set to something other than the placeholder.
+
+    The single source of the usable-key rule (``get_llm``, the eval's spend-meter
+    guards and the judge all use it).
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    return bool(api_key) and api_key != "your-api-key-here"
+
+
 def get_llm() -> ChatAnthropic:
     """Create and return a ChatAnthropic LLM instance.
 
     Raises:
         ValueError: If ANTHROPIC_API_KEY is not set.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or api_key == "your-api-key-here":
+    if not api_key_usable():
         raise ValueError(
             "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
         )
@@ -371,12 +380,15 @@ def _message_text(content: Any) -> str:
     return "".join(parts)
 
 
-def generate(question: str, context: str) -> Dict[str, Any]:
+def generate(question: str, context: str, llm: Any = None) -> Dict[str, Any]:
     """Generate an answer to a legal question using the provided context.
 
     Args:
         question: The user's legal question.
         context: Formatted context string from retrieved documents.
+        llm: A chat model to use instead of ``get_llm()`` (16A-1, D70: the eval
+            passes the spend meter's metered client). ``None`` keeps today's
+            unmetered client, so ``pipeline query`` is never metered.
 
     Returns:
         Dict with 'answer', 'citations' (list of {para, page, raw}), 'sources'
@@ -385,7 +397,8 @@ def generate(question: str, context: str) -> Dict[str, Any]:
         None when absent) and 'generation_status' (complete / truncated /
         declined / incomplete / unknown — see ``status_from_stop_reason``).
     """
-    llm = get_llm()
+    if llm is None:
+        llm = get_llm()
     chain = PROMPT_TEMPLATE | llm
 
     message = chain.invoke({"question": question, "context": context})
@@ -403,13 +416,15 @@ def generate(question: str, context: str) -> Dict[str, Any]:
 
 
 def generate_with_sources(
-    question: str, retrieved_results: List[Dict[str, Any]]
+    question: str, retrieved_results: List[Dict[str, Any]], llm: Any = None
 ) -> Dict[str, Any]:
     """Generate an answer using retriever output directly.
 
     Args:
         question: The user's legal question.
         retrieved_results: Output from retriever.retrieve().
+        llm: Forwarded to ``generate`` (the eval's metered client); ``None``
+            keeps today's call shape exactly.
 
     Returns:
         Dict with 'answer', 'citations', 'sources', 'source_documents',
@@ -422,7 +437,8 @@ def generate_with_sources(
         to do with each outcome stays in pipeline.py.
     """
     context = format_context(retrieved_results)
-    result = generate(question, context)
+    # Today's call shape when no client is given (mocks of generate keep working).
+    result = generate(question, context) if llm is None else generate(question, context, llm=llm)
     result["source_documents"] = [r["document"] for r in retrieved_results]
     result["citation_check"] = validate_citations(
         result["citations"], retrieved_results

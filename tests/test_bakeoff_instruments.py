@@ -23,13 +23,20 @@ import re
 import pytest
 
 from scripts import bakeoff_report, embed_latency, w_sweep
-from src.embedder import CHROMA_PERSIST_DIR
+from src import eval_sets
+from src.eval_privacy import public_v1_id
+from src.eval_roster import RoleSpec
 
 # ---------------------------------------------------------------------------
 # Synthetic report fixture (structure of eval/results_partial.md, invented data)
 # ---------------------------------------------------------------------------
-GOLDEN_SHA = "a" * 64
-REALISTIC_SHA = "b" * 64
+# Phase 16A-1 (D65): a report classifies public only when every set sha256 it
+# records is registered public (classify rule 5), so the fixture records the
+# registered hashes of the committed golden/realistic sets. Only the hashes
+# are taken from the registry; no eval-set text enters this file.
+_REGISTERED = {e.path: e.sha256 for e in eval_sets.load_registry()}
+GOLDEN_SHA = _REGISTERED["eval/golden_set.jsonl"]
+REALISTIC_SHA = _REGISTERED["eval/realistic_set.jsonl"]
 
 EXPANSION_OFF = "- query expansion: disabled (offline run)"
 EXPANSION_ON = "- query expansion: claude-haiku — attempted 20, live 20, fallbacks 0"
@@ -246,7 +253,7 @@ def test_compare_lists_both_flip_directions_with_full_question_text():
         "baseline-fixture": bakeoff_report.parse_report(build_report()),
         "candidate": bakeoff_report.parse_report(_candidate_report()),
     }
-    result = bakeoff_report.compare(arms, "baseline-fixture")
+    result = bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
     assert result["baseline"] == "baseline-fixture"
     assert result["flips"]["candidate"]["hit_to_miss"] == [G1]
@@ -276,7 +283,7 @@ def test_compare_flags_questions_present_in_only_one_arm():
         "baseline-fixture": bakeoff_report.parse_report(build_report()),
         "candidate": bakeoff_report.parse_report(trimmed),
     }
-    result = bakeoff_report.compare(arms, "baseline-fixture")
+    result = bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
     assert sorted(result["flips"]["candidate"]["unmatched"]) == sorted([G2, G3])
 
 
@@ -284,22 +291,24 @@ def test_compare_raises_when_the_baseline_arm_is_absent():
     """A typo'd baseline name must fail, not silently compare nothing."""
     arms = {"candidate": bakeoff_report.parse_report(build_report())}
     with pytest.raises(KeyError):
-        bakeoff_report.compare(arms, "baseline-fixture")
+        bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
 
 # ---------------------------------------------------------------------------
 # scripts/bakeoff_report.py — per-class movement
 # ---------------------------------------------------------------------------
+GONE = "Fixture question that no longer exists"
+# Item 9: the roster is keyed by row id (public v1 id of the fixture question).
 FIXTURE_ROSTER = (
-    bakeoff_report.RosterEntry("vocabulary gap", "Fixture realistic question about a widget", ("8.1",)),
-    bakeoff_report.RosterEntry("vocabulary gap", "Fixture realistic question about sprocket", ("8.2",)),
-    bakeoff_report.RosterEntry("near-miss", "Fixture realistic question about flange", ("8.3",)),
-    bakeoff_report.RosterEntry("near-miss", "Fixture question that no longer exists", ("8.9",)),
+    bakeoff_report.RosterEntry("vocabulary gap", public_v1_id(R1), ("8.1",)),
+    bakeoff_report.RosterEntry("vocabulary gap", public_v1_id(R2), ("8.2",)),
+    bakeoff_report.RosterEntry("near-miss", public_v1_id(R3), ("8.3",)),
+    bakeoff_report.RosterEntry("near-miss", public_v1_id(GONE), ("8.9",)),
 )
 
 
-def test_class_movement_matches_roster_by_prefix_and_counts_related_hits():
-    """Roster entries match on question prefix; a related-only HIT@6 counts."""
+def test_class_movement_matches_roster_by_id_and_counts_related_hits():
+    """Roster entries match on row id; a related-only HIT@6 counts."""
     arm = bakeoff_report.parse_report(build_report())
     movement = bakeoff_report.class_movement(arm, roster=FIXTURE_ROSTER)
 
@@ -308,12 +317,24 @@ def test_class_movement_matches_roster_by_prefix_and_counts_related_hits():
     assert by_class["vocabulary gap"]["hits"] == [R1]  # strict rank 2
     assert by_class["vocabulary gap"]["misses"] == [R2]  # no rank at all
     assert by_class["near-miss"]["hits"] == [R3]  # related rank 3 only
-    assert movement["unmatched"] == ["Fixture question that no longer exists"]
+    assert movement["unmatched"] == [public_v1_id(GONE)]
 
-    entries = {e["prefix"]: e for e in movement["entries"]}
-    assert entries["Fixture realistic question about a widget"]["question"] == R1
-    assert entries["Fixture realistic question about flange"]["hit_at_6"] is True
-    assert entries["Fixture question that no longer exists"]["question"] is None
+    entries = {e["row_id"]: e for e in movement["entries"]}
+    assert entries[public_v1_id(R1)]["question"] == R1
+    assert entries[public_v1_id(R3)]["hit_at_6"] is True
+    assert entries[public_v1_id(GONE)]["question"] is None
+
+
+def test_parse_report_adds_a_row_id_per_detail_row():
+    """Public rows get public_v1_id(question); a shown opaque id is kept."""
+    parsed = bakeoff_report.parse_report(build_report())
+    assert [q["id"] for q in parsed["sets"]["tuning"]["questions"]] == [
+        public_v1_id(G1), public_v1_id(G2), public_v1_id(G3)
+    ]
+    opaque = "q:0123456789ab"
+    private_text = build_report().replace(f":: {G1}", f":: {opaque}")
+    rows = bakeoff_report.parse_report(private_text)["sets"]["tuning"]["questions"]
+    assert rows[0]["id"] == opaque
 
 
 def test_class_movement_default_roster_is_the_briefs_table():
@@ -336,7 +357,7 @@ def _role_report(retrieved_for_role):
     )
 
 
-FIXTURE_ROLES = (bakeoff_report.RoleSpec("S5", "Fixture realistic question about a widget", ("2.2.1", "2.2.2")),)
+FIXTURE_ROLES = (bakeoff_report.RoleSpec("S5", public_v1_id(R1), ("2.2.1", "2.2.2")),)
 
 
 def test_role_coverage_true_only_when_each_group_is_covered_separately():
@@ -436,10 +457,13 @@ def test_cli_emits_all_four_sections_and_a_manifest(tmp_path, capsys):
             "baseline-fixture",
             "--manifest-out",
             str(manifest_path),
+            "--legacy",  # v5 reports carry no .rows.json sidecar (16A-1 C4)
         ]
     )
     assert rc == 0
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
+    assert bakeoff_report.LEGACY_NOTE in captured.err
 
     assert "## 1. Selection table" in out
     assert "## 2. Golden per-question strict flips" in out
@@ -461,6 +485,7 @@ def test_cli_emits_all_four_sections_and_a_manifest(tmp_path, capsys):
         "eval/realistic_set.jsonl",
     }
     assert {s["sha256"] for s in arm["eval_sets"]} == {GOLDEN_SHA, REALISTIC_SHA}
+    assert manifest["legacy"] is True and manifest["c4"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +513,7 @@ def test_build_cache_offline_only_raises_on_a_missing_entry(tmp_path, monkeypatc
 
     question = "A fixture question that was edited after the cache was built?"
     with pytest.raises(RuntimeError) as exc:
-        w_sweep.build_cache(_sets([question]), offline_only=True)
+        w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
     assert question[:60] in str(exc.value)
     assert "absent" in str(exc.value)
 
@@ -505,7 +530,7 @@ def test_build_cache_offline_only_raises_on_a_non_live_entry(tmp_path, monkeypat
     monkeypatch.setattr(w_sweep, "expand_query", _explode)
 
     with pytest.raises(RuntimeError, match="status=fallback"):
-        w_sweep.build_cache(_sets([question]), offline_only=True)
+        w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
 
 
 def test_build_cache_offline_only_returns_a_complete_live_cache(tmp_path, monkeypatch):
@@ -517,7 +542,7 @@ def test_build_cache_offline_only_returns_a_complete_live_cache(tmp_path, monkey
     monkeypatch.setattr(w_sweep, "CACHE", str(cache_path))
     monkeypatch.setattr(w_sweep, "expand_query", _explode)
 
-    cache = w_sweep.build_cache(_sets([question]), offline_only=True)
+    cache = w_sweep.build_cache(_sets([question]), offline_only=True, privacy="public")
     assert cache[question]["status"] == w_sweep.STATUS_LIVE
     assert cache[question]["rewrites"] == ["rewrite one"]
 
@@ -535,22 +560,49 @@ class _FakeDoc:
         self.metadata = {"section_number": section}
 
 
-def _stub_sweep(monkeypatch, tmp_path, calls):
-    """Wire w_sweep's IO seams to fakes: sets, cache file, store, retrieval."""
+def _write_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path
+
+
+def _stub_sweep(monkeypatch, tmp_path, calls, eval_registry, *, prefix="Fixture"):
+    """Wire w_sweep's IO seams to fakes: set files, cache file, store, retrieval.
+
+    The set files are real tmp JSONL files registered public (16A-1: the floor
+    classifies every set w_sweep opens); the cache is listed in a tmp
+    legacy_public.json, so ``--legacy-public`` makes the run public and its
+    absence floors it to private (as with the real 0717 cache).
+    """
     golden = [
-        {"question": f"Fixture golden sweep question {i}?", "expected_sections": ["1.1"],
+        {"question": f"{prefix} golden sweep question {i}?", "expected_sections": ["1.1"],
          "type": "direct"}
         for i in range(2)
-    ]
-    # main() reports S5 (index 4) and N4 (index 16) of the realistic set, so the
-    # fixture set must be at least as long as the real one.
+    ] + [{"question": f"{prefix} golden refusal question?", "expected_sections": [],
+          "type": "refusal"}]
     realistic = [
-        {"question": f"Fixture realistic sweep question {i}?", "expected_sections": ["3.3"],
+        {"question": f"{prefix} realistic sweep question {i}?", "expected_sections": ["3.3"],
          "type": "direct"}
         for i in range(17)
     ]
-    monkeypatch.setattr(w_sweep, "load_sets", lambda: {"golden": golden, "realistic": realistic})
+    golden_path = _write_jsonl(tmp_path / "sets" / "golden_set.jsonl", golden)
+    realistic_path = _write_jsonl(tmp_path / "sets" / "realistic_set.jsonl", realistic)
+    eval_registry.add(golden_path)
+    eval_registry.add(realistic_path)
+    monkeypatch.setattr(
+        w_sweep, "SET_PATHS", (("golden", str(golden_path)), ("realistic", str(realistic_path)))
+    )
+    # S5/N4 come from the id-keyed roster (item 9); point them at fixture rows.
+    monkeypatch.setattr(
+        w_sweep,
+        "ROLE_BY_NAME",
+        {
+            "S5": RoleSpec("S5", public_v1_id(realistic[4]["question"]), ("2.2.1", "2.2.2")),
+            "N4": RoleSpec("N4", public_v1_id(realistic[16]["question"]), ("2.2.1", "2.2.2")),
+        },
+    )
 
+    answerable = [r for r in golden + realistic if r["type"] != "refusal"]
     cache_path = tmp_path / "expansions.json"
     cache_path.write_text(
         json.dumps(
@@ -560,12 +612,13 @@ def _stub_sweep(monkeypatch, tmp_path, calls):
                     "status": w_sweep.STATUS_LIVE,
                     "intent": "an intent",
                 }
-                for row in golden + realistic
+                for row in answerable
             }
         ),
         encoding="utf-8",
     )
     monkeypatch.setattr(w_sweep, "CACHE", str(cache_path))
+    _legacy_public(monkeypatch, tmp_path, cache_path)
     monkeypatch.setattr(w_sweep, "expand_query", _explode)
 
     def fake_load_retrieval_context(persist_directory=None):
@@ -578,33 +631,42 @@ def _stub_sweep(monkeypatch, tmp_path, calls):
 
     monkeypatch.setattr(w_sweep, "load_retrieval_context", fake_load_retrieval_context)
     monkeypatch.setattr(w_sweep, "retrieve", fake_retrieve)
-    return golden, realistic
+    return [r for r in golden if r["type"] != "refusal"], realistic
 
 
-def test_sweep_defaults_to_the_production_index_and_writes_no_file(tmp_path, monkeypatch, capsys):
-    """No new flag -> unchanged behaviour: default dir, printed summary only."""
+def test_sweep_defaults_to_the_production_index_and_writes_no_file(
+    tmp_path, monkeypatch, capsys, eval_registry
+):
+    """No new flag -> default (absolute) dir, printed summary only. Without
+    --legacy-public the cache floors the run to private: aggregates still print."""
     calls = {}
-    _stub_sweep(monkeypatch, tmp_path, calls)
+    _stub_sweep(monkeypatch, tmp_path, calls, eval_registry)
 
-    w_sweep.main([])
+    assert w_sweep.main([]) == 0
 
-    assert calls["persist_directory"] == CHROMA_PERSIST_DIR
+    assert calls["persist_directory"] == w_sweep.DEFAULT_PERSIST_DIR
+    assert os.path.isabs(w_sweep.DEFAULT_PERSIST_DIR)
     out = capsys.readouterr().out
     for weight in w_sweep.WEIGHTS:
         assert f"=== W = {weight} ===" in out
     assert "  golden: strict@6 2/2 (1.000)" in out
-    assert "S5: strict_rank=" in out
+    assert "S5: strict_rank=" in out and "N4: strict_rank=" in out
     assert not list(tmp_path.glob("*.json.out"))
+    assert not (tmp_path / "eval" / "private").exists()  # nothing written
 
 
-def test_sweep_ranks_out_dumps_machine_readable_per_question_ranks(tmp_path, monkeypatch, capsys):
-    """--ranks-out captures question, expected, both ranks and the top-6 list."""
+def test_sweep_ranks_out_dumps_machine_readable_per_question_ranks(
+    tmp_path, monkeypatch, capsys, eval_registry
+):
+    """--ranks-out (public run) writes the C4 fields plus the legacy ``ranks``
+    dict: question, expected, both ranks and the top-6 list."""
     calls = {}
-    golden, realistic = _stub_sweep(monkeypatch, tmp_path, calls)
+    golden, realistic = _stub_sweep(monkeypatch, tmp_path, calls, eval_registry)
     ranks_path = tmp_path / "ranks.json"
 
     w_sweep.main(
-        ["--persist-dir", "./chroma_db_arm_fixture", "--ranks-out", str(ranks_path)]
+        ["--persist-dir", "./chroma_db_arm_fixture", "--ranks-out", str(ranks_path),
+         "--legacy-public"]
     )
     capsys.readouterr()
 
@@ -625,6 +687,36 @@ def test_sweep_ranks_out_dumps_machine_readable_per_question_ranks(tmp_path, mon
     assert miss["question"] == realistic[16]["question"]
     assert miss["strict_rank"] == 3  # "3.3" is third in the stubbed list
     assert calls["retrieve_kwargs"][-1]["intent_weight"] == 0.5
+
+    # C4 fields (item 6): the same identity a rows sidecar carries.
+    from src.eval_cohort import SCORER_VERSION
+
+    assert payload["version"] == 1
+    assert payload["scorer_version"] == SCORER_VERSION
+    assert payload["absorbed_map_sha256"] is None
+    assert payload["expansion"] == {
+        "kind": "cache", "digest": eval_sets.sha256_file(w_sweep.CACHE)
+    }
+    assert payload["privacy"] == "public"
+    assert {c["label"] for c in payload["cohorts"]} == {"golden", "realistic"}
+    golden_cohort = next(c for c in payload["cohorts"] if c["label"] == "golden")
+    assert golden_cohort["rows"] == 3  # the refusal row is in the cohort...
+    assert len(payload["rows"]) == len(w_sweep.WEIGHTS) * (len(golden) + len(realistic))
+    by_key = {(r["mode"], r["id"]): r for r in payload["rows"]}
+    c4_row = by_key[("W=0.5", public_v1_id(realistic[16]["question"]))]
+    assert c4_row["strict_rank"] == 3 and c4_row["completion_rank"] == 3
+    assert c4_row["set_sha256"] == eval_sets.sha256_file(w_sweep.SET_PATHS[1][1])
+    # ...but never scored (refusals have no expected section).
+    refusal_id = public_v1_id("Fixture golden refusal question?")
+    assert all(r["id"] != refusal_id for r in payload["rows"])
+
+
+def test_ranks_of_matches_the_evaluator_first_rank_logic():
+    """The one helper (score_evidence, one group) keeps the old semantics."""
+    assert w_sweep.ranks_of(["2.2"], ["", "2.2.1", "2.2"]) == (3, 2)
+    assert w_sweep.ranks_of(["9.9"], ["1.1", "2.2"]) == (None, None)
+    assert w_sweep.ranks_of([], ["1.1"]) == (None, None)
+    assert not hasattr(w_sweep, "first_ranks")
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +817,7 @@ class TestCompareProdRanks:
             "W=0.5|golden|0": {"question": "q0", "strict_rank": 1},
             "W=0.25|realistic|0": {"question": "r0", "strict_rank": None},
         })
-        out = compare_prod_ranks(base, arm)
+        out = compare_prod_ranks(base, arm, legacy=True)
         assert [r["question"] for r in out["flips"]] == ["q0"]  # 3 -> 9
         assert [r["question"] for r in out["gains"]] == ["q1"]  # None -> 4
         assert out["unmatched"] == []
@@ -737,7 +829,7 @@ class TestCompareProdRanks:
 
         base = self._dump({"W=0.25|golden|0": {"question": "q0", "strict_rank": 1}})
         arm = self._dump({"W=0.25|golden|1": {"question": "q1", "strict_rank": 1}})
-        out = compare_prod_ranks(base, arm)
+        out = compare_prod_ranks(base, arm, legacy=True)
         assert out["flips"] == [] and out["gains"] == []
         assert out["unmatched"] == ["W=0.25|golden|0", "W=0.25|golden|1"]
 
@@ -746,7 +838,7 @@ class TestCompareProdRanks:
 
         base = self._dump({"W=0.25|golden|0": {"question": "q", "strict_rank": 6}})
         arm = self._dump({"W=0.25|golden|0": {"question": "q", "strict_rank": 7}})
-        out = compare_prod_ranks(base, arm)
+        out = compare_prod_ranks(base, arm, legacy=True)
         assert [r["question"] for r in out["flips"]] == ["q"]
 
 
@@ -796,7 +888,7 @@ def test_compare_fails_on_an_empty_baseline_golden_detail():
         "candidate": bakeoff_report.parse_report(build_report()),
     }
     with pytest.raises(ValueError, match="baseline-fixture.*no golden"):
-        bakeoff_report.compare(arms, "baseline-fixture")
+        bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
 
 def test_compare_fails_on_an_empty_arm_golden_detail():
@@ -806,7 +898,7 @@ def test_compare_fails_on_an_empty_arm_golden_detail():
         "candidate": bakeoff_report.parse_report(empty),
     }
     with pytest.raises(ValueError, match="candidate.*no golden"):
-        bakeoff_report.compare(arms, "baseline-fixture")
+        bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
 
 def test_compare_fails_when_detail_count_disagrees_with_reported_n():
@@ -821,7 +913,7 @@ def test_compare_fails_when_detail_count_disagrees_with_reported_n():
         "candidate": bakeoff_report.parse_report(short),
     }
     with pytest.raises(ValueError, match="n=3.*1 rows"):
-        bakeoff_report.compare(arms, "baseline-fixture")
+        bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
 
 def test_parse_report_rejects_a_report_with_no_provenance_block():
@@ -849,7 +941,7 @@ def test_compare_fails_when_the_golden_ablation_section_is_missing():
         "candidate": bakeoff_report.parse_report(text),
     }
     with pytest.raises(ValueError, match="no reported n"):
-        bakeoff_report.compare(arms, "baseline-fixture")
+        bakeoff_report.compare(arms, "baseline-fixture", legacy=True)
 
 
 class TestCompareProdRanksVacuous:
@@ -860,29 +952,46 @@ class TestCompareProdRanksVacuous:
         JSON null (a genuine miss) stays accepted, see TestCompareProdRanks."""
         bare = {"W=0.25|golden|0": {"question": "q"}}
         with pytest.raises(ValueError, match="lacks strict_rank"):
-            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": bare})
+            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": bare}, legacy=True)
         with pytest.raises(ValueError, match="lacks strict_rank"):
-            bakeoff_report.compare_prod_ranks({"ranks": bare}, {"ranks": self.ROW})
+            bakeoff_report.compare_prod_ranks({"ranks": bare}, {"ranks": self.ROW}, legacy=True)
 
     def test_an_explicit_null_strict_rank_is_a_recorded_miss(self):
         null = {"W=0.25|golden|0": {"question": "q", "strict_rank": None}}
-        out = bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": null})
+        out = bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": null}, legacy=True)
         assert [r["question"] for r in out["flips"]] == ["q"]
 
     def test_no_baseline_rows_for_the_prefix_fails(self):
         with pytest.raises(ValueError, match="baseline"):
-            bakeoff_report.compare_prod_ranks({"ranks": {}}, {"ranks": self.ROW})
+            bakeoff_report.compare_prod_ranks({"ranks": {}}, {"ranks": self.ROW}, legacy=True)
 
     def test_no_arm_rows_for_the_prefix_fails(self):
         wrong_weight = {"W=0.5|golden|0": {"question": "q", "strict_rank": 1}}
         with pytest.raises(ValueError, match="arm"):
-            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": wrong_weight})
+            bakeoff_report.compare_prod_ranks({"ranks": self.ROW}, {"ranks": wrong_weight}, legacy=True)
 
 
 # ---------------------------------------------------------------------------
 # C5 — manifest provenance fields
 # ---------------------------------------------------------------------------
-def test_manifest_records_prod_rank_hashes_weight_cache_and_command_line(tmp_path, capsys):
+def _legacy_public(monkeypatch, tmp_path, *paths):
+    """List ``paths`` in a tmp eval/legacy_public.json (as the frozen pre-16A
+    bake-off artifacts and the 0717 cache are listed in the real one)."""
+    legacy = tmp_path / "legacy_public.json"
+    legacy.write_text(
+        json.dumps(
+            {"version": 1, "entries": [
+                {"path": str(p), "sha256": eval_sets.sha256_file(p)} for p in paths
+            ]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(eval_sets, "LEGACY_PUBLIC_PATH", legacy)
+
+
+def test_manifest_records_prod_rank_hashes_weight_cache_and_command_line(
+    tmp_path, capsys, monkeypatch
+):
     baseline, candidate = _write_arms(tmp_path)
     base_dump = tmp_path / "baseline-fixture.json"
     arm_dump = tmp_path / "candidate.json"
@@ -891,6 +1000,7 @@ def test_manifest_records_prod_rank_hashes_weight_cache_and_command_line(tmp_pat
     arm_dump.write_text(json.dumps({"ranks": rows}), encoding="utf-8")
     cache = tmp_path / "expansions.json"
     cache.write_text("{}", encoding="utf-8")
+    _legacy_public(monkeypatch, tmp_path, base_dump, arm_dump, cache)
     manifest_path = tmp_path / "manifest.json"
     argv = [
         "--reports", str(baseline), str(candidate),
@@ -898,6 +1008,7 @@ def test_manifest_records_prod_rank_hashes_weight_cache_and_command_line(tmp_pat
         "--prod-ranks", str(base_dump), str(arm_dump),
         "--expansion-cache", str(cache),
         "--manifest-out", str(manifest_path),
+        "--legacy", "--legacy-public",
     ]
 
     assert bakeoff_report.main(argv) == 0

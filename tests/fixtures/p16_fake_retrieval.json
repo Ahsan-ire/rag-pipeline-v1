@@ -1,0 +1,6 @@
+{
+ "version": 1,
+ "comment": "Synthetic ranked-chunk filler for tests/p16_capture.py. Section numbers only; no corpus text. The driver places an expected section (or its parent) at a rank derived from sha256(mode|question) and fills the remaining ranks from this list in rotation.",
+ "filler": ["97.1", "97.2", "97.3.1", "97.4", "98.1", "98.2.2", "98.3", "99.1", "99.2", "99.5.1", "96.7", "96.8"],
+ "pages": {"first": 700, "span": 3}
+}

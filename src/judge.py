@@ -158,8 +158,21 @@ def judge_answer(
         exception ``ok=False, error_type="api"``; on unparseable/invalid JSON
         ``ok=False, error_type="parse"``. Both error cases zero the counts and
         set ``faithfulness=None``.
+
+    Raises:
+        src.spend.SpendLimitReached: passes straight through (16A-1, D70); it
+            subclasses ``BaseException``, so the ``except Exception`` handler
+            never records a spend stop as an API error.
     """
-    llm_fn = llm_fn or _default_llm_fn
+    if llm_fn is None:
+        # D70: the default is a live, unmetered call; refused with a usable key.
+        from src.generator import api_key_usable
+
+        if api_key_usable():
+            from src.spend import SpendMeterRequired
+
+            raise SpendMeterRequired("judge_answer needs a metered llm_fn (D70)")
+        llm_fn = _default_llm_fn
 
     def _error(error_type: str) -> Dict[str, Any]:
         return {
@@ -177,9 +190,10 @@ def judge_answer(
         raw = llm_fn(
             {"question": question, "answer": answer, "context": context}
         )
-    except Exception:
+    except Exception as exc:
         # Any llm_fn failure (network, rate limit, auth) is an API error, held
-        # apart from parse errors so the report can attribute failures.
+        # apart from parse errors so the report can attribute failures (a
+        # spend-meter failure is a BaseException and stops the run, D70).
         return _error("api")
 
     try:
@@ -256,6 +270,8 @@ def judge_answers(
     """
     if sample_n is not None and sample_n < 0:
         raise ValueError(f"sample_n must be >= 0, got {sample_n}")
+    # (the D70 unmetered-default refusal lives in judge_answer, which every
+    # item goes through before any call)
 
     # Deterministic sub-sample when asked for fewer than we have.
     to_judge = items

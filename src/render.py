@@ -11,7 +11,6 @@ never written into ``public_result["answer"]`` or ``answer_chars``, and are neve
 seen by refusal matching, caveat detection or citation extraction.
 """
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -27,7 +26,6 @@ from src.audit import (
     ACTION_WITHHELD_TRUNCATED,
 )
 from src.chunker import locator_label
-from src.evaluator import split_sentences
 from src.generator import (
     CAVEAT_PREFIX,
     CITATION_RE,
@@ -52,6 +50,7 @@ from src.grounding import (
     WITHHELD_NOTICES,
     generation_outcome,
 )
+from src.text_utils import is_gap_statement, split_sentences
 
 NO_RESULTS_MESSAGE = "No relevant documents found. Please index some documents first."
 # Statuses a generation result may carry (``error`` is evaluator-only).
@@ -75,18 +74,6 @@ _TERMINAL_ACTIONS = {
     GENERATION_INCOMPLETE: ACTION_WITHHELD_INCOMPLETE,
 }
 
-# Gap-statement exemption (H2): a unit that merely says the handbook is silent.
-_GAP_STARTS = (
-    "The extracts do not",
-    "The source material does not",
-    "This is not covered",
-    "The handbook does not",
-)
-# A hedge turns a gap statement back into a claim ("not covered, but likely 20
-# days"), so the exemption is lost. Whole words only (amendment 6).
-_HEDGE_RE = re.compile(
-    r"\b(?:but|however|likely|probably|generally|usually)\b", re.IGNORECASE
-)
 _MIN_WORDS = 5
 _TITLE_EXTENSIONS = (".pdf", ".txt", ".html", ".htm", ".md", ".docx")
 
@@ -120,10 +107,11 @@ def uncited_statements(answer: str) -> List[str]:
 
     Display-only: the outcome never changes. Steps: strip one leading exact
     ``CAVEAT_PREFIX`` (as the evaluator does); flag every remaining exact
-    occurrence as ``"repeated caveat"``; split with ``evaluator.split_sentences``.
+    occurrence as ``"repeated caveat"``; split with ``text_utils.split_sentences``.
     A unit is flagged when it has no citation locator, is at least five words, does
     not end with ``:``, is not a Markdown heading, and is not a narrow gap
-    statement ("The handbook does not ...") free of hedge words. A whole-answer
+    statement ("The handbook does not ...", also as a list item or emphasised;
+    see ``text_utils.is_gap_statement``) free of hedge words. A whole-answer
     refusal flags nothing.
 
     Documented misses: ``split_sentences`` does not split before a lowercase
@@ -145,7 +133,7 @@ def uncited_statements(answer: str) -> List[str]:
             continue
         if len(unit.split()) < _MIN_WORDS:
             continue
-        if unit.startswith(_GAP_STARTS) and not _HEDGE_RE.search(unit):
+        if is_gap_statement(unit):
             continue
         flagged.append(unit)
     return flagged

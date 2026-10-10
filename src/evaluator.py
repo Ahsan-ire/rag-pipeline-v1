@@ -30,9 +30,27 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from src import eval_privacy as _privacy
+from src import eval_sets as _eval_sets
 from src.bm25_index import load_bm25_index
+from src.eval_cohort import (
+    build_sidecar,
+    dump_sidecar,
+    rank_rows,
+    sidecar_path,
+    v1_cohort,
+)
+from src.eval_privacy import (
+    PUBLIC,
+    PrivatePathError,
+    check_floor,
+    rank as _privacy_rank,
+    require_class,
+    write_inputs_json,
+    write_private,
+)
 from src.embedder import (
     CHROMA_PERSIST_DIR,
     EMBEDDING_MODEL,
@@ -73,6 +91,9 @@ from src.retriever import (
     load_retrieval_context,
     retrieve,
 )
+# split_sentences moved to src.text_utils (16A-1 item 3); re-exported here so
+# ``from src.evaluator import split_sentences`` keeps working.
+from src.text_utils import split_sentences  # noqa: F401
 
 # Canonical vs. partial report destinations (Phase 10 results-path guard, D38).
 # ``eval/results.md`` is committed and is ONLY written by a fully canonical run
@@ -153,6 +174,10 @@ def load_golden_set(path: str) -> List[Dict[str, Any]]:
         ValueError: If a line violates the schema above; the message names
             the offending 1-indexed line number.
     """
+    # 16A-1 (D65): sealed input is refused before the file is parsed, and a
+    # .md/.py file is never an eval set (a renamed sealed set stays refused).
+    _eval_sets.refuse_non_eval_suffix(path)
+    _eval_sets.refuse_sealed([path])
     golden: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line_number, raw_line in enumerate(f, start=1):
@@ -527,6 +552,19 @@ def _normalise_answer(res: Any) -> Tuple[str, str]:
     return res["answer"], status
 
 
+def _status_answer(res: Any) -> Dict[str, Any]:
+    """The one answer_fn status wrapper (D62 follow-up, D68 item 9).
+
+    Maps a generation result -- a ``generate_with_sources`` dict, a legacy str,
+    or ``None`` for a generation that raised -- to the ``{"answer",
+    "generation_status"}`` shape ``evaluate_refusals`` scores, via
+    ``_normalise_answer`` (missing status -> ``unknown``, unknown vocabulary ->
+    ``incomplete``, ``None`` -> ``""`` with status ``error``).
+    """
+    text, status = _normalise_answer(res)
+    return {"answer": text, "generation_status": status}
+
+
 def _status_counts(statuses: Sequence[str]) -> Dict[str, int]:
     """Count generation statuses, zero-filled over incomplete/unknown/error."""
     counts: Dict[str, int] = {
@@ -589,16 +627,16 @@ def evaluate_refusals(
         can echo copyrighted corpus prose, so only the refusal flag escapes.
     """
     if answer_fn is None:
+        # D70: the default answer_fn makes live, unmetered calls; with a usable
+        # key it is refused here (pass an answer_fn built on a meter's client,
+        # or go through run_eval / run_eval_matrix with meter=).
+        _require_meter(None, live_paths=(True,))
         default_retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
         def answer_fn(question: str) -> Dict[str, Any]:
             """Retrieve via the once-built store/BM25 index, then generate."""
             results = default_retrieve_fn(question)
-            res = generate_with_sources(question, results)
-            return {
-                "answer": res["answer"],
-                "generation_status": res.get("generation_status", STATUS_UNKNOWN),
-            }
+            return _status_answer(generate_with_sources(question, results))
 
     per_question: List[Dict[str, Any]] = []
     refused = 0
@@ -641,122 +679,6 @@ def evaluate_refusals(
         "generation_incomplete_total": sum(incomplete.values()),
         "unknown": counts[STATUS_UNKNOWN],
     }
-
-
-# Prose abbreviations whose trailing period must NOT be read as a sentence end.
-# Ordered longest-first so a shorter member ("p.") can never pre-empt a longer
-# one ("pp.", "paras.") during protection. Deliberately small and legal-prose
-# focused (the handbook's own citation style: paragraphs, sections, pages).
-_SENTENCE_ABBREVIATIONS = (
-    "e.g.",
-    "i.e.",
-    "etc.",
-    "cf.",
-    "viz.",
-    "approx.",
-    "vs.",
-    "paras.",
-    "para.",
-    "pp.",
-    "p.",
-    "ss.",
-    "s.",
-    "no.",
-    "art.",
-    "ch.",
-    "sec.",
-)
-
-# A whole bracketed span — a citation locator like ``[Handbook, para 14.8.5,
-# p.412]`` — masked as one opaque token before splitting so the periods inside
-# it (``p.412``, ``14.8.5``) can never be read as sentence boundaries.
-_BRACKET_RE = re.compile(r"\[[^\]]*\]")
-# The mask token: two NUL bytes around the index. Contains no ``. ! ?`` or
-# whitespace, so it always survives sentence splitting as a single unit and
-# can never itself look like a sentence boundary.
-_MASK_RE = re.compile("\x00(\\d+)\x00")
-# Sentence boundary: a ``.?!`` immediately before whitespace that is followed by
-# a capital, an opening quote, or a masked citation (a sentence may open with a
-# quotation or, rarely, a citation). Heuristic — see ``split_sentences``.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“\x00])")
-
-
-def split_sentences(text: str) -> List[str]:
-    """Split an answer into sentences for the completeness metric (heuristic).
-
-    This gates nothing — it only counts sentences and locates where citations
-    fall, feeding the *syntactic* sentence-citation-coverage figure (D38). It
-    is deliberately simple and its limitations are documented, not hidden:
-
-    1. Bracketed citation spans are masked to an opaque token first, so the
-       periods inside ``[Handbook, para 14.8.5, p.412]`` cannot be mistaken for
-       sentence ends.
-    2. A small set of prose abbreviations (``p. pp. para. paras. s. ss. no.
-       art. ch. sec. e.g. i.e. etc. cf. viz. approx. vs.``) have their periods
-       protected so ``see para. 3`` or ``e.g. a lease`` do not split there.
-    3. The text is split on newlines first (so bullet / numbered lists split),
-       then within each line on ``.?!`` + whitespace + a capital/quote/citation.
-    4. Masks and protected periods are restored, so each returned sentence
-       carries its original citation brackets verbatim (needed for the
-       downstream ``CITATION_RE`` check).
-
-    Known limitations (accepted — this is a coarse coverage proxy): a sentence
-    that genuinely ends in a listed abbreviation (e.g. an answer ending "...the
-    answer is no.") will not split after it; a sentence whose terminal period
-    sits inside a closing quote (``'... yes.' The next...``) will not split; and
-    lower-case sentence starts are not detected. None of these can cause a
-    false refusal or block — the metric is descriptive only.
-
-    Args:
-        text: The answer text (may be empty, whitespace, or multi-line).
-
-    Returns:
-        A list of non-empty, stripped sentence strings in order; ``[]`` for
-        empty or whitespace-only input.
-    """
-    if not text or not text.strip():
-        return []
-
-    # 1. Mask bracketed citation spans to opaque tokens.
-    masked_citations: List[str] = []
-
-    def _mask(match: "re.Match[str]") -> str:
-        masked_citations.append(match.group(0))
-        return f"\x00{len(masked_citations) - 1}\x00"
-
-    masked = _BRACKET_RE.sub(_mask, text)
-
-    # 2. Protect abbreviation periods (longest-first; case-insensitive but the
-    #    matched casing is preserved — only the periods become the sentinel).
-    for abbr in _SENTENCE_ABBREVIATIONS:
-        pattern = r"\b" + re.escape(abbr)
-        masked = re.sub(
-            pattern,
-            lambda m: m.group(0).replace(".", "\x01"),
-            masked,
-            flags=re.IGNORECASE,
-        )
-
-    # 3. Newline split first (lists), then sentence split within each line.
-    sentences: List[str] = []
-    for line in masked.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        for part in _SENTENCE_SPLIT_RE.split(line):
-            part = part.strip()
-            if part:
-                sentences.append(part)
-
-    # 4. Unmask: restore protected periods, then the citation brackets.
-    restored: List[str] = []
-    for sentence in sentences:
-        sentence = sentence.replace("\x01", ".")
-        sentence = _MASK_RE.sub(
-            lambda m: masked_citations[int(m.group(1))], sentence
-        )
-        restored.append(sentence)
-    return restored
 
 
 def evaluate_completeness(
@@ -1004,6 +926,9 @@ def generate_answers(
     Raises:
         ValueError: If two in-scope questions share identical text (they would
             collide in the cache — fail visibly rather than silently drop one).
+        src.spend.SpendLimitReached: passes straight through (16A-1, D70). It
+            subclasses ``BaseException``, so the per-question ``except
+            Exception`` retry never turns a spend stop into an error row.
     """
     answers: Dict[str, Dict[str, Any]] = {}
     for entry in golden:
@@ -1011,9 +936,10 @@ def generate_answers(
             continue
         question = entry["question"]
         if question in answers:
+            # No question text in the message (D65): it may be private.
             raise ValueError(
-                f"Duplicate question text in golden set (would collide in the "
-                f"answer cache): {question!r}"
+                "Duplicate question text in golden set (would collide in the "
+                "answer cache)"
             )
 
         result: Optional[Dict[str, Any]] = None
@@ -1024,6 +950,8 @@ def generate_answers(
                 error = None
                 break
             except Exception as e:  # noqa: BLE001 — record and (maybe) retry any failure
+                # (a SpendMeterError / SpendLimitReached is a BaseException and
+                # passes straight through: it stops the run, D70)
                 error = f"{type(e).__name__}: {e}"
                 if attempt < retries and retry_backoff:
                     time.sleep(retry_backoff * (attempt + 1))
@@ -1287,6 +1215,142 @@ def _dirty_provenance_str(provenance: Dict[str, Any]) -> str:
     return "dirty"
 
 
+
+# ---------------------------------------------------------------------------
+# Phase 16A-1 privacy plumbing (D65)
+# ---------------------------------------------------------------------------
+_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$")
+
+
+def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
+    """``(run_id, report_path, run_dir)`` for a private run.
+
+    A private run writes only under ``eval/private/runs/<run id>/``. An explicit
+    ``results_path`` is accepted only inside ``eval/private/runs/<id>/`` (its
+    directory then is the run directory); anything else is refused before any
+    work is done.
+
+    Raises:
+        PrivatePathError: for a destination outside the private runs tree.
+    """
+    runs_root = _privacy.private_root() / "runs"
+    if results_path is None:
+        run_id = _privacy.new_run_id()
+        rdir = _privacy.run_dir(run_id, create=False)
+        return run_id, str(rdir / "report.md"), rdir
+    if not _privacy.is_under(results_path, runs_root):
+        raise PrivatePathError(
+            "a private run writes reports only under eval/private/runs/<run id>/"
+        )
+    from pathlib import Path
+
+    rel = _privacy.relative_to_root(results_path, runs_root)
+    if len(rel.parts) != 2:
+        raise PrivatePathError("a private report path must be eval/private/runs/<run id>/<file>")
+    run_id = rel.parts[0]
+    rdir = _privacy.run_dir(run_id, create=False)
+    return run_id, str(rdir / rel.parts[1]), rdir
+
+
+# What a private run writes into its run directory besides the report and its
+# rows sidecar: the scanner contract and the judge dump (D65).
+_RUN_CONTRACT_FILES = ("inputs.json", "judge_review.jsonl")
+
+
+def _refuse_private_overwrite(report_path: str, run_dir_path: Any, input_paths: Sequence[str]) -> None:
+    """Refuse a private run whose own writes would destroy an input or a contract file.
+
+    The public path refuses a report over an input set in
+    ``_resolve_results_path`` (D38); a private run never calls it, so this is
+    the private path's guard (final gate, D1). A private run writes its
+    report, ``<report>.rows.json``, ``inputs.json`` and ``judge_review.jsonl``
+    into its run directory. None of them may be (by file identity) an input
+    the run reads, and the report may not take a contract file's name -- on a
+    case-insensitive filesystem a case variant is the same file, so the name
+    is compared casefolded. Called before any retrieval, expansion or model
+    call. The message names no path (private runs print the type only).
+
+    Raises:
+        ValueError: on either collision.
+    """
+    from pathlib import Path
+
+    if Path(report_path).name.casefold() in _RUN_CONTRACT_FILES:
+        raise ValueError(
+            "a private report path names a run-contract file (inputs.json or "
+            "judge_review.jsonl); refusing to overwrite it with a report"
+        )
+    writes = [report_path, sidecar_path(report_path)]
+    writes += [str(Path(run_dir_path) / name) for name in _RUN_CONTRACT_FILES]
+    for target in writes:
+        for p in input_paths:
+            if _same_path(target, p):
+                raise ValueError(
+                    "a private run's report, rows sidecar, inputs.json or judge dump "
+                    "resolves to an input path; refusing to overwrite the input"
+                )
+
+
+def _api_key_usable() -> bool:
+    """True when a real-looking ANTHROPIC_API_KEY is set (``generator.api_key_usable``)."""
+    from src.generator import api_key_usable
+
+    return api_key_usable()
+
+
+def _require_meter(meter: Any, *, live_paths: Sequence[bool]) -> None:
+    """Refuse a default live path with a usable key and no spend meter (D70).
+
+    Called before any call is made. ``live_paths`` flags each default (not
+    injected) path that would make a Claude API call on this run.
+
+    Raises:
+        src.spend.SpendMeterRequired: when a live path would run unmetered.
+    """
+    if meter is None and any(live_paths) and _api_key_usable():
+        from src.spend import SpendMeterRequired
+
+        raise SpendMeterRequired(
+            "a live eval path needs a spend meter (D70); the CLI builds one"
+        )
+
+
+def _meter_llm_kwargs(meter: Any) -> Dict[str, Any]:
+    """``{"llm": <metered generation client>}`` given a meter, else ``{}``.
+
+    Runners call this ONCE and reuse the result for every question.
+    """
+    return {} if meter is None else {"llm": meter.generation_llm()}
+
+
+def _check_formatter_privacy(privacy: str, data_privacy: str) -> str:
+    """A formatter refuses a class weaker than the result's (D65)."""
+    privacy = require_class(privacy)
+    if _privacy_rank(privacy) < _privacy_rank(data_privacy):
+        raise _privacy.PrivacyFloorError(
+            f"formatter privacy {privacy!r} is weaker than the result's {data_privacy!r}"
+        )
+    return privacy
+
+
+def _safe_label(label: str, index: int) -> str:
+    """A set label safe for private stdout: short plain labels, else ``set<i>``."""
+    return label if _SAFE_LABEL_RE.match(label) else f"set{index}"
+
+
+def _write_sidecar(report_path: str, doc: Dict[str, Any], private: bool) -> str:
+    """Write ``<report>.rows.json`` beside the report (private: contained)."""
+    path = sidecar_path(report_path)
+    content = dump_sidecar(doc)
+    if private:
+        from pathlib import Path
+
+        write_private(Path(path), content)
+    else:
+        _atomic_write(path, content)
+    return path
+
+
 def _format_report(
     golden_path: str,
     top_k: int,
@@ -1294,8 +1358,17 @@ def _format_report(
     refusals: Optional[Dict[str, Any]],
     provenance: Dict[str, Any],
     golden: List[Dict[str, Any]],
+    *,
+    privacy: str,
+    data_privacy: str,
+    ids: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render the retrieval + refusal results as a Markdown report.
+
+    16A-1 (D65): ``privacy`` is keyword-only with no default; a class weaker
+    than ``data_privacy`` (the result's) is refused. A public report is the v5
+    report byte for byte; a non-public report shows each row's opaque id
+    (``ids``: question -> id) where the question text would go.
 
     Copyright rule (CLAUDE.md D30): only question text, section numbers,
     metrics, and provenance appear here — never chunk ``page_content`` or full
@@ -1311,6 +1384,13 @@ def _format_report(
         golden: The loaded golden set, used only to report per-type question
             counts (not any answer or chunk text).
     """
+    privacy = _check_formatter_privacy(privacy, data_privacy)
+    if privacy != PUBLIC and ids is None:
+        raise ValueError("a non-public report needs row ids")
+
+    def _q(question: str) -> str:
+        return question if privacy == PUBLIC else ids[question]
+
     # Per-type counts of the loaded golden set (e.g. direct=8, exact_token=5,
     # refusal=5), so the report states the shape of the set it scored.
     type_counts: Dict[str, int] = {}
@@ -1399,18 +1479,18 @@ def _format_report(
         lines.append(
             f"- [{q['type']}] strict={strict} related={related} "
             f"expected={q['expected_sections']} "
-            f"retrieved={q['retrieved_sections']} :: {q['question']}"
+            f"retrieved={q['retrieved_sections']} :: {_q(q['question'])}"
         )
     if refusals is not None:
         for q in refusals["per_question"]:
             if q["refused"] is None:
                 lines.append(
                     f"- [refusal] excluded ({q.get('generation_status')}) "
-                    f":: {q['question']}"
+                    f":: {_q(q['question'])}"
                 )
                 continue
             status = "refused" if q["refused"] else "answered"
-            lines.append(f"- [refusal] {status} :: {q['question']}")
+            lines.append(f"- [refusal] {status} :: {_q(q['question'])}")
 
     return "\n".join(lines) + "\n"
 
@@ -1419,11 +1499,14 @@ def run_eval(
     golden_path: str,
     top_k: int = 6,
     skip_refusals: bool = False,
-    results_path: str = PARTIAL_RESULTS_PATH,
+    results_path: Optional[str] = None,
     retrieve_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     answer_fn: Optional[Callable[[str], Any]] = None,
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
+    privacy: str,
+    meter: Any = None,
 ) -> Dict[str, Any]:
     """Run the full Phase 5/6 evaluation and report the results.
 
@@ -1451,9 +1534,10 @@ def run_eval(
         top_k: Number of chunks to retrieve per question.
         skip_refusals: If True, skip the (API-calling) refusal pass.
         results_path: Where to write the Markdown report; parent directory
-            is created if missing. Defaults to the gitignored
-            ``PARTIAL_RESULTS_PATH`` — the canonical ``eval/results.md`` is
-            matrix-runner-only now (D46).
+            is created if missing. ``None`` (default) means the gitignored
+            ``PARTIAL_RESULTS_PATH`` on a public run — the canonical
+            ``eval/results.md`` is matrix-runner-only (D46) — and
+            ``eval/private/runs/<run id>/report.md`` on a private run.
         retrieve_fn: Optional override for retrieval (see
             ``evaluate_retrieval``); mainly for tests.
         answer_fn: Optional override for answer generation (see
@@ -1471,6 +1555,15 @@ def run_eval(
             load-once retrieval); ignored by either pass whose ``retrieve_fn``
             / ``answer_fn`` was given explicitly, since only their own default
             builders consult it.
+        privacy: keyword-only, no default (16A-1, D65). The run's floor is
+            the strictest ``classify`` over ``golden_path``; a weaker value
+            raises ``PrivacyFloorError`` before any retrieval or model call, a
+            stronger one is honoured. A private run prints aggregates only and
+            writes its report, rows sidecar and ``inputs.json`` under
+            ``eval/private/runs/<run id>/``.
+        meter: a ``src.spend.SpendMeter``; given one, the default answer path
+            generates with its metered client. A default live path with a
+            usable API key and no meter raises ``SpendMeterRequired``.
 
     Returns:
         Dict with ``retrieval`` (evaluate_retrieval's return value),
@@ -1483,13 +1576,15 @@ def run_eval(
             by ``run_eval_matrix`` on a canonical run (D46). Guarded up front,
             before any retrieval/generation, so an accidental canonical target
             fails fast and never makes a live API call en route to a refused
-            write.
+            write. Also, on a private run, if a file the run writes would land
+            on ``golden_path`` or the report takes a run-contract file's name
+            (``_refuse_private_overwrite``), before any call.
     """
     # D46 fail-closed: the legacy single-set runner must never write the
     # committed canonical report, even when explicitly targeted — that report is
     # matrix-runner-only. Guard by FILE IDENTITY (_same_path) so a case-variant
     # or symlink alias of eval/results.md is caught too.
-    if _same_path(results_path, DEFAULT_RESULTS_PATH):
+    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH):
         raise ValueError(
             f"run_eval refuses to write the canonical report "
             f"{DEFAULT_RESULTS_PATH!r}: the committed report is written ONLY by "
@@ -1498,7 +1593,26 @@ def run_eval(
             f"{PARTIAL_RESULTS_PATH!r})."
         )
 
+    # 16A-1 (D65): the privacy floor is checked first — before any retrieval,
+    # expansion or model call. Sealed input raises SealedInputError here.
+    privacy = check_floor(require_class(privacy), _eval_sets.floor([golden_path]))
+    private = privacy != PUBLIC
+    run_id: Optional[str] = None
+    run_dir_path: Any = None
+    if private:
+        run_id, results_path, run_dir_path = _private_destination(results_path)
+        _refuse_private_overwrite(results_path, run_dir_path, [golden_path])
+    elif results_path is None:
+        results_path = PARTIAL_RESULTS_PATH
+    _require_meter(
+        meter,
+        live_paths=(not skip_refusals and answer_fn is None,),
+    )
+
     golden = load_golden_set(golden_path)
+    # Cohort (C4) up front: a repeated question is refused before any paid call.
+    set_sha = _sha256_file(golden_path)
+    cohort, ids = v1_cohort(golden, path=golden_path, privacy=privacy, sha256=set_sha)
 
     # Build the load-once retrieve_fn a SINGLE time for the whole run (Phase 9 /
     # D37): one store open + one BM25 unpickle, shared by the retrieval pass AND
@@ -1516,6 +1630,7 @@ def run_eval(
         refusals = None
     else:
         if answer_fn is None:
+            gen_kwargs = _meter_llm_kwargs(meter)
 
             def answer_fn(question: str) -> Dict[str, Any]:
                 """Answer via the run's single load-once retrieve_fn, then generate.
@@ -1526,13 +1641,11 @@ def run_eval(
                 generation status (H1c) so the refusal scorer can exclude
                 incomplete drafts.
                 """
-                res = generate_with_sources(
-                    question, retrieve_fn(question, top_k=top_k)
+                return _status_answer(
+                    generate_with_sources(
+                        question, retrieve_fn(question, top_k=top_k), **gen_kwargs
+                    )
                 )
-                return {
-                    "answer": res["answer"],
-                    "generation_status": res.get("generation_status", STATUS_UNKNOWN),
-                }
 
         refusals = evaluate_refusals(
             golden, answer_fn=answer_fn, top_k=top_k, persist_directory=persist_directory
@@ -1545,14 +1658,32 @@ def run_eval(
     provenance = provenance_fn()
 
     report = _format_report(
-        golden_path, top_k, retrieval, refusals, provenance, golden
+        golden_path, top_k, retrieval, refusals, provenance, golden,
+        privacy=privacy, data_privacy=privacy, ids=ids,
     )
-    print(report)
+    sidecar = build_sidecar(
+        privacy=privacy,
+        cohorts=[cohort],
+        rows=rank_rows(retrieval, mode="raw", set_sha256=set_sha, ids=ids),
+        expansion={"kind": "none"},
+    )
 
-    # Atomic write (temp file + os.replace) — same convention as the matrix
-    # runner and the BM25 sidecar: an interrupted write leaves any pre-existing
-    # report byte-identical rather than half-overwritten.
-    _atomic_write(results_path, report)
+    if private:
+        from pathlib import Path
+
+        write_inputs_json(
+            run_dir_path, [{"path": golden_path, "sha256": set_sha, "kind": "questions"}]
+        )
+        write_private(Path(results_path), report)
+        _write_sidecar(results_path, sidecar, private=True)
+        print(_private_run_eval_summary(run_id, retrieval, refusals))
+    else:
+        print(report)
+        # Atomic write (temp file + os.replace) — same convention as the matrix
+        # runner and the BM25 sidecar: an interrupted write leaves any
+        # pre-existing report byte-identical rather than half-overwritten.
+        _atomic_write(results_path, report)
+        _write_sidecar(results_path, sidecar, private=False)
 
     return {
         "retrieval": retrieval,
@@ -1560,7 +1691,29 @@ def run_eval(
         "provenance": provenance,
         "golden_path": golden_path,
         "top_k": top_k,
+        "privacy": privacy,
+        "results_path": results_path,
+        "run_id": run_id,
+        "ids": ids,
+        "cohort": cohort,
     }
+
+
+def _private_run_eval_summary(
+    run_id: Optional[str], retrieval: Dict[str, Any], refusals: Optional[Dict[str, Any]]
+) -> str:
+    """Aggregates-only stdout for a private ``run_eval`` (no text, no sections)."""
+    lines = [
+        f"[eval] private run {run_id}: report under eval/private/runs/{run_id}/",
+        f"- retrieval: strict {retrieval['hits_strict']}/{retrieval['total']}, "
+        f"related {retrieval['hits_related']}/{retrieval['total']}",
+    ]
+    if refusals is not None:
+        lines.append(
+            f"- refusals: {refusals['refused']}/{refusals['total']} "
+            f"(excluded {refusals['generation_incomplete_total']})"
+        )
+    return "\n".join(lines)
 
 
 def _atomic_write(path: str, content: str) -> None:
@@ -1595,6 +1748,10 @@ def run_eval_matrix(
     provenance_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     judge_dump_path: Optional[str] = None,
     persist_directory: str = CHROMA_PERSIST_DIR,
+    *,
+    privacy: str,
+    meter: Any = None,
+    expansion: str = "live",
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1647,6 +1804,29 @@ def run_eval_matrix(
             (including claim text) are written here as JSONL for local review —
             gitignored; never committed, never in the report (D30).
         persist_directory: index directory for the default retrieval/generation.
+        privacy: keyword-only, no default (16A-1, D65). The floor is the
+            strictest ``classify`` over every set path; a weaker value raises
+            ``PrivacyFloorError`` before any retrieval, expansion or model call
+            (sealed input raises ``SealedInputError``), a stronger one is
+            honoured. A non-public run is never canonical, prints aggregates
+            and opaque ids only, and writes its report, rows sidecar, judge
+            dump and ``inputs.json`` only under ``eval/private/runs/<run id>/``.
+        meter: a ``src.spend.SpendMeter``. Given one, the default generation,
+            query expansion and judge use its metered clients; without one,
+            call shapes are today's. A default live path with a usable API key
+            and no meter raises ``SpendMeterRequired`` before any call.
+
+        expansion: ``"live"`` (default: today's behaviour), ``"build:<path>"``
+            (live expansion, then the run's expansions are frozen into an
+            artifact at ``<path>``; a private run's artifact goes under
+            ``eval/private/artifacts/<basename>``), or the path of a frozen
+            artifact (``src.expansion_artifact``) replayed in every arm: every
+            row is preflighted before any work, a missing entry or identity
+            mismatch fails with zero expansion calls, and a replayed run is
+            never canonical. The artifact's own class joins the privacy floor.
+
+    Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
+    cohort blocks and per-row ranks that machine comparisons read.
 
     Returns:
         A dict with ``sets`` (per-set results), ``modes``, ``top_k``,
@@ -1667,6 +1847,21 @@ def run_eval_matrix(
         raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
 
     set_paths = [path for _label, path in set_specs]
+    expansion_mode, artifact_path_arg = _parse_expansion_arg(expansion)
+    floor_paths = list(set_paths)
+    if expansion_mode == "replay":
+        floor_paths.append(artifact_path_arg)
+    # 16A-1 (D65): the privacy floor is checked before any retrieval, expansion
+    # or model call; sealed input raises SealedInputError here.
+    privacy = check_floor(require_class(privacy), _eval_sets.floor(floor_paths))
+    private = privacy != PUBLIC
+    run_id: Optional[str] = None
+    run_dir_path: Any = None
+    if private:
+        run_id, private_report_path, run_dir_path = _private_destination(results_path)
+        # Every input the run opens (sets, and a replayed artifact) is guarded.
+        _refuse_private_overwrite(private_report_path, run_dir_path, floor_paths)
+        results_path = None  # the private destination replaces it
     # Fail fast on the dangerous footgun (report over an eval set) BEFORE any
     # expensive generation, even though _resolve_results_path re-guards at write.
     # Compare by FILE IDENTITY (_same_path) so abs/rel/symlink AND case-variant
@@ -1678,6 +1873,73 @@ def run_eval_matrix(
                     f"--results path {results_path!r} resolves to an input "
                     f"eval-set path; refusing to overwrite the eval set with a report"
                 )
+
+    # Review fixes (16A-1): everything that can refuse the run is checked HERE,
+    # before any expansion, retrieval or model call, so a refusal never lands
+    # after money is spent.
+    # (a) a build:<path> destination: contained under the private artifacts
+    #     root on a private run; never an input set or the canonical report.
+    build_target: Optional[str] = None
+    if expansion_mode == "build":
+        if private:
+            base = os.path.basename(artifact_path_arg or "")
+            if base in ("", ".", ".."):
+                raise ValueError("build:<path> needs a file name (a private artifact is written "
+                                 "to eval/private/artifacts/<name>)")
+            build_target = str(_privacy.artifact_path(base))
+            # A private artifact is never overwritten: an earlier run's
+            # replay identity would silently change under it (gate round 5).
+            if os.path.lexists(build_target):
+                raise ValueError("build:<path> names an existing private artifact; "
+                                 "choose a new name (private artifacts are never overwritten)")
+        else:
+            if not str(artifact_path_arg).lower().endswith(".json"):
+                raise ValueError("build:<path> must name a .json artifact")
+            clashes = [*set_paths, DEFAULT_RESULTS_PATH, PARTIAL_RESULTS_PATH]
+            clashes += [x for x in (results_path, judge_dump_path) if x]
+            clashes += [sidecar_path(x) for x in (results_path, DEFAULT_RESULTS_PATH, PARTIAL_RESULTS_PATH) if x]
+            for p in clashes:
+                if _same_path(artifact_path_arg, p):
+                    raise ValueError(
+                        "build:<path> resolves to an input set or a report; refusing to overwrite it"
+                    )
+            build_target = artifact_path_arg
+            # Never overwrite an existing file that is not an expansion
+            # artifact (the registry, legacy list, caches, other JSON).
+            if os.path.lexists(build_target) and not _is_expansion_artifact(build_target):
+                raise ValueError(
+                    "build:<path> names an existing file that is not an expansion artifact; "
+                    "refusing to overwrite it"
+                )
+    # (b) every v1 set must form a cohort (no repeated question) up front.
+    from src.eval_schema import detect_schema as _detect_schema
+    from src.eval_schema import load_any as _load_any
+
+    schemas_upfront = []
+    for _label, path in set_specs:
+        schemas_upfront.append(_detect_schema(path))
+        if schemas_upfront[-1] == 1:
+            v1_cohort(load_golden_set(path), path=path, privacy=privacy, sha256=_sha256_file(path))
+        else:
+            # Full schema-2 validation (ids, families, inventory) before any
+            # set is expanded or generated.
+            _load_any(path)
+    # (c) a run known to be non-canonical before it starts (report v6, a
+    #     replayed artifact, a private run) may not target eval/results.md.
+    # Only the 16A-1 reasons are refused here. The v5 canonical guards keep
+    # D46's write-time refusal, which the H0 lock pins byte for byte (an
+    # owner-level change, not this phase's; recorded in D68).
+    knowably_noncanonical = 2 in schemas_upfront or expansion_mode == "replay" or private
+    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
+        raise ValueError(
+            "--results targets the canonical report, but this run is not canonical and "
+            "cannot be (report v6, replayed expansion or private input); refusing before any work"
+        )
+    # (d) an artifact build needs unique row keys across the run's sets.
+    if expansion_mode == "build":
+        keys = [k for _l, path in set_specs for _q, k in _artifact_keys(path)]
+        if len(keys) != len(set(keys)):
+            raise ValueError("build:<path> needs distinct input sets (duplicate artifact row keys)")
 
     # Which passes run, and therefore which answers to generate (Design 2).
     generation_ran = (not skip_refusals) or (not skip_completeness) or judge
@@ -1710,6 +1972,64 @@ def run_eval_matrix(
     # of live-enabled attempts.
     expansion_cache: Dict[str, Expansion] = {}
 
+    # Item 5: a replayed artifact is loaded (sealed refused) and every row of
+    # every set preflighted BEFORE any work, so a missing entry or identity
+    # mismatch fails with zero expansion calls.
+    replay_artifact: Any = None
+    replay_ids: Dict[str, str] = {}
+    if expansion_mode == "replay":
+        from src.expansion_artifact import load_artifact
+
+        if not expansion_enabled:
+            raise ValueError("an expansion artifact needs expansion enabled (not both --skip flags)")
+        replay_artifact = load_artifact(artifact_path_arg)
+        preflight_rows = []
+        for _label, path in set_specs:
+            for qtext, rid in _artifact_keys(path):
+                preflight_rows.append((rid, qtext))
+                replay_ids.setdefault(qtext, rid)
+        replay_artifact.preflight(preflight_rows)
+        # One expansion per question per run (shared cache): if two sets hold
+        # the same question, their frozen entries must agree, else refuse.
+        for rid, qtext in preflight_rows:
+            first = replay_ids[qtext]
+            if rid != first and replay_artifact.replay(rid, qtext) != replay_artifact.replay(first, qtext):
+                from src.expansion_artifact import ExpansionArtifactError
+
+                raise ExpansionArtifactError(
+                    "artifact entries for one question differ across sets; refusing to replay"
+                )
+    if expansion_mode == "build" and not expansion_enabled:
+        raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
+    rewrite_replayed = 0
+
+    # D70: refuse an unmetered default live path BEFORE any call, then build
+    # each metered client once for the whole run.
+    _require_meter(
+        meter,
+        live_paths=(
+            generation_ran and generate_fn is None,
+            expansion_enabled and expansion_mode != "replay",
+            judge and judge_fn is None,
+        ),
+    )
+    gen_kwargs = _meter_llm_kwargs(meter) if generate_fn is None else {}
+    rewrite_kwargs: Dict[str, Any] = (
+        {"llm": meter.rewrite_llm()}
+        if meter is not None and expansion_enabled and expansion_mode != "replay"
+        else {}
+    )
+    if judge and judge_fn is None and meter is not None:
+        from langchain_core.output_parsers import StrOutputParser
+
+        from src.judge import JUDGE_PROMPT
+
+        _judge_chain = JUDGE_PROMPT | meter.judge_llm() | StrOutputParser()
+
+        def judge_fn(prompt_vars: Dict[str, str]) -> str:
+            """Judge through the meter's metered client."""
+            return _judge_chain.invoke(prompt_vars)
+
     def _expand(question: str) -> Expansion:
         """Expand ``question`` once, reusing the shared cache (Phase 13, D46).
 
@@ -1718,10 +2038,15 @@ def run_eval_matrix(
         all — keeping keyless/offline runs at zero rewrite calls — and never
         populates the cache, so ``rewrite_attempts`` stays 0.
         """
+        nonlocal rewrite_replayed
         if not expansion_enabled:
             return Expansion(question, (), REWRITE_MODEL, STATUS_DISABLED)
         if question not in expansion_cache:
-            expansion_cache[question] = expand_query(question, enabled=True)
+            if replay_artifact is not None:
+                expansion_cache[question] = replay_artifact.replay(replay_ids[question], question)
+                rewrite_replayed += 1
+            else:
+                expansion_cache[question] = expand_query(question, enabled=True, **rewrite_kwargs)
         return expansion_cache[question]
 
     # Ownership flags (Codex #8), captured BEFORE the default
@@ -1818,7 +2143,31 @@ def run_eval_matrix(
                 # WITH the intent reframe threaded in (same _expand cache).
                 intent_rewrite=exp.intent_rewrite,
             )
-            return generate_with_sources(question, results)
+            return generate_with_sources(question, results, **gen_kwargs)
+
+    # Report v6 (item 3): iff any set is schema 2, the whole run is scored in
+    # families by src.eval_v6 (never canonical, never eval/results.md).
+    from src.eval_schema import detect_schema
+
+    schemas = [detect_schema(p) for p in set_paths]
+    if any(v == 2 for v in schemas):
+        if judge:
+            raise ValueError("the judge is not part of report v6 in 16A-1; run v6 without --judge")
+        return _run_matrix_v6(
+            set_specs=set_specs, schemas=schemas, modes=modes, top_k=top_k,
+            skip_refusals=skip_refusals, skip_completeness=skip_completeness,
+            generation_ran=generation_ran, include_types=include_types,
+            retrieve_fn_factory=retrieve_fn_factory, generate_fn=generate_fn,
+            expand=_expand, expansion_cache=expansion_cache,
+            expansion_enabled=expansion_enabled, expansion_mode=expansion_mode,
+            replay_artifact=replay_artifact, replay_count=lambda: rewrite_replayed,
+            artifact_path_arg=build_target,
+            privacy=privacy, private=private, run_id=run_id, run_dir_path=run_dir_path,
+            metered_generation=bool(gen_kwargs),
+            private_report_path=private_report_path if private else None,
+            results_path=results_path, provenance_fn=provenance_fn,
+            persist_directory=persist_directory, meter=meter,
+        )
 
     sets: List[Dict[str, Any]] = []
     total_generation_errors = 0
@@ -1826,8 +2175,11 @@ def run_eval_matrix(
     total_unknown = 0
     judge_dump_records: List[Dict[str, Any]] = []
 
+    sidecar_rows: List[Dict[str, Any]] = []
     for label, path in set_specs:
         golden = load_golden_set(path)
+        set_sha = _sha256_file(path)
+        cohort, ids = v1_cohort(golden, path=path, privacy=privacy, sha256=set_sha)
         counts: Dict[str, int] = {}
         for entry in golden:
             counts[entry["type"]] = counts.get(entry["type"], 0) + 1
@@ -1854,12 +2206,18 @@ def run_eval_matrix(
                 top_k=top_k,
                 persist_directory=persist_directory,
             )
+            sidecar_rows.extend(
+                rank_rows(retrieval_by_mode[mode], mode=mode, set_sha256=set_sha, ids=ids)
+            )
 
         # One shared generation pass, only if a consuming pass is active.
         answers: Dict[str, Dict[str, Any]] = {}
         generation_errors = 0
         if generation_ran:
-            answers = generate_answers(golden, include_types, generate_fn)
+            answers = generate_answers(
+                golden, include_types, generate_fn,
+                **({"retries": 0} if gen_kwargs else {}),
+            )
             generation_errors = sum(
                 1 for a in answers.values() if a["result"] is None
             )
@@ -1878,9 +2236,7 @@ def run_eval_matrix(
                 # H1c: also carries the generation status (an errored row is
                 # status "error"; an incomplete one is excluded from the
                 # accuracy denominator by evaluate_refusals).
-                cached = _a.get(question) or {}
-                text, status = _normalise_answer(cached.get("result"))
-                return {"answer": text, "generation_status": status}
+                return _status_answer((_a.get(question) or {}).get("result"))
 
             refusals = evaluate_refusals(golden, answer_fn=_answer_fn)
 
@@ -1992,7 +2348,9 @@ def run_eval_matrix(
             {
                 "label": label,
                 "path": path,
-                "sha256": _sha256_file(path),
+                "sha256": set_sha,
+                "ids": ids,
+                "cohort": cohort,
                 "counts": counts,
                 "n_questions": len(golden),
                 "retrieval": retrieval_by_mode,
@@ -2013,6 +2371,7 @@ def run_eval_matrix(
     # live; ``rewrite_fallbacks`` = those whose status is not STATUS_LIVE or
     # that yielded zero usable rewrites (a degenerate expansion).
     rewrite_attempts = len(expansion_cache)
+    rewrite_live = rewrite_attempts - rewrite_replayed
     rewrite_fallbacks = sum(
         1
         for exp in expansion_cache.values()
@@ -2114,13 +2473,20 @@ def run_eval_matrix(
         and rewrite_fallbacks == 0
         and (bm25_loaded or not bm25_default_path_in_play)
         and judge_ran_clean
+        # 16A-1: a non-public run is never canonical (eval/results.md is public),
+        # and neither is a replayed-expansion run (item 5).
+        and not private
+        and expansion_mode != "replay"
     )
 
-    resolved_path, warnings = _resolve_results_path(
-        results_path, is_canonical, set_paths
-    )
-    for warning in warnings:
-        print(f"[eval] {warning}", file=sys.stderr)
+    if private:
+        resolved_path = private_report_path
+    else:
+        resolved_path, warnings = _resolve_results_path(
+            results_path, is_canonical, set_paths
+        )
+        for warning in warnings:
+            print(f"[eval] {warning}", file=sys.stderr)
 
     if provenance_fn is None:
         provenance_fn = lambda: collect_provenance(
@@ -2161,18 +2527,347 @@ def run_eval_matrix(
         "bm25_default_path_in_play": bm25_default_path_in_play,
         "bm25_loaded": bm25_loaded,
         "judge_ran_clean": judge_ran_clean,
+        "privacy": privacy,
+        "run_id": run_id,
+        "expansion_mode": expansion_mode,
+        "rewrite_live": rewrite_live,
+        "rewrite_replayed": rewrite_replayed,
     }
 
-    report = _format_matrix_report(result)
-    print(report)
-    _atomic_write(resolved_path, report)
+    expansion_id = _run_expansion_identity(
+        expansion_enabled, expansion_cache, replay_artifact, [s["path"] for s in sets]
+    )
+    result["expansion_identity"] = expansion_id
+    if expansion_mode == "build":
+        if private:
+            # inputs.json before the artifact; rewritten below with the
+            # artifact's entry (16A-1 gate round 5, PT3).
+            write_inputs_json(run_dir_path, _run_inputs(sets, replay_artifact, None))
+        result["expansion_artifact"] = _build_expansion_artifact(
+            build_target, sets, expansion_cache, private=private
+        )
 
-    # Write the gitignored judge review dump (claim text lives ONLY here).
-    if judge and judge_dump_path and judge_dump_records:
-        dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
-        _atomic_write(judge_dump_path, "\n".join(dump_lines) + "\n")
+    report = _format_matrix_report(result, privacy=privacy)
+    sidecar = build_sidecar(
+        privacy=privacy,
+        cohorts=[s["cohort"] for s in sets],
+        rows=sidecar_rows,
+        expansion=expansion_id,
+    )
+    dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
+    if private:
+        from pathlib import Path
+
+        # inputs.json FIRST: an interrupted run still leaves a run dir the
+        # merge-gate precheck can see and check (gate round 4).
+        write_inputs_json(
+            run_dir_path, _run_inputs(sets, replay_artifact, result.get("expansion_artifact"))
+        )
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
+        # The judge dump (claim and question text) stays inside the run dir.
+        if judge and judge_dump_records:
+            write_private(Path(run_dir_path) / "judge_review.jsonl", "\n".join(dump_lines) + "\n")
+        print(_private_matrix_summary(result))
+    else:
+        print(report)
+        _atomic_write(resolved_path, report)
+        _write_sidecar(resolved_path, sidecar, private=False)
+        # Write the gitignored judge review dump (claim text lives ONLY here).
+        if judge and judge_dump_path and judge_dump_records:
+            _atomic_write(judge_dump_path, "\n".join(dump_lines) + "\n")
 
     return result
+
+
+def _run_inputs(
+    sets: Sequence[Mapping[str, Any]], replay_artifact: Any, built: Optional[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
+    """A private run's ``inputs.json`` entries: every question set, plus the
+    replayed or built expansion artifact as a ``derived`` input listing the
+    question sets it was built from (so ``scan_leaks --run`` can trace it)."""
+    entries: List[Dict[str, Any]] = [
+        {"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets
+    ]
+    if replay_artifact is not None:
+        entries.append({
+            "path": str(replay_artifact.path), "sha256": replay_artifact.digest, "kind": "derived",
+            "sources": [{"path": i["path"], "sha256": i["sha256"]} for i in replay_artifact.inputs],
+        })
+    if built:
+        entries.append({
+            "path": built["path"], "sha256": built["sha256"], "kind": "derived",
+            "sources": [{"path": s["path"], "sha256": s["sha256"]} for s in sets],
+        })
+    return entries
+
+
+def _run_expansion_identity(
+    enabled: bool,
+    cache: Dict[str, Expansion],
+    replay_artifact: Any,
+    set_paths: Sequence[str],
+) -> Dict[str, Any]:
+    """The run's expansion identity for the sidecar and report (items 5-6; ONE source).
+
+    - disabled: ``{"kind": "disabled", "model"}``;
+    - replay: the artifact's identity and its file digest;
+    - live: the rewrite identity (model, prompt sha256, config hash) plus
+      ``expansion_artifact.live_digest`` over this run's expansions keyed by
+      their artifact row keys (hashes only, rewrite order kept).
+
+    Both the v5 and the v6 paths call this, so they cannot drift.
+    """
+    from src.expansion_artifact import live_digest, rewrite_identity
+
+    if not enabled:
+        return {"kind": "disabled", "model": REWRITE_MODEL}
+    if replay_artifact is not None:
+        return {
+            "kind": "replay",
+            "model": replay_artifact.identity["model"],
+            "digest": replay_artifact.digest,
+            "prompt_sha256": replay_artifact.identity["prompt_sha256"],
+            "config_hash": replay_artifact.identity["config_hash"],
+        }
+    entries: Dict[str, Expansion] = {}
+    for path in set_paths:
+        for question, key in _artifact_keys(path):
+            if question in cache:
+                entries[key] = cache[question]
+    return {"kind": "live", **rewrite_identity(), "digest": live_digest(entries)}
+
+
+def _artifact_keys(path: str) -> List[Tuple[str, str]]:
+    """``(question, artifact row key)`` for every row of a v1 or v2 set.
+
+    The key never depends on the run's privacy class, so an artifact built on
+    one run replays on the same sets at any honoured class (16A-1 review):
+    ``<set sha256[:16]>/<id>`` with ``id`` = the row's own id for schema 2, and
+    the unsalted ``q:`` + sha256(question)[:12] for schema 1 (the artifact
+    already records each question's full sha256, so this adds no exposure, and
+    artifacts of private sets live under the private root).
+    """
+    from src.eval_privacy import public_v1_id
+    from src.eval_schema import detect_schema, load_any
+
+    prefix = _sha256_file(path)[:16]
+    if detect_schema(path) == 2:
+        return [(r["question"], f"{prefix}/{r['id']}") for r in load_any(path)]
+    return [(e["question"], f"{prefix}/{public_v1_id(e['question'])}") for e in load_golden_set(path)]
+
+
+ABSORBED_MAP_PATH = os.path.join("eval", "absorbed_sections.json")
+
+
+def _load_absorbed_map() -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]:
+    """The committed absorbed-section map (item 7) and its sha256, if present."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(repo, ABSORBED_MAP_PATH)
+    if not os.path.isfile(path):
+        return None, None
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return dict(doc.get("map") or {}), _sha256_file(path)
+
+
+def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
+    """The report-v6 branch of ``run_eval_matrix`` (see ``src.eval_v6``).
+
+    Shares the runner's floor, destinations, expansion and meter set-up; scores
+    every set in families; writes the report and rows sidecar (private: under
+    the run directory, with ``inputs.json``). Never canonical.
+    """
+    from src import eval_v6
+    from src.eval_cohort import cohort_block
+    from src.eval_schema import load_any
+
+    modes = kw["modes"]
+    top_k = kw["top_k"]
+    privacy = kw["privacy"]
+    private = kw["private"]
+    ks = [k for k in HIT_KS if k <= top_k]
+    k = max(ks) if ks else top_k
+    absorbed, absorbed_sha = _load_absorbed_map()
+
+    sets: List[Dict[str, Any]] = []
+    sidecar_rows: List[Dict[str, Any]] = []
+    total_errors = 0
+    for (label, path), schema in zip(kw["set_specs"], kw["schemas"]):
+        rows = load_any(path)
+        sha = _sha256_file(path)
+        cohort = cohort_block(
+            path=path, privacy=privacy, schema=schema, sha256=sha,
+            rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
+        )
+        if cohort["rows"] != len({r["id"] for r in rows}):
+            raise ValueError("duplicate row id in set; C4 refuses the set")
+        for r in rows:
+            kw["expand"](r["question"])
+        retrieval: Dict[str, Dict[str, Any]] = {}
+        for mode in modes:
+            retrieval[mode] = eval_v6.score_retrieval_v6(
+                rows, kw["retrieve_fn_factory"](mode), top_k=top_k, ks=ks, absorbed=absorbed
+            )
+            for rid, sc in retrieval[mode].items():
+                sidecar_rows.append({
+                    "set_sha256": sha, "id": rid, "mode": mode,
+                    "strict_rank": sc["strict_rank"], "related_rank": sc["related_rank"],
+                    "completion_rank": sc["strict_rank"],
+                })
+        answers_by_id = None
+        if kw["generation_ran"]:
+            pseudo = [eval_v6.pseudo_v1(r) for r in rows]
+            cache = generate_answers(
+                pseudo, kw["include_types"], kw["generate_fn"],
+                **({"retries": 0} if kw["metered_generation"] else {}),
+            )
+            total_errors += sum(1 for a in cache.values() if a["result"] is None)
+            answers_by_id = eval_v6.score_answers_v6(rows, cache)
+        fams = {r["family_id"] for r in rows}
+        # Same predicate as eval_v6.family_rates: a family is retrieval-eligible
+        # iff none of its rows is refuse (the schema enforces one scope per family).
+        refuse_fams = {r["family_id"] for r in rows if r["scope"] == "refuse"}
+        fam_eligible = {r["family_id"] for r in rows} - refuse_fams
+        sets.append({
+            "label": label, "path": path, "sha256": sha, "schema": schema, "cohort": cohort,
+            "rows": rows, "ids": {r["question"]: r["id"] for r in rows},
+            "counts": {"rows": len(rows), "families": len(fams), "retrieval_families": len(fam_eligible)},
+            "retrieval": retrieval, "answers": answers_by_id,
+            "confusion": None if answers_by_id is None else eval_v6.scope_confusion(rows, answers_by_id),
+            "family_rates": eval_v6.family_rates(rows, retrieval, answers_by_id, k=k),
+        })
+
+    cache_exp = kw["expansion_cache"]
+    replayed = kw["replay_count"]()
+    expansion_id = _run_expansion_identity(
+        kw["expansion_enabled"], cache_exp, kw["replay_artifact"], [s["path"] for s in sets]
+    )
+    meter = kw["meter"]
+    if private:
+        resolved_path = kw["private_report_path"]
+    else:
+        resolved_path, warnings = _resolve_results_path(kw["results_path"], False, [p for _l, p in kw["set_specs"]])
+        for warning in warnings:
+            print(f"[eval] {warning}", file=sys.stderr)
+    provenance_fn = kw["provenance_fn"] or (
+        lambda: collect_provenance(persist_directory=kw["persist_directory"], exclude_paths=(resolved_path,))
+    )
+    result: Dict[str, Any] = {
+        "report_version": 6, "sets": sets, "modes": modes, "top_k": top_k, "k": k,
+        "privacy": privacy, "run_id": kw["run_id"], "is_canonical": False,
+        "results_path": resolved_path, "provenance": provenance_fn(),
+        "generation_errors": total_errors, "expansion_identity": expansion_id,
+        "expansion_mode": kw["expansion_mode"],
+        "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
+        "absorbed_map_sha256": absorbed_sha,
+        "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
+    }
+    if kw["expansion_mode"] == "build":
+        if private:
+            write_inputs_json(kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], None))
+        result["expansion_artifact"] = _build_expansion_artifact(
+            kw["artifact_path_arg"], sets, cache_exp, private=private
+        )
+    report = eval_v6.format_v6_report(result)
+    sidecar = build_sidecar(
+        privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
+        expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
+    )
+    if private:
+        from pathlib import Path
+
+        write_inputs_json(
+            kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], result.get("expansion_artifact"))
+        )
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
+        print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
+              f"({len(sets)} set(s); not canonical)")
+    else:
+        print(report)
+        _atomic_write(resolved_path, report)
+        _write_sidecar(resolved_path, sidecar, private=False)
+    return result
+
+
+def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:
+    """``"live"`` | ``"build:<path>"`` | ``<artifact path>`` -> (mode, path)."""
+    if not isinstance(expansion, str) or not expansion:
+        raise ValueError("expansion must be 'live', 'build:<path>' or an artifact path")
+    if expansion == "live":
+        return "live", None
+    if expansion.startswith("build:"):
+        path = expansion[len("build:"):]
+        if not path:
+            raise ValueError("build: needs a destination path")
+        return "build", path
+    return "replay", expansion
+
+
+def _build_expansion_artifact(
+    target: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion], *, private: bool
+) -> Dict[str, Any]:
+    """Freeze this run's live expansions into an artifact (item 5, ``build:``).
+
+    ``target`` was validated before the run started (a private run's lies
+    under ``eval/private/artifacts/``; a public one is never an input set or
+    a report). No question text is written.
+    """
+    from src.expansion_artifact import build_artifact, save_artifact
+
+    rows: List[Tuple[str, str]] = [
+        (key, question) for s in sets for question, key in _artifact_keys(s["path"])
+    ]
+    artifact = build_artifact(
+        rows,
+        lambda q: cache[q],
+        [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
+    )
+    # A private target is re-resolved through the containment check right
+    # before the write (narrows a mid-run swap of eval/private/artifacts to a
+    # symlink; the remaining check-to-open race is a disclosed residual, D65).
+    if private:
+        target = str(_privacy.artifact_path(os.path.basename(target)))
+    digest = save_artifact(target, artifact, exclusive=private)
+    return {"path": target, "sha256": digest}
+
+
+def _is_expansion_artifact(path: str) -> bool:
+    """True if ``path`` is an existing expansion artifact (safe to rebuild)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("kind") == "expansion_artifact"
+
+
+def _private_matrix_summary(result: Dict[str, Any]) -> str:
+    """Aggregates-only stdout for a private matrix run (D65 serialiser).
+
+    Allowlist: run id, set labels (plain short labels only), counts and rates.
+    Never a question, section, path, rewrite, answer or exception text.
+    """
+    rid = result.get("run_id")
+    lines = [
+        f"[eval] private run {rid}: report under eval/private/runs/{rid}/ (not canonical)",
+        f"- modes: {', '.join(result['modes'])}; top_k {result['top_k']}",
+        f"- generation errors {result['generation_errors']}, incomplete "
+        f"{result['generation_incomplete']}, unknown {result['generation_unknown']}; "
+        f"expansion attempted {result['rewrite_attempts']}, fallbacks {result['rewrite_fallbacks']}",
+    ]
+    for i, s in enumerate(result["sets"]):
+        parts = [f"- {_safe_label(s['label'], i)}: n={s['n_questions']}"]
+        for mode, r in s["retrieval"].items():
+            parts.append(f"{mode} strict {r['hits_strict']}/{r['total']}")
+        if s["refusals"] is not None:
+            parts.append(f"refused {s['refusals']['refused']}/{s['refusals']['total']}")
+        if s["completeness"] is not None:
+            c = s["completeness"]
+            parts.append(f"false refusals {c['refused']}/{c['total']}, blocked {c['blocked']}/{c['total']}")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
 
 
 def _mrr_label(top_k: int) -> str:
@@ -2185,13 +2880,23 @@ def _fmt_opt_rate(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.3f}"
 
 
-def _format_matrix_report(result: Dict[str, Any]) -> str:
+def _format_matrix_report(result: Dict[str, Any], *, privacy: str) -> str:
     """Render the Phase 10 v2 report (D38); honors D30 (no chunk/answer/claim text).
 
     Only question text, section numbers, counts, rates, gate outcomes, and
     provenance appear. The headline is strict hit@6 on the held-out set, with a
     count and a Wilson 95% interval so its small-n uncertainty is explicit.
+
+    16A-1 (D65): ``privacy`` is keyword-only, no default; a class weaker than
+    ``result["privacy"]`` is refused. A public report is v5 byte for byte; a
+    non-public one shows each row's opaque id in place of its question.
     """
+    # Fail closed: a result without a recorded class is refused, never public.
+    privacy = _check_formatter_privacy(privacy, result["privacy"])
+
+    def _q(s: Dict[str, Any], question: str) -> str:
+        return question if privacy == PUBLIC else s["ids"][question]
+
     sets = result["sets"]
     modes = result["modes"]
     top_k = result["top_k"]
@@ -2265,6 +2970,17 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
         )
     else:
         lines.append("- query expansion: disabled (offline run)")
+    # Item 5: a replayed or built artifact is disclosed (live runs keep the v5
+    # lines byte for byte). Replay is never canonical.
+    if result.get("expansion_mode", "live") != "live":
+        ident = result.get("expansion_identity") or {}
+        lines.append(
+            f"- expansion artifact ({result['expansion_mode']}): digest "
+            f"{(result.get('expansion_artifact') or {}).get('sha256') or ident.get('digest')}; "
+            f"rewrite_live {result.get('rewrite_live')}, rewrite_replayed "
+            f"{result.get('rewrite_replayed')}"
+            + (" (replayed runs are never canonical)" if result["expansion_mode"] == "replay" else "")
+        )
     # BM25-loaded disclosure (WS3 / Codex #8): surface whether the sidecar
     # actually loaded, so a non-canonical run can be traced to this guard. When
     # a default retrieval path was in play but the sidecar did NOT load, say so
@@ -2546,7 +3262,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                     f"- [{q['type']}] strict={strict}(rank={q['first_strict_rank']}) "
                     f"related={related}(rank={q['first_related_rank']}) "
                     f"expected={q['expected_sections']} "
-                    f"retrieved={q['retrieved_sections']}{extra} :: {q['question']}"
+                    f"retrieved={q['retrieved_sections']}{extra} :: {_q(s, q['question'])}"
                 )
         # Refusal-type per-question rows (from the refusal pass). Each carries
         # the D30-safe detail (caveat flag, gate outcome, grounded/citation
@@ -2569,7 +3285,7 @@ def _format_matrix_report(result: Dict[str, Any]) -> str:
                         f" caveat={d['is_caveat']} gate={d['gate_outcome']} "
                         f"grounded={d['n_grounded']}/{d['n_citations']}"
                     )
-                lines.append(f"- [refusal] {status}{extra} :: {q['question']}")
+                lines.append(f"- [refusal] {status}{extra} :: {_q(s, q['question'])}")
         lines.append("")
 
     return "\n".join(lines) + "\n"

@@ -40,6 +40,11 @@ model's opinion, never on the held-out set.
   retrieval/generation path ran (D51); and the judge ran on every set, judged
   >=1 item and had zero judge API/parse errors (D51). Else the gitignored
   `eval/results_partial.md`.
+- Validate an eval set (schema v1/v2, errors by line and field, never text):
+  `python scripts/validate_eval_set.py <path>`
+- Leak scan (D65): `python scripts/scan_leaks.py --output <files> --run <id>`
+  before releasing a private run's output; `--merge-gate --base main` before
+  a push when private sets exist (add `--pr <n>` once the branch has a PR).
 - Eval offline / CI (no API key, retrieval ablation only):
   `python -m src.pipeline eval --skip-refusals --skip-completeness` — both
   skips are required to make ZERO API calls: they suppress generation AND
@@ -49,8 +54,22 @@ model's opinion, never on the held-out set.
   command.
 
 ## Hard rules
-- NEVER commit anything in `data/`, any `*.pdf`, `.env`, or `chroma_db/`.
-  The corpus is copyrighted; the repo is public.
+- NEVER commit anything in `data/`, any `*.pdf`, `.env`, `chroma_db/`, or
+  `eval/private/` (D65). The corpus is copyrighted; the repo is public.
+- Private eval data (D65): eval inputs are `public` / `private` / `sealed`
+  (`src.eval_sets.classify`). Private material lives only under
+  `eval/private/`; a private run prints aggregates and opaque ids only and
+  writes only under `eval/private/runs/<run id>/`. Never pass a weaker
+  `privacy` than the floor, never add a registry/classifier parameter to
+  `src/` or `scripts/`, and with private sets present run
+  `python scripts/scan_leaks.py --merge-gate --base main` before every push,
+  with `--pr <n>` once a PR exists (a hit in pushed history is a D64 owner stop). Sealed input is refused
+  everywhere in 16A-1 (exit 4); never strip a sealed marker.
+- Eval spend (D70): every live eval call goes through the spend meter
+  (`src/spend.py`, ledger `~/.local/state/claudecode/anthropic_spend.jsonl`);
+  the €40/UTC-week cap is hard — exit 3 is a D64 owner stop, never lift it
+  without `--owner-approved-eur X --approval-ref <ref>` after the owner
+  approves X.
 - Evidence before claims: run the code/tests and show the output before
   saying something works. "Should work" is not done.
 - Every design choice (chunk size, pattern, library, threshold) gets a short
@@ -78,7 +97,7 @@ it *pointers* (file paths, branch names), not pasted content.
   of the diff vs main; fix findings forward or rebut them explicitly in the
   PR description.
 - Canonical call:
-  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, or held-out eval files."`
+  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, eval/private/, or held-out eval files."`
 - Treat Codex findings like pressure-tester findings: verify each against
   the code before acting; it can be wrong or out of scope. Proposed diffs
   are suggestions, not patches: verify and apply them yourself — Codex
@@ -88,7 +107,7 @@ it *pointers* (file paths, branch names), not pasted content.
   above — the corpus is copyrighted and must not be shipped to a third-party
   model (same reason as the `data/` commit ban; note `chroma_db/` and the
   Phase 15 bake-off arm indexes `chroma_db_arm_*/` contain the full corpus
-  text too).
+  text too; `eval/private/` holds private and sealed eval material, D65).
 
 ## Conventions
 - Python 3.11+, type hints and docstrings on all public functions.

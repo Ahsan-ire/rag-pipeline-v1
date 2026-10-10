@@ -29,3 +29,8 @@ sample_chroma_db/
 chroma_db_arm_*/
 eval/bakeoff/
 .harness/runs/
+# Phase 16A-1 (D65): private and sealed eval material never enters git; every
+# run's machine-readable rows sidecar stays local (collect_provenance must not
+# see it).
+eval/private/
+*.rows.json
