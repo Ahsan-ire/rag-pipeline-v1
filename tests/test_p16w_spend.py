@@ -9,6 +9,7 @@ per-test tmp ledger (tests/conftest.py sets CC_SPEND_LEDGER, autouse).
 from __future__ import annotations
 
 import json
+import logging
 import multiprocessing
 import os
 import time
@@ -792,3 +793,86 @@ def test_default_inner_factory_matches_production_builders_with_zero_retries(mon
 def test_default_inner_factory_needs_a_key():
     with pytest.raises(ValueError):
         spend.default_inner_factory("generation")
+
+
+# ---------------------------------------------------------------------------
+# Logging boundary (16A-1 merge gate, Codex #1): the ACTUAL anthropic SDK over
+# an httpx.MockTransport (nothing leaves the process). The SDK logs every
+# request's options -- the prompt -- at DEBUG; a metered attempt must emit no
+# log record while it runs, and must restore logging afterwards.
+# ---------------------------------------------------------------------------
+REAL_PRICES_PATH = Path(__file__).resolve().parent.parent / "config" / "api_prices.toml"
+
+
+def sdk_meter(seen: List[str], *, reply: str = "ok", **kwargs: Any) -> SpendMeter:
+    """A meter over today's ChatAnthropic clients whose SDK client sends to a mock transport.
+
+    ``seen`` receives every request body, so a test can prove the real SDK
+    request carried the prompt. Needs ANTHROPIC_API_KEY set (a fake one).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode("utf-8")
+        seen.append(body)
+        return httpx.Response(200, json={
+            "id": "msg_p16_mock", "type": "message", "role": "assistant",
+            "model": json.loads(body)["model"], "content": [{"type": "text", "text": reply}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        })
+
+    def factory(kind: str) -> Any:
+        inner = spend.default_inner_factory(kind)
+        params = dict(inner._client_params)
+        inner.__dict__["_client"] = anthropic.Client(
+            **params,
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(handler),
+                base_url=params.get("base_url") or "https://api.anthropic.com",
+            ),
+        )
+        return inner
+
+    kwargs.setdefault("sleep", lambda s: None)
+    return SpendMeter(load_prices(REAL_PRICES_PATH), None, kwargs.pop("run_limit_eur", 1.0),
+                      inner_factory=factory, **kwargs)
+
+
+@pytest.fixture
+def anthropic_debug_logging():
+    """What ``ANTHROPIC_LOG=debug`` does: the SDK's loggers at DEBUG."""
+    loggers = [logging.getLogger("anthropic"), logging.getLogger("httpx")]
+    before = [lg.level for lg in loggers]
+    for lg in loggers:
+        lg.setLevel(logging.DEBUG)
+    yield
+    for lg, level in zip(loggers, before):
+        lg.setLevel(level)
+
+
+def test_metered_sdk_call_logs_no_prompt_and_restores_logging(monkeypatch, caplog, anthropic_debug_logging):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-tests")
+    caplog.set_level(logging.DEBUG)
+    canary = "P16-CANARY-sdkprompt-" + uuid.uuid4().hex
+    seen: List[str] = []
+    meter = sdk_meter(seen)
+    for client in (meter.generation_llm(), meter.rewrite_llm(), meter.judge_llm()):
+        msg = client.invoke([HumanMessage(content=f"question {canary}")])
+        assert msg.content == "ok"
+    assert len(seen) == 3 and all(canary in body for body in seen)  # the real SDK sent it
+    assert canary not in caplog.text
+    assert {l["kind"] for l in ledger_lines() if l["event"] == "settle"} == {"generation", "rewrite", "judge"}
+    # restored afterwards: SDK debug logging works again outside the call
+    logging.getLogger("anthropic._base_client").debug("after-the-call marker")
+    assert "after-the-call marker" in caplog.text
+
+
+def test_logging_restored_after_a_failed_attempt(caplog):
+    logging.disable(logging.INFO)  # a caller's own threshold survives the call
+    try:
+        fakes = make_fakes(script=[status_error(400)])
+        with pytest.raises(anthropic.APIStatusError):
+            make_meter(fakes).generation_llm().invoke(MESSAGES)
+        assert logging.root.manager.disable == logging.INFO
+    finally:
+        logging.disable(logging.NOTSET)

@@ -179,6 +179,31 @@ def test_private_run_eval_leaks_nothing(tmp_path, capsys, caplog, canaries, priv
     assert str(result["results_path"]).startswith(str(_private_root_in_tmp))
 
 
+def test_private_run_eval_through_the_actual_sdk_logs_no_question(tmp_path, monkeypatch, capsys, caplog, canaries,
+                                                                   private_set, _private_root_in_tmp):
+    """16A-1 merge gate, Codex #1: a private run_eval whose default generation path
+    goes through the ACTUAL anthropic SDK (a spend meter over an httpx.MockTransport,
+    nothing leaves the process) with SDK debug logging on (ANTHROPIC_LOG=debug) emits
+    no question text into captured logging."""
+    from tests.test_p16w_spend import ledger_lines, sdk_meter
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-tests")
+    sdk_logger = logging.getLogger("anthropic")
+    monkeypatch.setattr(sdk_logger, "level", logging.DEBUG)
+    caplog.set_level(logging.DEBUG)
+    path, rows = private_set
+    retrieval, *_ = _fakes(canaries, rows)
+    seen = []
+    ev.run_eval(str(path), retrieve_fn=retrieval.factory(6)("hybrid"), provenance_fn=lambda: dict(PROVENANCE),
+                privacy="private", meter=sdk_meter(seen, reply="I cannot find that in the handbook."))
+    assert seen and canaries.tokens["qstart"] in _normalise("".join(seen))  # the real SDK request carried it
+    assert [l["kind"] for l in ledger_lines() if l["event"] == "settle"] == ["generation"]
+    out = capsys.readouterr()
+    outside = _files_outside(tmp_path, _private_root_in_tmp)
+    assert_no_leak(canaries, out.out, out.err, caplog.text,
+                   *[p.read_text(errors="replace") for p in outside], where="(run_eval, actual SDK)")
+
+
 def test_private_cli_loader_error_prints_type_only(tmp_path, monkeypatch, capsys, canaries):
     bad = tmp_path / "bad.jsonl"
     bad.write_text(json.dumps({"question": canaries.question(0), "type": canaries.value("loader"),

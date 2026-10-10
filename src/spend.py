@@ -106,6 +106,18 @@ reading the ledger or sending anything.
 ``SpendLimitReached`` subclasses ``BaseException`` so the broad
 ``except Exception`` handlers in the eval path cannot turn it into an api
 error row, a fallback, or a retry.
+
+Logging boundary
+----------------
+Every metered attempt runs with ``logging`` disabled process-wide, at every
+level, for the duration of the inner call (:func:`_logging_off`). The
+anthropic SDK logs each request's options -- the messages, i.e. the question,
+its context and, for the judge, the answer -- at DEBUG
+(``_base_client._build_request``), which ``ANTHROPIC_LOG=debug`` or any
+DEBUG-level root logger turns on; report sanitisation cannot reach that output
+(16A-1 merge gate, Codex #1). The eval is sequential, so the global switch is
+safe; it is restored when the call returns or raises. Every live eval call goes
+through a meter (``SpendMeterRequired`` otherwise), so this covers every class.
 """
 
 from __future__ import annotations
@@ -113,6 +125,7 @@ from __future__ import annotations
 import email.utils
 import fcntl
 import json
+import logging
 import math
 import os
 import pwd
@@ -747,6 +760,23 @@ class _MeterCallback(BaseCallbackHandler):
         )
 
 
+@contextmanager
+def _logging_off() -> Iterator[None]:
+    """Disable all logging for the block, then restore the previous setting.
+
+    ``logging.disable(CRITICAL)`` also makes ``Logger.isEnabledFor`` false, so
+    the SDK never even builds its DEBUG request dump. The previous threshold
+    (``logging.root.manager.disable``) is restored, so a caller's own
+    ``logging.disable`` survives and nesting is safe.
+    """
+    previous = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(previous)
+
+
 def _with_handler(config: Optional[RunnableConfig], handler: BaseCallbackHandler) -> RunnableConfig:
     """Return a copy of ``config`` with ``handler`` added to its callbacks."""
     cfg: Dict[str, Any] = dict(config or {})
@@ -787,7 +817,10 @@ class MeteredChatModel(Runnable[Any, BaseMessage]):
             meter._check_latch()
             handler = _MeterCallback(meter, self, attempt)
             try:
-                return self.inner.invoke(input, _with_handler(config, handler), **kwargs)
+                # No third-party log record during the call: the SDK's DEBUG
+                # request dump carries the prompt (module docstring).
+                with _logging_off():
+                    return self.inner.invoke(input, _with_handler(config, handler), **kwargs)
             except Exception as exc:  # SpendLimitReached is BaseException: never here
                 retry, wait = retry_decision(
                     exc, attempt, max_attempts=meter.max_attempts, rand=meter._rand
