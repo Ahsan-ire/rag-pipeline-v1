@@ -38,7 +38,7 @@ def _row(n=0, fam="f0000abcd", **over):
         "schema": 2,
         "id": f"{fam}-{n}",
         "family_id": fam,
-        "question": _q(n),
+        "question": _q(f"{fam}-{n}"),
         "scope": "answer",
         "evidence": [["901.1", "901.2"], ["902.7.3"]],
     }
@@ -130,7 +130,8 @@ def test_public_id_regex_rejects_bad_ids(tmp_path, eval_registry):
 # --- (g) error classes ------------------------------------------------------
 def test_duplicate_id(tmp_path):
     p = _write(tmp_path / "s.jsonl", [_row(0), _row(1), _row(0)])
-    assert _errors(p) == [(3, "id", "duplicate id")]
+    # a repeated row repeats its question too (both are refused, by line)
+    assert _errors(p) == [(3, "id", "duplicate id"), (3, "question", "duplicate question")]
 
 
 @pytest.mark.parametrize(
@@ -458,7 +459,9 @@ def test_cli_invalid_prints_line_field_reason(tmp_path, capsys):
     out, err = capsys.readouterr()
     assert out.splitlines() == [
         "line 2: id: duplicate id",
+        "line 2: question: duplicate question",
         "line 3: gaps[0].keywords[0]: empty keyword",
+        "line 3: scope: scope differs within family",
         "line 4: evidence[0][0]: section not in inventory",
         "line 5: owner_status: unknown status",
     ]
@@ -492,3 +495,70 @@ def test_cli_v1_file(tmp_path, capsys):
     assert cli.main([str(p)]) == 0
     out = capsys.readouterr().out
     assert out.splitlines() == ["schema: 1", "rows: 4", "families: 4", "scopes: answer=2, partial=0, refuse=2"]
+
+
+# --- review fixes (16A-1 code review) -----------------------------------------------
+def _v2_row(rid, fid, q, scope="answer", **extra):
+    row = {"schema": 2, "id": rid, "family_id": fid, "question": q, "scope": scope,
+           "evidence": [] if scope == "refuse" else [["1.1"]]}
+    row.update(extra)
+    return row
+
+
+def _write_rows(tmp_path, rows):
+    import json as _json
+
+    p = tmp_path / "rv.jsonl"
+    p.write_text("".join(_json.dumps(r) + "\n" for r in rows))
+    return p
+
+
+_INV = {"version": 1, "map_sha256": "0" * 64, "sections": ["1.1"], "aliases": []}
+
+
+@pytest.mark.parametrize("bad", [["x"], {"a": 1}, 3])
+def test_non_string_type_scope_and_enums_are_line_errors_not_crashes(tmp_path, bad):
+    from src.eval_schema import SchemaError, load_v2
+
+    for field in ("type", "scope", "register", "owner_status"):
+        row = _v2_row("f0000000a-0", "f0000000a", "synthetic q one")
+        row[field] = bad
+        p = _write_rows(tmp_path, [row])
+        with pytest.raises(SchemaError) as exc:
+            load_v2(p, inventory=_INV)
+        assert any(e[1] == field for e in exc.value.errors), field
+
+
+def test_mixed_scope_family_refused(tmp_path):
+    from src.eval_schema import SchemaError, load_v2
+
+    p = _write_rows(tmp_path, [
+        _v2_row("f0000000a-0", "f0000000a", "synthetic q one"),
+        _v2_row("f0000000a-1", "f0000000a", "synthetic q two", scope="refuse"),
+    ])
+    with pytest.raises(SchemaError) as exc:
+        load_v2(p, inventory=_INV)
+    assert (2, "scope", "scope differs within family") in exc.value.errors
+
+
+def test_duplicate_question_refused_without_text(tmp_path):
+    from src.eval_schema import SchemaError, load_v2
+
+    p = _write_rows(tmp_path, [
+        _v2_row("f0000000a-0", "f0000000a", "P16-CANARY-dupq"),
+        _v2_row("f0000000b-0", "f0000000b", "P16-CANARY-dupq"),
+    ])
+    with pytest.raises(SchemaError) as exc:
+        load_v2(p, inventory=_INV)
+    assert (2, "question", "duplicate question") in exc.value.errors
+    assert "CANARY" not in str(exc.value)
+
+
+def test_deeply_nested_line_is_invalid_json(tmp_path):
+    from src.eval_schema import SchemaError, load_v2
+
+    p = tmp_path / "deep.jsonl"
+    p.write_text("[" * 100000 + "]" * 100000 + "\n")
+    with pytest.raises(SchemaError) as exc:
+        load_v2(p, inventory=_INV)
+    assert exc.value.errors[0][1] == "<row>"

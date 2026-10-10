@@ -148,7 +148,7 @@ def _read_rows(path: Path) -> Tuple[List[Tuple[int, Any]], List[ErrorTuple]]:
             continue
         try:
             obj = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             errors.append((number, "<row>", "invalid JSON"))
             continue
         if not isinstance(obj, dict):
@@ -370,7 +370,7 @@ def _validate_v2_row(
     if not _nonempty_str(row.get("question")):
         errors.append((line, "question", "must be a non-empty string"))
     scope = row.get("scope")
-    if scope not in SCOPES:
+    if not isinstance(scope, str) or scope not in SCOPES:
         errors.append((line, "scope", "unknown scope"))
         scope_ok = None
     else:
@@ -383,12 +383,12 @@ def _validate_v2_row(
                 errors.append((line, f"evidence[{gi}][{si}]", "section not in inventory"))
     if "type" in row:
         rtype = row["type"]
-        if rtype not in TYPE_SCOPES:
+        if not isinstance(rtype, str) or rtype not in TYPE_SCOPES:
             errors.append((line, "type", "unknown type"))
         elif scope_ok is not None and scope_ok not in TYPE_SCOPES[rtype]:
             errors.append((line, "type", "type disagrees with scope"))
     for key, allowed in _ENUMS.items():
-        if key in row and row[key] not in allowed:
+        if key in row and (not isinstance(row[key], str) or row[key] not in allowed):
             reason = "unknown status" if key.endswith("_status") else "unknown value"
             errors.append((line, key, reason))
     if "ambiguous" in row and not isinstance(row["ambiguous"], bool):
@@ -448,6 +448,30 @@ def _check_unique_ids(rows: Sequence[Tuple[int, Dict[str, Any]]], errors: List[E
         seen.add(rid)
 
 
+def _check_families_and_questions(
+    rows: Sequence[Tuple[int, Dict[str, Any]]], errors: List[ErrorTuple]
+) -> None:
+    """One scope per family; no repeated question text within a set.
+
+    A family is one scenario and its paraphrases, so its rows share a scope
+    (report v6 counts eligibility per family). A repeated question would
+    collide in the answer cache and in question-keyed id maps. Each repeat is
+    reported at its own line; no values are printed.
+    """
+    family_scope: Dict[str, Any] = {}
+    seen_questions: set = set()
+    for line, row in rows:
+        fid, scope, question = row.get("family_id"), row.get("scope"), row.get("question")
+        if isinstance(fid, str) and isinstance(scope, str):
+            if fid in family_scope and family_scope[fid] != scope:
+                errors.append((line, "scope", "scope differs within family"))
+            family_scope.setdefault(fid, scope)
+        if isinstance(question, str):
+            if question in seen_questions:
+                errors.append((line, "question", "duplicate question"))
+            seen_questions.add(question)
+
+
 def _resolve_inventory(inventory: Optional[Mapping[str, Any]]) -> frozenset:
     """Inventoried labels from a passed dict, else the committed file (never skipped)."""
     data = load_inventory() if inventory is None else inventory
@@ -464,6 +488,7 @@ def _load_v2_rows(
     for line, row in rows:
         out.append((line, _validate_v2_row(row, line, public, inventoried, errors)))
     _check_unique_ids(out, errors)
+    _check_families_and_questions(out, errors)
     if errors:
         errors.sort(key=lambda e: e[0])
         raise SchemaError(errors)
@@ -517,7 +542,7 @@ def _load_v1_rows(path: Path, privacy: str, rows: Sequence[Tuple[int, Any]]) -> 
         if not _nonempty_str(question):
             errors.append((line, "question", "must be a non-empty string"))
             bad = True
-        if rtype not in V1_TYPES:
+        if not isinstance(rtype, str) or rtype not in V1_TYPES:
             errors.append((line, "type", "unknown type"))
             bad = True
         groups: List[List[str]] = []

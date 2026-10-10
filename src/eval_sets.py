@@ -119,7 +119,7 @@ def has_sealed_marker(path: Any) -> bool:
                 continue
             try:
                 obj = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 if '"sealed"' in line:
                     return True
                 continue
@@ -128,7 +128,7 @@ def has_sealed_marker(path: Any) -> bool:
         return False
     try:
         obj = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return '"sealed"' in text
     if _is_sealed_row(obj):
         return True

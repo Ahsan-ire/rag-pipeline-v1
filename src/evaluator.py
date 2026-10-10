@@ -2554,7 +2554,10 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
             total_errors += sum(1 for a in cache.values() if a["result"] is None)
             answers_by_id = eval_v6.score_answers_v6(rows, cache)
         fams = {r["family_id"] for r in rows}
-        fam_eligible = {r["family_id"] for r in rows if r["scope"] != "refuse"}
+        # Same predicate as eval_v6.family_rates: a family is retrieval-eligible
+        # iff none of its rows is refuse (the schema enforces one scope per family).
+        refuse_fams = {r["family_id"] for r in rows if r["scope"] == "refuse"}
+        fam_eligible = {r["family_id"] for r in rows} - refuse_fams
         sets.append({
             "label": label, "path": path, "sha256": sha, "schema": schema, "cohort": cohort,
             "rows": rows, "ids": {r["question"]: r["id"] for r in rows},
