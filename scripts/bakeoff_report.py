@@ -52,8 +52,10 @@ Phase 16A-1 (items 1, 6, 9; D65, D68) adds:
   control flips are reported apart (C4 only).
 - **Privacy floor.** :func:`run` takes a keyword-only ``privacy`` (no
   default). ``main`` derives the floor = the strictest ``classify`` over every
-  path it opens (reports, sidecars, prod-rank dumps, the expansion cache);
-  sealed input exits 4 before anything else. Without ``--legacy-public`` a
+  path it opens (reports, sidecars, prod-rank dumps, the expansion cache, the
+  ``--controls`` file); sealed input exits 4 before anything else. A controls
+  file has no class of its own, so classify's rule 7 makes every
+  ``--controls`` run private (16A-1 merge gate, Codex #2). Without ``--legacy-public`` a
   ``--prod-ranks`` run (which opens the 0717 cache) floors to private: stdout
   then carries ids and aggregates only, and the manifest is written only under
   ``eval/private/runs/<run id>/`` with ``inputs.json``.
@@ -1611,11 +1613,13 @@ def input_paths(
     report_paths: Sequence[str],
     prod_ranks: Optional[Sequence[str]] = None,
     expansion_cache: Optional[str] = None,
+    controls_path: Optional[str] = None,
 ) -> List[str]:
-    """Every eval input a run opens: reports, their sidecars, dumps, the cache.
+    """Every eval input a run opens: reports, their sidecars, dumps, the cache, controls.
 
     The expansion cache counts whenever ``--prod-ranks`` is given (defaulting
-    to the committed 0717 cache) or ``--expansion-cache`` names one.
+    to the committed 0717 cache) or ``--expansion-cache`` names one. The
+    ``--controls`` file is opened too, so it is part of the floor (item 1).
     """
     paths = list(report_paths)
     paths += [sidecar_path(p) for p in report_paths if os.path.isfile(sidecar_path(p))]
@@ -1623,6 +1627,8 @@ def input_paths(
     cache = expansion_cache or (DEFAULT_EXPANSION_CACHE if prod_ranks else None)
     if cache is not None:
         paths.append(cache)
+    if controls_path is not None:
+        paths.append(controls_path)
     return paths
 
 
@@ -1737,8 +1743,8 @@ def run(
         PrivacyFloorError: ``privacy`` weaker than the inputs' floor.
         C4Error / LegacyArmError: comparability refusals.
     """
-    opened = input_paths(report_paths, prod_ranks, expansion_cache)
-    _eval_sets.refuse_sealed([*opened, *([controls_path] if controls_path else [])])
+    opened = input_paths(report_paths, prod_ranks, expansion_cache, controls_path)
+    _eval_sets.refuse_sealed(opened)
     floor = _eval_sets.floor(opened, legacy_public=legacy_public)
     privacy = check_floor(require_class(privacy), floor)
     show_text = privacy == PUBLIC
@@ -1826,6 +1832,14 @@ def run(
                 inputs.append(_derived_input(path, dump.get("cohorts", []) if is_c4(dump) else []))
             if cache is not None and os.path.isfile(cache):
                 inputs.append(_derived_input(cache, []))
+            if controls_path is not None:
+                # built from the sets its set_sha256 values name (each resolved
+                # in every arm by now, so the baseline's provenance has it)
+                wanted = {sha for sha, _rid in controls or ()}
+                inputs.append(_derived_input(controls_path, [
+                    {"path": d.get("path"), "sha256": d.get("sha256")}
+                    for d in arms[baseline]["sets"].values() if d.get("sha256") in wanted
+                ]))
             # inputs.json before the manifest (16A-1 gate round 5, PT3)
             write_inputs_json(rdir, inputs)
             write_private(target, content)
@@ -1949,9 +1963,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _refuse_heldout(parser, raw)
     args = parser.parse_args(raw)
 
-    opened = input_paths(args.reports, args.prod_ranks, args.expansion_cache)
-    sealed_check = [*opened, *([args.controls] if args.controls else [])]
-    if any(_eval_sets.is_sealed(p) for p in sealed_check):
+    opened = input_paths(args.reports, args.prod_ranks, args.expansion_cache, args.controls)
+    if any(_eval_sets.is_sealed(p) for p in opened):
         print("[bakeoff_report] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
     privacy = _eval_sets.floor(opened, legacy_public=args.legacy_public)

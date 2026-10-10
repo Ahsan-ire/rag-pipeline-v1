@@ -592,7 +592,8 @@ def test_unresolved_controls_are_refused(tmp_path, sets, capsys):
     path = tmp_path / "controls.json"
     path.write_text(json.dumps({"version": 1, "controls": []}), encoding="utf-8")
     rc, out, err = _cli(["--reports", base, cand, "--baseline", "base", "--controls", str(path)], capsys)
-    assert rc == 2 and "non-empty" in err and out == ""
+    # a controls file floors the run to private (merge gate #2): refusal type only
+    assert rc == 2 and "C4Error" in err and out == ""
 
 
 def test_control_flips_are_reported_apart(tmp_path, sets, capsys):
@@ -620,6 +621,59 @@ def test_control_flips_are_reported_apart(tmp_path, sets, capsys):
     )
     assert rc == 0, err
     assert "Controls (1, reported apart)" in text
+
+
+def _controls_file(tmp_path, golden_sha, ids):
+    path = tmp_path / "controls.json"
+    path.write_text(json.dumps({"version": 1, "controls": [{"set_sha256": golden_sha, "ids": ids}]}),
+                    encoding="utf-8")
+    return path
+
+
+def test_controls_file_is_in_the_floor(tmp_path, sets):
+    """16A-1 merge gate, Codex #2: the --controls file is an opened input, so a
+    public caller value over public reports plus a controls file is weaker than
+    the floor (classify rule 7: a controls file is private)."""
+    base = write_arm(tmp_path, "base", sets, BASE_RANKS)
+    cand = write_arm(tmp_path, "cand", sets, CAND_RANKS)
+    controls = _controls_file(tmp_path, sets["tuning"]["sha256"], [gid(sets, 0)])
+    with pytest.raises(PrivacyFloorError):
+        bakeoff_report.run([base, cand], "base", privacy="public", controls_path=str(controls))
+
+
+def test_malformed_control_value_never_reaches_stderr(tmp_path, sets, capsys, caplog):
+    """A duplicated control carrying private text is refused with its type only."""
+    caplog.set_level(logging.DEBUG)
+    base = write_arm(tmp_path, "base", sets, BASE_RANKS)
+    cand = write_arm(tmp_path, "cand", sets, CAND_RANKS)
+    bad = f"{CANARY}-control-value-{TAG} vexing fixture widget text"
+    controls = _controls_file(tmp_path, sets["tuning"]["sha256"], [bad, bad])
+    rc, out, err = _cli(["--reports", base, cand, "--baseline", "base", "--controls", str(controls)], capsys)
+    assert rc == 2 and out == ""
+    assert "C4Error" in err
+    _assert_no_canary(out, err, caplog.text)
+
+
+def test_private_controls_run_records_controls_in_inputs_json_and_passes_precheck(
+    tmp_path, monkeypatch, sets, capsys, _private_root_in_tmp
+):
+    from scripts import scan_leaks
+
+    base = write_arm(tmp_path / "arms", "base", sets, BASE_RANKS)
+    cand = write_arm(tmp_path / "arms", "cand", sets, CAND_RANKS)
+    golden_sha = sets["tuning"]["sha256"]
+    controls = _controls_file(tmp_path, golden_sha, [gid(sets, 0)])
+    rc, out, err = _cli(["--reports", base, cand, "--baseline", "base", "--controls", str(controls),
+                         "--manifest-out", str(tmp_path / "m.json")], capsys)
+    assert rc == 0, err
+    assert "Controls (1, reported apart)" in out and gid(sets, 0) in out
+    assert not (tmp_path / "m.json").exists()
+    (inputs_json,) = list((_private_root_in_tmp / "runs").glob("*/inputs.json"))
+    items = json.loads(inputs_json.read_text(encoding="utf-8"))["inputs"]
+    (entry,) = [i for i in items if i["path"] == os.path.abspath(controls)]
+    assert entry["kind"] == "derived" and entry["sha256"] == eval_sets.sha256_file(controls)
+    assert [s["sha256"] for s in entry["sources"]] == [golden_sha]
+    assert scan_leaks.precheck(set()) == []
 
 
 def test_controls_with_legacy_arms_are_refused(tmp_path, sets):
