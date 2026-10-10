@@ -1911,6 +1911,20 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Merge gate (Codex, reviewed 82e1568, 10 Oct):**
+- **#1 (blocker): SDK debug logging.** The anthropic SDK logs every request's options at DEBUG (`_base_client._build_request`): the messages, so the question, its context and, for the judge, the answer. `ANTHROPIC_LOG=debug` or any DEBUG-level root logger turns it on, and no report sanitiser can reach that output. Every metered attempt now runs with `logging` disabled process-wide, at every level, for the duration of the SDK call (`spend._logging_off`). The previous threshold is restored when the call returns or raises.
+  - It applies to every class, not only private runs. Every live eval call is metered (`SpendMeterRequired` otherwise), so a wrong class cannot skip the boundary.
+  - A public eval run loses only the SDK's own debug lines. To debug a request, use `pipeline query`, which is unmetered.
+  - The eval is sequential, so a process-wide switch is safe.
+  - Tested with the actual SDK: a real `ChatAnthropic` over `httpx.MockTransport`, both directly and through a private `run_eval`'s default generation path.
+- **#2: controls outside the floor.** `bakeoff_report` opened the `--controls` file without counting it in the floor, so public reports plus a private controls file stayed public, and a malformed control id reached stderr through the public error path. Now:
+  - the controls file is in `input_paths`, so it counts in the floor and in the sealed check (run and CLI);
+  - a private run lists it in `inputs.json` as a `derived` input whose sources are the sets its `set_sha256` values name.
+  - **Disclosed:** a controls file is neither a registered set nor a known derived kind, so classify rule 7 makes every `--controls` run private: ids only, with the manifest under `eval/private/runs/`. P6 (16A-2), which chooses controls, decides whether a controls file bound to real public rows may classify public.
+- **#3: commit and tag framing.** `--merge-gate` read commit and tag messages from one `git log` / `for-each-ref` stream split on `\x1e`. A message can hold that byte, and the normaliser treats it as whitespace, so a needle spaced with it was split across records and missed. Messages are now read object by object through the size-delimited `git cat-file --batch`, honouring the object's `encoding` header. Hit labels are unchanged (`commit <sha>:<message line>`).
+
+Each fix has a regression test that fails on fefb206.
+
 **Gate round 7 (10 Oct):** a narrow re-test of round 6 found that "cannot parse" counted as "no question keys". It also found that artifact entries were bound only by the header's self-declared sha, and that crafted input could crash the precheck with a traceback. Fixed:
 - A traced non-`.md` file must parse as duplicate-key-free JSON. A `.jsonl`, a BOM, a truncated file or a duplicate key fails closed and is never traced. Rule 5 in `classify` also rejects duplicate keys, because `json.loads` keeps the last one.
 - An artifact (under `artifacts/` or as a run input) is accepted only if every header set is approved and found on disk at its sha256. Every entry key and `question_sha256` must also be exactly those of a real row of those sets (`evaluator._artifact_keys`). Free text can then sit only in the rewrites, intent and model of real rows: model output for a real question, which spec (i) accepts.
@@ -2036,6 +2050,20 @@ Item 9:
 - the three answer_fn status wrappers become `_status_answer`.
 
 **Re-deferred:** the status recompute in `run_eval_matrix` (it touches a canonical guard), and `test_h_projection`'s subprocess cost. The new P0 lock runs in-process and adds no subprocess.
+
+**Merge gate (Codex, reviewed 82e1568, 10 Oct):**
+- **#4: coverage of the eligible set.** C4 checked that the two arms agree, not that they cover the eligible set. One eligible row dropped, or swapped for another id, identically in both arms passed. Each cohort block now binds its eligible roster:
+  - `eligible` is the count of rows whose scope is not `refuse` (the rows every retrieval mode scores; for v1, non-refusal rows);
+  - `eligible_fp` is the sha256 of the sorted eligible ids.
+
+  `index_rows` refuses a sidecar or dump in which any (set, mode) group is not exactly that roster, and the identity check compares both fields between arms. Sidecars and dumps written before this fix lack the fields and are refused, so earlier 16A-1 outputs must be regenerated before they are compared.
+- **#5: v6 reports in the comparison.** `bakeoff_report` read only v5 provenance, ablation and detail sections, so an actual v6 report parsed into zero sets. Now:
+  - a v6 report gives its sets (label, path and sha256) from its `## Cohort` block, and the held-out exclusion still applies;
+  - its ranks come from its rows sidecar, which it always needs: without one it is refused, `--legacy` included;
+  - the selection table is the sidecar's row-level strict/related@6;
+  - S5/N4 role coverage is `n/a`, because v6 records no retrieved sections.
+
+  Classify rule 5 now also reads a v6 report's cohort sha256s, so a v6 report built only from registered public sets classifies public, as a v5 report does. Tested end to end on two arms written by the actual v6 runner.
 
 **Gate round 1 (10 Oct):**
 - One function, `_run_expansion_identity`, builds the expansion identity for both the v5 and v6 paths. A live run records the rewrite identity (model, prompt sha256, config hash) plus `expansion_artifact.live_digest`, which keeps rewrite order.
