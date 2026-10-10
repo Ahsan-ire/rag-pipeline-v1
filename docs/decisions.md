@@ -1911,8 +1911,17 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Gate round 6 (10 Oct):** round 5's source tracing trusted `inputs.json` metadata. Six synthetic probes passed private text that the round-4 code refused. Tracing now requires all of the following:
+- the recorded file exists with its recorded sha256 (a missing or drifted file is accepted only as a needle source or a legacy entry);
+- every recorded source that exists on disk hashes to its recorded sha256;
+- a traced file with a `question`/`questions` key anywhere must `classify` public (rule 5 checks every question string).
+
+The artifact exemption now uses the exact artifact schema (`expansion_artifact._validate`), so text under any other key fails it. Files under `eval/private/artifacts/` are no longer skipped: each must be a valid artifact built only from approved sources, so an interrupted build's unreferenced artifact is still checked. Each probe is a regression test, and each fails on the round-5 scanner. An end-to-end private `bakeoff_report --prod-ranks` run passes the precheck and failed it before round 5.
+- **Residual (instruction-enforced, like a deleted run directory):** a hand-edited `inputs.json` that names approved sources for a sha-matching file without question keys (a `.md`, or JSON holding text under other keys) is trusted. Only the eval tools write `inputs.json`, and they record the true sources.
+- **Pre-existing, disclosed:** a file under `runs/<id>/` that no `inputs.json` lists is not refused (the same at the round-4 head).
+
 **Gate round 5 (10 Oct):**
-- The merge-gate precheck accepts a `derived` input whose recorded sources are all approved: needle sources, registered public sets or legacy entries. Before, a private `bakeoff_report --prod-ranks` run (public arm reports, their sidecars, `w_sweep` dumps) could pass only if its run directory was deleted. An artifact-shaped input (a JSON object with `entries`) is still accepted only when it is sha256-keyed and has no question key, however its sources trace.
+- The merge-gate precheck accepts a `derived` input whose recorded sources are all approved: needle sources, registered public sets or legacy entries. Before, a private `bakeoff_report --prod-ranks` run (public arm reports, their sidecars, `w_sweep` dumps) could pass only if its run directory was deleted. An artifact-shaped input (a JSON object with `entries`) is still accepted only when it is sha256-keyed and has no question key, however its sources trace. Round 6 found this held only when the recorded sha matched, and fixed it.
 - The sha256-keyed artifact exemption no longer requires `eval/private/artifacts/`: a public-built artifact replayed in a private run (D68) passes.
 - `w_sweep`, `bakeoff_report --manifest-out` and a private `build:` now write `inputs.json` before their dump, manifest or artifact. This makes the round-4 claim true on every path; a `build:` rewrites `inputs.json` with the artifact's entry afterwards.
 - **Pending (owner machine):** `eval/legacy_public.json` lists only the 0717 cache. The pre-16A `eval/bakeoff/` artifacts named by rule 6 are on the owner's machine, unread here (do-not-read clause), and are added there.
@@ -2031,7 +2040,7 @@ Item 9:
 - a `build:` over duplicate input sets;
 - a public `build:` target that already exists and is not an expansion artifact, which protects the registry, the legacy list and the caches.
 
-**Gate round 5 (10 Oct):** a private `build:` refuses a target that already exists, before any call. A private artifact is never overwritten, so an earlier run's recorded replay identity cannot change under it.
+**Gate round 5 (10 Oct):** a private `build:` refuses a target that already exists, before any call. Since round 6 the write itself is exclusive too (`save_artifact(..., exclusive=True)` hard-links the temp file into place, which fails if the name exists), so two builds racing for one name cannot overwrite each other. A private artifact is never overwritten, so an earlier run's recorded replay identity cannot change under it.
 
 **Gate round 4 (10 Oct):**
 - A metered default generator is not retried by `generate_answers`, because the meter's loop owns retries. Before, one question could cost up to 12 worst-case reservations.
@@ -2124,6 +2133,8 @@ Wiring is eval-only:
 - `SpendMeterError` subclasses `BaseException`, like `SpendLimitReached`. No broad `except Exception`, present or future, can degrade a meter failure. The per-site re-raises in `expand_query`, `judge_answer` and `generate_answers` are gone. The CLI maps it to exit 2, printing the type only on a non-public run.
 - `expand_query` and `get_rewrite_llm` use `generator.api_key_usable()`, and the duplicate guard in `judge_answers` is gone (`judge_answer` refuses before any call).
 - The chunker's absorption side channel records a sub-chunk's position only when `find()` lands inside its own segment; otherwise it records a find-miss. Production chunks and pages are unchanged (byte-identity tests).
+- **Disclosed (round 6):** for such a sub-chunk the production `page_start`/`page_end` still come from the out-of-segment hit, so the side channel (find-miss, no credit) and the page metadata disagree. Changing production pages is outside 16A-1: the P0 and H0 locks and the 1,470-chunk canary pin them.
+- Round 6 removed a duplicate, unreachable meter handler around `floor()` in the CLI.
 
 **Gate round 4 (10 Oct):**
 - `judge_answer`'s default `llm_fn` raises `SpendMeterRequired` when a usable key is set, matching `judge_answers`.

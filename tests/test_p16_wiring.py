@@ -593,16 +593,16 @@ def test_private_build_writes_inputs_json_before_the_artifact_and_never_overwrit
     seen = []
     real_save = ea.save_artifact
 
-    def spy(target, artifact):
+    def spy(target, artifact, **kw):
         runs = list((_private_root_in_tmp / "runs").glob("*/inputs.json"))
-        seen.append(len(runs))
-        return real_save(target, artifact)
+        seen.append((len(runs), kw.get("exclusive")))
+        return real_save(target, artifact, **kw)
 
     monkeypatch.setattr(ea, "save_artifact", spy)
     common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
                   privacy="private", skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
     r = ev.run_eval_matrix([("golden", str(priv))], expansion="build:exp.json", **common)
-    assert seen == [1]
+    assert seen == [(1, True)]  # inputs.json first; private writes are exclusive
     inputs = _json.loads((Path(r["results_path"]).parent / "inputs.json").read_text())["inputs"]
     assert any(i["kind"] == "derived" and Path(i["path"]).name == "exp.json" for i in inputs)
     calls = []

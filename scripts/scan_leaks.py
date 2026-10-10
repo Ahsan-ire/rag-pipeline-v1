@@ -627,48 +627,62 @@ def _pr_items(pr: int, gh_runner: GhRunner) -> List[Tuple[str, str]]:
     return items
 
 
-def _is_sha_keyed_artifact(path: Path) -> bool:
-    """A JSON artifact keyed by question sha256 that carries no ``question`` key anywhere.
+def _load_json(path: Path) -> Any:
+    """Parsed JSON at ``path``, or ``None`` if unreadable or not JSON."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        return None
 
-    Where it lives does not matter (16A-1 gate round 5): a public-built
+
+def _has_question_key(obj: Any) -> bool:
+    """True when a ``question``/``questions`` key sits anywhere in ``obj``."""
+    if isinstance(obj, dict):
+        return any(k in ("question", "questions") or _has_question_key(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(_has_question_key(v) for v in obj)
+    return False
+
+
+def _is_sha_keyed_artifact(path: Path) -> bool:
+    """A schema-valid expansion artifact (``src.expansion_artifact``).
+
+    The artifact schema is exact (no extra keys at any level; entries carry
+    only ``question_sha256``, ``rewrites``, ``intent`` and ``status``), so a
+    file cannot hide question text under another key and still pass (16A-1
+    gate round 6). Where it lives does not matter (round 5): a public-built
     artifact replayed in a private run is as content-free as one under
     ``eval/private/artifacts/``.
     """
+    from src.expansion_artifact import ExpansionArtifactError, _validate
+
     if not path.is_file():
         return False
+    doc = _load_json(path)
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
+        _validate(doc)
+    except ExpansionArtifactError:
         return False
-
-    def has_question_key(obj: Any) -> bool:
-        if isinstance(obj, dict):
-            return any(k in ("question", "questions") or has_question_key(v) for k, v in obj.items())
-        if isinstance(obj, list):
-            return any(has_question_key(v) for v in obj)
-        return False
-
-    if not isinstance(doc, dict) or has_question_key(doc):
-        return False
-    entries = doc.get("entries")
-    items = list(entries.values()) if isinstance(entries, dict) else entries
-    if not isinstance(items, list) or not items:
-        return False
-    for item in items:
-        if not isinstance(item, dict) or not any(
-            "sha256" in k and isinstance(v, str) and _HEX64.match(v) for k, v in item.items()
-        ):
-            return False
     return True
 
 
 def _has_entries(path: Path) -> bool:
     """True when ``path`` is a JSON object with an ``entries`` key (artifact-shaped)."""
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return False
+    doc = _load_json(path)
     return isinstance(doc, dict) and "entries" in doc
+
+
+def _sources_consistent(listed: Sequence[Tuple[str, str]]) -> bool:
+    """Every recorded source that exists on disk hashes to its recorded sha256."""
+    for s_path, s_sha in listed:
+        resolved = _resolve_recorded(s_path)
+        if resolved.is_file():
+            try:
+                if eval_sets.sha256_file(resolved) != s_sha:
+                    return False
+            except OSError:
+                return False
+    return True
 
 
 def _artifact_header_shas(path: Path) -> List[Tuple[str, str]]:
@@ -693,7 +707,15 @@ def precheck(source_shas: Set[str]) -> List[str]:
     ok_source = source_shas | public | legacy
     for path in sorted(p for p in root.rglob("*") if p.is_file() or p.is_symlink()):
         rel = path.relative_to(root)
-        if rel.parts[0] in ("runs", "artifacts"):
+        if rel.parts[0] == "runs":
+            continue
+        if rel.parts[0] == "artifacts":
+            # Every file here must be a schema-valid artifact built only from
+            # approved sources, referenced by a run or not (an interrupted
+            # build leaves one unreferenced; 16A-1 gate round 6).
+            header = _artifact_header_shas(path) if _is_sha_keyed_artifact(path) else None
+            if header is None or not all(h_sha in ok_source for _, h_sha in header):
+                offenders.append(str(path))
             continue
         try:
             sha = eval_sets.sha256_file(path)
@@ -733,20 +755,35 @@ def precheck(source_shas: Set[str]) -> List[str]:
             ]
             resolved = _resolve_recorded(rec_path)
             exempt = sha in legacy
-            if not exempt and resolved.is_file() and eval_sets.sha256_file(resolved) == sha:
+            # The recorded file must exist with the recorded sha256 for any
+            # check of its content (and so any acceptance by tracing) to mean
+            # anything; a missing or drifted file is accepted only as a needle
+            # source or a legacy entry (16A-1 gate round 6).
+            present = resolved.is_file() and eval_sets.sha256_file(resolved) == sha
+            traced = False
+            if not exempt and present:
                 if _is_sha_keyed_artifact(resolved):
                     exempt = True
                     listed += _artifact_header_shas(resolved)
                 elif _has_entries(resolved):
-                    # artifact-shaped but not content-free: never accepted,
+                    # artifact-shaped but not a valid artifact: never accepted,
                     # however its sources trace
                     offenders.append(f"{inputs_json} -> {rec_path}")
                     continue
-            # A derived input whose every recorded source is approved (needle,
-            # registered public or legacy) holds only text from those sources,
-            # which the needle scan already covers (16A-1 gate round 5: arm
-            # reports, their sidecars and w_sweep dumps in a bakeoff run).
-            traced = bool(listed) and all(s_sha in ok_source for _, s_sha in listed)
+                else:
+                    # A derived input whose every recorded source is approved
+                    # (needle, registered public or legacy) and consistent on
+                    # disk holds only text from those sources, which the needle
+                    # scan covers (round 5: bakeoff arm reports, sidecars and
+                    # w_sweep dumps). A file with question keys must also
+                    # classify public (rule 5 checks every question string).
+                    traced = (
+                        bool(listed)
+                        and all(s_sha in ok_source for _, s_sha in listed)
+                        and _sources_consistent(listed)
+                        and (not _has_question_key(_load_json(resolved))
+                             or eval_sets.classify(resolved) == PUBLIC)
+                    )
             if not exempt and not traced and sha not in source_shas:
                 offenders.append(f"{inputs_json} -> {rec_path}")
             for s_path, s_sha in listed:

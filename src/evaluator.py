@@ -2785,7 +2785,7 @@ def _build_expansion_artifact(
     # symlink; the remaining check-to-open race is a disclosed residual, D65).
     if private:
         target = str(_privacy.artifact_path(os.path.basename(target)))
-    digest = save_artifact(target, artifact)
+    digest = save_artifact(target, artifact, exclusive=private)
     return {"path": target, "sha256": digest}
 
 

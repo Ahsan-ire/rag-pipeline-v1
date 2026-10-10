@@ -1164,3 +1164,26 @@ def test_private_bakeoff_writes_inputs_json_before_the_manifest(tmp_path, monkey
                        "--expansion-cache", str(cache), "--manifest-out", str(tmp_path / "m.json")], capsys)
     assert rc == 0, err
     assert ("m.json", True) in seen and all(ok for _, ok in seen)
+
+
+def test_private_bakeoff_run_passes_the_merge_gate_precheck(tmp_path, monkeypatch, sets, capsys,
+                                                            _private_root_in_tmp):
+    """Round 5 PT1 end to end: a real private --prod-ranks run over registered
+    public sets, with the (legacy-listed) expansion cache, passes the precheck."""
+    from scripts import scan_leaks
+
+    base = write_arm(tmp_path / "arms", "base", sets, BASE_RANKS)
+    cand = write_arm(tmp_path / "arms", "cand", sets, CAND_RANKS)
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "base.json").write_text(json.dumps(_dump(sets, BASE_RANKS)), encoding="utf-8")
+    (dumps / "cand.json").write_text(json.dumps(_dump(sets, CAND_RANKS)), encoding="utf-8")
+    cache = tmp_path / "cache.json"
+    cache.write_text("{}", encoding="utf-8")
+    rc, _, err = _cli(["--reports", base, cand, "--baseline", "base",
+                       "--prod-ranks", str(dumps / "base.json"), str(dumps / "cand.json"),
+                       "--expansion-cache", str(cache), "--manifest-out", str(tmp_path / "m.json")], capsys)
+    assert rc == 0, err
+    assert list((_private_root_in_tmp / "runs").glob("*/inputs.json"))
+    monkeypatch.setattr(scan_leaks, "_legacy_shas", lambda: {eval_sets.sha256_file(cache)})
+    assert scan_leaks.precheck(set()) == []

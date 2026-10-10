@@ -320,7 +320,7 @@ def artifact_bytes(artifact: Mapping[str, Any]) -> bytes:
     return (text + "\n").encode("utf-8")
 
 
-def save_artifact(path: Any, artifact: Mapping[str, Any]) -> str:
+def save_artifact(path: Any, artifact: Mapping[str, Any], *, exclusive: bool = False) -> str:
     """Validate and atomically write ``artifact`` to ``path``; return its digest.
 
     The artifact is validated first (a malformed one is never written). The
@@ -329,8 +329,20 @@ def save_artifact(path: Any, artifact: Mapping[str, Any]) -> str:
     file may live (private builds under ``eval/private/artifacts/``) is the
     caller's decision.
 
+    Args:
+        path: destination file.
+        artifact: the artifact dict.
+        exclusive: never replace an existing file. The temp file is
+            hard-linked into place, which fails atomically if ``path`` exists,
+            so two private builds racing for one name cannot overwrite each
+            other (16A-1 gate round 6).
+
     Returns:
         The written file's sha256 (equal to :func:`artifact_digest`).
+
+    Raises:
+        ExpansionArtifactError: malformed artifact, a symlinked destination,
+            or (``exclusive``) an existing destination.
     """
     _validate(artifact)
     data = artifact_bytes(artifact)
@@ -348,7 +360,13 @@ def save_artifact(path: Any, artifact: Mapping[str, Any]) -> str:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        if exclusive:
+            try:
+                os.link(tmp, target)
+            except FileExistsError:
+                raise ExpansionArtifactError("artifact destination already exists") from None
+        else:
+            os.replace(tmp, target)
     finally:
         if tmp.exists() and not tmp.is_symlink():
             tmp.unlink()

@@ -402,7 +402,20 @@ def test_precheck_refuses_questions_input_not_a_source(repo, _private_root_in_tm
     assert sl.main(["--merge-gate", "--base", "base", "--repo", str(repo), "--needles", str(q)]) == 0
 
 
-def _legacy_and_artifact(repo: Path, root: Path, sets, *, artifact_doc=None):
+def _real_artifact(path: Path, inputs) -> Path:
+    """A schema-valid expansion artifact (synthetic rewrites) built from ``inputs``."""
+    from src.expansion_artifact import build_artifact, save_artifact
+    from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
+
+    art = build_artifact([("r-5", "synthetic widget")],
+                         lambda q: Expansion(q, ("alpha beta",), REWRITE_MODEL, STATUS_LIVE),
+                         [{"path": p, "sha256": h, "kind": "questions"} for p, h in inputs])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_artifact(path, art)
+    return path
+
+
+def _legacy_and_artifact(repo: Path, root: Path, sets, *, artifact_doc=None, artifact_inputs=None):
     cache = repo / "eval" / "w_cache.json"
     cache.write_text(json.dumps({"entries": {"k": {"rewrites": ["zz"]}}}), encoding="utf-8")
     (repo / "eval" / "legacy_public.json").write_text(
@@ -411,12 +424,11 @@ def _legacy_and_artifact(repo: Path, root: Path, sets, *, artifact_doc=None):
     )
     priv_sha = eval_sets.sha256_file(sets["private"])
     art = root / "artifacts" / "expansion.json"
-    art.parent.mkdir(parents=True)
-    doc = artifact_doc or {
-        "inputs": [{"path": "eval/private/sets/dev.jsonl", "sha256": priv_sha}],
-        "entries": [{"id": "r-5", "question_sha256": "a" * 64, "rewrites": ["alpha beta"]}],
-    }
-    art.write_text(json.dumps(doc), encoding="utf-8")
+    if artifact_doc is None:
+        _real_artifact(art, artifact_inputs or [("eval/private/sets/dev.jsonl", priv_sha)])
+    else:
+        art.parent.mkdir(parents=True)
+        art.write_text(json.dumps(artifact_doc), encoding="utf-8")
     _inputs(root, "run-ok", [
         {"path": "eval/w_cache.json", "sha256": eval_sets.sha256_file(cache), "kind": "derived", "sources": []},
         {"path": "eval/private/artifacts/expansion.json", "sha256": eval_sets.sha256_file(art), "kind": "derived",
@@ -441,9 +453,7 @@ def test_precheck_refuses_artifact_with_question_text(repo, _private_root_in_tmp
 
 
 def test_precheck_refuses_artifact_from_unregistered_source(repo, _private_root_in_tmp, sets):
-    doc = {"inputs": [{"path": "eval/private/x.jsonl", "sha256": "b" * 64}],
-           "entries": [{"id": "r-5", "question_sha256": "a" * 64}]}
-    _legacy_and_artifact(repo, _private_root_in_tmp, sets, artifact_doc=doc)
+    _legacy_and_artifact(repo, _private_root_in_tmp, sets, artifact_inputs=[("eval/private/x.jsonl", "b" * 64)])
     with pytest.raises(sl.ScanRefusal) as exc:
         sl.merge_gate("base", repo=repo)
     assert exc.value.code == 7 and any(p.endswith("eval/private/x.jsonl") for p in exc.value.paths)
@@ -542,12 +552,7 @@ def test_precheck_passes_derived_inputs_traced_to_approved_sources(repo, _privat
 def test_precheck_accepts_sha_keyed_artifact_outside_the_artifacts_dir(repo, tmp_path, _private_root_in_tmp, sets):
     """PT2: a public-built, content-free artifact replayed in a private run passes."""
     pub_sha = eval_sets.sha256_file(sets["public"])
-    art = tmp_path / "probes" / "art_pub.json"
-    art.parent.mkdir()
-    art.write_text(json.dumps({
-        "inputs": [{"path": str(sets["public"]), "sha256": pub_sha}],
-        "entries": [{"id": "r-1", "question_sha256": "a" * 64, "rewrites": ["alpha"]}],
-    }), encoding="utf-8")
+    art = _real_artifact(tmp_path / "probes" / "art_pub.json", [(str(sets["public"]), pub_sha)])
     _inputs(_private_root_in_tmp, "run-art", [
         {"path": str(art), "sha256": eval_sets.sha256_file(art), "kind": "derived", "sources": []},
     ])
@@ -566,3 +571,76 @@ def test_precheck_refuses_question_bearing_artifact_even_when_traced(repo, _priv
          "sources": [{"path": str(sets["private"]), "sha256": priv_sha}]},
     ])
     assert any(o.endswith("exp.json") for o in sl.precheck(sl.build_needles(sl.collect_sources()).source_shas))
+
+
+# --- gate round 6: tracing trusts no unverified metadata --------------------------
+UNREG = "vorsk tallimer quentish obbleby carrowen fintle spadgett murrable"
+
+
+def _offenders(sets):
+    return sl.precheck(sl.build_needles(sl.collect_sources()).source_shas)
+
+
+def _derived(root: Path, run: str, path: Path, sources, sha=None):
+    _inputs(root, run, [{"path": str(path), "sha256": sha or eval_sets.sha256_file(path), "kind": "derived",
+                         "sources": [{"path": p, "sha256": h} for p, h in sources]}])
+
+
+@pytest.mark.parametrize("doc", [
+    {"rows": [{"id": "x", "question": UNREG}]},          # probe A: question key, claims a public source
+    [{"question": UNREG}],                                 # probe F: a JSON list
+])
+def test_traced_file_with_question_text_must_classify_public(repo, _private_root_in_tmp, sets, doc):
+    path = _private_root_in_tmp / "runs" / "run-a" / "dump.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    _derived(_private_root_in_tmp, "run-a", path, [(str(sets["public"]), eval_sets.sha256_file(sets["public"]))])
+    assert any(o.endswith("dump.json") for o in _offenders(sets))
+
+
+def test_traced_source_path_must_hash_to_its_recorded_sha(repo, tmp_path, _private_root_in_tmp, sets):
+    """Probe B: a source path naming another file, carrying the public sha."""
+    other = tmp_path / "other.jsonl"
+    other.write_text(json.dumps({"question": UNREG}) + "\n", encoding="utf-8")
+    report = _private_root_in_tmp / "runs" / "run-b" / "r.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# arm\n", encoding="utf-8")
+    _derived(_private_root_in_tmp, "run-b", report, [(str(other), eval_sets.sha256_file(sets["public"]))])
+    assert any(o.endswith("r.md") for o in _offenders(sets))
+
+
+def test_missing_or_drifted_derived_file_is_never_traced(repo, _private_root_in_tmp, sets):
+    """Probes C and D: a missing file, and a question-bearing artifact whose recorded sha drifted."""
+    pub = [(str(sets["public"]), eval_sets.sha256_file(sets["public"]))]
+    _derived(_private_root_in_tmp, "run-c", Path("/nonexistent/exp.json"), pub, sha="d" * 64)
+    assert any(o.endswith("exp.json") for o in _offenders(sets))
+    art = _private_root_in_tmp / "runs" / "run-d" / "exp.json"
+    art.parent.mkdir(parents=True)
+    art.write_text(json.dumps({"entries": [{"question_sha256": "a" * 64, "question": UNREG}]}), encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-c", [])
+    _derived(_private_root_in_tmp, "run-d", art, pub, sha="e" * 64)
+    assert any(o.endswith("exp.json") for o in _offenders(sets))
+
+
+def test_artifact_exemption_needs_the_exact_schema(repo, tmp_path, _private_root_in_tmp, sets):
+    """Probe E: text under keys other than question/questions is not content-free."""
+    a = tmp_path / "anywhere" / "a.json"
+    a.parent.mkdir()
+    a.write_text(json.dumps({"entries": [{"question_sha256": "a" * 64, "q": UNREG, "prompt": UNREG}]}),
+                 encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-e", [{"path": str(a), "sha256": eval_sets.sha256_file(a),
+                                              "kind": "derived", "sources": []}])
+    assert any(o.endswith("a.json") for o in _offenders(sets))
+
+
+def test_unreferenced_files_under_artifacts_are_checked(repo, _private_root_in_tmp, sets):
+    """Probe G (artifacts/): an interrupted build's orphan must still be a valid
+    artifact from approved sources; anything else there is refused."""
+    priv_sha = eval_sets.sha256_file(sets["private"])
+    _real_artifact(_private_root_in_tmp / "artifacts" / "ok.json", [(str(sets["private"]), priv_sha)])
+    assert _offenders(sets) == []
+    (_private_root_in_tmp / "artifacts" / "stray.jsonl").write_text(json.dumps({"question": UNREG}) + "\n")
+    _real_artifact(_private_root_in_tmp / "artifacts" / "bad.json", [("x.jsonl", "b" * 64)])
+    offenders = _offenders(sets)
+    assert any(o.endswith("stray.jsonl") for o in offenders) and any(o.endswith("bad.json") for o in offenders)
+    assert not any(o.endswith("ok.json") for o in offenders)
