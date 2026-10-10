@@ -1,0 +1,8 @@
+{"question": "What does the invented Widget Registration Act require for a grommet transfer?", "expected_sections": ["91.2"], "type": "direct"}
+{"question": "How long is the synthetic sprocket notice period under the fixture rules?", "expected_sections": ["91.3.1", "91.3"], "type": "direct"}
+{"question": "Which form does a fictional cog vendor complete before closing?", "expected_sections": ["92.1"], "type": "exact_token"}
+{"question": "When must the imaginary flange certificate be lodged with the made-up registry?", "expected_sections": ["92.4.2"], "type": "direct"}
+{"question": "What is the synthetic doohickey fee for a test conveyance?", "expected_sections": ["93.1"], "type": "exact_token"}
+{"question": "Can the fixture handbook tell me tomorrow's weather in a fictional town?", "expected_sections": [], "type": "refusal"}
+{"question": "What is the price of an invented gizmo at a pretend market?", "expected_sections": [], "type": "refusal"}
+{"question": "How do I appeal an imaginary planning refusal for a toy shed?", "expected_sections": [], "type": "refusal"}
