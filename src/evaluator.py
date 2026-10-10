@@ -551,6 +551,19 @@ def _normalise_answer(res: Any) -> Tuple[str, str]:
     return res["answer"], status
 
 
+def _status_answer(res: Any) -> Dict[str, Any]:
+    """The one answer_fn status wrapper (D62 follow-up, D68 item 9).
+
+    Maps a generation result -- a ``generate_with_sources`` dict, a legacy str,
+    or ``None`` for a generation that raised -- to the ``{"answer",
+    "generation_status"}`` shape ``evaluate_refusals`` scores, via
+    ``_normalise_answer`` (missing status -> ``unknown``, unknown vocabulary ->
+    ``incomplete``, ``None`` -> ``""`` with status ``error``).
+    """
+    text, status = _normalise_answer(res)
+    return {"answer": text, "generation_status": status}
+
+
 def _status_counts(statuses: Sequence[str]) -> Dict[str, int]:
     """Count generation statuses, zero-filled over incomplete/unknown/error."""
     counts: Dict[str, int] = {
@@ -618,11 +631,7 @@ def evaluate_refusals(
         def answer_fn(question: str) -> Dict[str, Any]:
             """Retrieve via the once-built store/BM25 index, then generate."""
             results = default_retrieve_fn(question)
-            res = generate_with_sources(question, results)
-            return {
-                "answer": res["answer"],
-                "generation_status": res.get("generation_status", STATUS_UNKNOWN),
-            }
+            return _status_answer(generate_with_sources(question, results))
 
     per_question: List[Dict[str, Any]] = []
     refused = 0
@@ -1584,13 +1593,11 @@ def run_eval(
                 generation status (H1c) so the refusal scorer can exclude
                 incomplete drafts.
                 """
-                res = generate_with_sources(
-                    question, retrieve_fn(question, top_k=top_k), **gen_kwargs
+                return _status_answer(
+                    generate_with_sources(
+                        question, retrieve_fn(question, top_k=top_k), **gen_kwargs
+                    )
                 )
-                return {
-                    "answer": res["answer"],
-                    "generation_status": res.get("generation_status", STATUS_UNKNOWN),
-                }
 
         refusals = evaluate_refusals(
             golden, answer_fn=answer_fn, top_k=top_k, persist_directory=persist_directory
@@ -2100,9 +2107,7 @@ def run_eval_matrix(
                 # H1c: also carries the generation status (an errored row is
                 # status "error"; an incomplete one is excluded from the
                 # accuracy denominator by evaluate_refusals).
-                cached = _a.get(question) or {}
-                text, status = _normalise_answer(cached.get("result"))
-                return {"answer": text, "generation_status": status}
+                return _status_answer((_a.get(question) or {}).get("result"))
 
             refusals = evaluate_refusals(golden, answer_fn=_answer_fn)
 
