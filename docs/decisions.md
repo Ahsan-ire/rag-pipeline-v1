@@ -1947,7 +1947,8 @@ The artifact exemption now uses the exact artifact schema (`expansion_artifact._
 - The merge-gate precheck accepts a `derived` input whose recorded sources are all approved: needle sources, registered public sets or legacy entries. Before, a private `bakeoff_report --prod-ranks` run (public arm reports, their sidecars, `w_sweep` dumps) could pass only if its run directory was deleted. An artifact-shaped input (a JSON object with `entries`) is still accepted only when it is sha256-keyed and has no question key, however its sources trace. Round 6 found this held only when the recorded sha matched, and fixed it.
 - The sha256-keyed artifact exemption no longer requires `eval/private/artifacts/`: a public-built artifact replayed in a private run (D68) passes.
 - `w_sweep`, `bakeoff_report --manifest-out` and a private `build:` now write `inputs.json` before their dump, manifest or artifact. This makes the round-4 claim true on every path; a `build:` rewrites `inputs.json` with the artifact's entry afterwards.
-- **Pending (owner machine):** `eval/legacy_public.json` lists only the 0717 cache. The pre-16A `eval/bakeoff/` artifacts named by rule 6 are on the owner's machine, unread here (do-not-read clause), and are added there.
+- **Done (10 Oct, orchestrator on the owner's machine, `fefb206`):** `eval/legacy_public.json` gains sha256 entries for the 7 pre-16A `eval/bakeoff/` artifacts named by rule 6 (paths and hashes only).
+- **Residual (not fixed in 16A-1):** LangSmith tracing (`langsmith` 0.9.7 is installed with LangChain) would send prompts, including corpus and private question text, to a third party if `LANGSMITH_TRACING`/`LANGCHAIN_TRACING_V2` and an API key were set in the environment. Neither is set on the owner's machine or in CI. Tracing is Phase 18's scope, which must disable or self-host it explicitly.
 - **Disclosed:** `--merge-gate` without `--pr` scans no PR text and says so (`PR items skipped`). Once a PR exists, `--pr <n>` is required by instruction (CLAUDE.md and docs/harness.md), not by code. The scanner cannot know a PR exists without `gh`.
 - **Rebutted:** retrieval error logs carry the exception type only (round 3). The detail lost is the query, i.e. private question text, so type-only is the floor and not a regression. Debugging uses a public set.
 - **Pre-existing, not 16A-1:** `w_sweep` with no index opens an empty Chroma store at the default path and reports 0 hits. Out of this phase's scope.
@@ -2130,7 +2131,7 @@ v6 strict scoring credits an alias only through its chunk, and the map hash bind
 
 **Evidence:** on the synthetic sample corpus and `sample_chroma_db`, the map has one alias (2.4.1 on the 2.4 chunk), every key is in the index, and the inventory covers all 16 sections.
 
-**Pending (owner's machine, [C]):** running it on the real corpus and `./chroma_db`, committing both files, and the 1,470-chunk canary.
+**Done (10 Oct, orchestrator, [C]):** run on the real corpus and `./chroma_db` (1,470 chunks, 148 mapped chunks, 175 aliases, 1,104 sections; `map_sha256` 61a8b352…cafbfc), both files committed in `fefb206`. The 1,470-chunk canary holds: `chunk_handbook` on the real PDF gives 1,470 chunks with an identical sha256 over every chunk's text and metadata on `main` and on the branch.
 
 **Rejected:** D54's chunk-metadata route, re-deferred as a Phase 18 candidate. It would change production metadata, citations, the index and the gate, which this phase keeps byte-stable.
 
