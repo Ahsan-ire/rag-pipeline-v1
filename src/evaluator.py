@@ -1863,13 +1863,11 @@ def run_eval_matrix(
         replay_artifact = load_artifact(artifact_path_arg)
         preflight_rows = []
         for _label, path in set_specs:
-            g = load_golden_set(path)
             sha = _sha256_file(path)
-            _c, g_ids = v1_cohort(g, path=path, privacy=privacy, sha256=sha)
-            for e in g:
-                rid = _artifact_row_id(sha, g_ids[e["question"]])
-                preflight_rows.append((rid, e["question"]))
-                replay_ids.setdefault(e["question"], rid)
+            for qtext, row_id in _question_ids(path, privacy, sha):
+                rid = _artifact_row_id(sha, row_id)
+                preflight_rows.append((rid, qtext))
+                replay_ids.setdefault(qtext, rid)
         replay_artifact.preflight(preflight_rows)
     if expansion_mode == "build" and not expansion_enabled:
         raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
@@ -2014,6 +2012,29 @@ def run_eval_matrix(
                 intent_rewrite=exp.intent_rewrite,
             )
             return generate_with_sources(question, results, **gen_kwargs)
+
+    # Report v6 (item 3): iff any set is schema 2, the whole run is scored in
+    # families by src.eval_v6 (never canonical, never eval/results.md).
+    from src.eval_schema import detect_schema
+
+    schemas = [detect_schema(p) for p in set_paths]
+    if any(v == 2 for v in schemas):
+        if judge:
+            raise ValueError("the judge is not part of report v6 in 16A-1; run v6 without --judge")
+        return _run_matrix_v6(
+            set_specs=set_specs, schemas=schemas, modes=modes, top_k=top_k,
+            skip_refusals=skip_refusals, skip_completeness=skip_completeness,
+            generation_ran=generation_ran, include_types=include_types,
+            retrieve_fn_factory=retrieve_fn_factory, generate_fn=generate_fn,
+            expand=_expand, expansion_cache=expansion_cache,
+            expansion_enabled=expansion_enabled, expansion_mode=expansion_mode,
+            replay_artifact=replay_artifact, replay_count=lambda: rewrite_replayed,
+            artifact_path_arg=artifact_path_arg,
+            privacy=privacy, private=private, run_id=run_id, run_dir_path=run_dir_path,
+            private_report_path=private_report_path if private else None,
+            results_path=results_path, provenance_fn=provenance_fn,
+            persist_directory=persist_directory, meter=meter,
+        )
 
     sets: List[Dict[str, Any]] = []
     total_generation_errors = 0
@@ -2450,6 +2471,141 @@ def _expansion_identity(enabled: bool, cache: Dict[str, Expansion]) -> Dict[str,
     )
     digest = hashlib.sha256(json.dumps(tuples, separators=(",", ":")).encode("utf-8")).hexdigest()
     return {"kind": "live", "model": REWRITE_MODEL, "digest": digest}
+
+
+def _question_ids(path: str, privacy: str, set_sha256: str) -> List[Tuple[str, str]]:
+    """``(question, row id)`` for every row of a v1 or v2 set (no scoring)."""
+    from src.eval_schema import detect_schema, load_any
+
+    if detect_schema(path) == 2:
+        return [(r["question"], r["id"]) for r in load_any(path)]
+    g = load_golden_set(path)
+    _c, ids = v1_cohort(g, path=path, privacy=privacy, sha256=set_sha256)
+    return [(e["question"], ids[e["question"]]) for e in g]
+
+
+ABSORBED_MAP_PATH = os.path.join("eval", "absorbed_sections.json")
+
+
+def _load_absorbed_map() -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]:
+    """The committed absorbed-section map (item 7) and its sha256, if present."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(repo, ABSORBED_MAP_PATH)
+    if not os.path.isfile(path):
+        return None, None
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return dict(doc.get("map") or {}), _sha256_file(path)
+
+
+def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
+    """The report-v6 branch of ``run_eval_matrix`` (see ``src.eval_v6``).
+
+    Shares the runner's floor, destinations, expansion and meter set-up; scores
+    every set in families; writes the report and rows sidecar (private: under
+    the run directory, with ``inputs.json``). Never canonical.
+    """
+    from src import eval_v6
+    from src.eval_cohort import cohort_block
+    from src.eval_schema import load_any
+
+    modes = kw["modes"]
+    top_k = kw["top_k"]
+    privacy = kw["privacy"]
+    private = kw["private"]
+    ks = [k for k in HIT_KS if k <= top_k]
+    k = max(ks) if ks else top_k
+    absorbed, absorbed_sha = _load_absorbed_map()
+
+    sets: List[Dict[str, Any]] = []
+    sidecar_rows: List[Dict[str, Any]] = []
+    total_errors = 0
+    for (label, path), schema in zip(kw["set_specs"], kw["schemas"]):
+        rows = load_any(path)
+        sha = _sha256_file(path)
+        cohort = cohort_block(
+            path=path, privacy=privacy, schema=schema, sha256=sha,
+            rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
+        )
+        if cohort["rows"] != len({r["id"] for r in rows}):
+            raise ValueError("duplicate row id in set; C4 refuses the set")
+        for r in rows:
+            kw["expand"](r["question"])
+        retrieval: Dict[str, Dict[str, Any]] = {}
+        for mode in modes:
+            retrieval[mode] = eval_v6.score_retrieval_v6(
+                rows, kw["retrieve_fn_factory"](mode), top_k=top_k, ks=ks, absorbed=absorbed
+            )
+            for rid, sc in retrieval[mode].items():
+                sidecar_rows.append({
+                    "set_sha256": sha, "id": rid, "mode": mode,
+                    "strict_rank": sc["strict_rank"], "related_rank": sc["related_rank"],
+                    "completion_rank": sc["strict_rank"],
+                })
+        answers_by_id = None
+        if kw["generation_ran"]:
+            pseudo = [eval_v6.pseudo_v1(r) for r in rows]
+            cache = generate_answers(pseudo, kw["include_types"], kw["generate_fn"])
+            total_errors += sum(1 for a in cache.values() if a["result"] is None)
+            answers_by_id = eval_v6.score_answers_v6(rows, cache)
+        fams = {r["family_id"] for r in rows}
+        fam_eligible = {r["family_id"] for r in rows if r["scope"] != "refuse"}
+        sets.append({
+            "label": label, "path": path, "sha256": sha, "schema": schema, "cohort": cohort,
+            "rows": rows, "ids": {r["question"]: r["id"] for r in rows},
+            "counts": {"rows": len(rows), "families": len(fams), "retrieval_families": len(fam_eligible)},
+            "retrieval": retrieval, "answers": answers_by_id,
+            "confusion": None if answers_by_id is None else eval_v6.scope_confusion(rows, answers_by_id),
+            "family_rates": eval_v6.family_rates(rows, retrieval, answers_by_id, k=k),
+        })
+
+    cache_exp = kw["expansion_cache"]
+    replayed = kw["replay_count"]()
+    expansion_id = _expansion_identity(kw["expansion_enabled"], cache_exp)
+    if kw["replay_artifact"] is not None:
+        art = kw["replay_artifact"]
+        expansion_id = {"kind": "replay", "model": art.identity["model"], "digest": art.digest,
+                        "prompt_sha256": art.identity["prompt_sha256"], "config_hash": art.identity["config_hash"]}
+    meter = kw["meter"]
+    if private:
+        resolved_path = kw["private_report_path"]
+    else:
+        resolved_path, warnings = _resolve_results_path(kw["results_path"], False, [p for _l, p in kw["set_specs"]])
+        for warning in warnings:
+            print(f"[eval] {warning}", file=sys.stderr)
+    provenance_fn = kw["provenance_fn"] or (
+        lambda: collect_provenance(persist_directory=kw["persist_directory"], exclude_paths=(resolved_path,))
+    )
+    result: Dict[str, Any] = {
+        "report_version": 6, "sets": sets, "modes": modes, "top_k": top_k, "k": k,
+        "privacy": privacy, "run_id": kw["run_id"], "is_canonical": False,
+        "results_path": resolved_path, "provenance": provenance_fn(),
+        "generation_errors": total_errors, "expansion_identity": expansion_id,
+        "expansion_mode": kw["expansion_mode"],
+        "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
+        "absorbed_map_sha256": absorbed_sha,
+        "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
+    }
+    if kw["expansion_mode"] == "build":
+        result["expansion_artifact"] = _build_expansion_artifact(kw["artifact_path_arg"], sets, cache_exp, private=private)
+    report = eval_v6.format_v6_report(result)
+    sidecar = build_sidecar(
+        privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
+        expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
+    )
+    if private:
+        from pathlib import Path
+
+        write_private(Path(resolved_path), report)
+        _write_sidecar(resolved_path, sidecar, private=True)
+        write_inputs_json(kw["run_dir_path"], [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets])
+        print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
+              f"({len(sets)} set(s); not canonical)")
+    else:
+        print(report)
+        _atomic_write(resolved_path, report)
+        _write_sidecar(resolved_path, sidecar, private=False)
+    return result
 
 
 def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:

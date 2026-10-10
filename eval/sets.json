@@ -40,6 +40,22 @@
    "role": "fixture",
    "status": "active",
    "sha256": "27e873bd8653b40e9a1db39dd76ca6625fe81d6db0cce7c5b79dc56addc66c26"
+  },
+  {
+   "name": "p16-v2-golden",
+   "path": "tests/fixtures/p16_v2_golden.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "5374e8bed0f7422440ef9adbd5311e298357110d445a2b86588a7470e47b7b1e"
+  },
+  {
+   "name": "p16-v2-realistic",
+   "path": "tests/fixtures/p16_v2_realistic.jsonl",
+   "privacy": "public",
+   "role": "fixture",
+   "status": "active",
+   "sha256": "833ecb780762e87167f8d030ddce135edb28bdff5b2a81a9a0ba01aa1ab7a879"
   }
  ]
 }
