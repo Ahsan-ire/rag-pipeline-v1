@@ -153,3 +153,66 @@ def test_private_v6_writes_only_under_private_root(v6_env, tmp_path, _private_ro
                    *[f.read_text(errors="replace") for f in Path(tmp_path).rglob("*")
                      if f.is_file() and not str(f).startswith(str(_private_root_in_tmp)) and f != p])
     assert result["privacy"] == "private"
+
+
+def test_private_v6_canary_gap_evidence_rewrites_intent_and_answers_stay_private(
+    v6_env, tmp_path, monkeypatch, _private_root_in_tmp, capsys, caplog
+):
+    """(b): a private partial row with canary question, gap keyword and evidence; canary
+    rewrites/intent from the expansion fake and canary answers from the generation fake."""
+    import logging
+
+    from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
+    from tests.p16_canary import assert_no_leak
+    from tests.test_eval_privacy import Canaries, _eval_snapshot
+
+    caplog.set_level(logging.DEBUG)
+    c = Canaries(seed=1612)
+    retrieval, _ = v6_env
+    section, gap_kw = c.value("evidence"), c.value("gap")
+    # The inventory holds the canary evidence section, as the v6_env fixture does for v2 sections.
+    inv = tmp_path / "inventory_canary.json"
+    inv.write_text(json.dumps({"version": 1, "map_sha256": "0" * 64, "sections": [section], "aliases": []}))
+    monkeypatch.setattr(eval_schema, "INVENTORY_PATH", inv)
+    question = c.question(0)
+    p = tmp_path / "priv_partial.jsonl"
+    p.write_text(json.dumps({
+        "schema": 2, "id": "f0000000b-0", "family_id": "f0000000b", "question": question,
+        "scope": "partial", "evidence": [[section]], "gaps": [{"id": "g1", "keywords": [gap_kw]}],
+    }) + "\n")
+    retrieval.expected_by_q[question] = [section]
+
+    def canary_expand(q, *args, **kwargs):
+        return Expansion(q, (c.value("rewrite"), f"{c.value('rewrite')} {gap_kw}"), REWRITE_MODEL,
+                         STATUS_LIVE, c.value("intent"))
+
+    monkeypatch.setattr(ev, "expand_query", canary_expand)
+    gen = FakeGeneration(retrieval, lambda q, is_refusal: "partial")
+
+    def canary_generate(q):
+        out = gen(q)
+        # score_partial reads grounded citations as {"para": ...} dicts (the real shape).
+        out["citation_check"] = {k: [{"para": x} for x in v] for k, v in out["citation_check"].items()}
+        out["answer"] = f"{c.value('answer')} {out['answer']} {c.value('claim')} {gap_kw}"
+        return out
+
+    before = _eval_snapshot()
+    before_tmp = set(tmp_path.rglob("*"))
+    result = ev.run_eval_matrix(
+        [("golden", str(p))], retrieve_fn_factory=retrieval.factory(6), generate_fn=canary_generate,
+        provenance_fn=lambda: dict(PROVENANCE), privacy="private", skip_refusals=True,
+        skip_completeness=False,
+    )
+    assert result["privacy"] == "private"
+    out = capsys.readouterr()
+    new = {f for f in set(tmp_path.rglob("*")) - before_tmp if f.is_file()}
+    assert new and all(str(f).startswith(str(_private_root_in_tmp)) for f in new)
+    # Positive control: the run really scored the partial row.
+    assert result["sets"][0]["counts"]["rows"] == 1
+    outside = [f.read_text(errors="replace") for f in tmp_path.rglob("*")
+               if f.is_file() and not str(f).startswith(str(_private_root_in_tmp))
+               and f not in (p, inv)]
+    secrets = [*(c.value(f) for f in ("qstart", "qend", "gap", "evidence", "rewrite", "intent",
+                                      "answer", "claim")), question, *c.all_tokens()]
+    assert_no_leak(secrets, out.out, out.err, caplog.text, *outside, where="(private v6 canaries)")
+    assert _eval_snapshot() == before

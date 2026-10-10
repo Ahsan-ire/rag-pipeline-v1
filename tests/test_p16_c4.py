@@ -655,8 +655,15 @@ def _legacy_public(monkeypatch, tmp_path, *paths):
     monkeypatch.setattr(eval_sets, "LEGACY_PUBLIC_PATH", legacy)
 
 
-def stub_sweep(monkeypatch, tmp_path, sets, calls, *, sections=("9.1", "8.1", "9.3", "8.3", "9.2", "8.2")):
-    """Fake w_sweep's seams over the ``sets`` fixture; the cache is legacy-public."""
+def stub_sweep(
+    monkeypatch, tmp_path, sets, calls, *, sections=("9.1", "8.1", "9.3", "8.3", "9.2", "8.2"),
+    rewrites=("rw",), intent="it", retrieve_exc=None, ctx_exc=None,
+):
+    """Fake w_sweep's seams over the ``sets`` fixture; the cache is legacy-public.
+
+    ``rewrites``/``intent`` fill every cache entry; ``retrieve_exc``/``ctx_exc``
+    make the per-row retrieval / the top-level context load raise.
+    """
     monkeypatch.setattr(
         w_sweep, "SET_PATHS",
         (("golden", sets["tuning"]["path"]), ("realistic", sets["realistic"]["path"])),
@@ -673,7 +680,7 @@ def stub_sweep(monkeypatch, tmp_path, sets, calls, *, sections=("9.1", "8.1", "9
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(
         json.dumps({
-            r["question"]: {"rewrites": ["rw"], "status": w_sweep.STATUS_LIVE, "intent": "it"}
+            r["question"]: {"rewrites": list(rewrites), "status": w_sweep.STATUS_LIVE, "intent": intent}
             for data in sets.values() for r in _answerable(data)
         }),
         encoding="utf-8",
@@ -684,9 +691,13 @@ def stub_sweep(monkeypatch, tmp_path, sets, calls, *, sections=("9.1", "8.1", "9
 
     def fake_ctx(persist_directory=None):
         calls["persist_directory"] = persist_directory
+        if ctx_exc is not None:
+            raise RuntimeError(ctx_exc)
         return ("vs", "bm")
 
     def fake_retrieve(question, **kwargs):
+        if retrieve_exc is not None:
+            raise RuntimeError(retrieve_exc)
         calls.setdefault("retrieve", 0)
         calls["retrieve"] += 1
         return [{"document": _FakeDoc(s)} for s in sections]
@@ -831,6 +842,129 @@ def test_private_bakeoff_prints_ids_only_and_writes_under_the_private_root(
                       sets["tuning"]["path"], sets["realistic"]["path"]]
     for path in _files_outside_private_root(tmp_path, _private_root_in_tmp, inputs_written):
         _assert_no_canary(path.read_text(encoding="utf-8", errors="replace"))
+
+
+# --- acceptance (b): distinct canaries through the cache, evidence, ids and exceptions ----
+def _canary_sets(tmp_path, eval_registry, c):
+    """Like ``sets`` but start/end canary questions and canary evidence sections."""
+    ev = c.value("evidence")
+    golden = [{"question": c.question(i), "expected_sections": [ev], "type": "direct"} for i in range(3)]
+    golden.append({"question": c.question(3), "expected_sections": [], "type": "refusal"})
+    realistic = [{"question": c.question(4 + i), "expected_sections": [ev], "type": "direct"} for i in range(3)]
+    out = {}
+    for label, rows, name in (("tuning", golden, "golden_set.jsonl"), ("realistic", realistic, "realistic_set.jsonl")):
+        path = _write_jsonl(tmp_path / "sets" / name, rows)
+        eval_registry.add(path)
+        out[label] = {"path": str(path), "rows": rows, "sha256": eval_sets.sha256_file(path)}
+    return out
+
+
+def _canary_secrets(c):
+    fields = ("qstart", "qend", "gap", "evidence", "badid", "rowexc", "topexc", "rewrite", "intent",
+              "answer", "claim", "loader")
+    return [*(c.value(f) for f in fields), *(c.question(i) for i in range(7)), *c.all_tokens()]
+
+
+def _assert_canary_clean(c, tmp_path, private_root, exclude, *texts, where):
+    """Canaries absent from the texts, every non-input file outside the private root, and repo eval/."""
+    from tests.p16_canary import assert_no_leak
+
+    files = [p.read_text(encoding="utf-8", errors="replace")
+             for p in _files_outside_private_root(tmp_path, private_root, exclude)]
+    assert_no_leak(_canary_secrets(c), *texts, *files, where=where)
+
+
+@pytest.fixture
+def canaries():
+    from tests.test_eval_privacy import Canaries
+
+    return Canaries(seed=1611)
+
+
+def test_private_w_sweep_canary_cache_evidence_and_exceptions_stay_private(
+    tmp_path, monkeypatch, eval_registry, capsys, caplog, canaries, _private_root_in_tmp
+):
+    from tests.test_eval_privacy import _eval_snapshot
+
+    c = canaries
+    caplog.set_level(logging.DEBUG)
+    sets_c = _canary_sets(tmp_path, eval_registry, c)
+    before = _eval_snapshot()
+    ev = c.value("evidence")
+    cache = stub_sweep(
+        monkeypatch, tmp_path, sets_c, {}, sections=(ev, c.value("badid")) + (ev,) * 4,
+        rewrites=(c.value("rewrite"), f"{c.value('rewrite')} {c.value('gap')}"), intent=c.value("intent"),
+    )
+    requested = tmp_path / "out" / "ranks.json"
+    assert w_sweep.main(["--ranks-out", str(requested)]) == 0
+    captured = capsys.readouterr()
+    dumps = list((_private_root_in_tmp / "runs").glob("*/ranks.json"))
+    assert len(dumps) == 1
+    inputs = [sets_c["tuning"]["path"], sets_c["realistic"]["path"], cache]
+    _assert_canary_clean(c, tmp_path, _private_root_in_tmp, inputs, captured.out, captured.err,
+                         caplog.text, dumps[0].read_text(encoding="utf-8"), where="(w_sweep canaries)")
+    assert _eval_snapshot() == before
+
+
+@pytest.mark.parametrize("which", ["rowexc", "topexc"])
+def test_private_w_sweep_exception_text_is_never_printed(
+    tmp_path, monkeypatch, eval_registry, capsys, caplog, canaries, _private_root_in_tmp, which
+):
+    c = canaries
+    caplog.set_level(logging.DEBUG)
+    sets_c = _canary_sets(tmp_path, eval_registry, c)
+    kw = {"retrieve_exc": c.value(which)} if which == "rowexc" else {"ctx_exc": c.value(which)}
+    cache = stub_sweep(monkeypatch, tmp_path, sets_c, {}, rewrites=(c.value("rewrite"),),
+                       intent=c.value("intent"), **kw)
+    assert w_sweep.main([]) == 1
+    captured = capsys.readouterr()
+    assert "RuntimeError" in captured.err
+    inputs = [sets_c["tuning"]["path"], sets_c["realistic"]["path"], cache]
+    _assert_canary_clean(c, tmp_path, _private_root_in_tmp, inputs, captured.out, captured.err,
+                         caplog.text, where=f"(w_sweep {which})")
+
+
+def test_private_bakeoff_canary_cache_and_exception_stay_private(
+    tmp_path, monkeypatch, eval_registry, capsys, caplog, canaries, _private_root_in_tmp
+):
+    from tests.test_eval_privacy import _eval_snapshot
+
+    c = canaries
+    caplog.set_level(logging.DEBUG)
+    sets_c = _canary_sets(tmp_path, eval_registry, c)
+    before = _eval_snapshot()
+    base = write_arm(tmp_path / "arms", "base", sets_c, BASE_RANKS)
+    cand = write_arm(tmp_path / "arms", "cand", sets_c, CAND_RANKS)
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "base.json").write_text(json.dumps(_dump(sets_c, BASE_RANKS)), encoding="utf-8")
+    (dumps / "cand.json").write_text(json.dumps(_dump(sets_c, CAND_RANKS)), encoding="utf-8")
+    cache = tmp_path / "cache.json"
+    cache.write_text(json.dumps({
+        r["question"]: {"rewrites": [c.value("rewrite")], "status": "live", "intent": c.value("intent")}
+        for d in sets_c.values() for r in _answerable(d)
+    }), encoding="utf-8")
+    inputs = [base, cand, sidecar_path(base), sidecar_path(cand), cache, dumps / "base.json",
+              dumps / "cand.json", sets_c["tuning"]["path"], sets_c["realistic"]["path"]]
+    argv = ["--reports", base, cand, "--baseline", "base",
+            "--prod-ranks", str(dumps / "base.json"), str(dumps / "cand.json"),
+            "--expansion-cache", str(cache), "--manifest-out", str(tmp_path / "manifest.json")]
+    rc, out, err = _cli(argv, capsys)
+    assert rc == 0, err
+    _assert_canary_clean(c, tmp_path, _private_root_in_tmp, inputs, out, err, caplog.text,
+                         where="(bakeoff canaries)")
+
+    # (A malformed id-like value in an arm dump leaks via the C4Error 'extra rows' text,
+    # scripts/bakeoff_report.py:793 -- reported, not asserted here.)
+    def boom(*_a, **_k):
+        raise RuntimeError(f"{c.value('rowexc')} {c.value('topexc')}")
+
+    monkeypatch.setattr(bakeoff_report, "compare_prod_ranks", boom)
+    rc3, out3, err3 = _cli(argv, capsys)
+    assert rc3 == 1 and "RuntimeError" in err3
+    _assert_canary_clean(c, tmp_path, _private_root_in_tmp, inputs, out3, err3,
+                         caplog.text, where="(bakeoff exception)")
+    assert _eval_snapshot() == before
 
 
 def test_private_bakeoff_legacy_path_prints_ids_only(tmp_path, sets, capsys):
