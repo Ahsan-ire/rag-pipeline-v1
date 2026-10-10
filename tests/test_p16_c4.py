@@ -1485,3 +1485,47 @@ def test_v5_sidecar_arms_at_the_same_depth_compare(tmp_path, sets):
     arms = [write_arm(tmp_path / "arms", name, sets, ranks, top_k=6)
             for name, ranks in (("base", BASE_RANKS), ("cand", CAND_RANKS))]
     assert bakeoff_report.compare(load_arms(*arms), "base")["c4"] is True
+
+
+def test_v6_report_without_its_mode_line_is_refused(tmp_path, v2_sets):
+    with pytest.raises(C4Error, match="declares no retrieval modes"):
+        bakeoff_report.load_arm(_strip_v6_line(tmp_path, v2_sets, "- Retrieval modes: "))
+
+
+def _v6_pair_with_sidecar_edit(tmp_path, v2_sets, edit):
+    arms = []
+    for name, ranks in (("base", V6_BASE), ("cand", V6_CAND)):
+        report = _v6_arm(tmp_path / "arms", name, v2_sets, ranks)
+        side = Path(sidecar_path(report))
+        doc = json.loads(side.read_text())
+        doc["rows"] = edit(doc["rows"])
+        side.write_text(dump_sidecar(doc))
+        arms.append(report)
+    return arms
+
+
+@pytest.mark.parametrize("dropped", [("vector", "bm25", "hybrid"), ("hybrid",), ("vector",)])
+def test_v6_modes_dropped_from_both_sidecars_are_refused(tmp_path, v2_sets, dropped):
+    """#3: the same declared modes removed from both actual v6 sidecars."""
+    arms = _v6_pair_with_sidecar_edit(
+        tmp_path, v2_sets, lambda rows: [r for r in rows if r["mode"] not in dropped]
+    )
+    with pytest.raises(C4Error, match="declared mode"):
+        bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def test_v6_sidecar_rows_for_an_undeclared_mode_are_refused(tmp_path, v2_sets):
+    arms = _v6_pair_with_sidecar_edit(
+        tmp_path, v2_sets,
+        lambda rows: rows + [{**r, "mode": "hybrid-x"} for r in rows if r["mode"] == "hybrid"],
+    )
+    with pytest.raises(C4Error, match="undeclared mode"):
+        bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def test_v6_arms_without_the_primary_mode_are_refused(tmp_path, v2_sets):
+    """#3: both arms ran hybrid+rewrite only; the headline must not fall back to it."""
+    arms = [_v6_arm(tmp_path / "arms", name, v2_sets, ranks, modes=("hybrid+rewrite",))
+            for name, ranks in (("base", V6_BASE), ("cand", V6_CAND))]
+    with pytest.raises(C4Error, match="primary"):
+        bakeoff_report.compare(load_arms(*arms), "base")

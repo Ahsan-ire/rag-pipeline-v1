@@ -74,6 +74,11 @@ Phase 16A-1 (items 1, 6, 9; D65, D68) adds:
   (a v5 report's ``- top_k:`` header line counts; a pre-16A fixture without
   one is unknown, and unknown matches only unknown), and none below 6. Merge
   gate round 2, Codex #2.
+- **Declared modes.** A v6 report's ``- Retrieval modes:`` line is its mode
+  roster: it must name the primary metric's mode (``hybrid``) and the flip
+  mode (``hybrid+rewrite``), and its sidecar must cover every declared mode
+  over each cohort's eligible roster and carry no other mode. Merge gate
+  round 2, Codex #3.
 
 Usage::
 
@@ -121,6 +126,9 @@ EXPANSION_DISABLED_MARKER = "query expansion: disabled (offline run)"
 # mode is ablated — which, with expansion disabled, is raw hybrid by identity.
 DETAIL_MODE = "hybrid+rewrite"
 
+# The mode the brief names as the primary metric (the selection table's row).
+PRIMARY_MODE = "hybrid"
+
 # Which set is which, by the eval-set file the report names in its provenance.
 GOLDEN_BASENAME = "golden_set.jsonl"
 REALISTIC_BASENAME = "realistic_set.jsonl"
@@ -163,6 +171,7 @@ _SET_LABEL = re.compile(r"^- (?P<label>[^:]+): ")
 V6_TITLE_PREFIX = "# Legal RAG Evaluation Report v6"
 _V6_MODEL = re.compile(r"^- git sha: .*; embedding model: (?P<model>.+); generation model: .*$")
 _V6_DEPTH = re.compile(r"^- top_k: (?P<top_k>\d+); hit cut-off k = (?P<k>\d+)$")
+_V6_MODES = re.compile(r"^- Retrieval modes: (?P<modes>.+)$")
 # The v5 header's depth line (``src.evaluator``'s v5 and v1 report headers).
 _V5_TOP_K = re.compile(r"^- top_k: (?P<top_k>\d+)$")
 _V6_COHORT = re.compile(
@@ -464,14 +473,20 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
     beyond its depth, so reading it at @6 would credit or penalise depth, not
     retrieval (merge gate round 2, Codex #2).
 
+    The header's ``- Retrieval modes:`` line is the arm's declared mode roster
+    (``modes``); it must include ``PRIMARY_MODE`` and ``DETAIL_MODE``, and the
+    sidecar is bound to it in :func:`_fill_from_sidecar` (Codex #3).
+
     Raises:
-        C4Error: a v6 report with no cohort lines, no depth line, or a hit
-            cut-off other than ``HIT_K``.
+        C4Error: a v6 report with no cohort lines, no depth line, a hit
+            cut-off other than ``HIT_K``, no modes line, or a modes line
+            without ``PRIMARY_MODE`` or ``DETAIL_MODE``.
         ValueError: a recorded set that may not enter selection
             (:func:`_assert_set_provenance`).
     """
     model: Optional[str] = None
     depth: Optional[Tuple[int, int]] = None
+    modes: Optional[List[str]] = None
     sets: Dict[str, Dict[str, Any]] = {}
     for heading, body in _split_sections(text):
         if heading == "":
@@ -482,6 +497,9 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
                 m = _V6_DEPTH.match(line)
                 if m is not None:
                     depth = (int(m.group("top_k")), int(m.group("k")))
+                m = _V6_MODES.match(line)
+                if m is not None:
+                    modes = [mode.strip() for mode in m.group("modes").split(",")]
         elif heading.strip() == "## Cohort":
             for line in body:
                 m = _V6_COHORT.match(line)
@@ -502,6 +520,11 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
             f"v6 report's hit cut-off k = {k} (top_k {top_k}) is not the selection's "
             f"@{HIT_K}: refused rather than re-read at @{HIT_K}"
         )
+    if modes is None:
+        raise C4Error("v6 report declares no retrieval modes (its '- Retrieval modes:' line)")
+    for needed, role in ((PRIMARY_MODE, "the primary metric's"), (DETAIL_MODE, "the flip lists'")):
+        if needed not in modes:
+            raise C4Error(f"v6 report does not declare {role} mode {needed!r} (it declares {modes})")
     _assert_set_provenance(sets)
     return {
         "embedding_model": model,
@@ -509,6 +532,7 @@ def _parse_v6_report(text: str) -> Dict[str, Any]:
         "report_version": 6,
         "top_k": top_k,
         "k": k,
+        "modes": modes,
         "sets": sets,
     }
 
@@ -519,11 +543,12 @@ def _fill_from_sidecar(arm: Dict[str, Any], name: str) -> None:
     Per set: ``ablation`` gets the row-level strict/related@6 and ``n`` of each
     of ``hybrid`` and ``hybrid+rewrite`` the sidecar has; ``questions`` the
     ``hybrid+rewrite`` rows, shown by id (``id_only``: v6 carries no question
-    text) with no retrieved sections (``retrieved`` None).
+    text) with no retrieved sections (``retrieved`` None). The sidecar is
+    validated against the report's declared modes first (:func:`index_rows`).
     """
-    index = index_rows(arm["sidecar"], name)
+    index = index_rows(arm["sidecar"], name, modes=arm["modes"])
     for data in arm["sets"].values():
-        for mode in ("hybrid", DETAIL_MODE):
+        for mode in (PRIMARY_MODE, DETAIL_MODE):
             group = index.get((data["sha256"], mode))
             if not group:
                 continue
@@ -580,12 +605,13 @@ def _headline_row(data: Optional[Mapping[str, Any]]) -> Dict[str, Optional[float
 
     Offline, ``hybrid`` and ``hybrid+rewrite`` are the same numbers (expansion
     disabled); ``hybrid`` is the row the brief names as the primary metric, and
-    ``hybrid+rewrite`` is only used if a report lacks it.
+    ``hybrid+rewrite`` is only used if a v5 report lacks it (a v6 report must
+    declare ``hybrid``, and its sidecar must carry it: no fallback).
     """
     if not data:
         return {"strict_at_6": None, "related_at_6": None, "n": None}
     ablation = data.get("ablation") or {}
-    row = ablation.get("hybrid") or ablation.get(DETAIL_MODE) or {}
+    row = ablation.get(PRIMARY_MODE) or ablation.get(DETAIL_MODE) or {}
     return {
         "strict_at_6": row.get("strict", {}).get(HIT_K),
         "related_at_6": row.get("related", {}).get(HIT_K),
@@ -753,14 +779,23 @@ def _is_rank(value: Any) -> bool:
     return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 1)
 
 
-def index_rows(doc: Mapping[str, Any], name: str) -> Dict[Tuple[str, str], Dict[str, Dict[str, Any]]]:
+def index_rows(
+    doc: Mapping[str, Any], name: str, *, modes: Optional[Sequence[str]] = None
+) -> Dict[Tuple[str, str], Dict[str, Dict[str, Any]]]:
     """Validate a C4 document and index its rows as ``{(set sha256, mode): {id: row}}``.
+
+    Args:
+        doc: a rows sidecar or a production-rank dump.
+        name: the arm name, for messages.
+        modes: the report's declared mode roster (v6), or None to check the
+            modes the rows themselves carry (:func:`_check_roster`).
 
     Raises:
         C4Error: a wrong version, a malformed cohort or expansion block, a row
             missing a required field (or carrying a non-rank value), a row
-            whose set is not one of the document's cohorts, or a duplicate
-            ``(set sha256, mode, id)`` row.
+            whose set is not one of the document's cohorts, a duplicate
+            ``(set sha256, mode, id)`` row, or (``modes`` given) a declared
+            mode without its rows or rows for an undeclared mode.
     """
     if not is_c4(doc):
         missing = [f for f in C4_FIELDS if not isinstance(doc, Mapping) or f not in doc]
@@ -812,7 +847,7 @@ def index_rows(doc: Mapping[str, Any], name: str) -> Dict[Tuple[str, str], Dict[
                 f"{row['set_sha256'][:12]} mode {row['mode']}"
             )
         group[row["id"]] = dict(row)
-    _check_roster(cohorts, index, name)
+    _check_roster(cohorts, index, name, modes)
     return index
 
 
@@ -824,6 +859,7 @@ def _check_roster(
     cohorts: Sequence[Mapping[str, Any]],
     index: Mapping[Tuple[str, str], Mapping[str, Any]],
     name: str,
+    declared: Optional[Sequence[str]] = None,
 ) -> None:
     """Every mode must cover each cohort's eligible roster exactly (16A-1 merge gate #4).
 
@@ -832,17 +868,34 @@ def _check_roster(
     carry another id in its place, is refused even when the other arm has the
     same gap (the arm-vs-arm coverage check cannot see that).
 
+    With ``declared`` (a v6 report's mode roster) the modes checked are the
+    declared ones, not the ones that survive in the rows: a declared mode
+    dropped from the sidecar -- in both arms alike -- is refused, and so is a
+    mode the report does not declare (merge gate round 2, Codex #3).
+
     Raises:
-        C4Error: an eligible cohort with no rows at all, or a (set, mode)
-            group whose ids are not the cohort's roster.
+        C4Error: an eligible cohort with no rows at all, a (set, mode) group
+            whose ids are not the cohort's roster, or (``declared``) a
+            declared mode with no rows or rows for an undeclared mode.
     """
-    modes = sorted({mode for _sha, mode in index})
+    present = sorted({mode for _sha, mode in index})
+    if declared is None:
+        modes = present
+    else:
+        extra = sorted(set(present) - set(declared))
+        if extra:
+            raise C4Error(
+                f"arm {name!r}: rows for undeclared mode(s) {extra}; the report declares {list(declared)}"
+            )
+        modes = list(declared)
     for cohort in cohorts:
         sha = cohort["sha256"]
         if cohort["eligible"] and not modes:
             raise C4Error(f"arm {name!r}: set {sha[:12]} has eligible rows but the document has none")
         for mode in modes:
             ids = index.get((sha, mode), {})
+            if declared is not None and cohort["eligible"] and not ids:
+                raise C4Error(f"arm {name!r}: set {sha[:12]}: declared mode {mode} has no rows")
             if len(ids) != cohort["eligible"] or eligible_fp(ids) != cohort["eligible_fp"]:
                 raise C4Error(
                     f"arm {name!r}: set {sha[:12]} mode {mode}: rows cover {len(ids)} ids, not "
@@ -1141,7 +1194,7 @@ def compare_c4(
     indexed: Dict[str, Dict[str, Any]] = {}
     for name, arm in arms.items():
         indexed[name] = dict(arm)
-        indexed[name]["_c4_index"] = index_rows(arm["sidecar"], name)
+        indexed[name]["_c4_index"] = index_rows(arm["sidecar"], name, modes=arm.get("modes"))
         _check_report_matches_sidecar(name, indexed[name])
 
     base = indexed[baseline]
