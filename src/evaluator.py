@@ -175,7 +175,9 @@ def load_golden_set(path: str) -> List[Dict[str, Any]]:
         ValueError: If a line violates the schema above; the message names
             the offending 1-indexed line number.
     """
-    # 16A-1 (D65): sealed input is refused before the file is parsed.
+    # 16A-1 (D65): sealed input is refused before the file is parsed, and a
+    # .md/.py file is never an eval set (a renamed sealed set stays refused).
+    _eval_sets.refuse_non_eval_suffix(path)
     _eval_sets.refuse_sealed([path])
     golden: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8") as f:
@@ -1243,7 +1245,7 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
         )
     from pathlib import Path
 
-    rel = Path(results_path).resolve().relative_to(runs_root.resolve())
+    rel = _privacy.relative_to_root(results_path, runs_root)
     if len(rel.parts) != 2:
         raise PrivatePathError("a private report path must be eval/private/runs/<run id>/<file>")
     run_id = rel.parts[0]
@@ -1835,7 +1837,11 @@ def run_eval_matrix(
     build_target: Optional[str] = None
     if expansion_mode == "build":
         if private:
-            build_target = str(_privacy.artifact_path(os.path.basename(artifact_path_arg or "")))
+            base = os.path.basename(artifact_path_arg or "")
+            if base in ("", ".", ".."):
+                raise ValueError("build:<path> needs a file name (a private artifact is written "
+                                 "to eval/private/artifacts/<name>)")
+            build_target = str(_privacy.artifact_path(base))
         else:
             for p in [*set_paths, DEFAULT_RESULTS_PATH] + ([results_path] if results_path else []):
                 if _same_path(artifact_path_arg, p):
@@ -1894,9 +1900,7 @@ def run_eval_matrix(
         replay_artifact = load_artifact(artifact_path_arg)
         preflight_rows = []
         for _label, path in set_specs:
-            sha = _sha256_file(path)
-            for qtext, row_id in _question_ids(path, privacy, sha):
-                rid = _artifact_row_id(sha, row_id)
+            for qtext, rid in _artifact_keys(path):
                 preflight_rows.append((rid, qtext))
                 replay_ids.setdefault(qtext, rid)
         replay_artifact.preflight(preflight_rows)
@@ -1916,7 +1920,9 @@ def run_eval_matrix(
     )
     gen_kwargs = _meter_llm_kwargs(meter) if generate_fn is None else {}
     rewrite_kwargs: Dict[str, Any] = (
-        {} if meter is None or not expansion_enabled else {"llm": meter.rewrite_llm()}
+        {"llm": meter.rewrite_llm()}
+        if meter is not None and expansion_enabled and expansion_mode != "replay"
+        else {}
     )
     if judge and judge_fn is None and meter is not None:
         from langchain_core.output_parsers import StrOutputParser
@@ -2429,21 +2435,9 @@ def run_eval_matrix(
         "rewrite_replayed": rewrite_replayed,
     }
 
-    expansion_id = _expansion_identity(expansion_enabled, expansion_cache)
-    if replay_artifact is not None:
-        expansion_id = {
-            "kind": "replay",
-            "model": replay_artifact.identity["model"],
-            "digest": replay_artifact.digest,
-            "prompt_sha256": replay_artifact.identity["prompt_sha256"],
-            "config_hash": replay_artifact.identity["config_hash"],
-        }
-    elif expansion_enabled:
-        from src.expansion_artifact import rewrite_identity
-
-        expansion_id.update(
-            {k: v for k, v in rewrite_identity().items() if k != "model"}
-        )
+    expansion_id = _run_expansion_identity(
+        expansion_enabled, expansion_cache, replay_artifact, [s["path"] for s in sets]
+    )
     result["expansion_identity"] = expansion_id
     if expansion_mode == "build":
         result["expansion_artifact"] = _build_expansion_artifact(
@@ -2482,35 +2476,59 @@ def run_eval_matrix(
     return result
 
 
-def _expansion_identity(enabled: bool, cache: Dict[str, Expansion]) -> Dict[str, Any]:
-    """Expansion identity for the rows sidecar (item 5/6): kind, model, live digest.
+def _run_expansion_identity(
+    enabled: bool,
+    cache: Dict[str, Expansion],
+    replay_artifact: Any,
+    set_paths: Sequence[str],
+) -> Dict[str, Any]:
+    """The run's expansion identity for the sidecar and report (items 5-6; ONE source).
 
-    Live arms record sha256 over the sorted ``(question sha256, rewrite
-    sha256s, intent sha256)`` tuples -- hashes only, never text.
+    - disabled: ``{"kind": "disabled", "model"}``;
+    - replay: the artifact's identity and its file digest;
+    - live: the rewrite identity (model, prompt sha256, config hash) plus
+      ``expansion_artifact.live_digest`` over this run's expansions keyed by
+      their artifact row keys (hashes only, rewrite order kept).
+
+    Both the v5 and the v6 paths call this, so they cannot drift.
     """
+    from src.expansion_artifact import live_digest, rewrite_identity
+
     if not enabled:
         return {"kind": "disabled", "model": REWRITE_MODEL}
-    tuples = sorted(
-        [
-            hashlib.sha256(q.encode("utf-8")).hexdigest(),
-            sorted(hashlib.sha256(r.encode("utf-8")).hexdigest() for r in exp.rewrites),
-            hashlib.sha256((exp.intent_rewrite or "").encode("utf-8")).hexdigest(),
-        ]
-        for q, exp in cache.items()
-    )
-    digest = hashlib.sha256(json.dumps(tuples, separators=(",", ":")).encode("utf-8")).hexdigest()
-    return {"kind": "live", "model": REWRITE_MODEL, "digest": digest}
+    if replay_artifact is not None:
+        return {
+            "kind": "replay",
+            "model": replay_artifact.identity["model"],
+            "digest": replay_artifact.digest,
+            "prompt_sha256": replay_artifact.identity["prompt_sha256"],
+            "config_hash": replay_artifact.identity["config_hash"],
+        }
+    entries: Dict[str, Expansion] = {}
+    for path in set_paths:
+        for question, key in _artifact_keys(path):
+            if question in cache:
+                entries[key] = cache[question]
+    return {"kind": "live", **rewrite_identity(), "digest": live_digest(entries)}
 
 
-def _question_ids(path: str, privacy: str, set_sha256: str) -> List[Tuple[str, str]]:
-    """``(question, row id)`` for every row of a v1 or v2 set (no scoring)."""
+def _artifact_keys(path: str) -> List[Tuple[str, str]]:
+    """``(question, artifact row key)`` for every row of a v1 or v2 set.
+
+    The key never depends on the run's privacy class, so an artifact built on
+    one run replays on the same sets at any honoured class (16A-1 review):
+    ``<set sha256[:16]>/<id>`` with ``id`` = the row's own id for schema 2, and
+    the unsalted ``q:`` + sha256(question)[:12] for schema 1 (the artifact
+    already records each question's full sha256, so this adds no exposure, and
+    artifacts of private sets live under the private root).
+    """
+    from src.eval_privacy import public_v1_id
     from src.eval_schema import detect_schema, load_any
 
+    prefix = _sha256_file(path)[:16]
     if detect_schema(path) == 2:
-        return [(r["question"], r["id"]) for r in load_any(path)]
-    g = load_golden_set(path)
-    _c, ids = v1_cohort(g, path=path, privacy=privacy, sha256=set_sha256)
-    return [(e["question"], ids[e["question"]]) for e in g]
+        return [(r["question"], f"{prefix}/{r['id']}") for r in load_any(path)]
+    return [(e["question"], f"{prefix}/{public_v1_id(e['question'])}") for e in load_golden_set(path)]
 
 
 ABSORBED_MAP_PATH = os.path.join("eval", "absorbed_sections.json")
@@ -2593,11 +2611,9 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
 
     cache_exp = kw["expansion_cache"]
     replayed = kw["replay_count"]()
-    expansion_id = _expansion_identity(kw["expansion_enabled"], cache_exp)
-    if kw["replay_artifact"] is not None:
-        art = kw["replay_artifact"]
-        expansion_id = {"kind": "replay", "model": art.identity["model"], "digest": art.digest,
-                        "prompt_sha256": art.identity["prompt_sha256"], "config_hash": art.identity["config_hash"]}
+    expansion_id = _run_expansion_identity(
+        kw["expansion_enabled"], cache_exp, kw["replay_artifact"], [s["path"] for s in sets]
+    )
     meter = kw["meter"]
     if private:
         resolved_path = kw["private_report_path"]
@@ -2654,11 +2670,6 @@ def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:
     return "replay", expansion
 
 
-def _artifact_row_id(set_sha256: str, row_id: str) -> str:
-    """Artifact entry key: unique across sets (a question may sit in two sets)."""
-    return f"{set_sha256[:16]}/{row_id}"
-
-
 def _build_expansion_artifact(
     target: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion]
 ) -> Dict[str, Any]:
@@ -2670,10 +2681,9 @@ def _build_expansion_artifact(
     """
     from src.expansion_artifact import build_artifact, save_artifact
 
-    rows: List[Tuple[str, str]] = []
-    for s in sets:
-        for question, rid in s["ids"].items():
-            rows.append((_artifact_row_id(s["sha256"], rid), question))
+    rows: List[Tuple[str, str]] = [
+        (key, question) for s in sets for question, key in _artifact_keys(s["path"])
+    ]
     artifact = build_artifact(
         rows,
         lambda q: cache[q],

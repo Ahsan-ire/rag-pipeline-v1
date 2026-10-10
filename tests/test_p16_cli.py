@@ -58,13 +58,22 @@ def test_offline_builds_no_meter(monkeypatch):
     assert c["kwargs"]["meter"] is None
 
 
-def test_live_builds_meter(monkeypatch):
+def test_live_with_key_builds_meter(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
     code, c = _run(monkeypatch, ["--skip-refusals"])
     assert isinstance(c["kwargs"]["meter"], SpendMeter)
 
 
+def test_live_without_key_builds_no_meter_and_does_not_crash(monkeypatch):
+    """Keyless: no Claude call is possible, so the run degrades as before (no meter)."""
+    code, c = _run(monkeypatch, ["--skip-refusals"])
+    assert code == 0 and c["kwargs"]["meter"] is None
+
+
 @pytest.mark.parametrize("kind,expected", [("week", 3), ("run", 6)])
 def test_spend_limit_exit_codes(monkeypatch, kind, expected):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+
     def boom(set_specs, **kwargs):
         raise SpendLimitReached(kind)
 
@@ -79,7 +88,9 @@ def test_private_error_prints_type_only(monkeypatch, tmp_path, capsys):
     code, _ = _run(monkeypatch, ["--golden", _set(tmp_path / "g.jsonl"), "--skip-refusals", "--skip-completeness"], runner=boom)
     out = capsys.readouterr()
     assert code == 1
-    assert "P16-CANARY" not in out.out + out.err
+    from tests.p16_canary import assert_no_leak
+
+    assert_no_leak(["P16-CANARY-cli-exception text", "synthetic widget question"], out.out, out.err)
     assert "RuntimeError" in out.err
 
 

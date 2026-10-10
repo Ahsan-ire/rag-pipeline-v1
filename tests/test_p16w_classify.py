@@ -309,3 +309,19 @@ def test_case_variant_of_sealed_root_is_sealed(tmp_path, monkeypatch, _private_r
         p = variant / "x.jsonl"
         p.write_text('{"question": "q"}\n')
         assert classify(p) == "sealed"
+
+
+@pytest.mark.parametrize("name", ["renamed.md", "renamed.MD", "renamed.py", "x.jsonl.md"])
+def test_sealed_set_renamed_md_or_py_is_never_loaded(tmp_path, name):
+    """Gate finding: .md/.py marker text is exempt from rule 2, so every loader refuses those suffixes."""
+    from src.eval_schema import SchemaError, detect_schema, load_any
+    from src.eval_sets import NotAnEvalInput
+    from src.evaluator import load_golden_set
+
+    p = _write_jsonl(tmp_path / name, _rows("q a", sealed_index=0))
+    with pytest.raises(NotAnEvalInput):
+        load_golden_set(str(p))
+    with pytest.raises(SchemaError):
+        detect_schema(p)
+    with pytest.raises(SchemaError):
+        load_any(p)

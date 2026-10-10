@@ -696,7 +696,13 @@ def _eval_command(args: argparse.Namespace) -> int:
 
     live = (not (args.skip_refusals and args.skip_completeness)) or args.judge
     meter = None
-    if live:
+    # A meter is built iff the run is live AND a usable key exists. Without a
+    # key no Claude call can be made at all, so the run degrades as before
+    # (expansion falls back, generation records error rows) instead of
+    # crashing while building metered clients (D70).
+    from src.evaluator import _api_key_usable
+
+    if live and _api_key_usable():
         from src.spend import SpendMeter, load_prices
 
         meter = SpendMeter(

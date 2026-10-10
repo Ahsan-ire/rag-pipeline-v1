@@ -1911,6 +1911,8 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Gate round 1 (10 Oct):** every eval-set loader (`load_golden_set` and `eval_schema`) refuses `.md` and `.py` inputs. Rule 2 exempts marker text in those suffixes (reports and code mention `"sealed"`), so without this a sealed set renamed to `.md` would load as private. Rule 2 also counts any `"sealed": true` pair, so duplicate keys are caught; scans every non-`.md`/`.py` suffix as JSONL; and the private and sealed roots match case-variant spellings by `samefile`.
+
 **Rejected:**
 - A default `privacy` value: a forgotten argument would silently mean public.
 - Classifying by filename or label: copies and renames would escape.
@@ -1994,6 +1996,13 @@ Item 9:
 
 **Re-deferred:** the status recompute in `run_eval_matrix` (it touches a canonical guard), and `test_h_projection`'s subprocess cost. The new P0 lock runs in-process and adds no subprocess.
 
+**Gate round 1 (10 Oct):**
+- One function, `_run_expansion_identity`, builds the expansion identity for both the v5 and v6 paths. A live run records the rewrite identity (model, prompt sha256, config hash) plus `expansion_artifact.live_digest`, which keeps rewrite order.
+- Artifact row keys are `<set sha256[:16]>/<id>`. A v1 row uses the unsalted public id whatever the run's class, so a public-built artifact replays at a stronger class; the artifact already records each question's full sha256, so this adds no exposure.
+- The rewrite config is single-sourced in `query_rewrite.rewrite_llm_kwargs()`.
+- A private `build:` destination with an empty basename is refused before any call.
+- **Deferred (efficiency, no behaviour change):** each v1 set is loaded and hashed up to three times per run. Loading each once is a follow-up.
+
 **Choices made in the lane (C4 and item 9):**
 - Set labels come from each report's provenance, mapped by set sha256; sidecar cohort blocks carry no label.
 - A sidecar arm no longer needs the offline-expansion marker; the expansion identity check replaces it, so live/live and candidate pairs can be compared. Legacy arms still need the marker.
@@ -2050,6 +2059,15 @@ Wiring is eval-only:
 - The week check runs before the run check.
 - A torn last ledger line is truncated under the lock; any other unreadable line refuses.
 - `LedgerRefused` and `LedgerCorrupt` are ordinary exceptions.
+
+**Gate round 1 (10 Oct):**
+- Limits and prices must be finite: NaN or inf would switch a ceiling off.
+- The CLI builds a meter only when the run is live and a usable key exists, so a keyless run degrades as before instead of crashing on client construction.
+- The rewrite client is never built for a replay.
+- `w_sweep.build_cache`/`run_sweep` gain `meter=`, and a live cache fill with a key and no meter raises `SpendMeterRequired`.
+- The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
+- `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
+- **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
 
 **Rejected:**
 - SDK retries: unmetered attempts.

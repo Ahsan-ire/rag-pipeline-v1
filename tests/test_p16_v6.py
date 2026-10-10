@@ -147,5 +147,9 @@ def test_private_v6_writes_only_under_private_root(v6_env, tmp_path, _private_ro
     new = {f for f in set(Path(tmp_path).rglob("*")) - before if f.is_file()}
     assert new and all(str(f).startswith(str(_private_root_in_tmp)) for f in new)
     out = capsys.readouterr()
-    assert "P16-CANARY" not in out.out + out.err
+    from tests.p16_canary import assert_no_leak
+
+    assert_no_leak(["P16-CANARY-v6 private question text here"], out.out, out.err,
+                   *[f.read_text(errors="replace") for f in Path(tmp_path).rglob("*")
+                     if f.is_file() and not str(f).startswith(str(_private_root_in_tmp)) and f != p])
     assert result["privacy"] == "private"

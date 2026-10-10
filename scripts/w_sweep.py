@@ -106,6 +106,7 @@ def build_cache(
     *,
     offline_only: bool = False,
     name_question: Optional[Callable[[str], str]] = None,
+    meter: Any = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Load the expansion cache, filling any gap with a live Haiku call.
 
@@ -120,6 +121,9 @@ def build_cache(
             set now fails loudly instead of silently spending budget.
         name_question: how the error names the question; defaults to its
             opening 60 characters. A private run passes the row's opaque id.
+        meter: a ``src.spend.SpendMeter`` (D70). A live fill expands through
+            its metered rewrite client; with a usable API key and no meter a
+            live fill raises ``SpendMeterRequired`` before any call.
 
     Returns:
         ``{question: {"rewrites": [...], "status": str, "intent": str|None}}``.
@@ -129,6 +133,13 @@ def build_cache(
             live cache entry (named by ``name_question``).
     """
     describe = name_question or (lambda q: repr(q[:60]))
+    rewrite_kwargs: Dict[str, Any] = {}
+    if not offline_only:
+        from src.evaluator import _require_meter
+
+        _require_meter(meter, live_paths=(True,))
+        if meter is not None:
+            rewrite_kwargs = {"llm": meter.rewrite_llm()}
     cache = {}
     if os.path.exists(CACHE):
         with open(CACHE) as f:
@@ -147,7 +158,7 @@ def build_cache(
                     f"refusing to call the API; refresh {CACHE} deliberately"
                 )
             for _attempt in range(3):  # zero-fallback requirement: retry twice
-                exp = expand_query(q, enabled=True)
+                exp = expand_query(q, enabled=True, **rewrite_kwargs)
                 if exp.status == STATUS_LIVE:
                     break
             cache[q] = {
@@ -246,6 +257,7 @@ def run_sweep(
     ranks_out: Optional[str],
     privacy: str,
     legacy_public: bool = False,
+    meter: Any = None,
 ) -> int:
     """Run the sweep, print the per-W summary, optionally dump the ranks.
 
@@ -259,6 +271,8 @@ def run_sweep(
         ranks_out: where to write the C4 rank dump (None: no file).
         privacy: the caller's class (``main`` passes the derived floor).
         legacy_public: enables classify's legacy-public lookup (rule 6).
+        meter: forwarded to ``build_cache`` (D70). The sweep itself runs
+            ``offline_only`` (zero API calls), so it is never used today.
 
     Returns:
         0 on success, 1 when cached fallbacks make the sweep non-canonical.
@@ -290,6 +304,7 @@ def run_sweep(
         rows_by_label,
         offline_only=True,
         name_question=None if public else (lambda q: any_id.get(q, "<unlisted cache entry>")),
+        meter=meter,
     )
     non_live = {q: c["status"] for q, c in cache.items() if c["status"] != STATUS_LIVE}
     n_intent = sum(1 for c in cache.values() if c["intent"])

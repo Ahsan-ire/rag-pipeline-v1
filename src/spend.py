@@ -117,6 +117,7 @@ import math
 import os
 import pwd
 import random
+import sys
 import time
 import tomllib
 import uuid
@@ -235,6 +236,9 @@ def _positive(value: Any, name: str, *, allow_zero: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number, got {value!r}")
     v = float(value)
+    # NaN/inf would switch a ceiling off: every `total + eur > nan` is False.
+    if not math.isfinite(v):
+        raise ValueError(f"{name} must be finite, got {v}")
     if v < 0 or (v == 0 and not allow_zero):
         raise ValueError(f"{name} must be {'>= 0' if allow_zero else '> 0'}, got {v}")
     return v
@@ -304,7 +308,15 @@ def default_ledger_path() -> Path:
 
 
 def _under_pytest() -> bool:
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    """True only inside a pytest process.
+
+    ``PYTEST_CURRENT_TEST`` alone can be exported by any shell, which would let
+    a plain process swap the per-owner ledger for an empty one via
+    ``CC_SPEND_LEDGER``; requiring the ``pytest`` module to be loaded as well
+    closes that. (A process that imports pytest on purpose to spoof it remains
+    an instruction-enforced residual, D70.)
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) and "pytest" in sys.modules
 
 
 def _same_path(a: Path, b: Path) -> bool:

@@ -320,6 +320,25 @@ def classify(path: Any, *, legacy_public: bool = False) -> str:
     return PRIVATE
 
 
+class NotAnEvalInput(ValueError):
+    """A ``.md``/``.py`` file was offered as an eval set (never loaded)."""
+
+
+def refuse_non_eval_suffix(path: Any) -> None:
+    """Eval-set loaders never load a ``.md``/``.py`` file.
+
+    Rule 2 exempts ``.md``/``.py`` marker text (reports and code mention
+    ``"sealed"``), so a sealed set renamed to ``.md`` would not classify
+    sealed; refusing those suffixes at every loader closes that rename
+    (16A-1 gate finding) without making prose a marker.
+
+    Raises:
+        NotAnEvalInput: for a ``.md`` or ``.py`` path.
+    """
+    if Path(path).suffix.lower() in _NON_EVAL_SUFFIXES:
+        raise NotAnEvalInput("not an eval input: .md/.py files are never loaded as eval sets")
+
+
 def is_sealed(path: Any) -> bool:
     """Rules 1-2 only: under the sealed root, or carrying a sealed marker."""
     p = Path(path).resolve()

@@ -80,3 +80,20 @@ def test_safe_error_never_carries_message():
     exc = RuntimeError("P16-CANARY-exc-secret question text")
     assert safe_error(exc) == "RuntimeError"
     assert safe_error(exc, "q:abc") == "q:abc: RuntimeError"
+
+
+def test_relative_to_root_accepts_a_samefile_alias(tmp_path, monkeypatch, _private_root_in_tmp):
+    """A case-variant spelling (samefile on macOS) resolves to the same relative path."""
+    import os
+
+    from src.eval_privacy import relative_to_root
+
+    (_private_root_in_tmp / "runs" / "r1").mkdir(parents=True)
+    alias_root = tmp_path / "eval" / "PRIVATE"
+    real = os.path.samefile
+    monkeypatch.setattr(os.path, "samefile", lambda a, b: real(str(a).replace("PRIVATE", "private"), b))
+    alias_root.mkdir(parents=True)
+    assert relative_to_root(alias_root / "runs" / "r1" / "report.md", _private_root_in_tmp) == \
+        __import__("pathlib").Path("runs/r1/report.md")
+    with pytest.raises(PrivatePathError):
+        relative_to_root(tmp_path / "elsewhere.md", _private_root_in_tmp)

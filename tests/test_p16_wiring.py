@@ -261,3 +261,49 @@ def test_generate_answers_duplicate_error_has_no_text():
     with pytest.raises(ValueError) as exc:
         ev.generate_answers([{"question": "P16-CANARY-dupe", "type": "direct"}] * 2, ["direct"], lambda q: {"answer": "x"})
     assert "CANARY" not in str(exc.value)
+
+
+# --- code-review fixes (phase gate) -------------------------------------------------
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_spend_limits_refused(bad):
+    with pytest.raises(ValueError):
+        make_meter(run_limit_eur=bad)
+    with pytest.raises(ValueError):
+        make_meter(owner_approved_eur=bad, approval_ref="x")
+
+
+def test_v6_and_v5_live_identity_carry_rewrite_config(monkeypatch, tmp_path):
+    from src.expansion_artifact import rewrite_identity
+
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    r = ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"),
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    ident = r["expansion_identity"]
+    assert ident["kind"] == "live" and ident["config_hash"] == rewrite_identity()["config_hash"]
+    assert ident["prompt_sha256"] == rewrite_identity()["prompt_sha256"] and len(ident["digest"]) == 64
+
+
+def test_private_build_with_empty_basename_refused_before_any_call(monkeypatch, tmp_path, eval_registry):
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    priv = tmp_path / "p.jsonl"
+    priv.write_text(Path(ROOT / SAMPLE).read_text())
+    with pytest.raises(ValueError, match="file name"):
+        ev.run_eval_matrix([("golden", str(priv))], expansion="build:out/",
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="private", skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_public_built_artifact_replays_at_a_stronger_privacy(monkeypatch, tmp_path, _private_root_in_tmp):
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    art = tmp_path / "exp.json"
+    common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                  skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"), expansion=f"build:{art}",
+                       privacy="public", **common)
+    n = len(calls)
+    r = ev.run_eval_matrix([("golden", SAMPLE)], expansion=str(art), privacy="private", **common)
+    assert len(calls) == n and r["rewrite_live"] == 0

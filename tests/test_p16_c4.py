@@ -749,8 +749,13 @@ def _files_outside_private_root(root, private_root, exclude):
 
 
 def _assert_no_canary(*texts):
+    """No canary prefix, and no question or 8-token window of one, in any form (acceptance (b))."""
+    from tests.p16_canary import assert_no_leak
+
     for text in texts:
         assert CANARY not in text
+    secrets = [_q(kind, i) for kind in ("golden", "golden-refusal", "realistic", "refusal") for i in range(10)]
+    assert_no_leak([*secrets, TAG], *texts, where="(w_sweep/bakeoff)")
 
 
 def test_private_w_sweep_writes_only_under_the_private_root_and_prints_ids(
@@ -926,3 +931,38 @@ def test_entry_functions_take_privacy_keyword_only_without_default():
 
 def test_scorer_version_is_the_sidecar_one(sets):
     assert build_c4(sets, BASE_RANKS)["scorer_version"] == SCORER_VERSION
+
+
+# --- gate finding: w_sweep meter (D70) --------------------------------------------
+def test_w_sweep_live_fill_needs_a_meter_with_a_key(monkeypatch, tmp_path):
+    from scripts import w_sweep
+    from src.spend import SpendMeterRequired
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    monkeypatch.setattr(w_sweep, "CACHE", str(tmp_path / "absent.json"))
+    called = []
+    monkeypatch.setattr(w_sweep, "expand_query", lambda q, **k: called.append(q))
+    with pytest.raises(SpendMeterRequired):
+        w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False)
+    assert called == []
+
+
+def test_w_sweep_live_fill_uses_the_meter_rewrite_client(monkeypatch, tmp_path):
+    from scripts import w_sweep
+    from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    monkeypatch.setattr(w_sweep, "CACHE", str(tmp_path / "c.json"))
+    seen = []
+
+    def expand(q, **k):
+        seen.append(k.get("llm"))
+        return Expansion(q, ("r",), REWRITE_MODEL, STATUS_LIVE, None)
+
+    class Meter:
+        def rewrite_llm(self):
+            return "metered-rewrite-client"
+
+    monkeypatch.setattr(w_sweep, "expand_query", expand)
+    w_sweep.build_cache({"golden": [{"question": "synthetic q"}]}, offline_only=False, meter=Meter())
+    assert seen == ["metered-rewrite-client"]

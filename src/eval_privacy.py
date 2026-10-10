@@ -168,6 +168,31 @@ def is_under(path: os.PathLike | str, root: os.PathLike | str) -> bool:
     return False
 
 
+def relative_to_root(path: os.PathLike | str, root: os.PathLike | str) -> Path:
+    """``path`` relative to ``root``, also across a case-variant spelling.
+
+    Mirrors :func:`is_under`: a plain ``relative_to`` first, then the
+    ancestor of ``path`` that is the same file as ``root`` (``samefile``).
+
+    Raises:
+        PrivatePathError: if ``path`` is not under ``root``.
+    """
+    p = Path(path).resolve()
+    r = Path(root).resolve()
+    try:
+        return p.relative_to(r)
+    except ValueError:
+        pass
+    if r.exists():
+        for ancestor in (p, *p.parents):
+            try:
+                if ancestor.exists() and os.path.samefile(ancestor, r):
+                    return p.relative_to(ancestor)
+            except OSError:
+                continue
+    raise PrivatePathError("path is not under the private root")
+
+
 def contained_path(root: Path, *parts: str) -> Path:
     """Join ``parts`` under ``root`` and refuse any escape.
 
@@ -235,7 +260,7 @@ def write_private(path: Path, content: str) -> None:
     root = private_root()
     if not is_under(path, root):
         raise PrivatePathError("private output must stay under the private root")
-    rel = Path(path).resolve().relative_to(root.resolve())
+    rel = relative_to_root(path, root)
     target = contained_path(root, *rel.parts)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")

@@ -246,3 +246,65 @@ def test_public_privacy_on_private_input_raises_before_any_call(tmp_path, canari
                            generate_fn=lambda q: calls.append(q), judge_fn=lambda v: calls.append(v),
                            provenance_fn=lambda: dict(PROVENANCE), privacy="public")
     assert calls == []
+
+
+def test_private_cli_top_level_exception_prints_type_only(tmp_path, monkeypatch, capsys, caplog, canaries,
+                                                          private_set):
+    """A top-level exception carrying canary text (and the question) reaches the CLI: type only."""
+    caplog.set_level(logging.DEBUG)
+    path, rows = private_set
+
+    def boom(set_specs, **kwargs):
+        raise RuntimeError(canaries.value("topexc") + " " + rows[0]["question"])
+
+    monkeypatch.setattr("src.evaluator.run_eval_matrix", boom)
+    monkeypatch.setattr("sys.argv", ["prog", "eval", "--golden", str(path), "--skip-refusals", "--skip-completeness"])
+    import src.pipeline
+
+    with pytest.raises(SystemExit) as exc:
+        src.pipeline.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr()
+    assert_no_leak(canaries, out.out, out.err, caplog.text, where="(cli top-level exception)")
+    assert "RuntimeError" in out.err
+
+
+def test_private_copy_of_a_canonical_run_is_not_canonical(tmp_path, monkeypatch):
+    """Control: the P0 canonical fakes make a PUBLIC run canonical; the same on private copies is not."""
+    import shutil
+
+    from tests.p16_capture import (
+        MATRIX_SETS,
+        FakeGeneration,
+        _expected_index,
+        _fake_expand,
+        _judge_fn,
+        _pick_canonical,
+    )
+
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    canonical = tmp_path / "results.md"
+    monkeypatch.setattr(ev, "DEFAULT_RESULTS_PATH", str(canonical))
+    paths = [p for _l, p in MATRIX_SETS]
+    expected, refusals = _expected_index(paths)
+    retrieval = FakeRetrieval(expected)
+
+    def run(specs, privacy, out):
+        gen = FakeGeneration(retrieval, _pick_canonical)
+        gen.refusal_qs = refusals
+        return ev.run_eval_matrix(specs, judge=True, results_path=out, retrieve_fn_factory=retrieval.factory(6),
+                                  generate_fn=gen, judge_fn=_judge_fn("clean"),
+                                  provenance_fn=lambda: dict(PROVENANCE), privacy=privacy)
+
+    public = run(list(MATRIX_SETS), "public", str(tmp_path / "public.md"))
+    assert public["is_canonical"] is True
+    copies = []
+    for label, p in MATRIX_SETS:
+        dst = tmp_path / "copies" / Path(p).name
+        dst.parent.mkdir(exist_ok=True)
+        shutil.copy(ROOT / p, dst)
+        copies.append((label, str(dst)))
+    private = run(copies, "private", None)
+    assert private["is_canonical"] is False
+    assert not canonical.exists()

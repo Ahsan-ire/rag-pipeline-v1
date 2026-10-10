@@ -122,7 +122,13 @@ def render_errors(errors: Iterable[ErrorTuple]) -> str:
 # Low-level reading (no text in errors)
 # --------------------------------------------------------------------------
 def _refuse_if_sealed(path: Path) -> str:
-    """Classify ``path``; raise for sealed input, else return its class."""
+    """Classify ``path``; raise for sealed input, else return its class.
+
+    A ``.md``/``.py`` file is never an eval set: refused as a file-level
+    schema error (line 0), so a sealed set renamed to ``.md`` is never read.
+    """
+    if path.suffix.lower() in (".md", ".py"):
+        raise SchemaError([(0, "<file>", "not an eval input (.md/.py)")])
     privacy = classify(path)
     if privacy == SEALED:
         raise SealedInputError("sealed eval input is refused in 16A-1 (exit 4)")
