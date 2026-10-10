@@ -1241,7 +1241,7 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
     runs_root = _privacy.private_root() / "runs"
     if results_path is None:
         run_id = _new_run_id()
-        rdir = _privacy.run_dir(run_id)
+        rdir = _privacy.run_dir(run_id, create=False)
         return run_id, str(rdir / "report.md"), rdir
     if not _privacy.is_under(results_path, runs_root):
         raise PrivatePathError(
@@ -1253,7 +1253,7 @@ def _private_destination(results_path: Optional[str]) -> Tuple[str, str, Any]:
     if len(rel.parts) != 2:
         raise PrivatePathError("a private report path must be eval/private/runs/<run id>/<file>")
     run_id = rel.parts[0]
-    rdir = _privacy.run_dir(run_id)
+    rdir = _privacy.run_dir(run_id, create=False)
     return run_id, str(rdir / rel.parts[1]), rdir
 
 
@@ -1572,6 +1572,9 @@ def run_eval(
     )
 
     golden = load_golden_set(golden_path)
+    # Cohort (C4) up front: a repeated question is refused before any paid call.
+    set_sha = _sha256_file(golden_path)
+    cohort, ids = v1_cohort(golden, path=golden_path, privacy=privacy, sha256=set_sha)
 
     # Build the load-once retrieve_fn a SINGLE time for the whole run (Phase 9 /
     # D37): one store open + one BM25 unpickle, shared by the retrieval pass AND
@@ -1616,8 +1619,6 @@ def run_eval(
         )
     provenance = provenance_fn()
 
-    set_sha = _sha256_file(golden_path)
-    cohort, ids = v1_cohort(golden, path=golden_path, privacy=privacy, sha256=set_sha)
     report = _format_report(
         golden_path, top_k, retrieval, refusals, provenance, golden,
         privacy=privacy, data_privacy=privacy, ids=ids,
@@ -1847,7 +1848,12 @@ def run_eval_matrix(
                                  "to eval/private/artifacts/<name>)")
             build_target = str(_privacy.artifact_path(base))
         else:
-            for p in [*set_paths, DEFAULT_RESULTS_PATH] + ([results_path] if results_path else []):
+            if not str(artifact_path_arg).lower().endswith(".json"):
+                raise ValueError("build:<path> must name a .json artifact")
+            clashes = [*set_paths, DEFAULT_RESULTS_PATH, PARTIAL_RESULTS_PATH]
+            clashes += [x for x in (results_path, judge_dump_path) if x]
+            clashes += [sidecar_path(x) for x in (results_path, DEFAULT_RESULTS_PATH, PARTIAL_RESULTS_PATH) if x]
+            for p in clashes:
                 if _same_path(artifact_path_arg, p):
                     raise ValueError(
                         "build:<path> resolves to an input set or a report; refusing to overwrite it"
@@ -1856,9 +1862,15 @@ def run_eval_matrix(
     # (b) every v1 set must form a cohort (no repeated question) up front.
     from src.eval_schema import detect_schema as _detect_schema
 
+    from src.eval_schema import load_any as _load_any
+
     for _label, path in set_specs:
         if _detect_schema(path) == 1:
             v1_cohort(load_golden_set(path), path=path, privacy=privacy, sha256=_sha256_file(path))
+        else:
+            # Full schema-2 validation (ids, families, inventory) before any
+            # set is expanded or generated.
+            _load_any(path)
 
     # Which passes run, and therefore which answers to generate (Design 2).
     generation_ran = (not skip_refusals) or (not skip_completeness) or judge
@@ -1908,6 +1920,16 @@ def run_eval_matrix(
                 preflight_rows.append((rid, qtext))
                 replay_ids.setdefault(qtext, rid)
         replay_artifact.preflight(preflight_rows)
+        # One expansion per question per run (shared cache): if two sets hold
+        # the same question, their frozen entries must agree, else refuse.
+        for rid, qtext in preflight_rows:
+            first = replay_ids[qtext]
+            if rid != first and replay_artifact.replay(rid, qtext) != replay_artifact.replay(first, qtext):
+                from src.expansion_artifact import ExpansionArtifactError
+
+                raise ExpansionArtifactError(
+                    "artifact entries for one question differ across sets; refusing to replay"
+                )
     if expansion_mode == "build" and not expansion_enabled:
         raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
     rewrite_replayed = 0

@@ -1911,6 +1911,8 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Gate round 2 (10 Oct):** private and artifact temp files are created exclusive and no-follow, so a planted `<file>.tmp` symlink cannot redirect a write. Rule 5 applies only to derived files with no `question`/`questions` key at any depth, so a question set cannot declare itself public. An escaped `"\u0073ealed"` key on a malformed line counts as a marker.
+
 **Gate round 1 (10 Oct):** every eval-set loader (`load_golden_set` and `eval_schema`) refuses `.md` and `.py` inputs. Rule 2 exempts marker text in those suffixes (reports and code mention `"sealed"`), so without this a sealed set renamed to `.md` would load as private. Rule 2 also counts any `"sealed": true` pair, so duplicate keys are caught; scans every non-`.md`/`.py` suffix as JSONL; and the private and sealed roots match case-variant spellings by `samefile`.
 
 **Rejected:**
@@ -2003,6 +2005,15 @@ Item 9:
 - A private `build:` destination with an empty basename is refused before any call.
 - **Deferred (efficiency, no behaviour change):** each v1 set is loaded and hashed up to three times per run. Loading each once is a follow-up.
 
+**Gate round 2 (10 Oct):**
+- Every refusal now happens before any paid call: `run_eval` checks its cohort up front, and the matrix validates every schema-2 set up front.
+- A `build:` target must be a `.json` file and may not be any input set, report, sidecar or judge dump.
+- When the same question appears in two sets, a replay refuses if the two frozen entries differ.
+- Private run directories are created only when a file is written.
+- A private replay or build records the artifact in `inputs.json` as a `derived` input.
+- C4 refuses any rank below 1.
+- On a private floor, `bakeoff_report` prints refusals as their type only, because an id read from a malformed dump can carry text.
+
 **Choices made in the lane (C4 and item 9):**
 - Set labels come from each report's provenance, mapped by set sha256; sidecar cohort blocks carry no label.
 - A sidecar arm no longer needs the offline-expansion marker; the expansion identity check replaces it, so live/live and candidate pairs can be compared. Legacy arms still need the marker.
@@ -2068,6 +2079,10 @@ Wiring is eval-only:
 - The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
 - `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
 - **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
+
+**Gate round 2 (10 Oct):** `evaluate_refusals`' default `answer_fn` and `judge_answers`' default `llm_fn` raise `SpendMeterRequired` when a usable key is set.
+
+**Residual, predating this branch and disclosed:** the retriever's relevance-score `UserWarning` prints chunk text, which is corpus prose and not eval material, to stderr. The repo is unaffected because stderr is never committed.
 
 **Rejected:**
 - SDK retries: unmetered attempts.

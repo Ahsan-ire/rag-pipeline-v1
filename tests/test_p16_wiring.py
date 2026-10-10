@@ -207,15 +207,16 @@ def test_replay_identity_mismatch_refuses(monkeypatch, tmp_path):
 
 # --- (d) the sidecar never moves provenance ------------------------------------------
 def test_provenance_identical_with_and_without_sidecar():
-    probe = ROOT / "eval" / "p16_probe_report.md.rows.json"
-    assert not probe.exists()
-    before = ev.collect_provenance(persist_directory="/nonexistent-index")
-    try:
-        probe.write_text("{}\n")
-        after = ev.collect_provenance(persist_directory="/nonexistent-index")
-    finally:
-        probe.unlink()
-    assert before == after
+    """collect_provenance reads `git status --porcelain`, which omits ignored files:
+    every sidecar name is git-ignored, so its presence cannot change provenance.
+    Checked without writing into the repo (gate round 2)."""
+    import subprocess
+
+    for rel in ("eval/results.md.rows.json", "eval/results_partial.md.rows.json", "x/y/report.md.rows.json"):
+        proc = subprocess.run(["git", "check-ignore", "-q", rel], cwd=ROOT)
+        assert proc.returncode == 0, rel
+    porcelain = " M src/x.py\n"
+    assert ev._porcelain_dirty_paths(porcelain) == ["src/x.py"]
 
 
 # --- review fixes: refusals happen before any work ---------------------------------
@@ -339,3 +340,91 @@ def test_public_eval_functions_refuse_unmetered_live_defaults(monkeypatch):
     with pytest.raises(SpendMeterRequired):
         judge_answers([{"question": "q", "answer": "a", "context": "c"}])
     assert calls == []
+
+
+
+# --- gate round 2 (code review) ------------------------------------------------------
+@pytest.mark.parametrize("dest", ["eval/results_partial.md", "judge.jsonl", "x.md"])
+def test_build_target_collisions_and_non_json_refused(monkeypatch, tmp_path, dest):
+    monkeypatch.chdir(ROOT)
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    target = dest if dest.startswith("eval/") else str(tmp_path / dest)
+    with pytest.raises(ValueError, match="build:"):
+        ev.run_eval_matrix([("golden", SAMPLE)], expansion=f"build:{target}", judge_dump_path=str(tmp_path / "judge.jsonl"),
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_run_eval_refuses_repeated_question_before_any_call(tmp_path, eval_registry):
+    import json as _json
+
+    from src.eval_cohort import CohortError
+
+    p = tmp_path / "dup.jsonl"
+    row = {"question": "synthetic repeated refusal", "type": "refusal", "expected_sections": []}
+    p.write_text(_json.dumps(row) + "\n" + _json.dumps(row) + "\n")
+    eval_registry.add(p)
+    calls = []
+    with pytest.raises(CohortError):
+        ev.run_eval(str(p), retrieve_fn=lambda q, top_k=6: calls.append(q) or [],
+                    answer_fn=lambda q: calls.append(q), provenance_fn=lambda: dict(PROVENANCE),
+                    results_path=str(tmp_path / "r.md"), privacy="public")
+    assert calls == []
+
+
+def test_v6_bad_second_set_refused_before_any_call(monkeypatch, tmp_path, eval_registry):
+    import json as _json
+
+    import src.eval_schema as eval_schema
+    from src.eval_schema import SchemaError
+
+    inv = tmp_path / "inv.json"
+    inv.write_text(_json.dumps({"version": 1, "map_sha256": "0" * 64, "sections": ["1.1"], "aliases": []}))
+    monkeypatch.setattr(eval_schema, "INVENTORY_PATH", inv)
+    good = tmp_path / "good.jsonl"
+    good.write_text(_json.dumps({"schema": 2, "id": "goodrow-1", "family_id": "goodfam", "question": "synthetic good",
+                                 "scope": "answer", "evidence": [["1.1"]]}) + "\n")
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(_json.dumps({"schema": 2, "id": "badrow-1", "family_id": "badfam", "question": "synthetic bad",
+                                "scope": "answer", "evidence": [["9.9"]]}) + "\n")
+    eval_registry.add(good)
+    eval_registry.add(bad)
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    with pytest.raises(SchemaError):
+        ev.run_eval_matrix([("golden", str(good)), ("realistic", str(bad))],
+                           retrieve_fn_factory=lambda m: (lambda q, top_k=6: calls.append(q) or []),
+                           provenance_fn=lambda: dict(PROVENANCE), privacy="public", results_path=str(tmp_path / "r.md"),
+                           skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_private_failure_leaves_no_orphan_run_dir(tmp_path, eval_registry, _private_root_in_tmp):
+    from src.eval_cohort import CohortError
+
+    p = tmp_path / "dup.jsonl"
+    p.write_text('{"question": "q dup", "type": "direct", "expected_sections": ["1.1"]}\n' * 2)
+    with pytest.raises(CohortError):
+        ev.run_eval_matrix([("golden", str(p))], retrieve_fn_factory=FakeRetrieval({}).factory(6),
+                           provenance_fn=lambda: dict(PROVENANCE), privacy="private",
+                           skip_refusals=True, skip_completeness=True)
+    runs = _private_root_in_tmp / "runs"
+    assert not runs.exists() or not any(runs.iterdir())
+
+
+def test_formatters_refuse_a_weaker_class():
+    from src.eval_privacy import PrivacyFloorError
+
+    with pytest.raises(PrivacyFloorError):
+        ev._format_matrix_report({"privacy": "private", "sets": []}, privacy="public")
+    with pytest.raises(PrivacyFloorError):
+        ev._format_report("g.jsonl", 6, {}, None, {}, [], privacy="public", data_privacy="private")
+
+
+def test_bakeoff_rank_must_be_positive():
+    from scripts.bakeoff_report import _is_rank
+
+    assert _is_rank(None) and _is_rank(1) and _is_rank(6)
+    assert not _is_rank(0) and not _is_rank(-1) and not _is_rank(True)

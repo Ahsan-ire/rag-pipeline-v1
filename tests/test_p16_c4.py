@@ -954,8 +954,20 @@ def test_private_bakeoff_canary_cache_and_exception_stay_private(
     _assert_canary_clean(c, tmp_path, _private_root_in_tmp, inputs, out, err, caplog.text,
                          where="(bakeoff canaries)")
 
-    # (A malformed id-like value in an arm dump leaks via the C4Error 'extra rows' text,
-    # scripts/bakeoff_report.py:793 -- reported, not asserted here.)
+    # A malformed id-like value in an arm dump must not leak through a C4
+    # refusal on a private floor (gate round 2: refusals print the type only).
+    bad = _dump(sets_c, CAND_RANKS)
+    extra = dict(bad["rows"][0])
+    extra["id"] = "q:" + c.value("badid")
+    bad["rows"].append(extra)
+    (dumps / "bad.json").write_text(json.dumps(bad), encoding="utf-8")
+    bad_argv = [a if a != str(dumps / "cand.json") else str(dumps / "bad.json") for a in argv]
+    rc2, out2, err2 = _cli(bad_argv, capsys)
+    assert rc2 == 2, err2
+    _assert_canary_clean(c, tmp_path, _private_root_in_tmp, [*inputs, dumps / "bad.json"], out2, err2,
+                         caplog.text, where="(bakeoff C4 refusal)")
+    inputs.append(dumps / "bad.json")
+
     def boom(*_a, **_k):
         raise RuntimeError(f"{c.value('rowexc')} {c.value('topexc')}")
 

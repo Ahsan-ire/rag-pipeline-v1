@@ -106,6 +106,24 @@ list in `docs/work-state.md`.*
   and an `Implemented-by:` trailer; [C] integration and every real-row check stayed
   with the orchestrator.
 
+**Worker-lane record, 16A-1 (Tier-2).** harness-worker was unavailable in the cloud session, so every [W] item fell back to a Claude subagent: isolated git worktree, synthetic fixtures only, a file allowlist inside the spec's `worker_allow`, no eval/ rows read, and the orchestrator reviewing, integrating and committing with an `Implemented-by:` trailer.
+
+| [W] item | Lane | Commit(s) | Files |
+|---|---|---|---|
+| 1, registry and `classify` | orchestrator, in lane | `2613497` | `src/eval_sets.py`, `src/eval_privacy.py` |
+| 1, leak scanner | Claude subagent (Opus) | `be1cb25` | `scripts/scan_leaks.py` |
+| 2, schema v2 and validator | Claude subagent (Opus) | `8e66710` | `src/eval_schema.py`, `scripts/validate_eval_set.py` |
+| 3, `text_utils` move and scorers | Claude subagent (Opus) | `430d9fc`, `98b661d` | `src/text_utils.py`, `src/eval_scoring.py`, `src/render.py` |
+| 4, statistics | Claude subagent (Opus) | `5b9f032` | `src/eval_stats.py` |
+| 4, family split | Claude subagent (Opus) | `32364f3` | `src/eval_split.py` |
+| 5, expansion artifact | Claude subagent (Opus) | `37b8614` | `src/expansion_artifact.py` |
+| 7, chunker side channel | Claude subagent (Opus) | `3d47aa3` | `src/chunker.py` |
+| 8, spend meter core | Claude subagent (Opus) | `188d914` | `src/spend.py` |
+| review fixes (items 1, 4, 5, 8) | Claude subagent (Sonnet) | `e9b3642` | scanner, split, spend, artifact |
+| gate canary tests | Claude subagent (Sonnet) | `d939aec` | `tests/test_p16_c4.py`, `tests/test_p16_v6.py` |
+
+Read-only review legs (Sonnet ×3, Haiku ×1) and the fresh-context pressure-tester ran alongside. None of them wrote to the tree.
+
 ## Deliberately rejected (do not rebuild these)
 
 - **A model-graded scoreboard routing work between models.** One model

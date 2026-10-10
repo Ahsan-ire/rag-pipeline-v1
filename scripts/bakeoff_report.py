@@ -614,7 +614,7 @@ def is_c4(doc: Any) -> bool:
 
 def _is_rank(value: Any) -> bool:
     """A recorded rank: a positive int, or None (a genuine miss)."""
-    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 1)
 
 
 def index_rows(doc: Mapping[str, Any], name: str) -> Dict[Tuple[str, str], Dict[str, Dict[str, Any]]]:
