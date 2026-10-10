@@ -1911,6 +1911,15 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Gate round 7 (10 Oct):** a narrow re-test of round 6 found that "cannot parse" counted as "no question keys". It also found that artifact entries were bound only by the header's self-declared sha, and that crafted input could crash the precheck with a traceback. Fixed:
+- A traced non-`.md` file must parse as duplicate-key-free JSON. A `.jsonl`, a BOM, a truncated file or a duplicate key fails closed and is never traced. Rule 5 in `classify` also rejects duplicate keys, because `json.loads` keeps the last one.
+- An artifact (under `artifacts/` or as a run input) is accepted only if every header set is approved and found on disk at its sha256. Every entry key and `question_sha256` must also be exactly those of a real row of those sets (`evaluator._artifact_keys`). Free text can then sit only in the rewrites, intent and model of real rows: model output for a real question, which spec (i) accepts.
+- Deep nesting, a non-list `sources` and unreadable files give an offender (exit 7), not a traceback.
+
+Each probe is a regression test that fails on the round-6 code. An honest private `build:` then replay through `run_eval_matrix` passes the precheck, and a single tampered entry key fails it.
+- **Residual (instruction-enforced):** the rewrites and intent text inside a hand-edited, row-bound artifact, and a `.md` derived input whose recorded sources are false. Only the eval tools write these.
+- **Disclosed:** on a filesystem without hard links, `os.link` fails, so a private `build:` fails closed there.
+
 **Gate round 6 (10 Oct):** round 5's source tracing trusted `inputs.json` metadata. Six synthetic probes passed private text that the round-4 code refused. Tracing now requires all of the following:
 - the recorded file exists with its recorded sha256 (a missing or drifted file is accepted only as a needle source or a legacy entry);
 - every recorded source that exists on disk hashes to its recorded sha256;

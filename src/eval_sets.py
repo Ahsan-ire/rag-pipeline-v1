@@ -273,6 +273,21 @@ def public_sha256s() -> set:
 # --------------------------------------------------------------------------
 # Classification
 # --------------------------------------------------------------------------
+def loads_no_duplicates(text: str) -> Any:
+    """``json.loads`` that raises ``ValueError`` on a duplicate key at any depth.
+
+    ``json.loads`` keeps the last of two equal keys, so a file can show a
+    checker one ``question`` value and hide another (16A-1 gate round 7).
+    """
+    def _hook(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+        keys = [k for k, _ in pairs]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate JSON key")
+        return dict(pairs)
+
+    return json.loads(text, object_pairs_hook=_hook)
+
+
 def _is_known_derived(obj: Any) -> bool:
     """An expansion artifact, or a rows sidecar / C4 rank dump (``cohorts`` + ``rows``)."""
     if not isinstance(obj, dict):
@@ -347,8 +362,8 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
         return None
     if suffix == ".json":
         try:
-            obj = json.loads(text)
-        except ValueError:
+            obj = loads_no_duplicates(text)
+        except (ValueError, RecursionError):
             return None
         inputs = obj.get("inputs") if isinstance(obj, dict) else None
         if not isinstance(inputs, list) or not inputs:

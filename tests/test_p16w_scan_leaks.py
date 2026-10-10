@@ -70,9 +70,18 @@ def sets(tmp_path, eval_registry, _private_root_in_tmp):
     """A registered private set (under the private root) and a registered public set."""
     priv = _write_jsonl(_private_root_in_tmp / "sets" / "dev.jsonl", PRIVATE_ROWS)
     pub = _write_jsonl(tmp_path / "public" / "golden.jsonl", PUBLIC_ROWS)
+    # a valid single-schema private set an artifact can be keyed from (the
+    # mixed `dev` fixture is a scanner fixture, not a loadable eval set)
+    priv_v1 = _write_jsonl(_private_root_in_tmp / "sets" / "dev_v1.jsonl",
+                           [{"question": q, "type": "direct", "expected_sections": ["1.1"]} for q in (PRIV9, SHORT)])
+    # and a valid public one (a public-built artifact, round 5 PT2)
+    pub_v1 = _write_jsonl(tmp_path / "public" / "golden_v1.jsonl",
+                          [{"question": PUB_EXACT, "type": "direct", "expected_sections": ["1.1"]}])
     eval_registry.add(priv, privacy="private", name="dev-private")
+    eval_registry.add(priv_v1, privacy="private", name="dev-private-v1")
     eval_registry.add(pub, privacy="public", name="golden-public")
-    return {"private": priv, "public": pub}
+    eval_registry.add(pub_v1, privacy="public", name="golden-public-v1")
+    return {"private": priv, "public": pub, "private_v1": priv_v1, "public_v1": pub_v1}
 
 
 def _scan(text: str):
@@ -407,8 +416,15 @@ def _real_artifact(path: Path, inputs) -> Path:
     from src.expansion_artifact import build_artifact, save_artifact
     from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
 
-    art = build_artifact([("r-5", "synthetic widget")],
-                         lambda q: Expansion(q, ("alpha beta",), REWRITE_MODEL, STATUS_LIVE),
+    from src.evaluator import _artifact_keys
+
+    # Rows keyed exactly as a real build keys them (the precheck binds every
+    # entry to a real row of its header sets, gate round 7); a header set that
+    # is not on disk gets an invented row.
+    rows = []
+    for p, _h in inputs:
+        rows += [(key, q) for q, key in _artifact_keys(p)] if Path(p).is_file() else [("r-5", "synthetic widget")]
+    art = build_artifact(rows, lambda q: Expansion(q, ("alpha beta",), REWRITE_MODEL, STATUS_LIVE),
                          [{"path": p, "sha256": h, "kind": "questions"} for p, h in inputs])
     path.parent.mkdir(parents=True, exist_ok=True)
     save_artifact(path, art)
@@ -425,7 +441,8 @@ def _legacy_and_artifact(repo: Path, root: Path, sets, *, artifact_doc=None, art
     priv_sha = eval_sets.sha256_file(sets["private"])
     art = root / "artifacts" / "expansion.json"
     if artifact_doc is None:
-        _real_artifact(art, artifact_inputs or [("eval/private/sets/dev.jsonl", priv_sha)])
+        v1 = sets["private_v1"]
+        _real_artifact(art, artifact_inputs or [(str(v1), eval_sets.sha256_file(v1))])
     else:
         art.parent.mkdir(parents=True)
         art.write_text(json.dumps(artifact_doc), encoding="utf-8")
@@ -456,7 +473,8 @@ def test_precheck_refuses_artifact_from_unregistered_source(repo, _private_root_
     _legacy_and_artifact(repo, _private_root_in_tmp, sets, artifact_inputs=[("eval/private/x.jsonl", "b" * 64)])
     with pytest.raises(sl.ScanRefusal) as exc:
         sl.merge_gate("base", repo=repo)
-    assert exc.value.code == 7 and any(p.endswith("eval/private/x.jsonl") for p in exc.value.paths)
+    # the artifact itself is refused (its header names no approved, findable set)
+    assert exc.value.code == 7 and any(p.endswith("expansion.json") for p in exc.value.paths)
 
 
 def test_cli_usage_errors():
@@ -551,8 +569,8 @@ def test_precheck_passes_derived_inputs_traced_to_approved_sources(repo, _privat
 
 def test_precheck_accepts_sha_keyed_artifact_outside_the_artifacts_dir(repo, tmp_path, _private_root_in_tmp, sets):
     """PT2: a public-built, content-free artifact replayed in a private run passes."""
-    pub_sha = eval_sets.sha256_file(sets["public"])
-    art = _real_artifact(tmp_path / "probes" / "art_pub.json", [(str(sets["public"]), pub_sha)])
+    pub_sha = eval_sets.sha256_file(sets["public_v1"])
+    art = _real_artifact(tmp_path / "probes" / "art_pub.json", [(str(sets["public_v1"]), pub_sha)])
     _inputs(_private_root_in_tmp, "run-art", [
         {"path": str(art), "sha256": eval_sets.sha256_file(art), "kind": "derived", "sources": []},
     ])
@@ -636,11 +654,64 @@ def test_artifact_exemption_needs_the_exact_schema(repo, tmp_path, _private_root
 def test_unreferenced_files_under_artifacts_are_checked(repo, _private_root_in_tmp, sets):
     """Probe G (artifacts/): an interrupted build's orphan must still be a valid
     artifact from approved sources; anything else there is refused."""
-    priv_sha = eval_sets.sha256_file(sets["private"])
-    _real_artifact(_private_root_in_tmp / "artifacts" / "ok.json", [(str(sets["private"]), priv_sha)])
+    v1 = sets["private_v1"]
+    _real_artifact(_private_root_in_tmp / "artifacts" / "ok.json", [(str(v1), eval_sets.sha256_file(v1))])
     assert _offenders(sets) == []
     (_private_root_in_tmp / "artifacts" / "stray.jsonl").write_text(json.dumps({"question": UNREG}) + "\n")
     _real_artifact(_private_root_in_tmp / "artifacts" / "bad.json", [("x.jsonl", "b" * 64)])
     offenders = _offenders(sets)
     assert any(o.endswith("stray.jsonl") for o in offenders) and any(o.endswith("bad.json") for o in offenders)
     assert not any(o.endswith("ok.json") for o in offenders)
+
+
+def test_artifact_entries_must_bind_to_real_rows(repo, _private_root_in_tmp, sets):
+    """Round 7 (N6): a schema-valid artifact from an approved header whose entry
+    keys or question hashes match no real row is refused."""
+    from src.expansion_artifact import build_artifact, save_artifact
+    from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
+
+    pub_sha = eval_sets.sha256_file(sets["public"])
+    art = build_artifact([(f"{pub_sha[:16]}/{UNREG}", UNREG)],
+                         lambda q: Expansion(q, (UNREG,), REWRITE_MODEL, STATUS_LIVE),
+                         [{"path": "nonexistent/elsewhere.jsonl", "sha256": pub_sha, "kind": "questions"}])
+    save_artifact(_private_root_in_tmp / "artifacts" / "x.json", art)
+    assert any(o.endswith("x.json") for o in _offenders(sets))
+
+
+@pytest.mark.parametrize("body", [
+    "\n".join(json.dumps({"question": UNREG}) for _ in range(2)),           # N1 .jsonl-shaped
+    "\ufeff" + json.dumps({"question": UNREG}),                              # N2 BOM
+    json.dumps({"question": UNREG})[:-3],                                     # N2b truncated
+    '{"cohorts": [], "rows": [], "scorer_version": "x", "question": "%s", "question": "y"}' % UNREG,  # N3
+    "[" * 600 + json.dumps({"question": UNREG}) + "]" * 600,                 # N4 deep nesting
+])
+def test_unparseable_or_duplicate_keyed_traced_file_fails_closed(repo, _private_root_in_tmp, sets, body):
+    """Round 7: a file the checker cannot parse cleanly is never traced, and
+    nothing crashes the precheck (exit 7, not a traceback)."""
+    path = _private_root_in_tmp / "runs" / "run-n" / "dump.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(body, encoding="utf-8")
+    _derived(_private_root_in_tmp, "run-n", path, [(str(sets["public"]), eval_sets.sha256_file(sets["public"]))])
+    assert any(o.endswith("dump.json") for o in _offenders(sets))
+    assert sl.main(["--merge-gate", "--base", "base", "--repo", str(repo)]) == 7
+
+
+def test_non_list_sources_is_refused_not_a_crash(repo, _private_root_in_tmp, sets):
+    """Round 7 (N5): ``"sources": 5`` is an offender, not a TypeError."""
+    path = _private_root_in_tmp / "runs" / "run-s" / "r.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("# r\n", encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-s", [{"path": str(path), "sha256": eval_sets.sha256_file(path),
+                                              "kind": "derived", "sources": 5}])
+    assert sl.main(["--merge-gate", "--base", "base", "--repo", str(repo)]) == 7
+
+
+def test_rule5_refuses_a_duplicate_question_key(tmp_path, sets):
+    """Round 7 (N3): json.loads keeps the last duplicate key; rule 5 must not."""
+    pub_sha = eval_sets.sha256_file(sets["public"])
+    path = tmp_path / "outside" / "dump.json"
+    path.parent.mkdir()
+    pub_q = json.loads(Path(sets["public"]).read_text().splitlines()[0])["question"]
+    path.write_text('{"cohorts": [], "rows": [], "scorer_version": "x", "inputs": [{"path": "p", "sha256": "%s"}],'
+                    ' "question": "%s", "question": "%s"}' % (pub_sha, UNREG, pub_q), encoding="utf-8")
+    assert eval_sets.classify(path) != "public"

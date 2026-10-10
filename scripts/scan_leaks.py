@@ -286,7 +286,7 @@ def _run_inputs(run_id: str) -> List[Dict[str, Any]]:
         inputs = data["inputs"]
         if data.get("version") != 1 or not isinstance(inputs, list):
             raise ValueError
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         raise ScanRefusal(EXIT_USAGE, "run inputs.json missing or malformed", [str(path)])
     return [i for i in inputs if isinstance(i, dict)]
 
@@ -328,7 +328,8 @@ def collect_sources(
             if item.get("kind") == "questions":
                 recorded.append(item)
             elif item.get("kind") == "derived":
-                recorded.extend(s for s in item.get("sources") or [] if isinstance(s, dict))
+                srcs = item.get("sources")
+                recorded.extend(s for s in (srcs if isinstance(srcs, list) else []) if isinstance(s, dict))
         for item in recorded:
             sha = str(item.get("sha256", ""))
             rec_path = str(item.get("path", ""))
@@ -628,20 +629,21 @@ def _pr_items(pr: int, gh_runner: GhRunner) -> List[Tuple[str, str]]:
 
 
 def _load_json(path: Path) -> Any:
-    """Parsed JSON at ``path``, or ``None`` if unreadable or not JSON."""
+    """Parsed JSON at ``path``, or ``None`` if unreadable, not JSON, or carrying
+    a duplicate key (``eval_sets.loads_no_duplicates``). Callers treat ``None``
+    as "cannot be checked", i.e. fail closed (16A-1 gate round 7)."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return eval_sets.loads_no_duplicates(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, UnicodeDecodeError, RecursionError):
         return None
 
 
-def _has_question_key(obj: Any) -> bool:
-    """True when a ``question``/``questions`` key sits anywhere in ``obj``."""
-    if isinstance(obj, dict):
-        return any(k in ("question", "questions") or _has_question_key(v) for k, v in obj.items())
-    if isinstance(obj, list):
-        return any(_has_question_key(v) for v in obj)
-    return False
+def _sha_or_empty(path: Path) -> str:
+    """sha256 of a regular file, or ``""`` if it is missing or unreadable."""
+    try:
+        return eval_sets.sha256_file(path) if path.is_file() else ""
+    except OSError:
+        return ""
 
 
 def _is_sha_keyed_artifact(path: Path) -> bool:
@@ -676,20 +678,80 @@ def _sources_consistent(listed: Sequence[Tuple[str, str]]) -> bool:
     """Every recorded source that exists on disk hashes to its recorded sha256."""
     for s_path, s_sha in listed:
         resolved = _resolve_recorded(s_path)
-        if resolved.is_file():
-            try:
-                if eval_sets.sha256_file(resolved) != s_sha:
-                    return False
-            except OSError:
-                return False
+        if resolved.exists() and _sha_or_empty(resolved) != s_sha:
+            return False
     return True
 
 
-def _artifact_header_shas(path: Path) -> List[Tuple[str, str]]:
+def _content_checkable(path: Path) -> bool:
+    """A traced derived file's content can be trusted to its sources.
+
+    A ``.md`` report has no structure to check (its text is trusted to its
+    recorded sources: a disclosed residual, D65). Anything else must parse as
+    duplicate-free JSON (a ``.jsonl``, a BOM, a truncated or duplicate-keyed
+    file fails closed), and if it holds a ``question``/``questions`` key it must
+    classify public (rule 5 checks every question string). Gate round 7.
+    """
+    if path.suffix.lower() == ".md":
+        return True
+    doc = _load_json(path)
+    if doc is None:
+        return False
+    return not eval_sets._has_question_key(doc) or eval_sets.classify(path) == PUBLIC
+
+
+def _source_file(s_path: str, s_sha: str) -> Optional[Path]:
+    """The question set an artifact header names: its recorded path, else any
+    registered set at that sha256; ``None`` if no file with that sha is found."""
+    candidates = [_resolve_recorded(s_path)]
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return []
+        candidates += [e.resolved() for e in eval_sets.load_registry() if e.sha256 == s_sha]
+    except Exception:  # noqa: BLE001 - an unreadable registry just means fewer candidates
+        pass
+    for cand in candidates:
+        if _sha_or_empty(cand) == s_sha:
+            return cand
+    return None
+
+
+def _artifact_ok(path: Path, ok_source: Set[str]) -> bool:
+    """A schema-valid artifact whose every entry is bound to a real row.
+
+    Every header source must be approved and found on disk at its sha256, and
+    every entry key and ``question_sha256`` must be exactly the key and hash
+    of a row of those sets (``evaluator._artifact_keys``). Free text can then
+    sit only in the rewrites, intent and model of real rows (gate round 7).
+    """
+    if not _is_sha_keyed_artifact(path):
+        return False
+    header = _artifact_header_shas(path)
+    if not header or not all(h_sha in ok_source for _, h_sha in header):
+        return False
+    from src.evaluator import _artifact_keys
+    from src.expansion_artifact import question_sha256
+
+    expected: Dict[str, str] = {}
+    for h_path, h_sha in header:
+        src = _source_file(h_path, h_sha)
+        if src is None:
+            return False
+        try:
+            for question, key in _artifact_keys(str(src)):
+                expected[key] = question_sha256(question)
+        except Exception:  # noqa: BLE001 - an unloadable source cannot bind entries
+            return False
+    doc = _load_json(path)
+    entries = doc.get("entries") if isinstance(doc, dict) else None
+    if not isinstance(entries, dict):
+        return False
+    return all(
+        isinstance(e, dict) and expected.get(key) == e.get("question_sha256")
+        for key, e in entries.items()
+    )
+
+
+def _artifact_header_shas(path: Path) -> List[Tuple[str, str]]:
+    doc = _load_json(path)
     out = []
     for item in (doc.get("inputs") or []) if isinstance(doc, dict) else []:
         if isinstance(item, dict):
@@ -713,8 +775,7 @@ def precheck(source_shas: Set[str]) -> List[str]:
             # Every file here must be a schema-valid artifact built only from
             # approved sources, referenced by a run or not (an interrupted
             # build leaves one unreferenced; 16A-1 gate round 6).
-            header = _artifact_header_shas(path) if _is_sha_keyed_artifact(path) else None
-            if header is None or not all(h_sha in ok_source for _, h_sha in header):
+            if not _artifact_ok(path, ok_source):
                 offenders.append(str(path))
             continue
         try:
@@ -730,7 +791,7 @@ def precheck(source_shas: Set[str]) -> List[str]:
             items = data["inputs"]
             if not isinstance(items, list):
                 raise TypeError
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
             offenders.append(str(inputs_json))
             continue
         for item in items:
@@ -748,9 +809,13 @@ def precheck(source_shas: Set[str]) -> List[str]:
             if kind != "derived":
                 offenders.append(f"{inputs_json} -> {rec_path}")
                 continue
+            raw_sources = item.get("sources")
+            if raw_sources is not None and not isinstance(raw_sources, list):
+                offenders.append(f"{inputs_json} -> {rec_path}")
+                continue
             listed = [
                 (str(s.get("path", "")), str(s.get("sha256", "")))
-                for s in item.get("sources") or []
+                for s in raw_sources or []
                 if isinstance(s, dict)
             ]
             resolved = _resolve_recorded(rec_path)
@@ -759,10 +824,13 @@ def precheck(source_shas: Set[str]) -> List[str]:
             # check of its content (and so any acceptance by tracing) to mean
             # anything; a missing or drifted file is accepted only as a needle
             # source or a legacy entry (16A-1 gate round 6).
-            present = resolved.is_file() and eval_sets.sha256_file(resolved) == sha
+            present = _sha_or_empty(resolved) == sha
             traced = False
             if not exempt and present:
                 if _is_sha_keyed_artifact(resolved):
+                    if not _artifact_ok(resolved, ok_source):
+                        offenders.append(f"{inputs_json} -> {rec_path}")
+                        continue
                     exempt = True
                     listed += _artifact_header_shas(resolved)
                 elif _has_entries(resolved):
@@ -781,8 +849,7 @@ def precheck(source_shas: Set[str]) -> List[str]:
                         bool(listed)
                         and all(s_sha in ok_source for _, s_sha in listed)
                         and _sources_consistent(listed)
-                        and (not _has_question_key(_load_json(resolved))
-                             or eval_sets.classify(resolved) == PUBLIC)
+                        and _content_checkable(resolved)
                     )
             if not exempt and not traced and sha not in source_shas:
                 offenders.append(f"{inputs_json} -> {rec_path}")

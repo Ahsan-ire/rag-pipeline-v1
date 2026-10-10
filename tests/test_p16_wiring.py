@@ -622,3 +622,28 @@ def test_expand_query_uses_the_single_key_rule(monkeypatch):
     assert qr.expand_query("synthetic widget question").status == qr.STATUS_NO_KEY
     with pytest.raises(ValueError):
         qr.get_rewrite_llm()
+
+
+def test_honest_private_build_and_replay_pass_the_merge_gate_precheck(monkeypatch, tmp_path, _private_root_in_tmp):
+    """Gate round 7: real build/replay runs (entries bound to real rows) pass the
+    precheck once their question set is a needle source."""
+    from scripts import scan_leaks
+    from src import eval_sets
+
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    priv = tmp_path / "p.jsonl"
+    priv.write_text(Path(ROOT / SAMPLE).read_text())
+    common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                  privacy="private", skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    ev.run_eval_matrix([("golden", str(priv))], expansion="build:exp.json", **common)
+    art = _private_root_in_tmp / "artifacts" / "exp.json"
+    ev.run_eval_matrix([("golden", str(priv))], expansion=str(art), **common)
+    assert len(list((_private_root_in_tmp / "runs").glob("*/inputs.json"))) == 2
+    assert scan_leaks.precheck({eval_sets.sha256_file(priv)}) == []
+    # one tampered rewrite key -> the artifact no longer binds
+    doc = json.loads(art.read_text())
+    key = next(iter(doc["entries"]))
+    doc["entries"][key.split("/")[0] + "/tampered"] = doc["entries"].pop(key)
+    doc["build"]["entries"] = len(doc["entries"])
+    art.write_text(json.dumps(doc))
+    assert scan_leaks.precheck({eval_sets.sha256_file(priv)}) != []
