@@ -292,7 +292,6 @@ def collect_sources(
     needles: Sequence[Any] = (),
     *,
     run_id: Optional[str] = None,
-    include_registry: bool = True,
 ) -> List[NeedleSource]:
     """Gather the explicit needle sources (registry private sets, ``--needles``, run inputs).
 
@@ -301,13 +300,12 @@ def collect_sources(
             path, a non-``.jsonl`` one, a missing source or a drifted run input.
     """
     sources: List[NeedleSource] = []
-    if include_registry:
-        for entry in eval_sets.private_needle_sets():
-            path = entry.resolved()
-            if not path.is_file():
-                raise ScanRefusal(EXIT_USAGE, "registered private set missing", [entry.name])
-            _check_sealed(path)
-            sources.append(NeedleSource(path, entry.name))
+    for entry in eval_sets.private_needle_sets():
+        path = entry.resolved()
+        if not path.is_file():
+            raise ScanRefusal(EXIT_USAGE, "registered private set missing", [entry.name])
+        _check_sealed(path)
+        sources.append(NeedleSource(path, entry.name))
     for raw in needles:
         path = Path(raw)
         if not path.is_file():

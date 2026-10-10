@@ -1318,7 +1318,7 @@ def _format_report(
     golden: List[Dict[str, Any]],
     *,
     privacy: str,
-    data_privacy: str = PUBLIC,
+    data_privacy: str,
     ids: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render the retrieval + refusal results as a Markdown report.
