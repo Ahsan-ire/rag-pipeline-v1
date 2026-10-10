@@ -12,15 +12,17 @@ import json
 import logging
 import multiprocessing
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import anthropic
 import httpx
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -799,21 +801,30 @@ def test_default_inner_factory_needs_a_key():
 # Logging boundary (16A-1 merge gate, Codex #1): the ACTUAL anthropic SDK over
 # an httpx.MockTransport (nothing leaves the process). The SDK logs every
 # request's options -- the prompt -- at DEBUG; a metered attempt must emit no
-# log record while it runs, and must restore logging afterwards.
+# SDK/transport log record while it runs, and must restore logging afterwards.
 # ---------------------------------------------------------------------------
 REAL_PRICES_PATH = Path(__file__).resolve().parent.parent / "config" / "api_prices.toml"
 
 
-def sdk_meter(seen: List[str], *, reply: str = "ok", **kwargs: Any) -> SpendMeter:
+def sdk_meter(
+    seen: List[str],
+    *,
+    reply: str = "ok",
+    on_request: Optional[Callable[[str], None]] = None,
+    **kwargs: Any,
+) -> SpendMeter:
     """A meter over today's ChatAnthropic clients whose SDK client sends to a mock transport.
 
     ``seen`` receives every request body, so a test can prove the real SDK
-    request carried the prompt. Needs ANTHROPIC_API_KEY set (a fake one).
+    request carried the prompt; ``on_request`` (if given) runs with each body
+    while the request is in flight. Needs ANTHROPIC_API_KEY set (a fake one).
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = request.content.decode("utf-8")
         seen.append(body)
+        if on_request is not None:
+            on_request(body)
         return httpx.Response(200, json={
             "id": "msg_p16_mock", "type": "message", "role": "assistant",
             "model": json.loads(body)["model"], "content": [{"type": "text", "text": reply}],
@@ -876,3 +887,132 @@ def test_logging_restored_after_a_failed_attempt(caplog):
         assert logging.root.manager.disable == logging.INFO
     finally:
         logging.disable(logging.NOTSET)
+    # the SDK-logger filter is detached when the attempt raises, too
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("anthropic._base_client").warning("after-the-failure marker")
+    assert "after-the-failure marker" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Logging boundary, merge gate round 2 (Codex #1): the boundary must hold for
+# OVERLAPPING metered calls, and must touch only the SDK/transport loggers --
+# never other loggers, never the process-wide ``logging.disable`` threshold.
+# ---------------------------------------------------------------------------
+class _HoldUntil(BaseCallbackHandler):
+    """A caller callback that signals it is inside the call, then waits.
+
+    ``on_chat_model_start`` runs inside the metered boundary but before the
+    SDK builds (and DEBUG-logs) its request.
+    """
+
+    raise_error = True
+
+    def __init__(self, inside: threading.Event, release: threading.Event) -> None:
+        self.inside = inside
+        self.release = release
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        self.inside.set()
+        assert self.release.wait(10), "call A never finished"
+
+
+def test_overlapping_metered_sdk_calls_log_no_prompt(monkeypatch, caplog, anthropic_debug_logging):
+    """A enters, B enters, A leaves while B has not yet built its request.
+
+    The old process-wide switch restored A's saved threshold (0) on A's exit,
+    so B's real SDK request dump -- the prompt -- was logged.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-tests")
+    caplog.set_level(logging.DEBUG)
+    canary_a = "P16-CANARY-overlapA-" + uuid.uuid4().hex
+    canary_b = "P16-CANARY-overlapB-" + uuid.uuid4().hex
+    a_in_flight, b_inside, a_done = threading.Event(), threading.Event(), threading.Event()
+
+    def on_request(body: str) -> None:
+        if canary_a in body:  # A stays in flight until B is inside its own boundary
+            a_in_flight.set()
+            assert b_inside.wait(10), "call B never entered"
+
+    seen: List[str] = []
+    meter = sdk_meter(seen, on_request=on_request)
+    errors: List[BaseException] = []
+
+    def call_a() -> None:
+        try:
+            meter.generation_llm().invoke([HumanMessage(content=f"question {canary_a}")])
+        except BaseException as exc:  # surfaced below
+            errors.append(exc)
+        finally:
+            a_done.set()
+
+    def call_b() -> None:
+        try:
+            meter.judge_llm().invoke(
+                [HumanMessage(content=f"question {canary_b}")],
+                config={"callbacks": [_HoldUntil(b_inside, a_done)]},
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=call_a)
+    thread_a.start()
+    assert a_in_flight.wait(10)
+    thread_b = threading.Thread(target=call_b)
+    thread_b.start()
+    thread_a.join(20)
+    thread_b.join(20)
+    assert not thread_a.is_alive() and not thread_b.is_alive()
+    assert errors == []
+    assert sum(canary_a in b for b in seen) == 1 and sum(canary_b in b for b in seen) == 1
+    assert canary_a not in caplog.text and canary_b not in caplog.text
+    # the boundary is gone once the last call leaves
+    logging.getLogger("anthropic._base_client").debug("after-the-overlap marker")
+    assert "after-the-overlap marker" in caplog.text
+
+
+class _LoggingFake(FakeChat):
+    """A FakeChat that logs on an unrelated logger and on an SDK logger while in flight."""
+
+    def _generate(self, messages: List[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
+        logging.getLogger("p16.unrelated").warning("unrelated warning in flight")
+        logging.getLogger("p16.unrelated").log(75, "unrelated level-75 record in flight")
+        logging.getLogger("anthropic._base_client").warning("sdk record in flight")
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+def _logging_fakes() -> dict:
+    return {kind: _LoggingFake(model=model, usage=_usage()) for kind, model in MODELS.items()}
+
+
+def test_metered_call_keeps_unrelated_loggers_and_drops_only_sdk_records(caplog):
+    caplog.set_level(logging.DEBUG)
+    make_meter(_logging_fakes()).generation_llm().invoke(MESSAGES)
+    assert "unrelated warning in flight" in caplog.text
+    assert "unrelated level-75 record in flight" in caplog.text
+    assert "sdk record in flight" not in caplog.text
+
+
+def test_metered_call_preserves_a_stronger_disable_threshold(caplog):
+    """A caller's logging.disable(100) must hold during the call (old code lowered it to CRITICAL)."""
+    caplog.set_level(logging.DEBUG)
+    logging.disable(100)
+    try:
+        make_meter(_logging_fakes()).generation_llm().invoke(MESSAGES)
+        assert logging.root.manager.disable == 100
+    finally:
+        logging.disable(logging.NOTSET)
+    assert "level-75" not in caplog.text
+
+
+def test_batched_metered_sdk_calls_log_no_prompt(monkeypatch, caplog, anthropic_debug_logging):
+    """``Runnable.batch`` runs attempts on a thread pool; none may log its prompt."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-for-tests")
+    caplog.set_level(logging.DEBUG)
+    canaries = [f"P16-CANARY-batch{i}-" + uuid.uuid4().hex for i in range(6)]
+    seen: List[str] = []
+    replies = sdk_meter(seen).generation_llm().batch(
+        [[HumanMessage(content=f"question {c}")] for c in canaries], config={"max_concurrency": 6}
+    )
+    assert [m.content for m in replies] == ["ok"] * 6
+    assert all(any(c in body for body in seen) for c in canaries)
+    assert not any(c in caplog.text for c in canaries)

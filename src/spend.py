@@ -109,14 +109,20 @@ error row, a fallback, or a retry.
 
 Logging boundary
 ----------------
-Every metered attempt runs with ``logging`` disabled process-wide, at every
-level, for the duration of the inner call (:func:`_logging_off`). The
-anthropic SDK logs each request's options -- the messages, i.e. the question,
-its context and, for the judge, the answer -- at DEBUG
-(``_base_client._build_request``), which ``ANTHROPIC_LOG=debug`` or any
-DEBUG-level root logger turns on; report sanitisation cannot reach that output
-(16A-1 merge gate, Codex #1). The eval is sequential, so the global switch is
-safe; it is restored when the call returns or raises. Every live eval call goes
+While any metered attempt is in flight, every record from the SDK and
+transport logger families (``anthropic``, ``httpx``, ``httpcore``,
+``langchain_anthropic``, children included) is dropped, at every level, by a
+filter on those loggers (:func:`_sdk_logging_dropped`). The anthropic SDK logs
+each request's options -- the messages, i.e. the question, its context and,
+for the judge, the answer -- at DEBUG (``_base_client._build_request``), which
+``ANTHROPIC_LOG=debug`` or any DEBUG-level root logger turns on; report
+sanitisation cannot reach that output (16A-1 merge gate, Codex #1).
+
+The filter is reference-counted under a lock: the first attempt to enter
+installs it, the last to leave removes it, so overlapping calls (threads,
+``Runnable.batch``) cannot reopen the SDK's logging while another call is still
+sending. No other logger and not the process-wide ``logging.disable``
+threshold is touched (merge gate round 2, Codex #1). Every live eval call goes
 through a meter (``SpendMeterRequired`` otherwise), so this covers every class.
 """
 
@@ -131,6 +137,7 @@ import os
 import pwd
 import random
 import sys
+import threading
 import time
 import tomllib
 import uuid
@@ -760,21 +767,64 @@ class _MeterCallback(BaseCallbackHandler):
         )
 
 
-@contextmanager
-def _logging_off() -> Iterator[None]:
-    """Disable all logging for the block, then restore the previous setting.
+# The logger families whose records can carry request content. In the pinned
+# versions only ``anthropic._base_client`` logs the request options (the
+# prompt, DEBUG); httpx and httpcore log the URL, status and headers, and
+# langchain_anthropic defines no logger. All four families are covered so a
+# version bump that adds a body dump is covered too.
+_SDK_LOGGER_FAMILIES = ("anthropic", "httpx", "httpcore", "langchain_anthropic")
 
-    ``logging.disable(CRITICAL)`` also makes ``Logger.isEnabledFor`` false, so
-    the SDK never even builds its DEBUG request dump. The previous threshold
-    (``logging.root.manager.disable``) is restored, so a caller's own
-    ``logging.disable`` survives and nesting is safe.
+
+class _DropAll(logging.Filter):
+    """A logger filter that rejects every record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 - logging's API name
+        return False
+
+
+_SDK_DROP = _DropAll()
+_sdk_drop_lock = threading.Lock()
+_sdk_drop_depth = 0  # metered attempts currently in flight; guarded by _sdk_drop_lock
+
+
+def _sdk_loggers() -> List[logging.Logger]:
+    """Every existing logger in ``_SDK_LOGGER_FAMILIES`` (placeholders skipped).
+
+    A logger filter applies only to records created on that logger, not to
+    records its children propagate, so each child is listed itself.
     """
-    previous = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
+    out = []
+    for name, obj in list(logging.root.manager.loggerDict.items()):
+        if isinstance(obj, logging.Logger) and any(
+            name == family or name.startswith(family + ".") for family in _SDK_LOGGER_FAMILIES
+        ):
+            out.append(obj)
+    return out
+
+
+@contextmanager
+def _sdk_logging_dropped() -> Iterator[None]:
+    """Drop every SDK/transport log record while any metered attempt is in flight.
+
+    Reference-counted under a lock, so concurrent and nested attempts share
+    one boundary: each entry attaches :data:`_SDK_DROP` to every SDK-family
+    logger that exists by then (``addFilter`` is idempotent), and the last
+    exit detaches it from all of them. Only those loggers are touched; other
+    loggers and ``logging.disable`` keep whatever the caller set.
+    """
+    global _sdk_drop_depth
+    with _sdk_drop_lock:
+        _sdk_drop_depth += 1
+        for logger in _sdk_loggers():
+            logger.addFilter(_SDK_DROP)
     try:
         yield
     finally:
-        logging.disable(previous)
+        with _sdk_drop_lock:
+            _sdk_drop_depth -= 1
+            if _sdk_drop_depth == 0:
+                for logger in _sdk_loggers():
+                    logger.removeFilter(_SDK_DROP)
 
 
 def _with_handler(config: Optional[RunnableConfig], handler: BaseCallbackHandler) -> RunnableConfig:
@@ -817,9 +867,9 @@ class MeteredChatModel(Runnable[Any, BaseMessage]):
             meter._check_latch()
             handler = _MeterCallback(meter, self, attempt)
             try:
-                # No third-party log record during the call: the SDK's DEBUG
+                # No SDK/transport log record during the call: the SDK's DEBUG
                 # request dump carries the prompt (module docstring).
-                with _logging_off():
+                with _sdk_logging_dropped():
                     return self.inner.invoke(input, _with_handler(config, handler), **kwargs)
             except Exception as exc:  # SpendLimitReached is BaseException: never here
                 retry, wait = retry_decision(
