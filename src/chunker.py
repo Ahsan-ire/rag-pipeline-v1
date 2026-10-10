@@ -545,7 +545,11 @@ def _build_documents(
                 else:
                     pages = seg_pages  # inherit the parent's range on a find-miss
                 if log is not None:
-                    if pos != -1:
+                    # The side channel records only a hit inside this segment:
+                    # an unbounded find() can land in a later segment with the
+                    # same text, which would credit the wrong sections. Pages
+                    # (production metadata) are unchanged (gate round 5, CR7).
+                    if pos != -1 and seg.start <= pos and pos + len(piece) <= seg.end:
                         log._chunk(seg_index, seg, ORIGIN_OVERSIZE_SPLIT, pos, pos + len(piece))
                     else:
                         log._chunk(seg_index, seg, ORIGIN_FIND_MISS, None, None)

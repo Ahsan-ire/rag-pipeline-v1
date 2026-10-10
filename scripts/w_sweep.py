@@ -445,7 +445,7 @@ def run_sweep(
                 json.dump(payload, f, indent=1)
         else:
             rdir, target = private_output_path(ranks_out)
-            write_private(target, json.dumps(payload, indent=1))
+            # inputs.json before the dump (16A-1 gate round 5, PT3)
             write_inputs_json(
                 rdir,
                 [
@@ -458,6 +458,7 @@ def run_sweep(
                     },
                 ],
             )
+            write_private(target, json.dumps(payload, indent=1))
             print(f"\n[w_sweep] private run: ranks written to {target}")
     return 0
 

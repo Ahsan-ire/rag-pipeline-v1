@@ -1126,3 +1126,41 @@ def test_w_sweep_live_fill_refuses_non_public_sets(monkeypatch, tmp_path):
     with pytest.raises(PrivacyFloorError):
         w_sweep.build_cache({"golden": [{"question": "private q"}]}, offline_only=False, privacy="private")
     assert called == [] and not (tmp_path / "c.json").exists()
+
+
+# --- gate round 5 (PT3): inputs.json is written before any other run file -----
+def _order_spy(monkeypatch, module):
+    seen = []
+    real = module.write_private
+
+    def spy(target, content, *a, **k):
+        seen.append((Path(target).name, (Path(target).parent / "inputs.json").is_file()))
+        return real(target, content, *a, **k)
+
+    monkeypatch.setattr(module, "write_private", spy)
+    return seen
+
+
+def test_private_w_sweep_writes_inputs_json_before_the_dump(tmp_path, monkeypatch, sets, _private_root_in_tmp):
+    stub_sweep(monkeypatch, tmp_path, sets, {})
+    seen = _order_spy(monkeypatch, w_sweep)
+    assert w_sweep.main(["--ranks-out", str(tmp_path / "ranks.json")]) == 0
+    assert ("ranks.json", True) in seen and all(ok for _, ok in seen)
+
+
+def test_private_bakeoff_writes_inputs_json_before_the_manifest(tmp_path, monkeypatch, sets, capsys,
+                                                                 _private_root_in_tmp):
+    base = write_arm(tmp_path / "arms", "base", sets, BASE_RANKS)
+    cand = write_arm(tmp_path / "arms", "cand", sets, CAND_RANKS)
+    dumps = tmp_path / "dumps"
+    dumps.mkdir()
+    (dumps / "base.json").write_text(json.dumps(_dump(sets, BASE_RANKS)), encoding="utf-8")
+    (dumps / "cand.json").write_text(json.dumps(_dump(sets, CAND_RANKS)), encoding="utf-8")
+    cache = tmp_path / "cache.json"
+    cache.write_text("{}", encoding="utf-8")
+    seen = _order_spy(monkeypatch, bakeoff_report)
+    rc, _, err = _cli(["--reports", base, cand, "--baseline", "base",
+                       "--prod-ranks", str(dumps / "base.json"), str(dumps / "cand.json"),
+                       "--expansion-cache", str(cache), "--manifest-out", str(tmp_path / "m.json")], capsys)
+    assert rc == 0, err
+    assert ("m.json", True) in seen and all(ok for _, ok in seen)

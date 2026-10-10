@@ -192,12 +192,8 @@ def judge_answer(
         )
     except Exception as exc:
         # Any llm_fn failure (network, rate limit, auth) is an API error, held
-        # apart from parse errors so the report can attribute failures --
-        # except a spend-meter failure, which stops the run (16A-1, D70).
-        from src.spend import SpendMeterError
-
-        if isinstance(exc, SpendMeterError):
-            raise
+        # apart from parse errors so the report can attribute failures (a
+        # spend-meter failure is a BaseException and stops the run, D70).
         return _error("api")
 
     try:
@@ -274,15 +270,8 @@ def judge_answers(
     """
     if sample_n is not None and sample_n < 0:
         raise ValueError(f"sample_n must be >= 0, got {sample_n}")
-    if llm_fn is None and items:
-        # D70: the default llm_fn is a live, unmetered Claude call. With a
-        # usable key it is refused; the eval passes a metered llm_fn.
-        from src.generator import api_key_usable
-
-        if api_key_usable():
-            from src.spend import SpendMeterRequired
-
-            raise SpendMeterRequired("judge_answers needs a metered llm_fn (D70)")
+    # (the D70 unmetered-default refusal lives in judge_answer, which every
+    # item goes through before any call)
 
     # Deterministic sub-sample when asked for fewer than we have.
     to_judge = items

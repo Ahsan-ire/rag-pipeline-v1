@@ -26,7 +26,6 @@ built.
 """
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -176,8 +175,9 @@ def get_rewrite_llm() -> ChatAnthropic:
     Raises:
         ValueError: If ANTHROPIC_API_KEY is not set.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or api_key == "your-api-key-here":
+    from src.generator import api_key_usable
+
+    if not api_key_usable():
         raise ValueError(
             "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
         )
@@ -371,8 +371,9 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
         # STATUS_API_ERROR. Previously only ValueError was caught, so a
         # RuntimeError escaped (breaking the never-raises contract) and an
         # unrelated constructor ValueError was mislabeled STATUS_NO_KEY.
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key or api_key == "your-api-key-here":
+        from src.generator import api_key_usable
+
+        if not api_key_usable():
             logger.warning("Query expansion skipped: no ANTHROPIC_API_KEY set.")
             return Expansion(question, (), REWRITE_MODEL, STATUS_NO_KEY)
         try:
@@ -384,12 +385,8 @@ def expand_query(question: str, *, llm: Any = None, enabled: bool = True) -> Exp
     try:
         raw = _invoke_rewrite(llm, question)
     except Exception as exc:  # noqa: BLE001 — any rewrite-call failure degrades, never raises
-        # ...except a spend-meter failure (16A-1, D70): a corrupt or refused
-        # ledger stops the run instead of degrading into a fallback.
-        from src.spend import SpendMeterError
-
-        if isinstance(exc, SpendMeterError):
-            raise
+        # (a spend-meter failure is a BaseException and is not caught here:
+        # a corrupt or refused ledger stops the run, 16A-1 D70)
         logger.warning("Query expansion failed: the rewrite LLM call raised.")
         return Expansion(question, (), REWRITE_MODEL, STATUS_API_ERROR)
 

@@ -1811,7 +1811,6 @@ def run(
             print(f"\nManifest written: {manifest_out}")
         else:
             rdir, target = private_output_path(manifest_out)
-            write_private(target, content)
             inputs = []
             for name, path in paths.items():
                 sets = [
@@ -1827,7 +1826,9 @@ def run(
                 inputs.append(_derived_input(path, dump.get("cohorts", []) if is_c4(dump) else []))
             if cache is not None and os.path.isfile(cache):
                 inputs.append(_derived_input(cache, []))
+            # inputs.json before the manifest (16A-1 gate round 5, PT3)
             write_inputs_json(rdir, inputs)
+            write_private(target, content)
             print(f"\nManifest written: {target}")
     return 0
 

@@ -1911,6 +1911,15 @@ Each runner and formatter (`run_eval`, `run_eval_matrix`, `_format_report`, `_fo
 - Once a private set's sha256 sits in the committed registry, anyone holding candidate text can test its membership (16A-2 P4 decides whether private entries carry a separate secret salt).
 - Without `--legacy-public`, `w_sweep` and `bakeoff_report --prod-ranks` floor to private because they open the 0717 cache, and they write under `eval/private/`.
 
+**Gate round 5 (10 Oct):**
+- The merge-gate precheck accepts a `derived` input whose recorded sources are all approved: needle sources, registered public sets or legacy entries. Before, a private `bakeoff_report --prod-ranks` run (public arm reports, their sidecars, `w_sweep` dumps) could pass only if its run directory was deleted. An artifact-shaped input (a JSON object with `entries`) is still accepted only when it is sha256-keyed and has no question key, however its sources trace.
+- The sha256-keyed artifact exemption no longer requires `eval/private/artifacts/`: a public-built artifact replayed in a private run (D68) passes.
+- `w_sweep`, `bakeoff_report --manifest-out` and a private `build:` now write `inputs.json` before their dump, manifest or artifact. This makes the round-4 claim true on every path; a `build:` rewrites `inputs.json` with the artifact's entry afterwards.
+- **Pending (owner machine):** `eval/legacy_public.json` lists only the 0717 cache. The pre-16A `eval/bakeoff/` artifacts named by rule 6 are on the owner's machine, unread here (do-not-read clause), and are added there.
+- **Disclosed:** `--merge-gate` without `--pr` scans no PR text and says so (`PR items skipped`). Once a PR exists, `--pr <n>` is required by instruction (CLAUDE.md and docs/harness.md), not by code. The scanner cannot know a PR exists without `gh`.
+- **Rebutted:** retrieval error logs carry the exception type only (round 3). The detail lost is the query, i.e. private question text, so type-only is the floor and not a regression. Debugging uses a public set.
+- **Pre-existing, not 16A-1:** `w_sweep` with no index opens an empty Chroma store at the default path and reports 0 hits. Out of this phase's scope.
+
 **Gate round 2 (10 Oct):** private and artifact temp files are created exclusive and no-follow, so a planted `<file>.tmp` symlink cannot redirect a write. Rule 5 applies only to derived files with no `question`/`questions` key at any depth, so a question set cannot declare itself public. An escaped `"\u0073ealed"` key on a malformed line counts as a marker.
 
 **Gate round 4 (10 Oct):**
@@ -2022,6 +2031,8 @@ Item 9:
 - a `build:` over duplicate input sets;
 - a public `build:` target that already exists and is not an expansion artifact, which protects the registry, the legacy list and the caches.
 
+**Gate round 5 (10 Oct):** a private `build:` refuses a target that already exists, before any call. A private artifact is never overwritten, so an earlier run's recorded replay identity cannot change under it.
+
 **Gate round 4 (10 Oct):**
 - A metered default generator is not retried by `generate_answers`, because the meter's loop owns retries. Before, one question could cost up to 12 worst-case reservations.
 - `w_sweep.build_cache`'s live fill makes one attempt with a meter. It requires a keyword-only `privacy` and refuses any class but public, because it writes question text into the tracked public cache.
@@ -2098,7 +2109,7 @@ Wiring is eval-only:
 - `--owner-approved-eur X` replaces the ceiling; X and `--approval-ref` must be given together.
 - The week check runs before the run check.
 - A torn last ledger line is truncated under the lock; any other unreadable line refuses.
-- `LedgerRefused` and `LedgerCorrupt` are ordinary exceptions.
+- `LedgerRefused` and `LedgerCorrupt` are `SpendMeterError`s, which are `BaseException`s since gate round 5.
 
 **Gate round 1 (10 Oct):**
 - Limits and prices must be finite: NaN or inf would switch a ceiling off.
@@ -2108,6 +2119,11 @@ Wiring is eval-only:
 - The ledger's default path is keyed on the passwd home, not `$HOME`, and the ledger refuses non-finite or negative values.
 - `CC_SPEND_LEDGER` is honoured only when `PYTEST_CURRENT_TEST` is set **and** pytest is imported. A process that imports pytest on purpose to spoof it remains an instruction-enforced residual.
 - **Deferred (efficiency):** each metered attempt re-reads the whole ledger under the lock (O(lines) per call). Keeping per-week totals is a follow-up if the ledger grows large.
+
+**Gate round 5 (10 Oct):**
+- `SpendMeterError` subclasses `BaseException`, like `SpendLimitReached`. No broad `except Exception`, present or future, can degrade a meter failure. The per-site re-raises in `expand_query`, `judge_answer` and `generate_answers` are gone. The CLI maps it to exit 2, printing the type only on a non-public run.
+- `expand_query` and `get_rewrite_llm` use `generator.api_key_usable()`, and the duplicate guard in `judge_answers` is gone (`judge_answer` refuses before any call).
+- The chunker's absorption side channel records a sub-chunk's position only when `find()` lands inside its own segment; otherwise it records a find-miss. Production chunks and pages are unchanged (byte-identity tests).
 
 **Gate round 4 (10 Oct):**
 - `judge_answer`'s default `llm_fn` raises `SpendMeterRequired` when a usable key is set, matching `judge_answers`.
@@ -2121,7 +2137,7 @@ Wiring is eval-only:
 
 **Gate round 2 (10 Oct):** `evaluate_refusals`' default `answer_fn` and `judge_answers`' default `llm_fn` raise `SpendMeterRequired` when a usable key is set.
 
-**Residual, predating this branch and disclosed:** the retriever's relevance-score `UserWarning` prints chunk text, which is corpus prose and not eval material, to stderr. The repo is unaffected because stderr is never committed.
+**Resolved (gate round 3, D65):** the retriever's relevance-score `UserWarning`, which printed chunk text to stderr, is silenced at its one call.
 
 **Rejected:**
 - SDK retries: unmetered attempts.

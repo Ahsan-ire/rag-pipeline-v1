@@ -628,8 +628,13 @@ def _pr_items(pr: int, gh_runner: GhRunner) -> List[Tuple[str, str]]:
 
 
 def _is_sha_keyed_artifact(path: Path) -> bool:
-    """A JSON artifact keyed by question sha256 that carries no ``question`` key anywhere."""
-    if not eval_privacy.is_under(path, eval_privacy.private_root() / "artifacts") or not path.is_file():
+    """A JSON artifact keyed by question sha256 that carries no ``question`` key anywhere.
+
+    Where it lives does not matter (16A-1 gate round 5): a public-built
+    artifact replayed in a private run is as content-free as one under
+    ``eval/private/artifacts/``.
+    """
+    if not path.is_file():
         return False
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -655,6 +660,15 @@ def _is_sha_keyed_artifact(path: Path) -> bool:
         ):
             return False
     return True
+
+
+def _has_entries(path: Path) -> bool:
+    """True when ``path`` is a JSON object with an ``entries`` key (artifact-shaped)."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(doc, dict) and "entries" in doc
 
 
 def _artifact_header_shas(path: Path) -> List[Tuple[str, str]]:
@@ -723,7 +737,17 @@ def precheck(source_shas: Set[str]) -> List[str]:
                 if _is_sha_keyed_artifact(resolved):
                     exempt = True
                     listed += _artifact_header_shas(resolved)
-            if not exempt and sha not in source_shas:
+                elif _has_entries(resolved):
+                    # artifact-shaped but not content-free: never accepted,
+                    # however its sources trace
+                    offenders.append(f"{inputs_json} -> {rec_path}")
+                    continue
+            # A derived input whose every recorded source is approved (needle,
+            # registered public or legacy) holds only text from those sources,
+            # which the needle scan already covers (16A-1 gate round 5: arm
+            # reports, their sidecars and w_sweep dumps in a bakeoff run).
+            traced = bool(listed) and all(s_sha in ok_source for _, s_sha in listed)
+            if not exempt and not traced and sha not in source_shas:
                 offenders.append(f"{inputs_json} -> {rec_path}")
             for s_path, s_sha in listed:
                 if s_sha not in ok_source:

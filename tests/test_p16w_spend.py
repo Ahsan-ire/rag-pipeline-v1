@@ -355,7 +355,10 @@ def test_non_retryable_error_raises_once_with_worst_case_charged():
 def test_spend_limit_reached_is_base_exception():
     assert issubclass(SpendLimitReached, BaseException)
     assert not issubclass(SpendLimitReached, Exception)
-    assert issubclass(SpendMeterRequired, Exception)
+    # gate round 5 (CR6): meter failures are BaseExceptions too, so no broad
+    # ``except Exception`` can degrade them into a fallback or error row
+    assert issubclass(SpendMeterRequired, BaseException)
+    assert not issubclass(SpendMeterRequired, Exception)
     with pytest.raises(ValueError):
         SpendLimitReached("month")
     caught = None

@@ -506,3 +506,63 @@ def test_precheck_accepts_registered_public_question_inputs(tmp_path, monkeypatc
     (run / "inputs.json").write_text(_json.dumps({"version": 1, "inputs": [
         {"path": str(pub), "sha256": "0" * 64, "kind": "questions"}]}))
     assert scan_leaks.precheck(set()) != []
+
+
+# --- gate round 5 -----------------------------------------------------------------
+def test_precheck_passes_derived_inputs_traced_to_approved_sources(repo, _private_root_in_tmp, sets):
+    """PT1: a bakeoff-shaped private run (arm reports, sidecars, w_sweep dumps
+    whose recorded sources are registered public or needle sets) passes."""
+    pub_sha = eval_sets.sha256_file(sets["public"])
+    priv_sha = eval_sets.sha256_file(sets["private"])
+    rdir = _private_root_in_tmp / "runs" / "run-bake"
+    rdir.mkdir(parents=True)
+    report = rdir / "A.md"
+    report.write_text("# arm A\n", encoding="utf-8")
+    dump = rdir / "dA.json"
+    dump.write_text(json.dumps({"cohorts": [], "rows": []}), encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-bake", [
+        {"path": str(report), "sha256": eval_sets.sha256_file(report), "kind": "derived",
+         "sources": [{"path": str(sets["public"]), "sha256": pub_sha}]},
+        {"path": str(dump), "sha256": eval_sets.sha256_file(dump), "kind": "derived",
+         "sources": [{"path": str(sets["private"]), "sha256": priv_sha}]},
+    ])
+    assert sl.precheck(sl.build_needles(sl.collect_sources()).source_shas) == []
+    assert sl.merge_gate("base", repo=repo) == []
+    # a derived input with no recorded source, or one unapproved source, is still refused
+    _inputs(_private_root_in_tmp, "run-bake", [
+        {"path": str(dump), "sha256": eval_sets.sha256_file(dump), "kind": "derived", "sources": []},
+        {"path": str(report), "sha256": eval_sets.sha256_file(report), "kind": "derived",
+         "sources": [{"path": str(sets["public"]), "sha256": pub_sha}, {"path": "x.jsonl", "sha256": "c" * 64}]},
+    ])
+    offenders = sl.precheck(sl.build_needles(sl.collect_sources()).source_shas)
+    assert any(o.endswith("dA.json") for o in offenders)
+    assert any(o.endswith("-> x.jsonl") for o in offenders)
+
+
+def test_precheck_accepts_sha_keyed_artifact_outside_the_artifacts_dir(repo, tmp_path, _private_root_in_tmp, sets):
+    """PT2: a public-built, content-free artifact replayed in a private run passes."""
+    pub_sha = eval_sets.sha256_file(sets["public"])
+    art = tmp_path / "probes" / "art_pub.json"
+    art.parent.mkdir()
+    art.write_text(json.dumps({
+        "inputs": [{"path": str(sets["public"]), "sha256": pub_sha}],
+        "entries": [{"id": "r-1", "question_sha256": "a" * 64, "rewrites": ["alpha"]}],
+    }), encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-art", [
+        {"path": str(art), "sha256": eval_sets.sha256_file(art), "kind": "derived", "sources": []},
+    ])
+    assert sl.precheck(sl.build_needles(sl.collect_sources()).source_shas) == []
+
+
+def test_precheck_refuses_question_bearing_artifact_even_when_traced(repo, _private_root_in_tmp, sets):
+    """An artifact-shaped derived input is never accepted by source tracing alone."""
+    priv_sha = eval_sets.sha256_file(sets["private"])
+    art = _private_root_in_tmp / "runs" / "run-qa" / "exp.json"
+    art.parent.mkdir(parents=True)
+    art.write_text(json.dumps({"entries": [{"id": "r-5", "question_sha256": "a" * 64, "question": SHORT}]}),
+                   encoding="utf-8")
+    _inputs(_private_root_in_tmp, "run-qa", [
+        {"path": str(art), "sha256": eval_sets.sha256_file(art), "kind": "derived",
+         "sources": [{"path": str(sets["private"]), "sha256": priv_sha}]},
+    ])
+    assert any(o.endswith("exp.json") for o in sl.precheck(sl.build_needles(sl.collect_sources()).source_shas))

@@ -375,3 +375,23 @@ def test_a_log_records_one_run_only():
     assert isinstance(log, AbsorptionLog)
     with pytest.raises(RuntimeError):
         log._begin(clean_text, [])
+
+
+def test_out_of_segment_hit_is_logged_as_find_miss(monkeypatch):
+    """Gate round 5 (CR7): a sub-chunk whose text find() only locates in a LATER
+    segment is a find-miss in the side channel, never a credited position; the
+    production pages are unchanged."""
+    original = RecursiveCharacterTextSplitter.split_text
+    later = "Clause t3 in this part sets out a rule of conveyancing practice in detail."
+
+    def patched(self, text):
+        pieces = original(self, text)
+        return pieces[:-1] + [later] if "6.1 Parent" in text else pieces
+
+    monkeypatch.setattr(RecursiveCharacterTextSplitter, "split_text", patched)
+    clean_text, page_map, metadata = doc_split_across()
+    plain = chunk_handbook(clean_text, page_map, metadata)
+    docs, log = chunk_handbook_with_absorption(clean_text, page_map, metadata)
+    assert [(d.page_content, d.metadata) for d in plain] == [(d.page_content, d.metadata) for d in docs]
+    hit = next(c for c in log.chunks if c.origin == ORIGIN_FIND_MISS)
+    assert hit.start is None and hit.end is None

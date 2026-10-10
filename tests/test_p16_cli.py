@@ -114,3 +114,21 @@ def test_bad_meter_arguments_exit_2_without_traceback(monkeypatch, capsys, argv)
     code, c = _run(monkeypatch, ["--skip-refusals", *argv])
     assert code == 2 and c == {}
     assert "Traceback" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("golden", [False, True])
+def test_meter_error_mid_run_exits_2_type_only_when_private(monkeypatch, tmp_path, capsys, golden):
+    """Gate round 5 (CR6): a SpendMeterError (a BaseException) maps to exit 2."""
+    from src.spend import LedgerCorrupt
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+
+    def boom(set_specs, **kwargs):
+        raise LedgerCorrupt("P16-CANARY-ledger synthetic widget question")
+
+    argv = ["--skip-refusals"] + (["--golden", _set(tmp_path / "g.jsonl")] if golden else [])
+    code, _ = _run(monkeypatch, argv, runner=boom)
+    err = capsys.readouterr().err
+    assert code == 2 and "LedgerCorrupt" in err and "Traceback" not in err
+    if golden:
+        assert "P16-CANARY" not in err

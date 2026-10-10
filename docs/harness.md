@@ -44,7 +44,7 @@ rejected, and how to carry the whole thing into a new project. Project
 | `.github/workflows/ci.yml` | Keyless CI: full suite + offline smoke eval with hard assertions |
 | `eval/sets.json`, `src/eval_sets.py` | Eval-set registry and `classify()` → the privacy floor every eval entry point checks (D65) |
 | `eval/private/` (gitignored, never committed) | Private and sealed eval material; private runs write only under `runs/<id>/` |
-| `scripts/scan_leaks.py` | Needle scanner: `--output` before releasing a private run, `--merge-gate` before a push when private sets exist (D65) |
+| `scripts/scan_leaks.py` | Needle scanner: `--output` before releasing a private run, `--merge-gate` before a push when private sets exist, with `--pr <n>` once a PR exists (D65) |
 | `src/spend.py`, `config/api_prices.toml` | Eval-only spend meter; the €40/UTC-week cap is a D64 owner stop (D70) |
 | `tests/p16_capture.py` + `tests/test_p16_projection.py` | P0 lock: v5 reports byte-identical to main's capture (the H0 pattern, in-process) |
 

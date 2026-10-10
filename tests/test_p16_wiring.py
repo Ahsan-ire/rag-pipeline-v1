@@ -575,3 +575,50 @@ def test_spend_totals_failure_keeps_the_exit_code(monkeypatch, capsys):
         src.pipeline.main()
     assert exc.value.code == 3
     assert "Traceback" not in capsys.readouterr().err
+
+
+# --- gate round 5 ---------------------------------------------------------------
+def test_private_build_writes_inputs_json_before_the_artifact_and_never_overwrites(
+    monkeypatch, tmp_path, _private_root_in_tmp
+):
+    """PT3: inputs.json exists before the artifact lands; CR1: an existing private
+    artifact is refused before any call."""
+    import json as _json
+
+    import src.expansion_artifact as ea
+
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    priv = tmp_path / "p.jsonl"
+    priv.write_text(Path(ROOT / SAMPLE).read_text())
+    seen = []
+    real_save = ea.save_artifact
+
+    def spy(target, artifact):
+        runs = list((_private_root_in_tmp / "runs").glob("*/inputs.json"))
+        seen.append(len(runs))
+        return real_save(target, artifact)
+
+    monkeypatch.setattr(ea, "save_artifact", spy)
+    common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                  privacy="private", skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    r = ev.run_eval_matrix([("golden", str(priv))], expansion="build:exp.json", **common)
+    assert seen == [1]
+    inputs = _json.loads((Path(r["results_path"]).parent / "inputs.json").read_text())["inputs"]
+    assert any(i["kind"] == "derived" and Path(i["path"]).name == "exp.json" for i in inputs)
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    with pytest.raises(ValueError, match="never overwritten"):
+        ev.run_eval_matrix([("golden", str(priv))], expansion="build:exp.json", **common)
+    assert calls == []
+
+
+def test_expand_query_uses_the_single_key_rule(monkeypatch):
+    """CR8: expand_query and get_rewrite_llm defer to generator.api_key_usable."""
+    import src.generator as gen
+    import src.query_rewrite as qr
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    monkeypatch.setattr(gen, "api_key_usable", lambda: False)
+    assert qr.expand_query("synthetic widget question").status == qr.STATUS_NO_KEY
+    with pytest.raises(ValueError):
+        qr.get_rewrite_llm()

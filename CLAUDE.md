@@ -44,7 +44,7 @@ model's opinion, never on the held-out set.
   `python scripts/validate_eval_set.py <path>`
 - Leak scan (D65): `python scripts/scan_leaks.py --output <files> --run <id>`
   before releasing a private run's output; `--merge-gate --base main` before
-  a push when private sets exist.
+  a push when private sets exist (add `--pr <n>` once the branch has a PR).
 - Eval offline / CI (no API key, retrieval ablation only):
   `python -m src.pipeline eval --skip-refusals --skip-completeness` — both
   skips are required to make ZERO API calls: they suppress generation AND
@@ -62,8 +62,8 @@ model's opinion, never on the held-out set.
   writes only under `eval/private/runs/<run id>/`. Never pass a weaker
   `privacy` than the floor, never add a registry/classifier parameter to
   `src/` or `scripts/`, and with private sets present run
-  `python scripts/scan_leaks.py --merge-gate --base main` before every push
-  (a hit in pushed history is a D64 owner stop). Sealed input is refused
+  `python scripts/scan_leaks.py --merge-gate --base main` before every push,
+  with `--pr <n>` once a PR exists (a hit in pushed history is a D64 owner stop). Sealed input is refused
   everywhere in 16A-1 (exit 4); never strip a sealed marker.
 - Eval spend (D70): every live eval call goes through the spend meter
   (`src/spend.py`, ledger `~/.local/state/claudecode/anthropic_spend.jsonl`);

@@ -667,7 +667,7 @@ def _eval_command(args: argparse.Namespace) -> int:
     from src.eval_privacy import PUBLIC, SealedInputError, safe_error
     from src.eval_sets import floor
     from src.evaluator import run_eval_matrix
-    from src.spend import SpendLimitReached
+    from src.spend import SpendLimitReached, SpendMeterError
 
     # Build the (label, path) set list. The default golden path is the
     # tuning set (used to select D31 fusion constants) — label it so the
@@ -691,6 +691,13 @@ def _eval_command(args: argparse.Namespace) -> int:
     except SealedInputError:
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
+    except SpendMeterError as exc:
+        # a refused/corrupt ledger or a missing meter mid-run: a defined exit
+        # (it is a BaseException, so the generic handler below never sees it)
+        _totals()
+        detail = f"{type(exc).__name__}: {exc}" if privacy == PUBLIC else safe_error(exc)
+        print(f"[eval] spend meter failed: {detail}; no report written", file=sys.stderr)
+        return EXIT_USAGE
     if privacy == "sealed":
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
@@ -704,7 +711,7 @@ def _eval_command(args: argparse.Namespace) -> int:
     from src.generator import api_key_usable
 
     if live and api_key_usable():
-        from src.spend import SpendMeter, SpendMeterError, load_prices
+        from src.spend import SpendMeter, load_prices
 
         try:
             meter = SpendMeter(
@@ -727,7 +734,7 @@ def _eval_command(args: argparse.Namespace) -> int:
             return
         try:
             run_eur, week_eur = meter.run_total_eur, meter.week_total_eur
-        except Exception as exc:  # noqa: BLE001 - never lose the exit code over a total
+        except (Exception, SpendMeterError) as exc:  # noqa: BLE001 - never lose the exit code over a total
             print(f"[eval] spend totals unavailable: {safe_error(exc)}", file=sys.stderr)
             return
         print(
@@ -759,6 +766,13 @@ def _eval_command(args: argparse.Namespace) -> int:
     except SealedInputError:
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
+    except SpendMeterError as exc:
+        # a refused/corrupt ledger or a missing meter mid-run: a defined exit
+        # (it is a BaseException, so the generic handler below never sees it)
+        _totals()
+        detail = f"{type(exc).__name__}: {exc}" if privacy == PUBLIC else safe_error(exc)
+        print(f"[eval] spend meter failed: {detail}; no report written", file=sys.stderr)
+        return EXIT_USAGE
     except Exception as exc:  # noqa: BLE001 - private runs must not print str(exc)
         if privacy != PUBLIC:
             print(f"[eval] error: {safe_error(exc)}", file=sys.stderr)

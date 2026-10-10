@@ -176,12 +176,14 @@ class SpendLimitReached(BaseException):
         super().__init__(message or f"spend limit reached ({kind})")
 
 
-class SpendMeterError(Exception):
+class SpendMeterError(BaseException):
     """Base for meter failures that must stop an eval run, never degrade it.
 
-    ``expand_query``, ``judge_answer`` and ``generate_answers`` re-raise it
-    (their broad ``except Exception`` would otherwise turn a corrupt or
-    refused ledger into a silent fallback, API-error or error row).
+    Subclasses ``BaseException`` like :class:`SpendLimitReached` (16A-1 gate
+    round 5): a broad ``except Exception`` anywhere in the eval path (rewrite,
+    judge, generation, or code added later) cannot turn a corrupt or refused
+    ledger into a silent fallback, API-error or error row. The CLI maps it to
+    exit 2, printing its type only on a non-public run.
     """
 
 

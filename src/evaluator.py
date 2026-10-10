@@ -950,10 +950,8 @@ def generate_answers(
                 error = None
                 break
             except Exception as e:  # noqa: BLE001 — record and (maybe) retry any failure
-                from src.spend import SpendMeterError
-
-                if isinstance(e, SpendMeterError):
-                    raise  # a meter failure stops the run (D70), never an error row
+                # (a SpendMeterError / SpendLimitReached is a BaseException and
+                # passes straight through: it stops the run, D70)
                 error = f"{type(e).__name__}: {e}"
                 if attempt < retries and retry_backoff:
                     time.sleep(retry_backoff * (attempt + 1))
@@ -1845,6 +1843,11 @@ def run_eval_matrix(
                 raise ValueError("build:<path> needs a file name (a private artifact is written "
                                  "to eval/private/artifacts/<name>)")
             build_target = str(_privacy.artifact_path(base))
+            # A private artifact is never overwritten: an earlier run's
+            # replay identity would silently change under it (gate round 5).
+            if os.path.lexists(build_target):
+                raise ValueError("build:<path> names an existing private artifact; "
+                                 "choose a new name (private artifacts are never overwritten)")
         else:
             if not str(artifact_path_arg).lower().endswith(".json"):
                 raise ValueError("build:<path> must name a .json artifact")
@@ -2492,6 +2495,10 @@ def run_eval_matrix(
     )
     result["expansion_identity"] = expansion_id
     if expansion_mode == "build":
+        if private:
+            # inputs.json before the artifact; rewritten below with the
+            # artifact's entry (16A-1 gate round 5, PT3).
+            write_inputs_json(run_dir_path, _run_inputs(sets, replay_artifact, None))
         result["expansion_artifact"] = _build_expansion_artifact(
             build_target, sets, expansion_cache, private=private
         )
@@ -2713,6 +2720,8 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
     }
     if kw["expansion_mode"] == "build":
+        if private:
+            write_inputs_json(kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], None))
         result["expansion_artifact"] = _build_expansion_artifact(
             kw["artifact_path_arg"], sets, cache_exp, private=private
         )
