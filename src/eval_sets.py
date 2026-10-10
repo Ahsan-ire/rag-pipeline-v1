@@ -34,7 +34,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src import eval_privacy as _privacy
 from src.eval_privacy import (
@@ -94,43 +94,69 @@ def _is_sealed_row(obj: Any) -> bool:
     return isinstance(obj, dict) and obj.get("sealed") is True
 
 
-def has_sealed_marker(path: Any) -> bool:
-    """Rule 2: a ``.json``/``.jsonl`` file carrying a sealed marker (fail closed).
+_NON_EVAL_SUFFIXES = (".md", ".py")
 
-    ``.jsonl``: any parsed line object with ``"sealed": true``, or any line that
-    does not parse but contains the text ``"sealed"``. ``.json``: the top-level
-    object (or any element of a top-level list) with ``"sealed": true``, or an
-    unparseable file containing ``"sealed"``. Other suffixes never match (marker
-    text in ``.md``/``.py`` files is not a marker). An unreadable file of an
-    eval suffix fails closed (sealed); a missing file has no marker.
+
+def _loads_flagging_sealed(text: str) -> Tuple[Any, bool]:
+    """``json.loads`` that also reports any ``"sealed": true`` pair at any depth.
+
+    Catches a duplicate-key bypass (``{"sealed": true, "sealed": false}``
+    parses last-key-wins as not sealed) by inspecting every pair as parsed.
+    """
+    flagged = False
+
+    def _hook(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+        nonlocal flagged
+        if any(k == "sealed" and v is True for k, v in pairs):
+            flagged = True
+        return dict(pairs)
+
+    obj = json.loads(text, object_pairs_hook=_hook)
+    return obj, flagged
+
+
+def has_sealed_marker(path: Any) -> bool:
+    """Rule 2: an eval input carrying a sealed marker (fail closed).
+
+    ``.json``: the top-level object (or any element of a top-level list) holds
+    ``"sealed": true`` -- any ``"sealed": true`` pair, duplicate keys
+    included -- or the file does not parse and contains ``"sealed"``. Every
+    other suffix except ``.md``/``.py`` (``.jsonl``, ``.txt``, ``.ndjson``,
+    none, ...) is scanned line by line as JSONL, because ``load_golden_set``
+    accepts any suffix: a parsed line with a ``"sealed": true`` pair, or a line
+    that does not parse but contains ``"sealed"``. Lines split on ``\n`` only
+    (a raw U+2028 inside a JSON string is not a line break). Marker text in
+    ``.md``/``.py`` files is not a marker. An unreadable file fails closed
+    (sealed); a missing file has no marker.
     """
     p = Path(path)
     suffix = p.suffix.lower()
-    if suffix not in (".json", ".jsonl") or not p.exists():
+    if suffix in _NON_EVAL_SUFFIXES or not p.exists() or p.is_dir():
         return False
     try:
         raw = p.read_bytes()
     except OSError:
         return True
     text = raw.decode("utf-8", errors="replace")
-    if suffix == ".jsonl":
-        for line in text.splitlines():
+    if suffix != ".json":
+        for line in text.split("\n"):
+            line = line.rstrip("\r")
             if not line.strip():
                 continue
             try:
-                obj = json.loads(line)
+                obj, flagged = _loads_flagging_sealed(line)
             except (ValueError, RecursionError):
                 if '"sealed"' in line:
                     return True
                 continue
-            if _is_sealed_row(obj):
+            if flagged or _is_sealed_row(obj):
                 return True
         return False
     try:
-        obj = json.loads(text)
+        obj, flagged = _loads_flagging_sealed(text)
     except (ValueError, RecursionError):
         return '"sealed"' in text
-    if _is_sealed_row(obj):
+    if flagged or _is_sealed_row(obj):
         return True
     if isinstance(obj, list):
         return any(_is_sealed_row(item) for item in obj)

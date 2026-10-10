@@ -263,3 +263,49 @@ def test_ids():
     assert public_v1_id("abc").startswith("q:") and len(public_v1_id("abc")) == 14
     assert private_v1_id("abc", "0" * 64) != private_v1_id("abc", "1" * 64)
     assert private_v1_id("abc", "0" * 64) != public_v1_id("abc")
+
+
+# --- review fixes ---------------------------------------------------------------
+@pytest.mark.parametrize("name", ["copy.txt", "copy.ndjson", "copy", "copy.bak"])
+def test_marker_survives_any_eval_suffix(tmp_path, name):
+    rows = _rows("q a", "q b", sealed_index=1)
+    p = _write_jsonl(tmp_path / name, rows)
+    assert classify(p) == "sealed"
+
+
+def test_duplicate_key_marker_bypass_is_sealed(tmp_path):
+    p = tmp_path / "dup.jsonl"
+    p.write_text('{"question": "q", "sealed": true, "sealed": false}\n')
+    assert classify(p) == "sealed"
+    j = tmp_path / "dup.json"
+    j.write_text('{"sealed": true, "sealed": false}')
+    assert classify(j) == "sealed"
+
+
+def test_u2028_inside_a_string_is_not_a_line_break(tmp_path):
+    p = tmp_path / "u.jsonl"
+    p.write_text(json.dumps({"question": "alpha beta", "sealed": True}, ensure_ascii=False) + "\n")
+    assert classify(p) == "sealed"
+
+
+def test_case_variant_of_sealed_root_is_sealed(tmp_path, monkeypatch, _private_root_in_tmp):
+    """On a case-insensitive FS a case variant names the same directory (samefile)."""
+    sealed = _private_root_in_tmp / "sealed"
+    sealed.mkdir(parents=True)
+    variant = tmp_path / "eval" / "private" / "SEALED"
+    if not variant.exists():
+        # case-sensitive FS (Linux CI): emulate the alias with a symlink-free bind via samefile patch
+        import os
+
+        real_samefile = os.path.samefile
+        monkeypatch.setattr(os.path, "samefile",
+                            lambda a, b: real_samefile(str(a).replace("SEALED", "sealed"), b))
+        variant.mkdir(parents=True)
+        (variant / "x.jsonl").write_text('{"question": "q"}\n')
+        from src.eval_privacy import is_under
+
+        assert is_under(variant / "x.jsonl", sealed)
+    else:
+        p = variant / "x.jsonl"
+        p.write_text('{"question": "q"}\n')
+        assert classify(p) == "sealed"

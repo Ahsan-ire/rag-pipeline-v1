@@ -142,12 +142,30 @@ def private_root() -> Path:
 
 
 def is_under(path: os.PathLike | str, root: os.PathLike | str) -> bool:
-    """True iff ``path`` resolves inside ``root`` (both resolved)."""
+    """True iff ``path`` resolves inside ``root`` (both resolved).
+
+    On a case-insensitive filesystem (macOS by default) ``resolve()`` keeps the
+    as-typed casing, so ``eval/Private/Sealed/x`` would miss a string prefix
+    test. When the plain test fails, every existing ancestor of ``path`` is
+    also compared to ``root`` by file identity (``os.path.samefile``: device +
+    inode), the same identity rule ``evaluator._same_path`` uses.
+    """
+    p = Path(path).resolve()
+    r = Path(root).resolve()
     try:
-        Path(path).resolve().relative_to(Path(root).resolve())
+        p.relative_to(r)
         return True
     except ValueError:
+        pass
+    if not r.exists():
         return False
+    for ancestor in (p, *p.parents):
+        try:
+            if ancestor.exists() and os.path.samefile(ancestor, r):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def contained_path(root: Path, *parts: str) -> Path:

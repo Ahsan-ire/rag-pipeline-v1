@@ -931,9 +931,10 @@ def generate_answers(
             continue
         question = entry["question"]
         if question in answers:
+            # No question text in the message (D65): it may be private.
             raise ValueError(
-                f"Duplicate question text in golden set (would collide in the "
-                f"answer cache): {question!r}"
+                "Duplicate question text in golden set (would collide in the "
+                "answer cache)"
             )
 
         result: Optional[Dict[str, Any]] = None
@@ -1826,6 +1827,29 @@ def run_eval_matrix(
                     f"eval-set path; refusing to overwrite the eval set with a report"
                 )
 
+    # Review fixes (16A-1): everything that can refuse the run is checked HERE,
+    # before any expansion, retrieval or model call, so a refusal never lands
+    # after money is spent.
+    # (a) a build:<path> destination: contained under the private artifacts
+    #     root on a private run; never an input set or the canonical report.
+    build_target: Optional[str] = None
+    if expansion_mode == "build":
+        if private:
+            build_target = str(_privacy.artifact_path(os.path.basename(artifact_path_arg or "")))
+        else:
+            for p in [*set_paths, DEFAULT_RESULTS_PATH] + ([results_path] if results_path else []):
+                if _same_path(artifact_path_arg, p):
+                    raise ValueError(
+                        "build:<path> resolves to an input set or a report; refusing to overwrite it"
+                    )
+            build_target = artifact_path_arg
+    # (b) every v1 set must form a cohort (no repeated question) up front.
+    from src.eval_schema import detect_schema as _detect_schema
+
+    for _label, path in set_specs:
+        if _detect_schema(path) == 1:
+            v1_cohort(load_golden_set(path), path=path, privacy=privacy, sha256=_sha256_file(path))
+
     # Which passes run, and therefore which answers to generate (Design 2).
     generation_ran = (not skip_refusals) or (not skip_completeness) or judge
     include_types: List[str] = []
@@ -2036,7 +2060,7 @@ def run_eval_matrix(
             expand=_expand, expansion_cache=expansion_cache,
             expansion_enabled=expansion_enabled, expansion_mode=expansion_mode,
             replay_artifact=replay_artifact, replay_count=lambda: rewrite_replayed,
-            artifact_path_arg=artifact_path_arg,
+            artifact_path_arg=build_target,
             privacy=privacy, private=private, run_id=run_id, run_dir_path=run_dir_path,
             private_report_path=private_report_path if private else None,
             results_path=results_path, provenance_fn=provenance_fn,
@@ -2423,7 +2447,7 @@ def run_eval_matrix(
     result["expansion_identity"] = expansion_id
     if expansion_mode == "build":
         result["expansion_artifact"] = _build_expansion_artifact(
-            artifact_path_arg, sets, expansion_cache, private=private
+            build_target, sets, expansion_cache
         )
 
     report = _format_matrix_report(result, privacy=privacy)
@@ -2595,7 +2619,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
     }
     if kw["expansion_mode"] == "build":
-        result["expansion_artifact"] = _build_expansion_artifact(kw["artifact_path_arg"], sets, cache_exp, private=private)
+        result["expansion_artifact"] = _build_expansion_artifact(kw["artifact_path_arg"], sets, cache_exp)
     report = eval_v6.format_v6_report(result)
     sidecar = build_sidecar(
         privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
@@ -2636,12 +2660,13 @@ def _artifact_row_id(set_sha256: str, row_id: str) -> str:
 
 
 def _build_expansion_artifact(
-    dest: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion], *, private: bool
+    target: str, sets: List[Dict[str, Any]], cache: Dict[str, Expansion]
 ) -> Dict[str, Any]:
     """Freeze this run's live expansions into an artifact (item 5, ``build:``).
 
-    A private run's artifact goes under ``eval/private/artifacts/<basename>``
-    (contained); a public one to ``dest``. No question text is written.
+    ``target`` was validated before the run started (a private run's lies
+    under ``eval/private/artifacts/``; a public one is never an input set or
+    a report). No question text is written.
     """
     from src.expansion_artifact import build_artifact, save_artifact
 
@@ -2654,10 +2679,6 @@ def _build_expansion_artifact(
         lambda q: cache[q],
         [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
     )
-    if private:
-        target = str(_privacy.artifact_path(os.path.basename(dest)))
-    else:
-        target = dest
     digest = save_artifact(target, artifact)
     return {"path": target, "sha256": digest}
 
@@ -2710,7 +2731,8 @@ def _format_matrix_report(result: Dict[str, Any], *, privacy: str) -> str:
     ``result["privacy"]`` is refused. A public report is v5 byte for byte; a
     non-public one shows each row's opaque id in place of its question.
     """
-    privacy = _check_formatter_privacy(privacy, result.get("privacy", PUBLIC))
+    # Fail closed: a result without a recorded class is refused, never public.
+    privacy = _check_formatter_privacy(privacy, result["privacy"])
 
     def _q(s: Dict[str, Any], question: str) -> str:
         return question if privacy == PUBLIC else s["ids"][question]

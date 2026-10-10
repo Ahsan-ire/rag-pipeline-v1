@@ -216,3 +216,48 @@ def test_provenance_identical_with_and_without_sidecar():
     finally:
         probe.unlink()
     assert before == after
+
+
+# --- review fixes: refusals happen before any work ---------------------------------
+def test_build_over_an_input_set_refused_before_any_call(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+    with pytest.raises(ValueError, match="build:"):
+        ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"), expansion=f"build:{SAMPLE}",
+                           retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_duplicate_question_in_second_set_refused_before_any_call(monkeypatch, tmp_path, eval_registry):
+    import json as _json
+
+    dup = tmp_path / "dup.jsonl"
+    row = {"question": "synthetic duplicated question", "type": "direct", "expected_sections": ["1.1"]}
+    dup.write_text(_json.dumps(row) + "\n" + _json.dumps(row) + "\n")
+    eval_registry.add(dup)
+    calls = []
+    monkeypatch.setattr(ev, "expand_query", _counting_expand(calls))
+
+    def factory(mode):
+        calls.append(mode)
+        return FakeRetrieval({}).factory(6)(mode)
+
+    from src.eval_cohort import CohortError
+
+    with pytest.raises(CohortError):
+        ev.run_eval_matrix([("golden", SAMPLE), ("realistic", str(dup))], results_path=str(tmp_path / "a.md"),
+                           retrieve_fn_factory=factory, provenance_fn=lambda: dict(PROVENANCE),
+                           privacy="public", skip_completeness=True, generate_fn=lambda q: calls.append(q))
+    assert calls == []
+
+
+def test_matrix_formatter_fails_closed_without_privacy():
+    with pytest.raises(KeyError):
+        ev._format_matrix_report({"sets": []}, privacy="private")
+
+
+def test_generate_answers_duplicate_error_has_no_text():
+    with pytest.raises(ValueError) as exc:
+        ev.generate_answers([{"question": "P16-CANARY-dupe", "type": "direct"}] * 2, ["direct"], lambda q: {"answer": "x"})
+    assert "CANARY" not in str(exc.value)
