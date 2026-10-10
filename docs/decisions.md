@@ -1994,6 +1994,17 @@ Item 9:
 
 **Re-deferred:** the status recompute in `run_eval_matrix` (it touches a canonical guard), and `test_h_projection`'s subprocess cost. The new P0 lock runs in-process and adds no subprocess.
 
+**Choices made in the lane (C4 and item 9):**
+- Set labels come from each report's provenance, mapped by set sha256; sidecar cohort blocks carry no label.
+- A sidecar arm no longer needs the offline-expansion marker; the expansion identity check replaces it, so live/live and candidate pairs can be compared. Legacy arms still need the marker.
+- `--rewrite-candidate H` lets the arm whose `config_hash` is H also differ in model, prompt sha256 and digest, because the config hash covers them.
+- `--controls` and `--rewrite-candidate` cannot be combined with legacy arms.
+- On a private floor, `--ranks-out` and `--manifest-out` are redirected into `eval/private/runs/<id>/`.
+- `w_sweep` keeps its question-keyed legacy `ranks` dict only on public runs.
+- A malformed sidecar is refused rather than downgraded to legacy.
+- Relative CLI paths now resolve against the caller's working directory.
+- Refusals exit 2; sealed input exits 4.
+
 **Why:** design 003 16A.5–16A.6 and astra C4. Comparisons had keyed rows by question text or list position, and replay was impossible.
 
 **Rejected:**
