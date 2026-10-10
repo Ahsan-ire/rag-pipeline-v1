@@ -61,6 +61,13 @@ Phase 16A-1 (items 1, 6, 9; D65, D68) adds:
   ``eval/private/runs/<run id>/`` with ``inputs.json``.
 - **One roster.** Roster and S5/N4 roles come from ``src.eval_roster``, keyed
   by row id; ``parse_report`` adds an ``id`` to every detail row.
+- **Report v6.** A v6 report (schema-2 run, ``src.eval_v6``) has no v5
+  provenance, ablation or detail sections: its sets (label, path, sha256) are
+  read from its ``## Cohort`` block and its per-row ranks from its rows
+  sidecar, which it always needs (machines read the sidecar, item 6). The
+  selection table is then the sidecar's row-level strict/related@6; S5/N4
+  role coverage is ``n/a`` (no retrieved sections are recorded). 16A-1 merge
+  gate, Codex #5.
 
 Usage::
 
@@ -146,6 +153,13 @@ _DETAIL_ROW = re.compile(
     r"(?P<extra>.*?) :: (?P<question>.*)$"
 )
 _SET_LABEL = re.compile(r"^- (?P<label>[^:]+): ")
+# Report v6 (``src.eval_v6.format_v6_report``): title, model line, cohort lines.
+V6_TITLE_PREFIX = "# Legal RAG Evaluation Report v6"
+_V6_MODEL = re.compile(r"^- git sha: .*; embedding model: (?P<model>.+); generation model: .*$")
+_V6_COHORT = re.compile(
+    r"^- (?P<label>.+?): path (?P<path>.+); privacy (?P<privacy>[a-z]+); schema (?P<schema>\d+); "
+    r"sha256 (?P<sha256>[0-9a-f]{64}); rows \d+; families \d+; cohort_fp [0-9a-f]{64}$"
+)
 _SET_FIELD = re.compile(r"^\s+- (?P<key>path|sha256): (?P<value>.+)$")
 _EMBEDDING_MODEL = re.compile(r"^- embedding model: (?P<model>.+)$")
 
@@ -365,6 +379,13 @@ def parse_report(text: str, *, require_offline: bool = True) -> Dict[str, Any]:
             ``hybrid+rewrite``, or if the report records a question set whose
             path is not the golden or realistic set file.
     """
+    if text.startswith(V6_TITLE_PREFIX):
+        if require_offline:
+            raise C4Error(
+                "a v6 report is compared only through its rows sidecar "
+                "(<report>.rows.json); it has none, so it is refused (v5 rules cannot read it)"
+            )
+        return _parse_v6_report(text)
     expansion_disabled = EXPANSION_DISABLED_MARKER in text
     if require_offline and not expansion_disabled:
         raise ValueError(
@@ -411,6 +432,74 @@ def parse_report(text: str, *, require_offline: bool = True) -> Dict[str, Any]:
     # sets with path=None that the label fallback lets into selection (C2).
     _assert_set_provenance(sets)
     return {"embedding_model": model, "expansion_disabled": expansion_disabled, "sets": sets}
+
+
+def _parse_v6_report(text: str) -> Dict[str, Any]:
+    """Parse a report v6: its sets from the ``## Cohort`` block (ranks come from the sidecar).
+
+    Raises:
+        C4Error: a v6 report with no cohort lines.
+        ValueError: a recorded set that may not enter selection
+            (:func:`_assert_set_provenance`).
+    """
+    model: Optional[str] = None
+    sets: Dict[str, Dict[str, Any]] = {}
+    for heading, body in _split_sections(text):
+        if heading == "":
+            for line in body:
+                m = _V6_MODEL.match(line)
+                if m is not None:
+                    model = m.group("model").strip()
+        elif heading.strip() == "## Cohort":
+            for line in body:
+                m = _V6_COHORT.match(line)
+                if m is not None:
+                    sets[m.group("label")] = {
+                        "path": m.group("path"),
+                        "sha256": m.group("sha256"),
+                        "ablation": {},
+                        "questions": [],
+                    }
+    if not sets:
+        raise C4Error("v6 report has no cohort lines")
+    _assert_set_provenance(sets)
+    return {"embedding_model": model, "expansion_disabled": False, "report_version": 6, "sets": sets}
+
+
+def _fill_from_sidecar(arm: Dict[str, Any], name: str) -> None:
+    """Fill a v6 arm's ablation headline and detail rows from its rows sidecar.
+
+    Per set: ``ablation`` gets the row-level strict/related@6 and ``n`` of each
+    of ``hybrid`` and ``hybrid+rewrite`` the sidecar has; ``questions`` the
+    ``hybrid+rewrite`` rows, shown by id (``id_only``: v6 carries no question
+    text) with no retrieved sections (``retrieved`` None).
+    """
+    index = index_rows(arm["sidecar"], name)
+    for data in arm["sets"].values():
+        for mode in ("hybrid", DETAIL_MODE):
+            group = index.get((data["sha256"], mode))
+            if not group:
+                continue
+            n = len(group)
+            data["ablation"][mode] = {
+                "strict": {HIT_K: sum(_hit_at_k(r["strict_rank"]) for r in group.values()) / n},
+                "related": {HIT_K: sum(_hit_at_k(r["related_rank"]) for r in group.values()) / n},
+                "n": n,
+            }
+        detail = index.get((data["sha256"], DETAIL_MODE), {})
+        data["questions"] = [
+            {
+                "type": None,
+                "id": rid,
+                "question": rid,
+                "id_only": True,
+                "expected": [],
+                "retrieved": None,
+                "strict_rank": detail[rid]["strict_rank"],
+                "related_rank": detail[rid]["related_rank"],
+            }
+            for rid in sorted(detail)
+        ]
 
 
 # --------------------------------------------------------------------------
@@ -1123,13 +1212,15 @@ def role_coverage(
             None,
         )
         retrieved = [] if match is None else match["retrieved"]
-        groups = {g: _covers(retrieved, g) for g in role.groups}
+        available = retrieved is not None  # a v6 row records no retrieved sections
+        groups = {g: available and _covers(retrieved, g) for g in role.groups}
         out[role.name] = {
             "question": None if match is None else match["question"],
             "found": match is not None,
-            "retrieved": retrieved,
+            "available": available,
+            "retrieved": retrieved if available else [],
             "groups": groups,
-            "both": match is not None and all(groups.values()),
+            "both": match is not None and available and all(groups.values()),
         }
     return out
 
@@ -1148,7 +1239,7 @@ def _question_texts(arms: Mapping[str, Mapping[str, Any]]) -> Dict[str, str]:
     for arm in arms.values():
         for data in arm["sets"].values():
             for q in data["questions"]:
-                if has_text(q["question"]):
+                if not q.get("id_only") and has_text(q["question"]):
                     texts.setdefault(q["id"], q["question"])
     return texts
 
@@ -1194,7 +1285,8 @@ def render(
             return rid
         if not c4:
             return item
-        text = texts.get(rid) or (item if has_text(item) else None)
+        # an id is never its own text (a v2 id is not a ``q:`` hash)
+        text = texts.get(rid) or (item if not is_id and has_text(item) else None)
         return f"{rid} — {text}" if text else rid
 
     out: List[str] = ["# Bake-off selection evidence", ""]
@@ -1299,6 +1391,10 @@ def render(
     out.append("| --- | --- | " + " | ".join(["---"] * (len(groups) + 1)) + " |")
     for name, arm in arms.items():
         for role_name, cover in role_coverage(arm).items():
+            if not cover["available"]:
+                cells = " | ".join("n/a" for _g in groups)
+                out.append(f"| {name} | {role_name} (v6: no retrieved sections recorded) | {cells} | n/a |")
+                continue
             cells = " | ".join(
                 ("yes" if cover["groups"].get(g) else "no") for g in groups
             )
@@ -1698,6 +1794,8 @@ def load_arm(path: str) -> Dict[str, Any]:
     with open(path, encoding="utf-8") as fh:
         arm = parse_report(fh.read(), require_offline=sidecar is None)
     arm["sidecar"] = sidecar
+    if arm.get("report_version") == 6:
+        _fill_from_sidecar(arm, _arm_name(path))
     return arm
 
 

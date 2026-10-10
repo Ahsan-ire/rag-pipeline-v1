@@ -55,6 +55,11 @@ STATUSES = ("active", "frozen", "retired")
 _REGISTRY_KEYS = {"name", "path", "privacy", "role", "status", "sha256"}
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _MD_SET_SHA_RE = re.compile(r"^\s+- sha256: ([0-9a-f]{64})\s*$")
+# A report v6 records its input sets in its ``## Cohort`` block instead
+# (``src.eval_v6.format_v6_report``; 16A-1 merge gate, Codex #5).
+_MD_V6_COHORT_SHA_RE = re.compile(
+    r"^- .+; schema \d+; sha256 ([0-9a-f]{64}); rows \d+; families \d+; cohort_fp [0-9a-f]{64}\s*$"
+)
 
 
 class RegistryError(ValueError):
@@ -388,7 +393,11 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
             shas.append(sha)
         return shas
     if suffix == ".md":
-        shas = [m.group(1) for line in text.splitlines() if (m := _MD_SET_SHA_RE.match(line))]
+        shas = [
+            m.group(1)
+            for line in text.splitlines()
+            if (m := _MD_SET_SHA_RE.match(line) or _MD_V6_COHORT_SHA_RE.match(line))
+        ]
         return shas or None
     return None
 

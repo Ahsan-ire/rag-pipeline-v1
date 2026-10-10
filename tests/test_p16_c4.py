@@ -1304,3 +1304,130 @@ def test_private_bakeoff_run_passes_the_merge_gate_precheck(tmp_path, monkeypatc
     assert list((_private_root_in_tmp / "runs").glob("*/inputs.json"))
     monkeypatch.setattr(scan_leaks, "_legacy_shas", lambda: {eval_sets.sha256_file(cache)})
     assert scan_leaks.precheck(set()) == []
+
+
+# ---------------------------------------------------------------------------
+# 16A-1 merge gate, Codex #5: ACTUAL report v6 output (run_eval_matrix's v6
+# path on synthetic schema-2 sets, fake retrieval) and its rows sidecar go
+# through the C4 report comparison end to end.
+# ---------------------------------------------------------------------------
+V6_FILLER = ["7.1", "7.2", "7.3", "7.4", "7.5", "7.6"]
+
+
+@pytest.fixture
+def v2_sets(tmp_path, eval_registry, monkeypatch):
+    """Registered public schema-2 golden (3 answer + 1 refuse) and realistic (2) sets."""
+    import src.eval_schema as eval_schema
+    import src.evaluator as ev
+    from tests.p16_capture import _fake_expand
+
+    golden = [{"schema": 2, "id": f"gold-{i}", "family_id": f"gfam-{i}", "question": _q("v2golden", i),
+               "scope": "answer", "evidence": [[f"9.{i + 1}"]]} for i in range(3)]
+    golden.append({"schema": 2, "id": "gold-r0", "family_id": "gfam-r0", "question": _q("v2refuse", 0),
+                   "scope": "refuse", "evidence": []})
+    realistic = [{"schema": 2, "id": f"real-{i}", "family_id": f"rfam-{i}", "question": _q("v2realistic", i),
+                  "scope": "answer", "evidence": [[f"8.{i + 1}"]]} for i in range(2)]
+    out = {}
+    for label, rows, name in (("tuning", golden, "golden_set.jsonl"), ("realistic", realistic, "realistic_set.jsonl")):
+        path = _write_jsonl(tmp_path / "v2" / name, rows)
+        eval_registry.add(path)
+        out[label] = {"path": str(path), "rows": rows, "sha256": eval_sets.sha256_file(path)}
+    inv = tmp_path / "inventory.json"
+    inv.write_text(json.dumps({"version": 1, "map_sha256": "0" * 64,
+                               "sections": sorted({"8.1", "8.2", "9.1", "9.2", "9.3", *V6_FILLER}), "aliases": []}))
+    monkeypatch.setattr(eval_schema, "INVENTORY_PATH", inv)
+    monkeypatch.setattr(ev, "_load_absorbed_map", lambda: (None, None))
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    return out
+
+
+def _v6_arm(directory, name, v2, ranks):
+    """Run the real v6 path; ``ranks``: {row id: strict rank of its section, or None}."""
+    from langchain_core.documents import Document
+
+    import src.evaluator as ev
+    from tests.p16_capture import PROVENANCE
+
+    by_q = {r["question"]: r for data in v2.values() for r in data["rows"]}
+
+    def factory(mode):
+        def retrieve(question, top_k=6):
+            row = by_q[question]
+            target = row["evidence"][0][0] if row["evidence"] else None
+            rank = ranks.get(row["id"])
+            secs = [target if (rank is not None and i + 1 == rank) else V6_FILLER[i] for i in range(top_k)]
+            return [{"document": Document(page_content=f"Synthetic {s}.", id=f"syn-{s}",
+                                          metadata={"section_number": s, "source": "synthetic.pdf"}),
+                     "score": 1.0, "metadata": {"section_number": s}} for s in secs]
+        return retrieve
+
+    directory.mkdir(parents=True, exist_ok=True)
+    report = directory / f"{name}.md"
+    ev.run_eval_matrix([("tuning", v2["tuning"]["path"]), ("realistic", v2["realistic"]["path"])],
+                       skip_refusals=True, skip_completeness=True, retrieve_fn_factory=factory,
+                       provenance_fn=lambda: dict(PROVENANCE), privacy="public", results_path=str(report))
+    assert Path(sidecar_path(str(report))).is_file()
+    return str(report)
+
+
+V6_BASE = {"gold-0": 1, "gold-1": None, "gold-2": 4, "real-0": 2, "real-1": None}
+V6_CAND = {"gold-0": None, "gold-1": 1, "gold-2": 2, "real-0": 2, "real-1": None}
+
+
+def test_actual_v6_reports_and_sidecars_compare_under_c4(tmp_path, v2_sets, capsys):
+    base = _v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE)
+    cand = _v6_arm(tmp_path / "arms", "cand", v2_sets, V6_CAND)
+    capsys.readouterr()
+    assert Path(base).read_text().startswith(bakeoff_report.V6_TITLE_PREFIX)
+    assert eval_sets.classify(base) == "public"  # rule 5 reads the v6 cohort block
+
+    result = bakeoff_report.compare(load_arms(base, cand), "base")
+    assert result["c4"] is True
+    assert result["flips"]["cand"]["hit_to_miss"] == ["gold-0"]
+    assert result["flips"]["cand"]["miss_to_hit"] == ["gold-1"]
+    base_row = next(r for r in result["table"] if r["arm"] == "base")
+    assert base_row["golden"] == {"strict_at_6": 2 / 3, "related_at_6": 2 / 3, "n": 3}
+    assert base_row["realistic"]["n"] == 2
+
+    rc, out, err = _cli(["--reports", base, cand, "--baseline", "base"], capsys)
+    assert rc == 0, err
+    assert "C4 cohort identity checked" in out
+    assert "- gold-0\n" in out and "- gold-1\n" in out  # ids, never "id — id"
+    _assert_no_canary(out, err)
+    # a v6 row records no retrieved sections: role coverage is n/a, never "no"
+    cover = bakeoff_report.role_coverage(load_arms(cand)["cand"], roles=(RoleSpec("S5", "real-0", ("8.1", "8.2")),))
+    assert cover["S5"]["found"] is True and cover["S5"]["available"] is False and cover["S5"]["both"] is False
+
+
+def test_v6_report_without_its_sidecar_is_refused(tmp_path, v2_sets, capsys):
+    base = _v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE)
+    cand = _v6_arm(tmp_path / "arms", "cand", v2_sets, V6_CAND)
+    os.remove(sidecar_path(cand))
+    capsys.readouterr()
+    for extra in ([], ["--legacy"]):
+        rc, out, err = _cli(["--reports", base, cand, "--baseline", "base", *extra], capsys)
+        assert rc == 2 and out == "" and "rows sidecar" in err
+
+
+def test_v6_arm_with_a_symmetric_roster_gap_is_refused(tmp_path, v2_sets):
+    """#4 and #5 together: the same eligible v2 row dropped from both actual v6 sidecars."""
+    arms = []
+    for name, ranks in (("base", V6_BASE), ("cand", V6_CAND)):
+        report = _v6_arm(tmp_path / "arms", name, v2_sets, ranks)
+        side = Path(sidecar_path(report))
+        doc = json.loads(side.read_text())
+        doc["rows"] = [r for r in doc["rows"] if r["id"] != "gold-0"]
+        side.write_text(dump_sidecar(doc))
+        arms.append(report)
+    with pytest.raises(C4Error, match="roster mismatch"):
+        bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def test_v6_report_naming_an_unregistered_set_stays_private(tmp_path, v2_sets):
+    base = _v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE)
+    text = Path(base).read_text().replace(v2_sets["realistic"]["sha256"], "e" * 64)
+    forged = tmp_path / "other" / "forged.md"
+    forged.parent.mkdir()
+    forged.write_text(text)
+    assert eval_sets.classify(base) == "public"
+    assert eval_sets.classify(str(forged)) == "private"
