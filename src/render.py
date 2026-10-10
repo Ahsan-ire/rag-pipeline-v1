@@ -50,7 +50,7 @@ from src.grounding import (
     WITHHELD_NOTICES,
     generation_outcome,
 )
-from src.text_utils import _GAP_STARTS, _HEDGE_RE, split_sentences
+from src.text_utils import is_gap_statement, split_sentences
 
 NO_RESULTS_MESSAGE = "No relevant documents found. Please index some documents first."
 # Statuses a generation result may carry (``error`` is evaluator-only).
@@ -110,7 +110,8 @@ def uncited_statements(answer: str) -> List[str]:
     occurrence as ``"repeated caveat"``; split with ``text_utils.split_sentences``.
     A unit is flagged when it has no citation locator, is at least five words, does
     not end with ``:``, is not a Markdown heading, and is not a narrow gap
-    statement ("The handbook does not ...") free of hedge words. A whole-answer
+    statement ("The handbook does not ...", also as a list item or emphasised;
+    see ``text_utils.is_gap_statement``) free of hedge words. A whole-answer
     refusal flags nothing.
 
     Documented misses: ``split_sentences`` does not split before a lowercase
@@ -132,7 +133,7 @@ def uncited_statements(answer: str) -> List[str]:
             continue
         if len(unit.split()) < _MIN_WORDS:
             continue
-        if unit.startswith(_GAP_STARTS) and not _HEDGE_RE.search(unit):
+        if is_gap_statement(unit):
             continue
         flagged.append(unit)
     return flagged

@@ -22,6 +22,54 @@ _HEDGE_RE = re.compile(
     r"\b(?:but|however|likely|probably|generally|usually)\b", re.IGNORECASE
 )
 
+# One leading list marker: a bullet (``-``, ``*``, ``•``), a number with ``.`` or
+# ``)`` (``1.``, ``12)``), or a parenthesised letter, roman numeral or number
+# (``(a)``, ``(iv)``, ``(2)``). The marker (plus any closing emphasis, as in
+# ``**1.** ``) must be followed by whitespace, so a word that merely starts with
+# one of these characters is never stripped.
+_LIST_MARKER_RE = re.compile(r"^(?:[-*\u2022]|\d+[.)]|\((?:[A-Za-z]|[ivxlcIVXLC]+|\d+)\))[*_]*\s+")
+# Leading Markdown emphasis: any run of ``*`` / ``_`` (``**bold**``, ``_em_``).
+_EMPHASIS_RE = re.compile(r"^[*_]+")
+
+
+def _strip_list_and_emphasis(unit: str) -> str:
+    """Strip leading list markers and Markdown emphasis from ``unit``.
+
+    Repeats to a fixed point (bounded) so nested forms such as
+    ``"- **The handbook does not ..."`` or ``"**1.** The handbook ..."`` both
+    reduce to the bare sentence. Only the START of the unit is touched.
+    """
+    text = unit.strip()
+    for _ in range(4):
+        before = text
+        text = _LIST_MARKER_RE.sub("", text)
+        text = _EMPHASIS_RE.sub("", text).lstrip()
+        if text == before:
+            break
+    return text
+
+
+def is_gap_statement(unit: str) -> bool:
+    """True if ``unit`` is a narrow gap statement ("the handbook is silent").
+
+    The H2 exemption, shared by render's uncited-statement hint and the eval
+    scorers (``src.eval_scoring``). A unit qualifies when, after stripping one
+    or more leading list markers (``-``, ``*``, ``•``, ``1.``, ``1)``, ``(a)``)
+    and leading Markdown emphasis (``**``, ``*``, ``_``), it starts with one of
+    ``_GAP_STARTS`` (case-sensitive, as before) AND the whole unit is free of
+    hedge words (``_HEDGE_RE``: but / however / likely / probably / generally /
+    usually, whole words, any case). The hedge rule is unchanged from H2: a
+    hedge turns a gap statement back into a claim.
+
+    Args:
+        unit: One sentence or line, typically from ``split_sentences``.
+
+    Returns:
+        Whether the unit is an unhedged gap statement.
+    """
+    stripped = _strip_list_and_emphasis(unit)
+    return stripped.startswith(_GAP_STARTS) and not _HEDGE_RE.search(unit)
+
 # Prose abbreviations whose trailing period must NOT be read as a sentence end.
 # Ordered longest-first so a shorter member ("p.") can never pre-empt a longer
 # one ("pp.", "paras.") during protection. Deliberately small and legal-prose
