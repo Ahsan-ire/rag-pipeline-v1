@@ -1127,7 +1127,8 @@ integration, canaries, commits with `Implemented-by:`). **[W]** R0 code on **syn
 `harness-worker` once B2's escape probes pass and OS-1's `worker_allow` is applied (else Claude); `worker_allow` =
 `src/{eval_sets,eval_schema,eval_privacy,eval_scoring,eval_split}.py`,
 `src/{eval_stats,expansion_artifact,spend,text_utils,chunker}.py`, `scripts/{scan_leaks,validate_eval_set}.py`,
-`tests/test_p16w_*.py`, `tests/fixtures/p16w_*`; workers never get real eval rows (public v1 included), files quoting
+`tests/test_p16w_*.py`, `tests/fixtures/p16w_*`, plus read-only import dependencies `src/{generator,grounding,
+render}.py` and `tests/conftest.py`; workers never get real eval rows (public v1 included), files quoting
 them, `eval/` or report output. **D64 triggers in 16A-1:** the weekly spend cap, reached or to be lifted (item 8; a
 self-imposed run-limit refusal is an ordinary failed run); a private-data hit in pushed history (item 1); the OS-1
 manifest refresh (owner-only).
@@ -1157,8 +1158,8 @@ manifest refresh (owner-only).
 ### Work
 0. **P0 — captures before any code edit [C]** (H0 precedent). `tests/p16_capture.py` (an uncollected driver) sets
    `PYTHON_DOTENV_DISABLED=1` (python-dotenv 1.2.2) and drops `ANTHROPIC_API_KEY` before importing `src` from
-   `--repo`, makes the `anthropic` and `ChatAnthropic` client constructors raise, fakes every model seam (generation,
-   judge, `expand_query` taking any keywords; a fake meter where the runner takes `meter=`) and runs both v5
+   `--repo`, makes the `anthropic` and `ChatAnthropic` client constructors raise, fakes retrieval (fixed ranked chunk lists from a committed synthetic fixture; SentenceTransformer and Chroma
+   constructors patched to raise) and every model seam (generation, judge, `expand_query` taking any keywords; a fake meter where the runner takes `meter=`) and runs both v5
    formatters over public golden, realistic, sample and the invented `tests/fixtures/p16_synthetic_heldout.jsonl`
    labelled `held-out`: an offline and a canonical-shaped run (fakes meet every v5 guard; tmp results path; clock,
    paths, provenance injected) plus one run per other branch (generation error, incomplete and unknown rows, judge
@@ -1194,9 +1195,11 @@ manifest refresh (owner-only).
      and opaque ids only; the private report adds section ids, evidence and ranks; nothing outside `eval/private/`
      carries a question, gap keyword, prefix, raw malformed value, `str(exc)` or model-derived text (rewrites, intent,
      answers, judge claims). Private v1 ids are `q:` + sha256(set sha256 ‖ question)[:12], salted by the file's own
-     hash (kept under `eval/private/`), so candidate text cannot confirm membership. **[C] Destinations:** a private
+     hash (kept under `eval/private/`), so candidate text cannot confirm membership without that hash. **Residual (D65):** once a private set's sha256
+     is registered in the committed `eval/sets.json`, anyone holding candidate text can test membership; 16A-2 (P4)
+     decides whether private registry entries carry a separate secret salt. **[C] Destinations:** a private
      run writes reports, detail, judge dumps, caches and rank dumps only under `eval/private/runs/<run id>/` (with
-     `inputs.json`: each private input's path and sha256), artifacts under `eval/private/artifacts/` (resolved-path
+     `inputs.json`: each private input's path, sha256 and `kind` — `questions` for an eval set, `derived` for a cache, dump or artifact, which also lists the question sets it was built from), artifacts under `eval/private/artifacts/` (resolved-path
      containment; symlink and `..` escapes refused; never `eval/results.md`); errors print as id + exception type.
    - **[W] Leak scanner** `scripts/scan_leaks.py`, never printing a needle. *Sources (explicit):* registry `private`
      sets, `--needles <path>` (a v1 or v2 eval JSONL; must classify private) and, in `--output` mode, the run's own
@@ -1208,8 +1211,9 @@ manifest refresh (owner-only).
      serialiser's job ((b)). *Modes:* `--output` (a private run's stdout, stderr, captured logging and report before
      release; a hit aborts, exit 5); `--merge-gate --base <ref>` (tracked files at HEAD, **every blob version added or
      modified in `base..HEAD`**, commit messages, tags, PR body, comments, review comments), which first refuses (exit
-     7, paths only) if a file under `eval/private/` outside `runs/` and `artifacts/`, or an input listed in any
-     `runs/*/inputs.json`, is not a needle source. *Hits* give target (file:line, commit or PR item), needle id (`n` +
+     7, paths only) if a file under `eval/private/` outside `runs/` and `artifacts/`, or a `questions` input (or a
+     `derived` input's listed question set) in any `runs/*/inputs.json`, is not a needle source; entries in
+     `eval/legacy_public.json` and sha256-keyed artifacts with no question text are exempt (their sources are checked). *Hits* give target (file:line, commit or PR item), needle id (`n` +
      10 hex of its sha256), kind and source, never text; the orchestrator may open that tracked file (private, not
      sealed, content is readable by Claude) and fix it, rewriting unpushed history. With private sets present,
      `--merge-gate` runs before every push (CI cannot); a hit in pushed history is a data incident (D64 owner stop).
@@ -1281,15 +1285,15 @@ manifest refresh (owner-only).
 6. **C4 cohort identity + item 9 (D68) [C]** ([C]: `scripts/w_sweep.py:34–35` and the roster quote real rows).
    **Cohort block** per set in report v6: path, privacy, schema, sha256, rows, families, `cohort_fp` = sha256 of the
    sorted `(id, evidence fingerprint, scope)` tuples. **Rows sidecar:** every 16A-1 run also writes
-   `<report>.rows.json` (`version`, scorer version, absorbed-map hash, expansion identity, cohort blocks, rows
+   `<report>.rows.json` (gitignored via `*.rows.json`, so `collect_provenance` never sees it; `version`, scorer version, absorbed-map hash, expansion identity, cohort blocks, rows
    `{set_sha256, id, mode, strict_rank, related_rank, completion_rank}`); `w_sweep` rank dumps gain the same fields.
    **`compare` / `compare_prod_ranks`** key rows by `(set sha256, id)`; both arms must cover the eligible ids exactly
    once with every required field (missing, extra or duplicate fails; the `:786` skip goes). Set hashes, labels,
    `cohort_fp`, scorer version and absorbed-map hash must match unconditionally; expansion identity must match too,
    except that two live arms may differ in draw digest (rewrite model, prompt and config identities equal) and
    `--rewrite-candidate <config hash>` permits only the declared candidate config difference (its artifact records
-   that hash). **Legacy:** an arm without C4 fields (a v5 markdown report, a pre-16A dump) is `legacy`; if either arm
-   is, today's v5 rules apply with no new refusal and a printed `legacy: C4 not checked` note, so v5 output is
+   that hash). **Legacy:** an arm without C4 fields (a v5 markdown report, a pre-16A dump) is `legacy` and accepted only with an
+   explicit `--legacy` flag (printed and recorded; without it the arm is refused); then today's v5 rules apply with no new refusal and a printed `legacy: C4 not checked` note, so v5 output is
    unchanged. `--controls <file>` (`{"version": 1, "controls": [{"set_sha256", "ids"}]}`) must be non-empty and
    resolve in both arms; control flips are reported apart (choosing controls and verdicts: P6). Roster and roles move
    to ids. **Item 9:** `w_sweep.py` loses its module-level `chdir`; helpers merge; one arm roster; one answer_fn
@@ -1356,9 +1360,10 @@ manifest refresh (owner-only).
   than the floor raises with zero retrieval, expansion and model calls (downgraded sealed input too), a stronger one
   honoured, formatters refuse a weaker class; both AST tests pass; item 1's refusers refuse sealed input, zero calls.
 - **(d) v5 unchanged:** `tests/test_p16_projection.py` reproduces P0's `reports`, every captured branch, byte for
-  byte, constructing no network-capable client (the patched constructors never fire); `load_golden_set` is byte-equal
+  byte, constructing no network-capable client, embedding model or vector store (the patched constructors never fire); `load_golden_set` is byte-equal
   on the v1 files and H (j)'s offline rows match P0 [C]; each v5 canonical guard removed alone makes a run
-  non-canonical; the CI greps are unchanged; no v6 or replayed run writes `eval/results.md`.
+  non-canonical; the CI greps are unchanged; no v6 or replayed run writes `eval/results.md`; a canonical-shaped run's recorded provenance is identical with
+  and without its sidecar present.
 - **(e) Evidence groups** [W, synthetic]: two groups hit → the later group's first hit; one missing → a miss at every
   k; OR alternates; a parent matches under related only; an alias takes its chunk's rank; `groups_covered@k`. [C]:
   single-group ranks equal v5's on every v1 golden and realistic row (fake retriever).
@@ -1379,7 +1384,8 @@ manifest refresh (owner-only).
   paraphrase is not; a sub-8-token question has only its whole needle; escaped injections are caught; hit lines hold
   no fixture token; a clean real-shaped v5 report has zero hits; `--merge-gate` finds needles in a blob added then
   deleted within the range, a commit message, a tag annotation and a faked `gh` PR body and comment; it refuses (exit
-  7, no content) an unregistered file under the private root and an `inputs.json` input not given as a source.
+  7, no content) an unregistered file under the private root and an `inputs.json` `questions` input not given as a source, and passes a run whose only private inputs are a
+  `legacy_public.json` cache and a sha256-keyed artifact built from a registered source.
 - **(j) Stats** (recomputed 10 Oct, stdlib Python 3): exact two-sided McNemar b = 10, c = 2 → p = 0.03857421875;
   singleton Durkalski, same data → χ² = 5.3333, p = 0.0209213353 (≠ exact); clusters (m, b, c) = (2,2,0), (2,1,1),
   (3,3,0), (2,0,1), (2,1,0) → d = 1, 0, 1, −0.5, 0.5, χ² = 2²/2.5 = 1.6, p = 0.2059032107; all-cancelling →
@@ -1390,7 +1396,8 @@ manifest refresh (owner-only).
   0/0 → `unavailable`. Holm (0.01, 0.04, 0.03, 0.005) → (0.03, 0.06, 0.06, 0.02). Three paraphrases count once.
 - **(k) C4:** a mismatched set hash, label, `cohort_fp`, scorer version, absorbed-map hash or expansion digest is
   refused, a declared `--rewrite-candidate` arm accepted; live/live and candidate pairs still fail on set-hash, scorer
-  or map mismatch; a legacy arm: v5 rules, the note, no refusal; missing, extra or duplicate rows fail (today's
+  or map mismatch; a legacy arm with `--legacy`: v5 rules, the note, no refusal; without it (incl. a post-16A report whose
+  `.rows.json` was deleted): refused; missing, extra or duplicate rows fail (today's
   missing-baseline-HIT case too); empty or unresolved `--controls` refused; permuted rows match by id. **(k2)** Arms
   replaying one artifact match, `rewrite_live` = 0; a missing entry fails with zero calls; a mismatch refuses.
 - **(l) Absorbed map:** a synthetic runt merge and appendix stub map as expected; only the containing oversize
@@ -1402,8 +1409,9 @@ manifest refresh (owner-only).
   new process; an unpriced model is refused; ISO-week totals are right; lines hold no fixture token;
   `SpendLimitReached` passes through `generate_answers` (one call, no error row), `expand_query` (no fallback),
   `judge_answer` (no api error), `run_eval_matrix` and the CLI (no report; exit 3 on `week`, 6 on `run`); the retry
-  predicate (faked SDK errors) retries exactly connection/timeout, 408, 409, 429, 500, 529 and `x-should-retry: true`,
-  no other status, none on `x-should-retry: false`, honouring `retry-after` ≤ 60 s; a fake key with no meter raises
+  predicate (faked SDK errors) retries connection/timeout, 408, 409, 429 and every status ≥ 500 (tested with 500,
+  501, 502, 503 and 529) and `x-should-retry: true`; no status below 500 other than 408/409/429 (tested with 400,
+  401, 403, 404, 413 and 422); none on `x-should-retry: false`, which takes precedence; honouring `retry-after` ≤ 60 s; a fake key with no meter raises
   `SpendMeterRequired`; `CC_SPEND_LEDGER` outside pytest is refused; `pipeline query` and the offline command build no
   meter; the suite never uses the default ledger.
 - **(n) Hygiene:** `git check-ignore eval/private/probe.jsonl` passes; `check_never_commit.py` rejects
@@ -1571,6 +1579,13 @@ were off in the 5th decimal). Of 127 (a row may list several): **80 FIXED** (16A
 | Au r4 | 11–14 | MINOR | FIXED | 11: retry loop mirrors anthropic 0.116.0, (m); 12: `CC_SPEND_LEDGER` pytest-only, (m); 13: OS-1 Q1 on the branch; 14: formats in items 1–3, 6, 7 |
 | Au r4 | 15–19 | MINOR | FIXED | 15: appendix stubs, (l); 16: Tier-2 copies registered, empty-map equality; 17: as Cx r4 1; 18: P0 branch runs, (d); 19: every stream, (b) scope, `results.md` test |
 | Au r4 | 20–23 | MINOR | FIXED | 20: status recompute and H0 subprocess re-deferred (item 6, D68), P0 lock in-process; 21: salted private v1 ids; 22: malformed marked line sealed, (c); 23: Cx r1 10 row |
+| Cx r5 | 1 | MINOR | FIXED | (m) retry set: 408/409/429 and every status ≥ 500 (500–503, 529 tested); 400–422 not retried |
+| Au r5 | 1 | MAJOR | FIXED | merge gate: `inputs.json` `kind` (`questions`/`derived`); legacy caches and sha256-keyed artifacts exempt, their sources checked; (i) |
+| Au r5 | 2 | MINOR | FIXED | as Cx r5 1 |
+| Au r5 | 3 | MINOR | FIXED | P0 fakes retrieval; embedding/vector-store constructors raise; (d) |
+| Au r5 | 4 | MINOR | FIXED | legacy arms need explicit `--legacy`; a post-16A arm missing its sidecar is refused; (k) |
+| Au r5 | 5 | MINOR | FIXED | `*.rows.json` gitignored; (d) provenance identical with and without the sidecar |
+| Au r5 | nc | — | FIXED | `worker_allow` import dependencies listed; registry-salt membership residual disclosed in D65, P4 decides |
 
 ## Cut list (v2)
 
