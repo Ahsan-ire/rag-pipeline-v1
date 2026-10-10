@@ -1320,11 +1320,16 @@ def role_coverage(
             (``src.eval_roster``), matched by row id.
 
     Returns:
-        ``{name: {"question", "found", "retrieved", "groups": {group: bool},
-        "both": bool}}``. ``both`` is True only when every group is covered
-        independently.
+        ``{name: {"question", "found", "available", "retrieved", "groups":
+        {group: bool}, "both": bool}}``. ``both`` is True only when every
+        group is covered independently. ``available`` is False for every role
+        of a v6 arm, matched or not: v6 records no retrieved sections, so its
+        coverage renders ``n/a`` (merge gate round 2, Codex #4). A v5 arm
+        keeps today's rendering (an unmatched role is ``no``, flagged
+        "question not found").
     """
     realistic = set_of_kind(arm, "realistic") or {"questions": []}
+    records_sections = arm.get("report_version") != 6
     out: Dict[str, Any] = {}
     for role in roles:
         match = next(
@@ -1332,7 +1337,7 @@ def role_coverage(
             None,
         )
         retrieved = [] if match is None else match["retrieved"]
-        available = retrieved is not None  # a v6 row records no retrieved sections
+        available = records_sections and retrieved is not None
         groups = {g: available and _covers(retrieved, g) for g in role.groups}
         out[role.name] = {
             "question": None if match is None else match["question"],
@@ -1511,14 +1516,16 @@ def render(
     out.append("| --- | --- | " + " | ".join(["---"] * (len(groups) + 1)) + " |")
     for name, arm in arms.items():
         for role_name, cover in role_coverage(arm).items():
+            found = "" if cover["found"] else " (question not found)"
             if not cover["available"]:
                 cells = " | ".join("n/a" for _g in groups)
-                out.append(f"| {name} | {role_name} (v6: no retrieved sections recorded) | {cells} | n/a |")
+                out.append(
+                    f"| {name} | {role_name}{found} (v6: no retrieved sections recorded) | {cells} | n/a |"
+                )
                 continue
             cells = " | ".join(
                 ("yes" if cover["groups"].get(g) else "no") for g in groups
             )
-            found = "" if cover["found"] else " (question not found)"
             out.append(
                 f"| {name} | {role_name}{found} | {cells} | "
                 f"{'yes' if cover['both'] else 'no'} |"

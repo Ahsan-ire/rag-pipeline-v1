@@ -1529,3 +1529,20 @@ def test_v6_arms_without_the_primary_mode_are_refused(tmp_path, v2_sets):
             for name, ranks in (("base", V6_BASE), ("cand", V6_CAND))]
     with pytest.raises(C4Error, match="primary"):
         bakeoff_report.compare(load_arms(*arms), "base")
+
+
+def test_v6_role_coverage_is_n_a_for_unmatched_ids_too(tmp_path, v2_sets, capsys):
+    """#4: an S5/N4 id the v6 set lacks renders n/a, never 'no'."""
+    base = _v6_arm(tmp_path / "arms", "base", v2_sets, V6_BASE)
+    cand = _v6_arm(tmp_path / "arms", "cand", v2_sets, V6_CAND)
+    capsys.readouterr()
+    cover = bakeoff_report.role_coverage(
+        load_arms(cand)["cand"], roles=(RoleSpec("S5", "q:000000000000", ("8.1", "8.2")),)
+    )["S5"]
+    assert cover["found"] is False and cover["available"] is False and cover["both"] is False
+    rc, out, err = _cli(["--reports", base, cand, "--baseline", "base"], capsys)
+    assert rc == 0, err
+    section = out.split("## 4. S5 / N4 both-role coverage", 1)[1]
+    rows = [line for line in section.splitlines() if line.startswith(("| base |", "| cand |"))]
+    assert len(rows) == 4  # S5 and N4 per arm; the shipped roster ids are v1 ids, absent here
+    assert all(line.endswith("| n/a | n/a | n/a |") and "| no |" not in line for line in rows)
