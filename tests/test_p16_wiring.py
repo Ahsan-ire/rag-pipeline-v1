@@ -307,3 +307,35 @@ def test_public_built_artifact_replays_at_a_stronger_privacy(monkeypatch, tmp_pa
     n = len(calls)
     r = ev.run_eval_matrix([("golden", SAMPLE)], expansion=str(art), privacy="private", **common)
     assert len(calls) == n and r["rewrite_live"] == 0
+
+
+def test_private_replay_records_the_artifact_in_inputs_json(monkeypatch, tmp_path, _private_root_in_tmp):
+    import json as _json
+
+    monkeypatch.setattr(ev, "expand_query", _fake_expand)
+    art = tmp_path / "exp.json"
+    common = dict(retrieve_fn_factory=FakeRetrieval({}).factory(6), provenance_fn=lambda: dict(PROVENANCE),
+                  skip_completeness=True, generate_fn=lambda q: {"answer": "x"})
+    ev.run_eval_matrix([("golden", SAMPLE)], results_path=str(tmp_path / "a.md"), expansion=f"build:{art}",
+                       privacy="public", **common)
+    r = ev.run_eval_matrix([("golden", SAMPLE)], expansion=str(art), privacy="private", **common)
+    inputs = _json.loads((Path(r["results_path"]).parent / "inputs.json").read_text())["inputs"]
+    kinds = [(i["kind"], Path(i["path"]).name) for i in inputs]
+    assert ("derived", "exp.json") in kinds and any(k == "questions" for k, _ in kinds)
+    derived = next(i for i in inputs if i["kind"] == "derived")
+    assert derived["sources"] and all(len(s["sha256"]) == 64 for s in derived["sources"])
+
+
+def test_public_eval_functions_refuse_unmetered_live_defaults(monkeypatch):
+    """Gate round 2: evaluate_refusals' default answer_fn and judge_answers' default llm_fn."""
+    from src.judge import judge_answers
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    calls = []
+    monkeypatch.setattr(ev, "generate_with_sources", lambda *a, **k: calls.append("gen"))
+    monkeypatch.setattr(ev, "_build_default_retrieve_fn", lambda *a, **k: (lambda q, top_k=6: []))
+    with pytest.raises(SpendMeterRequired):
+        ev.evaluate_refusals([{"question": "q", "type": "refusal", "expected_sections": []}])
+    with pytest.raises(SpendMeterRequired):
+        judge_answers([{"question": "q", "answer": "a", "context": "c"}])
+    assert calls == []

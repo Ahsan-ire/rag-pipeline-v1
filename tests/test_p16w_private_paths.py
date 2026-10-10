@@ -97,3 +97,29 @@ def test_relative_to_root_accepts_a_samefile_alias(tmp_path, monkeypatch, _priva
         __import__("pathlib").Path("runs/r1/report.md")
     with pytest.raises(PrivatePathError):
         relative_to_root(tmp_path / "elsewhere.md", _private_root_in_tmp)
+
+
+def test_symlink_planted_at_temp_path_is_refused(tmp_path, _private_root_in_tmp):
+    """Gate round 2: <report>.tmp symlinked outside must not redirect a private write."""
+    d = run_dir("r-probe-1")
+    outside = tmp_path / "outside_leak.md"
+    os.symlink(outside, d / "report.md.tmp")
+    with pytest.raises(PrivatePathError):
+        write_private(d / "report.md", "PRIVATE QUESTION TEXT\n")
+    assert not outside.exists()
+
+
+def test_symlink_planted_at_artifact_temp_path_is_refused(tmp_path, _private_root_in_tmp):
+    from src.expansion_artifact import save_artifact
+
+    target = artifact_path("x.json")
+    outside = tmp_path / "outside.json"
+    os.symlink(outside, target.with_name("x.json.tmp"))
+    from src.expansion_artifact import build_artifact
+    from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
+
+    art = build_artifact([("row-1", "synthetic q")], lambda q: Expansion(q, ("r",), REWRITE_MODEL, STATUS_LIVE),
+                         [{"path": "x.jsonl", "sha256": "a" * 64, "kind": "questions"}])
+    with pytest.raises(PrivatePathError):
+        save_artifact(target, art)
+    assert not outside.exists()

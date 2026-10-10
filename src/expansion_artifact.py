@@ -336,15 +336,21 @@ def save_artifact(path: Any, artifact: Mapping[str, Any]) -> str:
     data = artifact_bytes(artifact)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
+    if target.is_symlink():
+        raise ExpansionArtifactError("artifact destination is a symlink")
+    # Exclusive, no-follow temp file: a planted symlink at <target>.tmp cannot
+    # redirect the write (16A-1 gate round 2).
+    from src.eval_privacy import open_exclusive_tmp
+
+    tmp, fh = open_exclusive_tmp(target, "wb")
     try:
-        with open(tmp, "wb") as fh:
+        with fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, target)
     finally:
-        if tmp.exists():
+        if tmp.exists() and not tmp.is_symlink():
             tmp.unlink()
     return hashlib.sha256(data).hexdigest()
 

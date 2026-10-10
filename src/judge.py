@@ -27,6 +27,7 @@ claims themselves.
 """
 
 import json
+import os
 import random
 import re
 from typing import Any, Callable, Dict, List, Optional
@@ -261,6 +262,14 @@ def judge_answers(
     """
     if sample_n is not None and sample_n < 0:
         raise ValueError(f"sample_n must be >= 0, got {sample_n}")
+    if llm_fn is None and items:
+        # D70: the default llm_fn is a live, unmetered Claude call. With a
+        # usable key it is refused; the eval passes a metered llm_fn.
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if key and key != "your-api-key-here":
+            from src.spend import SpendMeterRequired
+
+            raise SpendMeterRequired("judge_answers needs a metered llm_fn (D70)")
 
     # Deterministic sub-sample when asked for fewer than we have.
     to_judge = items

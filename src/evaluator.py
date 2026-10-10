@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src import eval_privacy as _privacy
 from src import eval_sets as _eval_sets
@@ -628,6 +628,10 @@ def evaluate_refusals(
         can echo copyrighted corpus prose, so only the refusal flag escapes.
     """
     if answer_fn is None:
+        # D70: the default answer_fn makes live, unmetered calls; with a usable
+        # key it is refused here (pass an answer_fn built on a meter's client,
+        # or go through run_eval / run_eval_matrix with meter=).
+        _require_meter(None, live_paths=(True,))
         default_retrieve_fn = _build_default_retrieve_fn(top_k, persist_directory)
 
         def answer_fn(question: str) -> Dict[str, Any]:
@@ -2458,8 +2462,7 @@ def run_eval_matrix(
         write_private(Path(resolved_path), report)
         _write_sidecar(resolved_path, sidecar, private=True)
         write_inputs_json(
-            run_dir_path,
-            [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
+            run_dir_path, _run_inputs(sets, replay_artifact, result.get("expansion_artifact"))
         )
         # The judge dump (claim and question text) stays inside the run dir.
         if judge and judge_dump_records:
@@ -2474,6 +2477,28 @@ def run_eval_matrix(
             _atomic_write(judge_dump_path, "\n".join(dump_lines) + "\n")
 
     return result
+
+
+def _run_inputs(
+    sets: Sequence[Mapping[str, Any]], replay_artifact: Any, built: Optional[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
+    """A private run's ``inputs.json`` entries: every question set, plus the
+    replayed or built expansion artifact as a ``derived`` input listing the
+    question sets it was built from (so ``scan_leaks --run`` can trace it)."""
+    entries: List[Dict[str, Any]] = [
+        {"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets
+    ]
+    if replay_artifact is not None:
+        entries.append({
+            "path": str(replay_artifact.path), "sha256": replay_artifact.digest, "kind": "derived",
+            "sources": [{"path": i["path"], "sha256": i["sha256"]} for i in replay_artifact.inputs],
+        })
+    if built:
+        entries.append({
+            "path": built["path"], "sha256": built["sha256"], "kind": "derived",
+            "sources": [{"path": s["path"], "sha256": s["sha256"]} for s in sets],
+        })
+    return entries
 
 
 def _run_expansion_identity(
@@ -2646,7 +2671,9 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
 
         write_private(Path(resolved_path), report)
         _write_sidecar(resolved_path, sidecar, private=True)
-        write_inputs_json(kw["run_dir_path"], [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets])
+        write_inputs_json(
+            kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], result.get("expansion_artifact"))
+        )
         print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
               f"({len(sets)} set(s); not canonical)")
     else:

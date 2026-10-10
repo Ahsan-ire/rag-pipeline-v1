@@ -325,3 +325,22 @@ def test_sealed_set_renamed_md_or_py_is_never_loaded(tmp_path, name):
         detect_schema(p)
     with pytest.raises(SchemaError):
         load_any(p)
+
+
+def test_question_set_with_self_declared_public_inputs_is_private(tmp_path, eval_registry):
+    """Gate round 2: rule 5 never applies to a file holding question text."""
+    pub = _write_jsonl(tmp_path / "pub.jsonl", _rows("q a"))
+    entry = eval_registry.add(pub)
+    fake = tmp_path / "set.json"
+    fake.write_text(json.dumps({"inputs": [{"sha256": entry.sha256}], "question": "private q",
+                                "type": "direct", "expected_sections": ["1.1"]}))
+    assert classify(fake) == "private"
+    nested = tmp_path / "nested.json"
+    nested.write_text(json.dumps({"inputs": [{"sha256": entry.sha256}], "rows": [{"question": "private q"}]}))
+    assert classify(nested) == "private"
+
+
+def test_escaped_sealed_key_on_a_malformed_line_is_sealed(tmp_path):
+    p = tmp_path / "esc.jsonl"
+    p.write_text('{"question": "q a"}\n{"\\u0073ealed": true, "question": \n')
+    assert classify(p) == "sealed"

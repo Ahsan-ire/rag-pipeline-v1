@@ -1985,8 +1985,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("[bakeoff_report] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
     except C4Error as exc:
-        # C4 messages carry names, labels, hashes and opaque ids only.
-        print(f"[bakeoff_report] refused: {exc}", file=sys.stderr)
+        # C4 messages carry names, labels, hashes and ids -- but an id read
+        # from a malformed dump can carry arbitrary text, so a non-public run
+        # prints the refusal type only (16A-1 gate round 2).
+        if privacy != PUBLIC:
+            print(f"[bakeoff_report] refused: {safe_error(exc)} (details withheld on a private run)",
+                  file=sys.stderr)
+        else:
+            print(f"[bakeoff_report] refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     except Exception as exc:  # noqa: BLE001 - private runs must not print str(exc)
         if privacy != PUBLIC:

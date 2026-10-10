@@ -115,6 +115,21 @@ def _loads_flagging_sealed(text: str) -> Tuple[Any, bool]:
     return obj, flagged
 
 
+def _mentions_sealed(text: str) -> bool:
+    """Fail-closed test for unparseable input: a ``"sealed"`` key, raw or escaped.
+
+    JSON allows ``\\uXXXX`` escapes inside keys, so ``"\\u0073ealed"`` is the
+    same key; the text is checked as written and with escapes decoded.
+    """
+    if '"sealed"' in text:
+        return True
+    try:
+        decoded = text.encode("utf-8", "backslashreplace").decode("unicode_escape")
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return '"sealed"' in decoded
+
+
 def has_sealed_marker(path: Any) -> bool:
     """Rule 2: an eval input carrying a sealed marker (fail closed).
 
@@ -146,7 +161,7 @@ def has_sealed_marker(path: Any) -> bool:
             try:
                 obj, flagged = _loads_flagging_sealed(line)
             except (ValueError, RecursionError):
-                if '"sealed"' in line:
+                if _mentions_sealed(line):
                     return True
                 continue
             if flagged or _is_sealed_row(obj):
@@ -155,7 +170,7 @@ def has_sealed_marker(path: Any) -> bool:
     try:
         obj, flagged = _loads_flagging_sealed(text)
     except (ValueError, RecursionError):
-        return '"sealed"' in text
+        return _mentions_sealed(text)
     if flagged or _is_sealed_row(obj):
         return True
     if isinstance(obj, list):
@@ -258,6 +273,20 @@ def public_sha256s() -> set:
 # --------------------------------------------------------------------------
 # Classification
 # --------------------------------------------------------------------------
+def _has_question_key(obj: Any) -> bool:
+    """True if any object at any depth has a ``question``/``questions`` key."""
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            if "question" in cur or "questions" in cur:
+                return True
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return False
+
+
 def _recorded_input_shas(path: Path) -> Optional[List[str]]:
     """The input sha256s a derived file records (rule 5), or None if it records none."""
     suffix = path.suffix.lower()
@@ -272,6 +301,11 @@ def _recorded_input_shas(path: Path) -> Optional[List[str]]:
             return None
         inputs = obj.get("inputs") if isinstance(obj, dict) else None
         if not isinstance(inputs, list) or not inputs:
+            return None
+        # Rule 5 is for DERIVED files (artifacts, sidecars, rank dumps) only:
+        # a document holding question text anywhere is an eval set whose
+        # self-declared "inputs" must never make it public (gate round 2).
+        if _has_question_key(obj):
             return None
         shas = []
         for item in inputs:

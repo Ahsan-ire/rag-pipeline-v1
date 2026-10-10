@@ -255,6 +255,29 @@ def artifact_path(name: str) -> Path:
     return path
 
 
+def open_exclusive_tmp(target: Path, mode: str = "w") -> Any:
+    """Open ``<target>.tmp`` for writing without following a symlink.
+
+    A pre-planted symlink at the temp path would otherwise redirect a private
+    write outside the private root (16A-1 gate round 2). A leftover regular
+    temp file is removed first; a symlink there is refused. The file is then
+    created with ``O_CREAT | O_EXCL | O_NOFOLLOW`` (mode 0600).
+
+    Raises:
+        PrivatePathError: if the temp path is a symlink.
+    """
+    tmp = target.with_name(target.name + ".tmp")
+    if tmp.is_symlink():
+        raise PrivatePathError("temp path is a symlink; refusing to follow it")
+    if tmp.exists():
+        tmp.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
+    if "b" in mode:
+        return tmp, os.fdopen(fd, mode)
+    return tmp, os.fdopen(fd, mode, encoding="utf-8")
+
+
 def write_private(path: Path, content: str) -> None:
     """Atomically write ``content`` to a path that must be inside the private root."""
     root = private_root()
@@ -263,8 +286,8 @@ def write_private(path: Path, content: str) -> None:
     rel = relative_to_root(path, root)
     target = contained_path(root, *rel.parts)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
+    tmp, fh = open_exclusive_tmp(target, "w")
+    with fh:
         fh.write(content)
     os.replace(tmp, target)
 
