@@ -1429,7 +1429,7 @@ meter's sum for its real prompts first, sends nothing above €0.25, and settles
 per [W] item. **Gates:** plan gate on v4.1 (plan-auditor + Codex `gpt-6.1-sol`, read-only; the outline only for
 completeness) → implement → `/phase-gate 16A-1` → Codex merge review → PR, CI → merge, `v2.3.0`.
 
-### 16A-2 — eval data and re-baseline, in two phases (spec v6, 12 Oct 2026; plan-gate r1–r5 reconciled)
+### 16A-2 — eval data and re-baseline, in two phases (spec v7, 12 Oct 2026; plan-gate r1–r6 reconciled)
 **Authority:** design 003 §5 16A.3–16A.5 and 16A.7–16A.8 (normative), §1.2 Q1, Q3, Q7, §6 Phase 20 and 21 rows; astra
 B3, M8–M10; D46, D54, D57 (+ addendum), D61, D62, D64, D65–D70; **D71 binds** (its Q5 narrows 16A.4's second opinion to
 owner-escalated labels, disclosed in D75). **Two phases (S1):** **16A-2a** builds and tests the sealed tooling on
@@ -1485,13 +1485,15 @@ is checked after every move.
 **Inference (R2, r5):** the confirmatory **estimand** is the family-level difference in strict hit@6 over eligible
 families (answer or partial; the MWE's scale). The primary test is an **exact cluster sign-flip test**: each group g
 contributes d_g = (families the candidate gains) − (families it loses), and p is the exact probability, over
-independent random signs on every |d_g|, of a sum at least as extreme (one-sided per direction, enumerated by a dynamic
-programme over integer sums). Groups are independent, and under the paired-randomisation null (the two arms are
-exchangeable within each group, which implies a zero family-level difference) d_g is symmetric, so the size is ≤ α
-exactly under that null; within-group changes are never masked, and with all-singleton groups the test is the exact
-McNemar test. Power and MDE come from a seeded Monte Carlo of this test on the family scale, with the planned group
-sizes, under independent families (optimistic) and under full within-group correlation (pessimistic). Both are
-reported. Durkalski by group (asymptotic) and family-level exact McNemar are labelled sensitivities. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
+independent random signs on every |d_g|, of |Σ| at least as large as |Σ d_g| (**two-sided**, enumerated by a dynamic
+programme over integer sums; the sign of Σ d_g gives the direction, so a gain and a loss are each declared at α
+two-sided, as v5's exact McNemar was). Groups are independent, and under the paired-randomisation null (the two arms
+are exchangeable within each group, which implies a zero family-level difference) d_g is symmetric, so the size is
+≤ α exactly under that null; within-group changes are never masked, and with all-singleton groups p equals
+`eval_stats.mcnemar_exact` (two-sided). Power and MDE come from a seeded Monte Carlo of this test on the family scale
+(rejections in the candidate's favour, as `power(..., sided="directional")`), with the planned group sizes, under
+independent families (optimistic; with singletons it reproduces `eval_stats.power`/`mde`, so the figures below hold)
+and under full within-group correlation (pessimistic). Both are reported. Durkalski by group (asymptotic) and family-level exact McNemar are labelled sensitivities. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
 (answer or partial, not excluded); sealed 60 in the band gives 42–45; the group count is reported beside it.
 
 ### 16A-2a — sealed tooling — `phase-16a2-eval-data` → `v2.4.0`
@@ -1607,7 +1609,7 @@ a7. **Sealed-processor launcher (D72) [C].** `scripts/sp_launch.py --kind probe|
 a8. **Builders and tooling (D73) [C].** `scripts/handbook_sections.py` (b0's dump). `inputs-check`: every id in
     `eval/v2_pairing.json` is a public v1 id used at most once; every label in `eval/conflict_sections.json` is
     inventoried. `scripts/controls.py --rule c1|c2` computes the control list from draw sidecars and refuses a differing
-    committed list. `eval_stats` gains `cluster_signflip_p(d, direction)` (exact) and `cluster_signflip_power(group_sizes,
+    committed list. `eval_stats` gains `cluster_signflip_p(d)` (exact, two-sided) and `cluster_signflip_power(group_sizes,
     discordance, effect, alpha, draws, seed, model)` ([W], synthetic); `power` prints both models; `prereg-check`
     validates a prereg and recomputes its quota formulas and power table.
 a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, tracing, residuals); D73 (canonical v6,
@@ -1659,8 +1661,9 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
   API key, or with a prereg not reachable from `origin/<branch>` (accepted when a later commit sits on top); a fake
   `claude` printing a canary leaves it out of the launcher's output; a failed run still deletes its staging directory
   and the next launch sweeps a stale one; the two kinds log apart.
-- **(j)** `controls.py` under both rules; `cluster_signflip_p` matches brute-force enumeration on small cases, equals
-  the exact McNemar p with singleton groups, and on Codex's r5 fixture (20 two-family groups, gain and loss types
+- **(j)** `controls.py` under both rules; `cluster_signflip_p` (two-sided) matches brute-force enumeration on small
+  cases, equals `mcnemar_exact` with singleton groups (e.g. b = 7, c = 1 → 0.0703), and `cluster_signflip_power` under
+  independence with singletons matches `eval_stats.power(..., "directional")` within Monte Carlo error; and on Codex's r5 fixture (20 two-family groups, gain and loss types
   equally likely, true family effect 0) rejects at no more than α over exact enumeration; a group where one family
   gains and another loses contributes 0, and a refusal-only group contributes nothing; `cluster_signflip_power` is
   seed-deterministic and its MDE table equals the prereg's; Durkalski and the family test render as labelled
@@ -1688,8 +1691,9 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     else the SP drafts more before the next attempt); the drafting rule for attempts and round 2; strata; band;
     `min_share` (realistic: tutorial + colleague ≥ 0.25, D71 Q4; none elsewhere); the floor; calibration seed; primary
     metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse, a tie is a MISS); **MWE +0.10** absolute;
-    α = 0.05 family-wise; **K_max = 4** confirmatory candidates per epoch, declared as one non-adaptive batch before the
-    first confirmatory slot, Holm across it; **primary test the exact cluster sign-flip test on the family-level
+    α = 0.05 family-wise over rejections in **either direction** (one two-sided test per candidate; Holm over the K
+    two-sided p-values; a significant result's direction is the sign of Σ d_g); **K_max = 4** confirmatory candidates
+    per epoch, declared as one non-adaptive batch before the first confirmatory slot, Holm across it; **primary test the exact cluster sign-flip test on the family-level
     estimand** (Inference), Durkalski by group and exact McNemar on families the sensitivities (R2, r5);
     rewrite-changing candidates expand live under `--rewrite-candidate` against the incumbent's replay; R = 5; the
     canonical v6 guards; power tables for groups and families. Slots: 0 = descriptive baseline (the canonical run),
@@ -1701,8 +1705,9 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
       can a change overfitted to development and neutral on sealed. It departs from 003 §5 16B (003:255).
     - **(B) Sealed confirmation only.** Adopted only on PASS (favours the candidate, sign-flip-primary Holm p ≤ α, effect
       ≥ MWE, no control flip, unsupported claims not higher). The exact sign-flip test bounds false adoption by α under the
-      paired-randomisation null, but with 35–45 eligible families in fewer groups a true gain below ≈ 0.25–0.29 is usually not
-      adopted (power at the MWE ≤ 0.16 under independence, lower under within-group correlation), which favours the
+      paired-randomisation null, but with 35–45 eligible families in fewer groups a true gain near the MWE is usually not
+      adopted: for independent singleton families power at the MWE is ≈ 0.11–0.16 (`eval_stats`), group structure moves it
+      either way, and the prereg's Monte Carlo table gives the figures for the planned groups. This favours the
       incumbent.
     - **Controls (C1):** public-lineage development families with strict completion rank ≤ 3 in raw hybrid and in
       hybrid+rewrite on every draw, which **reverses the D57 addendum** ("a rank-6 hit that any perturbation dislodges
@@ -1781,8 +1786,11 @@ from the final development prompts by the meter's worst-case function (≈ €3.
 Phase ≈ €12, planned ≈ €21; 0b waits for a new UTC week unless the remainder covers it. The only hard bounds are the
 meter's run limits and the €40 UTC-week cap (exits 6 and 3); lifting the cap is a D64 stop.
 **Power (P8; `eval_stats`, recomputed 12 Oct, directional power 0.8):** for families, N = eligible answerable sealed
-families, 42–45 at freeze and ≥ 35 by the floor (refusal families excluded, `src/eval_v6.py:137`); the group count, and
-its lower power, are reported by `power` at freeze (R2). Family MDE at discordance 0.2 / 0.3 / 0.5:
+families, 42–45 at freeze and ≥ 35 by the floor (refusal families excluded, `src/eval_v6.py:137`). The figures below
+are for **independent singleton families**, where the sign-flip primary equals exact McNemar; the planned group
+structure moves power either way (Codex r6 showed a grouped case above the singleton figure), so the prereg's Monte Carlo
+table under both correlation models is the binding one, recomputed by `power` at freeze (R2). Family MDE at
+discordance 0.2 / 0.3 / 0.5:
 N = 35: – / 0.26 / 0.34 at α = 0.05, – / 0.29 / 0.40 at α = 0.0125; N = 45: 0.19 / 0.23 / 0.31 and – / 0.27 / 0.35. Power
 at the MWE (0.10, discordance 0.3): 0.11–0.16 at α = 0.05, 0.04–0.05 at 0.0125. Sampling error and the control rule can
 still produce FAIL. **Negative branch:** if freeze is infeasible after round 2, 16A-2b merges the content-free
@@ -1994,6 +2002,13 @@ Au5-1 (MAJOR, the same as Cx5-1) and Au5-2 (MAJOR, conditional). Fixed in v6 by 
 | Cx5 | 1 | MAJOR | ACCEPTED: the estimand is the family-level difference (the MWE's scale); the primary is an exact cluster sign-flip test on group net discordance (size ≤ α under the paired-randomisation null, no within-group masking, exact McNemar with singletons); power by seeded Monte Carlo under two correlation models; Codex's fixture is a test | Inference; a8; b1; options; 2a-(j) |
 | Au5 | 1 | MAJOR | ACCEPTED: same fix as Cx5-1 | Inference |
 | Au5 | 2 | MAJOR | ACCEPTED: a round-2 draft related to any round-1 sealed group is dropped, not joined; the SP drafts round 2 from sources no sealed group uses | Unit; 2a-(e) |
+
+### 16A-2 plan-gate r6 dispositions (spec v6 `b8a24c5`, 12 Oct)
+| Src | # | Sev | Disposition | Where |
+|---|---|---|---|---|
+| Cx6 | 1 | MAJOR | ACCEPTED: same fix as Au6-1 (two-sided; singleton equality with `mcnemar_exact`); option (B) no longer states a power bound for grouped families, and the figures come from the prereg's Monte Carlo table | Inference; option (B); 2a-(j) |
+| Cx6 | 2 | MAJOR | ACCEPTED: one two-sided test per candidate, Holm over the K two-sided p-values; the family-wise α covers rejections in either direction | b1 |
+| Au6 | 1 | MAJOR | ACCEPTED: the sign-flip primary is two-sided at α (the direction is read from the sign), equal to `mcnemar_exact` with singletons; the Monte Carlo power under independence with singletons reproduces `eval_stats.power(..., "directional")`, so the quoted power and MDE figures stand | Inference; a8; 2a-(j) |
 
 ### 16A-2 appendix A — note for the reviewing colleague
 *(The owner sends this with each form. It names no client and quotes no Handbook text.)*
