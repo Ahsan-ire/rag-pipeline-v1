@@ -78,7 +78,8 @@ def world(tmp_path, eval_registry, _private_root_in_tmp):
     """A sealed set, a development set, a public set, a handbook dump and a repo-less scan setup."""
     root = _private_root_in_tmp
     sealed = _write(_mkdir(root / "sealed") / "set.jsonl", _sealed_rows())
-    dev = _write(_mkdir(root / "dev") / "dev.jsonl", [_row(0, FAM_DEV, question=DEV_Q)])
+    # a released development split: only dev/tuning* and dev/realistic* exempt a sealed window (gate fix C2)
+    dev = _write(_mkdir(root / "dev") / "tuning_r1.jsonl", [_row(0, FAM_DEV, question=DEV_Q)])
     pub = _write_jsonl(tmp_path / "public" / "golden.jsonl", [{"question": PUB_Q, "type": "direct", "expected_sections": ["1.1"]}])
     eval_registry.add(pub, privacy="public", name="golden-public")
     dump = tmp_path / "handbook.jsonl"
@@ -294,7 +295,7 @@ def test_every_jsonl_under_the_private_root_is_a_needle_source_outside_runs_and_
     sources = sl.collect_sources()
     by_label = {s.label: s.sealed for s in sources}
     assert by_label == {
-        "eval/private/dev/dev.jsonl": False,
+        "eval/private/dev/tuning_r1.jsonl": False,
         "eval/private/sealed/set.jsonl": True,
         "eval/private/sealed/pool/draft.jsonl": True,
         "eval/private/sealed/work/w.jsonl": True,

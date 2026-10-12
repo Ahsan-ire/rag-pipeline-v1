@@ -61,14 +61,27 @@ tokens, every 8-token window (under 8 tokens only the whole needle exists).
 **S-needles (sealed questions).** A sealed question of 8 or more tokens yields
 its whole needle and every 8-token window, matched in the same token stream.
 Its **exempt windows** are those that occur in a registered public question, in
-a development question (any non-sealed source above) or in handbook text (the
-dump, below). A sealed question of **fewer than 8 tokens has no window needle**
+a **development split** or in handbook text (the dump, below). A development
+split is a released or frozen file directly under ``eval/private/dev/`` named
+``tuning*.jsonl`` or ``realistic*.jsonl`` (:func:`_is_development_split`); a
+question in ``work/``, in a quarantine file, in a ``--needles`` path outside
+``dev/``, in a registry private set outside it or in a run input is a private
+needle like any other but grants a sealed window no exemption. A sealed
+question of **fewer than 8 tokens has no window needle**
 and is not matched inside running text: only an exact match of the whole
 normalised question against a whole JSON string value (a string between two
-quote marks, a key included) or against a whole line counts. Residual: such a
+quote marks, a key included), against a whole line, or against either after
+the JSON escapes are decoded (a JSON string value's, or the raw line's, ``\\n``
+escapes split it into lines, each tested) counts. Residual: such a
 question embedded in prose, a numbered list item or an unquoted ``key: value``
 line is missed. A whole short question equal to a registered public question is
 exempt, as above.
+
+**Families.** A window or whole question is mapped to the **set** of sealed
+families that contain it (:attr:`NeedleIndex.s_families`), and a hit names every
+one of them, one line each, so a caller excludes them all (a window shared by two
+families, two families holding the same question, or a window of one family
+inside another family's whole question).
 
 **Handbook dump.** Handbook text is read in-process from a JSONL dump (one JSON
 object per line, the section text under ``text``): ``--handbook-dump``, default
@@ -195,13 +208,20 @@ HANDBOOK_DUMP = Path("data") / "research" / "handbook_sections.jsonl"
 # set loaders) and the pre-check allows them, .json payloads included; the merge gate and --output still scan them
 # as TARGETS, so question text that leaks into one is a hit. A pool.jsonl in the same sp_out directory is NOT a
 # record: it holds drafted questions, so it stays a sealed needle source (and sealed_tool intake moves it away).
+# The crash leftovers of an atomic write are records too (a gate fix, Rev14): the ledger's payload temp file
+# (``sealed/ledger/payloads/.<name>.json.tmp``) and sealed_tool's temp files (``.<name>.<hex>.tmp``, any depth under
+# ``sealed/work/``, see :data:`RECORD_TMP_TREES`). A crash between the write and the rename leaves one behind; it is
+# allowed (not an exit-7 offender) and scanned as a target like the record it was becoming, so question text in it is a hit.
 RECORD_FILES = (
     "sealed/ledger/sealed_ledger.jsonl",
     "sealed/ledger/payloads/*.json",
+    "sealed/ledger/payloads/.*.json.tmp",
     "sealed/work/sp_out/*/twins.jsonl",
     "sp_dispatch.jsonl",
     "sp_probe.jsonl",
 )
+# (directory relative to the private root, file name pattern): a file at ANY depth below the directory.
+RECORD_TMP_TREES = (("sealed/work", ".*.tmp"),)
 
 # A JSON string's delimiters: a quote mark, with or without the backslashes of a
 # nested (escaped) serialisation in front of it.
@@ -300,7 +320,9 @@ class NeedleIndex:
 
     ``whole``/``windows``/``long_by_prefix``/``short_lengths`` hold the private
     needles. The ``s_*`` fields hold the S-needles (sealed questions); their
-    values are family ids, never needle ids.
+    values are family ids, never needle ids (``s_families`` maps each needle to
+    every family that holds it; ``s_whole``/``s_windows``/``s_short`` keep the
+    first one).
     """
 
     whole: Dict[Tuple[str, ...], Tuple[str, str]] = field(default_factory=dict)
@@ -318,6 +340,10 @@ class NeedleIndex:
     # ... and sealed questions under WINDOW tokens: no window needle, and no match inside running text; only a
     # whole JSON string value or a whole line equal to the question counts (:func:`_short_sealed_hits`).
     s_short: Dict[Tuple[str, ...], str] = field(default_factory=dict)
+    # Every S-needle's token tuple (a whole question, a window or a short question) -> the SET of sealed families that
+    # contain it. The maps above keep the first family only (their callers want a single value); a hit is reported for
+    # every family in this set, so a caller can exclude them all (gate fix C3, Rev12).
+    s_families: Dict[Tuple[str, ...], Set[str]] = field(default_factory=dict)
     s_exempt_whole: int = 0
     s_exempt_windows: int = 0
 
@@ -381,9 +407,13 @@ def _area(rel: Path) -> Optional[str]:
 
 
 def _is_record(rel: Path) -> bool:
-    """True when ``rel`` (relative to the private root) is one of the :data:`RECORD_FILES`."""
+    """True when ``rel`` (relative to the private root) is a :data:`RECORD_FILES` or :data:`RECORD_TMP_TREES` file."""
     posix = rel.as_posix()
-    return any(len(pat.split("/")) == len(rel.parts) and fnmatch.fnmatchcase(posix, pat) for pat in RECORD_FILES)
+    if any(len(pat.split("/")) == len(rel.parts) and fnmatch.fnmatchcase(posix, pat) for pat in RECORD_FILES):
+        return True
+    return any(
+        posix.startswith(tree + "/") and fnmatch.fnmatchcase(rel.name, pat) for tree, pat in RECORD_TMP_TREES
+    )
 
 
 def _record_files() -> List[Path]:
@@ -562,6 +592,32 @@ def _public_questions() -> Tuple[Set[str], Set[Tuple[str, ...]]]:
     return hashes, windows
 
 
+# A released or frozen development split: a file DIRECTLY under ``dev/`` whose name starts ``tuning`` or ``realistic``
+# (``tuning_r<R>``, ``realistic_r<R>``, the frozen ``tuning-v2``/``realistic-v2`` and pinned ``tuning*``/``realistic*``).
+# ``dev/quarantine*`` is neither, and nothing under ``work/`` is a split.
+DEV_SPLIT_GLOBS = ("tuning*.jsonl", "realistic*.jsonl")
+
+
+def _is_development_split(path: Path) -> bool:
+    """True when ``path`` is a released or frozen development split (gate fix C2, Rev10).
+
+    Only such a file grants a sealed window an exemption: a development
+    question's wording is already out of the sealed set's reach, but a fragment
+    saved in ``work/``, a quarantined family, a ``--needles`` file, a registry
+    private set elsewhere or a run input is not a split, and letting one exempt
+    a window would hide a real S-hit. Decided on the resolved path (a symlink
+    into ``dev/`` from elsewhere, or out of it, follows its target).
+    """
+    dev = eval_privacy.private_root() / "dev"
+    try:
+        resolved = Path(path).resolve()
+        if not dev.is_dir() or not os.path.samefile(resolved.parent, dev):
+            return False
+    except OSError:
+        return False
+    return any(fnmatch.fnmatchcase(resolved.name, glob) for glob in DEV_SPLIT_GLOBS)
+
+
 def _iter_sealed(path: Path) -> Iterator[Tuple[str, str]]:
     """Yield ``(family_id, question)`` for every row of a sealed source.
 
@@ -661,18 +717,22 @@ def _add_sealed_needles(
                 index.s_exempt_whole += 1
             else:
                 index.s_short.setdefault(toks, family)
+                index.s_families.setdefault(toks, set()).add(family)
             continue
         if whole_exempt:
             index.s_exempt_whole += 1
-        elif toks not in index.s_whole:
-            index.s_whole[toks] = family
-            index.s_long_by_prefix.setdefault(toks[:WINDOW], []).append(toks)
+        else:
+            if toks not in index.s_whole:
+                index.s_whole[toks] = family
+                index.s_long_by_prefix.setdefault(toks[:WINDOW], []).append(toks)
+            index.s_families.setdefault(toks, set()).add(family)
         for i in range(len(toks) - WINDOW + 1):
             win = toks[i : i + WINDOW]
             if win in exempt:
                 index.s_exempt_windows += 1
             else:
                 index.s_windows.setdefault(win, family)
+                index.s_families.setdefault(win, set()).add(family)
 
 
 def build_needles(
@@ -685,10 +745,11 @@ def build_needles(
 
     Private sources are exempt against registered public questions only (as in
     16A-1). Sealed sources become S-needles whose windows are exempt against
-    public questions, development questions (every non-sealed source) and the
-    handbook text in ``handbook_dump`` (default: ``data/research/handbook_sections.jsonl``
-    under the repo base). An absent dump adds a note and an empty handbook
-    exemption.
+    public questions, development splits (:func:`_is_development_split`: only
+    ``dev/tuning*`` and ``dev/realistic*`` files, not every non-sealed source)
+    and the handbook text in ``handbook_dump`` (default:
+    ``data/research/handbook_sections.jsonl`` under the repo base). An absent
+    dump adds a note and an empty handbook exemption.
 
     Raises:
         ScanRefusal: exit 2 for an unreadable or invalid source.
@@ -707,6 +768,7 @@ def build_needles(
                 if toks:
                     sealed_rows.append((family, toks))
             continue
+        split = _is_development_split(src.path)
         for q in _iter_questions(src.path):
             toks = tuple(normalise_tokens(q))
             if not toks:
@@ -722,7 +784,8 @@ def build_needles(
                     index.short_lengths.add(len(toks))
             for i in range(len(toks) - WINDOW + 1):
                 win = toks[i : i + WINDOW]
-                development.add(win)
+                if split:
+                    development.add(win)
                 if win in public_windows:
                     index.exempt_windows += 1
                 elif win not in index.windows:
@@ -752,18 +815,17 @@ def _tokens_with_lines(text: str) -> Tuple[List[str], List[int]]:
     return tokens, lines
 
 
-def _stream_matches(
+def _raw_matches(
     tokens: Sequence[str],
     whole: Dict[Tuple[str, ...], Any],
     windows: Dict[Tuple[str, ...], Any],
     long_by_prefix: Dict[Tuple[str, ...], List[Tuple[str, ...]]],
     short_lengths: Iterable[int],
 ) -> List[Tuple[int, int, str, Any]]:
-    """Folded matches ``(start, end, kind, value)`` of one needle family in a token stream.
+    """Every match ``(start, end, kind, value)`` of one needle family in a token stream, sorted, unfolded.
 
     ``value`` is whatever the needle maps carry (``(id, source)`` for private
-    needles, a family id for S-needles). A window inside a whole match's span
-    is folded into the whole match.
+    needles, a family id for S-needles).
     """
     n = len(tokens)
     found: List[Tuple[int, int, str, Any]] = []
@@ -780,8 +842,110 @@ def _stream_matches(
                 seq = tuple(tokens[i : i + length])
                 if seq in whole:
                     found.append((i, i + length, "whole", whole[seq]))
+    return sorted(found)
+
+
+def _stream_matches(
+    tokens: Sequence[str],
+    whole: Dict[Tuple[str, ...], Any],
+    windows: Dict[Tuple[str, ...], Any],
+    long_by_prefix: Dict[Tuple[str, ...], List[Tuple[str, ...]]],
+    short_lengths: Iterable[int],
+) -> List[Tuple[int, int, str, Any]]:
+    """Folded matches ``(start, end, kind, value)`` of one needle family in a token stream.
+
+    A window inside a whole match's span is folded into the whole match.
+    """
+    found = _raw_matches(tokens, whole, windows, long_by_prefix, short_lengths)
     spans = [(s, e) for s, e, k, _ in found if k == "whole"]
-    return [m for m in sorted(found) if not (m[2] == "window" and any(s <= m[0] and m[1] <= e for s, e in spans))]
+    return [m for m in found if not (m[2] == "window" and any(s <= m[0] and m[1] <= e for s, e in spans))]
+
+
+def _s_stream_hits(tokens: Sequence[str], lines: Sequence[int], target: str, index: NeedleIndex) -> List[Hit]:
+    """S-hits for the sealed questions of 8 or more tokens in one token stream, one per family.
+
+    A match names EVERY sealed family holding that whole question or window
+    (:attr:`NeedleIndex.s_families`). A window inside a whole match is folded
+    into it, but a family that holds the window and not the whole question is
+    not folded away: it is reported where that window starts (a hit names the
+    families a caller must exclude; gate fix C3, Rev12).
+    """
+    raw = _raw_matches(tokens, index.s_whole, index.s_windows, index.s_long_by_prefix, ())
+    wholes = [(s, e) for s, e, k, _ in raw if k == "whole"]
+    reported: Set[Tuple[int, str]] = set()  # (token start, family)
+    for start, end, kind, _ in raw:
+        families = set(index.s_families.get(tuple(tokens[start:end]), ()))
+        if kind == "window":
+            for s, e in wholes:  # a family the whole question that covers this window already names
+                if s <= start and end <= e:
+                    families -= {family for family in families if (s, family) in reported}
+        for family in families:
+            reported.add((start, family))
+    return [Hit(f"{target}:{lines[start]}", "", "S", "", family) for start, family in sorted(reported)]
+
+
+_JSON_OPENERS = ("{", "[", '"')
+
+
+def _json_strings(text: str) -> Iterator[str]:
+    """Every string (key or value, at any depth, nested serialisations included) of one JSON document.
+
+    ``text`` that does not parse as JSON yields nothing. A string that itself
+    looks like a JSON document is parsed again, up to three levels deep (a
+    transcript stores a tool's JSON output as a string inside its own record).
+    """
+    if text.lstrip()[:1] not in _JSON_OPENERS:
+        return
+    try:
+        root = json.loads(text)
+    except (ValueError, RecursionError):
+        return
+    stack: List[Tuple[Any, int]] = [(root, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, str):
+            yield node
+            if depth < 3 and node.lstrip()[:1] in _JSON_OPENERS:
+                try:
+                    stack.append((json.loads(node), depth + 1))
+                except (ValueError, RecursionError):
+                    pass
+        elif isinstance(node, dict):
+            stack.extend((key, depth) for key in node)
+            stack.extend((value, depth) for value in node.values())
+        elif isinstance(node, list):
+            stack.extend((value, depth) for value in node)
+
+
+def _short_candidates(line: str) -> Iterator[str]:
+    """The texts of one physical line a short sealed question may equal in full (gate fix C1, Rev9).
+
+    - the line itself, and each string between two adjacent quote marks (an
+      escaped quote, ``\\"``, included, so a nested serialisation counts);
+    - each of those with its backslash escapes (and HTML entities) decoded and
+      split on line breaks: a transcript stores a file's lines as ONE physical
+      line joined by ``\\n`` escapes, so each decoded line is tested, and so
+      is each quoted string inside it;
+    - when the line is a JSON document, each of its decoded string values
+      (keys included, nested serialisations too), split on line breaks.
+    """
+    bases = [line] + _QUOTE_SPLIT.split(line)[1:-1]  # only text with a quote on both sides is a string value
+    for base in bases:
+        yield base
+        if "\\" in base or "&" in base:
+            decoded = decode_escapes(base)
+            if decoded == base:
+                continue
+            pieces = decoded.splitlines() or [decoded]
+            if len(pieces) > 1:
+                yield from pieces
+            for piece in pieces:
+                yield from _QUOTE_SPLIT.split(piece)[1:-1]
+    for value in _json_strings(line):
+        yield value
+        pieces = value.splitlines()
+        if len(pieces) > 1:
+            yield from pieces
 
 
 def _short_sealed_hits(text: str, target: str, index: NeedleIndex) -> List[Hit]:
@@ -790,6 +954,10 @@ def _short_sealed_hits(text: str, target: str, index: NeedleIndex) -> List[Hit]:
     A line matches when its whole normalised token list equals the question's.
     A JSON string value matches when the text between two adjacent quote marks
     (an escaped quote, ``\\"``, included, so a nested serialisation counts) does.
+    Both are also tried after decoding the escapes and splitting on line breaks
+    (:func:`_short_candidates`), so a question that is a whole line of a file
+    stored in a JSON-escaped transcript is found. Every family holding the
+    question is reported.
     Residual: such a question embedded in prose, a numbered item or an unquoted
     ``key: value`` line is missed; with no window needle there is nothing to
     match a fragment against.
@@ -799,14 +967,14 @@ def _short_sealed_hits(text: str, target: str, index: NeedleIndex) -> List[Hit]:
     hits: List[Hit] = []
     seen: Set[Tuple[int, str]] = set()
     for lineno, line in enumerate(text.splitlines(), 1):
-        candidates = [line]
-        parts = _QUOTE_SPLIT.split(line)
-        candidates.extend(parts[1:-1])  # only text with a quote on both sides is a string value
-        for candidate in candidates:
-            family = index.s_short.get(tuple(normalise_tokens(candidate)))
-            if family is not None and (lineno, family) not in seen:
-                seen.add((lineno, family))
-                hits.append(Hit(f"{target}:{lineno}", "", "S", "", family))
+        for candidate in _short_candidates(line):
+            toks = tuple(normalise_tokens(candidate))
+            if toks not in index.s_short:
+                continue
+            for family in sorted(index.s_families.get(toks) or {index.s_short[toks]}):
+                if (lineno, family) not in seen:
+                    seen.add((lineno, family))
+                    hits.append(Hit(f"{target}:{lineno}", "", "S", "", family))
     return hits
 
 
@@ -816,7 +984,8 @@ def scan_text(text: str, target: str, index: NeedleIndex) -> List[Hit]:
     Matching is on whole tokens over the normalised token stream of the
     whole text, so a needle wrapped across lines is still caught. S-needles
     (sealed questions) of 8 or more tokens match the same way and yield S-hits
-    (family id, no needle id or source); under 8 tokens see
+    (family id, no needle id or source), one per sealed family holding the
+    matched whole question or window; under 8 tokens see
     :func:`_short_sealed_hits`.
     """
     if not index or not text:
@@ -833,13 +1002,10 @@ def scan_text(text: str, target: str, index: NeedleIndex) -> List[Hit]:
                 seen.add((label, nid))
                 hits.append(Hit(label, nid, kind, src))
     if index.s_whole or index.s_windows:
-        for start, _end, _kind, family in _stream_matches(
-            tokens, index.s_whole, index.s_windows, index.s_long_by_prefix, ()
-        ):
-            label = f"{target}:{lines[start]}"
-            if (label, family) not in seen:
-                seen.add((label, family))
-                hits.append(Hit(label, "", "S", "", family))
+        for hit in _s_stream_hits(tokens, lines, target, index):
+            if (hit.target, hit.family) not in seen:
+                seen.add((hit.target, hit.family))
+                hits.append(hit)
     for hit in _short_sealed_hits(text, target, index):
         if (hit.target, hit.family) not in seen:
             seen.add((hit.target, hit.family))
