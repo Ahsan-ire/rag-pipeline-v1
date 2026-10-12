@@ -1824,6 +1824,11 @@ def run_eval_matrix(
             row is preflighted before any work, a missing entry or identity
             mismatch fails with zero expansion calls, and a replayed run is
             never canonical. The artifact's own class joins the privacy floor.
+            Under BOTH skip flags (16A-2a, a6): ``"live"`` stays zero-call (no
+            expansion, no generation); ``"build:<path>"`` makes live Haiku
+            rewrite calls only (no generation, no judge unless ``judge`` is
+            set) and needs a meter; a replayed artifact runs retrieval only
+            with the frozen expansions and zero API calls.
 
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
@@ -1964,7 +1969,21 @@ def run_eval_matrix(
     # > 0). Only the hybrid+rewrite ABLATION ROW is gated on the mode being
     # selected; when the mode is present but expansion is disabled, that row
     # renders as the raw-hybrid fallback.
-    expansion_enabled = not (skip_refusals and skip_completeness)
+    #
+    # 16A-2a (a6): the offline contract is unchanged for ``expansion="live"`` —
+    # both skips and no expansion option stay at zero API calls. An explicit
+    # ``--expansion`` option is the one thing that re-enables expansion under
+    # both skips, in the two forms the data phase needs:
+    #   * ``build:<path>`` runs LIVE expansion (Haiku rewrite calls only — the
+    #     generation pass and the judge stay off, so nothing else is called) and
+    #     freezes the result; the CLI builds a meter for it (D70).
+    #   * a replayed artifact feeds its FROZEN expansions into the retrieval
+    #     rows — retrieval only, zero API calls of any kind (replay is local),
+    #     so it needs no meter.
+    expansion_enabled = (
+        not (skip_refusals and skip_completeness)
+        or expansion_mode in ("build", "replay")
+    )
     # One expansion per unique question text, shared across ALL sets, the
     # hybrid+rewrite ablation, AND the default generation pass (a question is
     # expanded at most once for the whole run). Entries land here ONLY when
@@ -1980,8 +1999,6 @@ def run_eval_matrix(
     if expansion_mode == "replay":
         from src.expansion_artifact import load_artifact
 
-        if not expansion_enabled:
-            raise ValueError("an expansion artifact needs expansion enabled (not both --skip flags)")
         replay_artifact = load_artifact(artifact_path_arg)
         preflight_rows = []
         for _label, path in set_specs:
@@ -1999,8 +2016,6 @@ def run_eval_matrix(
                 raise ExpansionArtifactError(
                     "artifact entries for one question differ across sets; refusing to replay"
                 )
-    if expansion_mode == "build" and not expansion_enabled:
-        raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
     rewrite_replayed = 0
 
     # D70: refuse an unmetered default live path BEFORE any call, then build

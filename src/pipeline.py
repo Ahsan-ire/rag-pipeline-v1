@@ -507,7 +507,10 @@ Examples:
     # per non-refused in-corpus answer. Offline/CI runs must pass BOTH
     # --skip-refusals and --skip-completeness (and omit --judge) — that pair
     # ALSO disables query expansion outright, so it stays the documented
-    # zero-API-call contract even on a keyed dev box (Phase 13, D46). A
+    # zero-API-call contract even on a keyed dev box (Phase 13, D46). Only an
+    # explicit --expansion option changes that under both skips: build:<path>
+    # makes live rewrite calls only (metered), a replayed artifact runs
+    # retrieval only with zero calls (16A-2a). A
     # canonical committed run now additionally requires --realistic, all four
     # EVAL_MODES, and zero query-expansion fallbacks (see run_eval_matrix).
     eval_parser = subparsers.add_parser(
@@ -532,6 +535,14 @@ Examples:
         help="Path to the realistic-slice JSONL (messy staff phrasing + "
         "near-domain negatives); required for a canonical run "
         "(e.g. eval/realistic_set.jsonl)",
+    )
+    eval_parser.add_argument(
+        "--regression",
+        default=None,
+        help="Path to a regression-set JSONL, scored as a FOURTH set labelled "
+        "'regression' alongside --golden/--heldout/--realistic (16A-2a: the "
+        "former held-out set, once consumed). It joins the privacy floor and "
+        "the cohort identity checks like every other set",
     )
     eval_parser.add_argument(
         "--mode",
@@ -593,8 +604,10 @@ Examples:
     eval_parser.add_argument(
         "--expansion",
         default="live",
-        help="'live' (default), 'build:<path>' to freeze this run's expansions, "
-        "or a frozen artifact path to replay in every arm (never canonical)",
+        help="'live' (default), 'build:<path>' to freeze this run's expansions "
+        "(live rewrite calls, metered, even under both --skip flags), or a "
+        "frozen artifact path to replay in every arm (never canonical; under "
+        "both --skip flags: retrieval only, zero API calls)",
     )
     eval_parser.add_argument(
         "--approved-eur",
@@ -660,8 +673,9 @@ def _eval_command(args: argparse.Namespace) -> int:
     The privacy class passed to the runner is ``classify``'s floor over the set
     paths (the CLI never chooses a class itself). Sealed input exits 4 before
     anything else runs. A live run (any pass other than the both-skips offline
-    form, or --judge) builds a spend meter from ``config/api_prices.toml``; the
-    offline command builds none. On a private run an unexpected error prints
+    form, --judge, or ``--expansion build:<path>``) builds a spend meter from
+    ``config/api_prices.toml``; the offline command and a replay under both
+    skips build none. On a private run an unexpected error prints
     only its exception type.
     """
     from src.eval_privacy import PUBLIC, SealedInputError, safe_error
@@ -681,6 +695,8 @@ def _eval_command(args: argparse.Namespace) -> int:
         set_specs.append(("held-out", args.heldout))
     if args.realistic:
         set_specs.append(("realistic", args.realistic))
+    if args.regression:
+        set_specs.append(("regression", args.regression))
     modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
 
     paths = [p for _l, p in set_specs]
@@ -695,7 +711,15 @@ def _eval_command(args: argparse.Namespace) -> int:
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
 
-    live = (not (args.skip_refusals and args.skip_completeness)) or args.judge
+    # 16A-2a (a6): ``--expansion build:<path>`` is live even under both skips
+    # (live Haiku rewrite calls, nothing else), so it gets a meter. A replayed
+    # artifact is local (zero calls) and both skips alone stay zero-call: neither
+    # counts as live.
+    live = (
+        (not (args.skip_refusals and args.skip_completeness))
+        or args.judge
+        or args.expansion.startswith("build:")
+    )
     meter = None
     # A meter is built iff the run is live AND a usable key exists. Without a
     # key no Claude call can be made at all, so the run degrades as before
