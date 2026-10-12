@@ -857,8 +857,12 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     The sealed set is the one passed as ``--heldout``; every other set must be
     non-sealed. A slot already in the ledger is recovered from storage (no
     fresh call): a spent or consumed slot is a ``claim`` refusal, stored results
-    are rendered. A new slot runs every gate (``src.sealed_run.acquire_slot_token``)
-    and only then claims. Everything printed is a count, a hash, an enum, a gate
+    are rendered. A new slot runs every gate (``src.sealed_run.acquire_slot_token``,
+    which takes the slot's execution lock) and is minted UNCLAIMED; ``run_slot`` then
+    preflights everything the run could still refuse (numeric options, replay artifact,
+    metered clients, absorbed map, duplicate ids, the index a default path loads) and only
+    then claims, right before the first model call, so a refusal never spends a slot.
+    Everything printed is a count, a hash, an enum, a gate
     or guard name; never a path, a row id or text. Exit codes: 4 a gate refused,
     5 the pre-publication scan could not clear the report, 8 a sealed epoch stop
     (lost or tampered ledger, below the floor), 3 and 6 the spend limits.
@@ -881,6 +885,10 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     if args.results_path is not None or args.prereg is None:
         print("[eval] --sealed-slot needs --prereg and publishes only through its slot protocol (no --results)",
               file=sys.stderr)
+        return EXIT_USAGE
+    if args.top_k < 1 or (args.judge_sample is not None and args.judge_sample < 0):
+        # Checked before the ledger is touched: these would otherwise be refused only after the claim.
+        print("[eval] --top-k must be >= 1 and --judge-sample >= 0; no slot was touched", file=sys.stderr)
         return EXIT_USAGE
     meter = None
     run_totals = lambda: None  # noqa: E731 - replaced once a meter exists
@@ -934,6 +942,7 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
                 rewrite_candidate=args.rewrite_candidate,
                 meter=meter,
                 baseline_run=args.baseline_run,
+                claim=False,  # run_slot claims after its preflight, right before the first model call
             )
             outcome = sealed_run.run_slot(
                 token,

@@ -10,8 +10,16 @@ The gate (:func:`acquire_slot_token`)
 -------------------------------------
 A token is minted only if **every** check passes; the checks that cannot spend
 the slot run first and the claim is the last one, so a refusal never costs a
-slot. A refusal raises :class:`GateRefused` naming one gate (a fixed token,
-never a path, hash or row detail) before any retrieval, expansion or model call:
+slot. The last check before the claim is the slot's execution lock (a slot that
+another process is running or recovering is ``claim: busy``). The CLI mints the
+token UNCLAIMED (``claim=False``); :func:`run_slot` then runs :func:`preflight_slot`
+(everything the run itself could still refuse: the numeric options, the replay
+artifact, the metered clients, the absorbed map, duplicate ids, and the embedding
+model, Chroma index and BM25 sidecar a default path loads) and only then claims,
+so the durable claim sits right before the first model call and a refusal in
+between never costs a slot. A refusal raises :class:`GateRefused` naming one gate
+(a fixed token, never a path, hash or row detail) before any retrieval, expansion
+or model call:
 
 ``slot``, ``prereg`` (a malformed or silent prereg), ``expansion_mode`` (the
 mode the command line selects is not the mode the prereg declares for the
@@ -22,8 +30,10 @@ group record or the exclusions bound at the freeze differ from the freeze
 record), ``approvals`` (a sealed row is not approval-bound), ``groups`` (the
 group record is malformed), ``floor`` (fewer families than the floor after
 exclusions: the epoch ends, a D64 stop), ``baseline`` (a confirmatory slot
-without a verified baseline run), and ``claim`` (a4's claim refused: claimed
-before, or 0b not available).
+without a verified baseline run that published a canonical report),
+``retrieval_backend`` (the preflight could not load the index a default path
+needs) and ``claim`` (a4's claim refused: claimed before, 0b not available, or
+the slot's execution lock is held: ``busy``).
 
 Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
 ----------------------------------------------------------------------------------------------
@@ -61,19 +71,23 @@ guard re-checks it after the run.
 (``ledger.load_payload("twins_sealed", freeze["twins_sha256"])``, digest-checked against the
 freeze record). Only its ``"edges": [[family, family], ...]`` is read.
 
-**Exclusions**: ``SealedLedger.exclusions()``, no file. The freeze binds the digest of those
-recorded before it (``exclusions_digest``); the gate recomputes it from the ledger
+**Exclusions**: ``SealedLedger.excluded_families()``, no file. The freeze binds the digest of the
+group ids recorded before it (``exclusions_digest``); the gate recomputes it from the ledger
 (``exclusions_at_freeze``), so a later exclusion (an S-hit, an exposure) simply adds to the list.
+Each exclusion names its member families, and the gate maps them onto the freeze-bound groups
+(``resolve_excluded_groups``), so a group renamed by a later rejection still resolves and an
+exclusion whose families are no longer in the sealed set excludes nothing (never a refusal).
 
 **Groups.** ``src.sealed_ledger.group_ids`` -- the same function ``sealed_tool exclude`` uses --
 over the frozen set's families and the group record's edges: the connected components, a family
 with no edge a group of its own, each named by its smallest *sealed* family id (an edge may name
-a draft that is not in the sealed set: its connectivity is kept, it is not a member). Exclusions
-name groups by that id; an unknown id refuses the gate.
+a draft that is not in the sealed set: its connectivity is kept, it is not a member).
 
 The slot protocol (:func:`run_slot`, :func:`finish_slot`)
 ---------------------------------------------------------
-1. the gate claims the slot (a4 step 1);
+1. the slot is claimed (a4 step 1): by the gate for a token minted with ``claim=True`` (the
+   default), or by :func:`run_slot` after its preflight for a token minted with ``claim=False``
+   (the CLI);
 2. ``run_eval_matrix(..., slot_token=token)`` runs the matrix and writes, under
    ``eval/private/sealed/runs/<run id>/`` and never beside any report:
    ``results.json`` (the stored results document, ids and enums only),
@@ -93,8 +107,19 @@ The slot protocol (:func:`run_slot`, :func:`finish_slot`)
 
 Steps 4-6 read only the stored directory, whether the run is fresh or a
 recovery, so :func:`recover_slot` renders from storage and can never make a
-call. A canonical report is written to ``eval/results_v6.md`` (derived from the
-private root so that tests redirect it); nothing else ever writes there.
+call. A canonical report (slots 0 and 0b only) is written to ``eval/results_v6.md``
+(derived from the private root so that tests redirect it); nothing else ever
+writes there. A confirmatory slot (1-4) is never canonical and never published:
+after the same render-and-scan it writes ``report.md`` into its own run directory
+(``eval/private/sealed/runs/<run id>/``, never committed, ignored by the run
+directory digest) and prints an aggregates-only summary (the primary sign-flip
+line and the labelled sensitivities, numbers only), without calling anything a
+failed guard.
+
+The slot's execution lock (``SealedLedger.lock_slot``) is taken by the gate before the
+claim and carried by the token to the end of :func:`run_slot`; :func:`recover_slot`
+takes it too. A live run therefore never looks spent, 0b cannot be claimed while
+slot 0 runs, and two recoveries of one slot cannot both finish it.
 """
 
 from __future__ import annotations
@@ -106,7 +131,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from src import eval_privacy as _privacy
 from src.eval_privacy import PRIVATE, REPO_ROOT, new_run_id, sealed_run_dir, write_private
@@ -119,15 +144,18 @@ from src.sealed_ledger import (
     RecoveryAction,
     SealedLedger,
     SealedLedgerError,
+    SlotBusy,
     SlotRefused,
     below_floor,
     digest_run_dir,
     exclusions_digest,
+    fsync_dir,
     group_ids,
 )
 from src.sealed_report import (
     RESULTS_KIND,
     RESULTS_VERSION,
+    confirmatory_summary,
     family_hits,
     format_sealed_report,
     sealed_set,
@@ -139,6 +167,7 @@ from src.tracing_guard import TracingRefused, assert_tracing_off
 SEALED_SPLIT = "sealed"
 EXPANSION_MODES = ("live", "replay", "candidate")
 RESULTS_FILE = "results.json"
+REPORT_FILE = "report.md"  # a confirmatory slot's rendered report, inside its run directory
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 
@@ -146,6 +175,7 @@ _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 GATES = (
     "slot", "prereg", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
+    "retrieval_backend",
 )
 
 #: The canonical-v6 guards, in report order. Each is a pure function of the stored facts.
@@ -198,6 +228,11 @@ class PublicationBlocked(BaseException):
         self.reason = reason
 
 
+def backend_refused(exc: BaseException) -> GateRefused:
+    """The ``retrieval_backend`` refusal for a preflight that could not load the index (detail: the class name only)."""
+    return GateRefused("retrieval_backend", type(exc).__name__)
+
+
 # ---------------------------------------------------------------------------
 # Locations
 # ---------------------------------------------------------------------------
@@ -239,8 +274,15 @@ def normalise_slot(slot: Union[int, str]) -> str:
 # Records: prereg, approvals, the group record, exclusions, groups
 # ---------------------------------------------------------------------------
 
-#: The ledger payload ``sealed_tool freeze --split sealed`` stores and binds: the group record.
+#: The ledger payload ``sealed_tool freeze --split sealed`` stores and binds: the group record. The freeze
+#: stores it under its content name (``twins_payload_name``: ``twins_sealed_<first 16 hex of its sha256>``,
+#: the freeze record's own ``twins_sha256``) and, for readers that predate that, under this plain alias too.
 TWINS_PAYLOAD = "twins_sealed"
+
+
+def twins_payload_name(sha256: str) -> str:
+    """The content name of the freeze-bound group record for a freeze whose ``twins_sha256`` is ``sha256``."""
+    return f"{TWINS_PAYLOAD}_{sha256[:16]}"
 
 
 def _read_json(path: Union[str, os.PathLike], gate: str) -> Any:
@@ -306,16 +348,21 @@ def load_approvals(path: Union[str, os.PathLike]) -> Dict[str, str]:
 def load_group_edges(ledger: SealedLedger, freeze: Mapping[str, Any]) -> List[Tuple[str, str]]:
     """The group edges from the freeze-bound ``twins_sealed`` payload, as family-id pairs.
 
-    The payload is read from whichever ledger copy verifies against the freeze record's
-    ``twins_sha256``.
+    The payload is named by the freeze record's own ``twins_sha256`` (``twins_sealed_<sha16>``) and
+    read from whichever ledger copy verifies against that digest; the plain ``twins_sealed`` alias
+    (the same bytes) is the fallback for a freeze recorded before payloads were content-named.
 
     Raises:
         GateRefused: ``twins_record`` when no copy verifies (the record is off its freeze record),
             ``groups`` when the payload has no well-formed ``edges``.
     """
     try:
-        payload = ledger.load_payload(TWINS_PAYLOAD, freeze["twins_sha256"])
-    except (EpochStop, KeyError, ValueError):
+        digest = freeze["twins_sha256"]
+        try:
+            payload = ledger.load_payload(twins_payload_name(digest), digest)
+        except EpochStop:
+            payload = ledger.load_payload(TWINS_PAYLOAD, digest)
+    except (EpochStop, KeyError, ValueError, TypeError):
         raise GateRefused("twins_record") from None
     edges = payload.get("edges") if isinstance(payload, dict) else None
     if not isinstance(edges, list):
@@ -329,16 +376,33 @@ def load_group_edges(ledger: SealedLedger, freeze: Mapping[str, Any]) -> List[Tu
 
 
 def check_exclusions_bound(ledger: SealedLedger, freeze: Mapping[str, Any]) -> FrozenSet[str]:
-    """Every group excluded so far, after checking the freeze-time list against the freeze record.
+    """Every family excluded so far, after checking the freeze-time list against the freeze record.
+
+    The freeze binds the digest of the group *ids* recorded before it; the families returned are the
+    exclusions' recorded members (``SealedLedger.excluded_families``), to be mapped onto the frozen
+    groups with :func:`resolve_excluded_groups`.
 
     Raises:
         GateRefused: ``exclusion_list`` when the exclusions recorded before the freeze no longer
-            digest to the freeze record's ``exclusions_sha256``.
+            digest to the freeze record's ``exclusions_sha256``, or a record's members are malformed.
     """
     at_freeze = ledger.exclusions_at_freeze(SEALED_SPLIT)
     if at_freeze is None or exclusions_digest(at_freeze) != freeze.get("exclusions_sha256"):
         raise GateRefused("exclusion_list")
-    return ledger.exclusions()
+    try:
+        return ledger.excluded_families()
+    except SealedLedgerError:
+        raise GateRefused("exclusion_list") from None
+
+
+def resolve_excluded_groups(families: Iterable[str], groups: Mapping[str, str]) -> FrozenSet[str]:
+    """The groups (under ``groups``, family -> group id) that the excluded ``families`` belong to.
+
+    A family that is not in the frozen set (a member rejected after the exclusion was made) names
+    no group and is skipped, so a stale exclusion excludes nothing instead of wedging the gate; a
+    group renamed by a later rejection resolves through its remaining members.
+    """
+    return frozenset(groups[f] for f in families if f in groups)
 
 
 #: The one definition of a group id (``sealed_tool exclude`` calls the same function).
@@ -392,20 +456,46 @@ class SlotToken:
     baseline: Optional[Mapping[str, Any]] = field(repr=False)
     mint: object = field(repr=False, compare=False, default=None)
     used: List[bool] = field(repr=False, compare=False, default_factory=lambda: [False])
+    lock: Any = field(repr=False, compare=False, default=None)  # the slot's execution lock, held to the run's end
+    claimed: List[bool] = field(repr=False, compare=False, default_factory=lambda: [False])
 
     def __post_init__(self) -> None:
         if self.mint is not _MINT:
             raise TypeError("a SlotToken is minted only by acquire_slot_token")
 
+    def claim(self) -> None:
+        """Claim the slot in the ledger (a4 step 1) if this token has not claimed it yet.
+
+        Raises:
+            GateRefused: ``claim`` when the ledger refuses (``busy`` when slot 0 still runs for 0b).
+        """
+        if self.claimed[0]:
+            return
+        try:
+            self.ledger.claim(self.slot)
+        except SlotBusy:
+            raise GateRefused("claim", "busy") from None
+        except SlotRefused:
+            raise GateRefused("claim") from None
+        self.claimed[0] = True
+
     def begin(self) -> None:
         """Mark the token used: one claim runs the matrix once (a sealed row is never run twice).
 
         Raises:
-            GateRefused: ``claim`` (``token_used``) when the matrix already started under this token.
+            GateRefused: ``claim`` (``unclaimed``) when the slot was never claimed, (``token_used``) when
+                the matrix already started under this token.
         """
+        if not self.claimed[0]:
+            raise GateRefused("claim", "unclaimed")
         if self.used[0]:
             raise GateRefused("claim", "token_used")
         self.used[0] = True
+
+    def release(self) -> None:
+        """Let go of the slot's execution lock (idempotent). :func:`run_slot` does this when the run ends or dies."""
+        if self.lock is not None:
+            self.lock.release()
 
     def __repr__(self) -> str:
         return f"SlotToken(slot={self.slot!r}, run_id={self.run_id!r})"
@@ -499,7 +589,9 @@ def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str) -> Dict
     """Verify a stored slot 0 / 0b run and return its per-mode family hits (for a confirmatory slot).
 
     The run must be a consumed ``0``/``0b`` slot of the same sealed set whose
-    run directory still digests to what the ledger recorded.
+    run directory still digests to what the ledger recorded, and it must have
+    a publication intent: the baseline is the run that published the canonical
+    report (when 0b is the canonical one, slot 0 is not a baseline).
 
     Raises:
         GateRefused: ``baseline`` for anything else.
@@ -508,6 +600,8 @@ def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str) -> Dict
     if len(stored) != 1 or stored[0]["slot"] not in DESCRIPTIVE_SLOTS:
         raise GateRefused("baseline")
     if ledger.recover(stored[0]["slot"]).action is not RecoveryAction.CONSUMED:
+        raise GateRefused("baseline")
+    if not any(r["slot"] == stored[0]["slot"] for r in ledger.records("publication_intent")):
         raise GateRefused("baseline")
     try:
         run_dir = sealed_run_dir(run_id, create=False)
@@ -537,11 +631,17 @@ def acquire_slot_token(
     rewrite_candidate: Optional[str] = None,
     meter: Any = None,
     baseline_run: Optional[str] = None,
+    claim: bool = True,
 ) -> SlotToken:
-    """Run every gate for ``slot`` and, if all pass, claim it and mint the token.
+    """Run every gate for ``slot`` and, if all pass, mint the token (claiming the slot unless ``claim=False``).
 
     See the module docstring for the gates, their order and the formats. The
-    claim is the last step, so any refusal leaves the slot unclaimed.
+    claim is the last step, so any refusal leaves the slot unclaimed. Just
+    before it the gate takes the slot's execution lock (non-blocking; the token
+    keeps it until :func:`run_slot` ends). With ``claim=False`` the token comes
+    back unclaimed (the gate only checks that the slot COULD be claimed) and
+    :func:`run_slot` claims it after its preflight, right before the first model
+    call: that is how the CLI makes every refusal precede the claim.
 
     Raises:
         GateRefused: a gate refused (its name is on the exception).
@@ -571,7 +671,7 @@ def acquire_slot_token(
     if _file_sha(set_path) != freeze["set_sha256"]:
         raise GateRefused("set_file")
     edges = load_group_edges(ledger, freeze)  # digest-checked against the freeze record ("twins_record")
-    excluded = check_exclusions_bound(ledger, freeze)  # the list bound at the freeze, plus any later exclusion
+    excluded_families = check_exclusions_bound(ledger, freeze)  # the list bound at the freeze, plus any later one
     try:
         rows = tuple(load_sealed(set_path))
     except (SchemaError, InventoryError, NotSealedInput, OSError, UnicodeDecodeError):
@@ -586,9 +686,7 @@ def acquire_slot_token(
 
     families = sorted({r["family_id"] for r in rows})
     groups = compute_groups(families, edges)
-    known_groups = set(groups.values())
-    if not excluded <= known_groups:
-        raise GateRefused("exclusion_list")
+    excluded = resolve_excluded_groups(excluded_families, groups)  # by member family: a renamed group still resolves
 
     floor = prereg["floor"]
     sealed_families, eligible = _eligible_counts(rows, groups, frozenset(excluded))
@@ -603,14 +701,51 @@ def acquire_slot_token(
     elif baseline_run:
         raise GateRefused("baseline")
 
-    try:
-        ledger.claim(sid)
-    except SlotRefused:
-        raise GateRefused("claim") from None
-
     approved_paths = [str(Path(set_path).resolve())]
     if artifact_path is not None:
         approved_paths.append(str(Path(artifact_path).resolve()))
+    lock = None
+    try:
+        try:
+            lock = ledger.lock_slot(sid)  # a slot another process is running or recovering is not ours to claim
+        except SlotBusy:
+            raise GateRefused("claim", "busy") from None
+        token = _mint_token(
+            sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor, ledger,
+            approvals_path, approvals_sha, baseline, lock,
+        )
+        if claim:
+            token.claim()
+        else:
+            try:
+                ledger.check_claimable(sid)
+            except SlotRefused:
+                raise GateRefused("claim") from None
+    except BaseException:
+        if lock is not None:
+            lock.release()
+        raise
+    return token
+
+
+def _mint_token(
+    sid: str,
+    freeze: Mapping[str, Any],
+    set_path: Union[str, os.PathLike],
+    rows: Tuple[Mapping[str, Any], ...],
+    groups: Mapping[str, str],
+    excluded: FrozenSet[str],
+    mode: str,
+    approved_paths: List[str],
+    artifact_sha: Optional[str],
+    floor: Mapping[str, int],
+    ledger: SealedLedger,
+    approvals_path: Path,
+    approvals_sha: Optional[str],
+    baseline: Optional[Dict[str, Any]],
+    lock: Any,
+) -> SlotToken:
+    """Build the (unclaimed) token: the gate's last step before the claim."""
     return SlotToken(
         slot=sid,
         run_id=new_run_id(),
@@ -630,6 +765,7 @@ def acquire_slot_token(
         approvals_sha256=approvals_sha,
         baseline=baseline,
         mint=_MINT,
+        lock=lock,
     )
 
 
@@ -846,6 +982,18 @@ def default_scanner(run_id: str, notes: Optional[List[str]] = None) -> Callable[
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` durably: temp file, fsync, rename, then fsync the directory entries.
+
+    A rename is a durable fact only once the directory that holds it is synced, and callers record
+    "consumed" after this returns: without the sync a crash could leave a ledger that says the report was
+    published beside a report that is missing or still the old one. A directory created on the way gets its
+    own parent synced as well.
+    """
+    created = []
+    probe = path.parent
+    while not probe.exists():
+        created.append(probe)
+        probe = probe.parent
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -858,6 +1006,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
+    fsync_dir(path.parent)
+    for directory in created:
+        fsync_dir(directory.parent)
 
 
 def _check_floor_doc(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> None:
@@ -912,7 +1063,7 @@ def render_and_publish(
         if not fresh:
             raise PublicationBlocked("persistent_hit")
         for group in fresh:
-            ledger.exclude(group, "s_hit")
+            ledger.exclude(group, "s_hit", members=sorted(f for f, g in doc["groups"].items() if g == group))
         excluded = excluded | frozenset(fresh)
         newly += len(fresh)
     if publish_to is not None:
@@ -936,14 +1087,19 @@ class SlotOutcome:
     published: bool
     scan_exclusions: int
     action: str
+    rendered: bool = False  # a confirmatory slot's report.md was written into its run directory (never published)
 
 
-def _exclusions_now(ledger: SealedLedger) -> FrozenSet[str]:
-    """Every group excluded so far, from the ledger (the freeze-time list re-checked against its record)."""
+def _exclusions_now(ledger: SealedLedger, groups: Mapping[str, str]) -> FrozenSet[str]:
+    """Every group excluded so far, from the ledger (the freeze-time list re-checked against its record).
+
+    ``groups`` is the stored document's family -> group map: the recorded member families are resolved
+    onto it, the same way the gate resolved them for the run.
+    """
     freeze = ledger.freeze_record(SEALED_SPLIT)
     if freeze is None:
         raise GateRefused("exclusion_list")
-    return check_exclusions_bound(ledger, freeze)
+    return resolve_excluded_groups(check_exclusions_bound(ledger, freeze), groups)
 
 
 def finish_slot(
@@ -958,6 +1114,13 @@ def finish_slot(
 
     Used for a fresh run (right after step 3) and for recovery alike, so both
     produce the same report. Makes no model, retrieval or expansion call.
+
+    Slots 0 and 0b are the only canonical ones: a canonical run records the intent and
+    writes ``eval/results_v6.md``; a non-canonical one prints its failed guards and renders
+    nothing. A confirmatory slot (1-4) is never canonical and is not judged by the guards:
+    it is rendered and scanned like a canonical report, written to ``report.md`` in its own
+    run directory (never published, never committed, no intent) and summarised on ``out`` as
+    numbers only (the primary sign-flip line and the labelled sensitivities).
 
     Raises:
         GateRefused: ``stored_results`` when the slot has nothing to finish, or
@@ -976,14 +1139,17 @@ def finish_slot(
     doc = load_results_doc(run_dir)
     failed = failed_guards(doc["facts"])
     canonical = not failed
+    confirmatory = is_confirmatory(sid)
     if rec.action is RecoveryAction.REPUBLISH:
         if not canonical:
             raise GateRefused("stored_results")  # an intent exists only for a canonical run
     elif canonical:
         ledger.record_intent(sid)  # step 4: only a canonical run records an intent
     newly = 0
-    if canonical:  # a non-canonical run publishes nothing: there is nothing to render or scan
-        excluded = _exclusions_now(ledger)
+    excluded: FrozenSet[str] = frozenset()
+    # A non-canonical slot 0/0b publishes nothing: there is nothing to render or scan.
+    if canonical or confirmatory:
+        excluded = _exclusions_now(ledger, doc["groups"])
         if scan is None:
             notes: List[str] = []
             scan = default_scanner(doc["run_id"], notes)
@@ -991,15 +1157,59 @@ def finish_slot(
                 print(f"[eval] scan note: {note}", file=sys.stderr)
         _text, newly = render_and_publish(
             doc, ledger=ledger, excluded=excluded, failed=failed, scan=scan,
-            publish_to=results_v6_path(), render=render,
+            publish_to=(run_dir / REPORT_FILE) if confirmatory else results_v6_path(), render=render,
         )
+        if newly:  # the groups the scan added count for the summary too
+            excluded = _exclusions_now(ledger, doc["groups"])
     ledger.record_consumed(sid)  # step 6
     if canonical:
         out(f"[eval] sealed slot {sid}: canonical; published {results_v6_path().name}"
             + (f" ({newly} group(s) excluded by the pre-publication scan)" if newly else ""))
+    elif confirmatory:
+        out(f"[eval] sealed slot {sid}: confirmatory; report rendered in run {doc['run_id']} (not published)"
+            + (f" ({newly} group(s) excluded by the pre-publication scan)" if newly else ""))
+        for line in confirmatory_summary(doc, excluded):
+            out(f"[eval] slot {sid} {line}")
     else:
         out(f"[eval] sealed slot {sid}: not canonical; failed guards: {', '.join(failed)}")
-    return SlotOutcome(sid, doc["run_id"], canonical, tuple(failed), canonical, newly, rec.action.value)
+    return SlotOutcome(sid, doc["run_id"], canonical, tuple(failed), canonical, newly, rec.action.value, confirmatory)
+
+
+def preflight_slot(
+    slot_token: SlotToken,
+    *,
+    set_specs: Sequence[Tuple[str, str]],
+    modes: Sequence[str],
+    top_k: int,
+    skip_refusals: bool,
+    skip_completeness: bool,
+    judge: bool,
+    judge_sample: Optional[int],
+    persist_directory: str,
+    meter: Any,
+    expansion: str,
+    matrix_kwargs: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Everything the run could still refuse, checked with the not-yet-claimed ``slot_token``.
+
+    Same arguments as :func:`run_slot` (which calls it before claiming an unclaimed token), so that
+    a refusal costs no slot. It runs the evaluator up to (not including)
+    the first retrieval, expansion or model call: the numeric options, the token and set bindings,
+    the replay artifact (loaded and preflighted against every row), the metered clients, the absorbed
+    map, the per-set cohort and duplicate-id checks, and, when a default retrieval or generation path
+    is in play, the embedding model, Chroma index and BM25 sidecar it would load. Makes no call.
+
+    Raises:
+        Whatever the evaluator refuses with (``ValueError``, ``GateRefused``...); never claims anything.
+    """
+    from src import evaluator
+
+    evaluator.run_eval_matrix(
+        list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
+        skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
+        persist_directory=persist_directory, privacy=PRIVATE, meter=meter, expansion=expansion,
+        slot_token=slot_token, preflight_only=True, **dict(matrix_kwargs or {}),
+    )
 
 
 def run_slot(
@@ -1023,19 +1233,34 @@ def run_slot(
     """Steps 2-6 for a freshly claimed slot (step 1 was the gate's claim).
 
     ``matrix_kwargs`` passes the evaluator's injection seams (fakes) through.
+    A token minted unclaimed (``claim=False``) is preflighted first
+    (:func:`preflight_slot`: every refusal the run could still make) and claimed
+    only when nothing is left to refuse, right before the first model call.
     A crash anywhere before ``store_results`` leaves the slot claimed with no
-    stored results, which a4 treats as spent.
+    stored results, which a4 treats as spent. The token's execution lock is held
+    for the whole run and released when it ends or dies (``finally``), so a live
+    run is never mistaken for a spent slot.
     """
     from src import evaluator
 
-    evaluator.run_eval_matrix(
-        list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
-        skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
-        persist_directory=persist_directory, privacy=PRIVATE, meter=meter, expansion=expansion,
-        slot_token=slot_token, **dict(matrix_kwargs or {}),
-    )
-    ledger.store_results(slot_token.slot, sealed_run_dir(slot_token.run_id, create=False))  # step 3
-    return finish_slot(slot_token.slot, ledger=ledger, scan=scan, out=out)
+    try:
+        if not slot_token.claimed[0]:
+            preflight_slot(
+                slot_token, set_specs=set_specs, modes=modes, top_k=top_k, skip_refusals=skip_refusals,
+                skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
+                persist_directory=persist_directory, meter=meter, expansion=expansion, matrix_kwargs=matrix_kwargs,
+            )
+            slot_token.claim()
+        evaluator.run_eval_matrix(
+            list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
+            skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
+            persist_directory=persist_directory, privacy=PRIVATE, meter=meter, expansion=expansion,
+            slot_token=slot_token, **dict(matrix_kwargs or {}),
+        )
+        ledger.store_results(slot_token.slot, sealed_run_dir(slot_token.run_id, create=False))  # step 3
+        return finish_slot(slot_token.slot, ledger=ledger, scan=scan, out=out)
+    finally:
+        slot_token.release()
 
 
 def recover_slot(
@@ -1049,14 +1274,23 @@ def recover_slot(
 
     Returns ``None`` when the slot was never claimed (the caller runs it
     fresh). A spent or consumed slot is a ``claim`` refusal (never re-run);
-    stored results are finished from storage.
+    stored results are finished from storage. The slot's execution lock is held
+    meanwhile: a slot that another process is running or recovering is a
+    ``claim`` refusal (``busy``), never a spent slot or a second finish.
     """
     sid = normalise_slot(slot)
-    rec = ledger.recover(sid)
-    if rec.action is RecoveryAction.NOT_STARTED:
-        return None
-    if rec.action is RecoveryAction.SPENT:
-        raise GateRefused("claim", "spent")
-    if rec.action is RecoveryAction.CONSUMED:
-        raise GateRefused("claim", "consumed")
-    return finish_slot(sid, ledger=ledger, scan=scan, out=out)
+    try:
+        lock = ledger.lock_slot(sid)
+    except SlotBusy:
+        raise GateRefused("claim", "busy") from None
+    try:
+        rec = ledger.recover(sid)
+        if rec.action is RecoveryAction.NOT_STARTED:
+            return None
+        if rec.action is RecoveryAction.SPENT:
+            raise GateRefused("claim", "spent")
+        if rec.action is RecoveryAction.CONSUMED:
+            raise GateRefused("claim", "consumed")
+        return finish_slot(sid, ledger=ledger, scan=scan, out=out)
+    finally:
+        lock.release()

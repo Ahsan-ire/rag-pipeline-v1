@@ -14,6 +14,7 @@ add a socket spy to prove it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import socket
@@ -29,7 +30,7 @@ from src import eval_privacy, eval_schema, eval_sets, sealed_run
 from src.eval_schema import row_hash
 from src.eval_sealed_read import load_sealed
 from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
-from src.sealed_ledger import SealedLedger, exclusions_digest
+from src.sealed_ledger import SealedLedger, _dumps
 from tests.p16_capture import ANSWER, PARTIAL, PROVENANCE, REFUSE, FakeGeneration
 from tests.test_p16w_spend import make_meter
 
@@ -148,7 +149,7 @@ class World:
     families: List[str]
     group_of: Dict[str, str]
     prereg: Dict[str, Any] = field(default_factory=dict)
-    pre_freeze_exclusions: List[str] = field(default_factory=list)
+    pre_freeze_exclusions: Dict[str, List[str]] = field(default_factory=dict)
     twins_payload: Dict[str, Any] = field(default_factory=dict)
 
     # -- records ----------------------------------------------------------------
@@ -166,10 +167,11 @@ class World:
         self.prereg_path.write_text(json.dumps(self.prereg), encoding="utf-8")
         return self.prereg_path
 
-    def write_records(self, *, approve: bool = True, exclusions: Optional[List[str]] = None,
+    def write_records(self, *, approve: bool = True, exclusions: Optional[Any] = None,
                       twins: Optional[Dict[str, Any]] = None) -> None:
         """``approvals.json`` as ``sealed_tool apply`` writes it; stage the group record and the exclusions
-        that ``freeze`` puts in the ledger (``twins`` replaces the group-record payload)."""
+        that ``freeze`` puts in the ledger (``twins`` replaces the group-record payload). ``exclusions`` is a
+        list of group ids, or a ``{group id: [member families]}`` mapping (a list means the id alone)."""
         rows = load_sealed(self.sealed_path)
         approved = {r["id"]: {"row_hash": row_hash(r), "sheet_sha256": SHEET} for r in rows} if approve else {}
         self.records_dir.mkdir(parents=True, exist_ok=True)
@@ -178,19 +180,23 @@ class World:
         }))
         edges = [[self.families[a], self.families[b]] for a, b in SEALED_EDGES]
         self.twins_payload = twins if twins is not None else {"version": 1, "edges": edges}
-        self.pre_freeze_exclusions = list(exclusions or [])
+        self.pre_freeze_exclusions = dict(exclusions) if isinstance(exclusions, dict) else {g: [g] for g in exclusions or []}
 
-    def freeze(self, *, set_path: Optional[Path] = None, exclusions_sha256: Optional[str] = None) -> None:
-        """The sealed freeze, as ``sealed_tool freeze`` records it: the group record is stored as the
-        ``twins_sealed`` payload and bound by its sha256; the exclusions recorded so far are bound by digest."""
+    def freeze(self, *, set_path: Optional[Path] = None, exclusions_sha256: Optional[str] = None,
+               twins_names: Tuple[str, ...] = ("twins_sealed",)) -> None:
+        """The sealed freeze, as ``sealed_tool freeze`` records it: the group record is stored as a payload and
+        bound by its sha256; the exclusions recorded so far are bound by digest. ``twins_names`` are the payload
+        names it is stored under (``{sha16}`` stands for the first 16 hex digits of its sha256: the content name
+        ``sealed_tool`` uses; the plain ``twins_sealed`` is the alias older readers load)."""
         ledger = self.ledger()
-        for group in self.pre_freeze_exclusions:
-            ledger.exclude(group, "owner")
-        twins_sha = ledger.store_payload("twins_sealed", self.twins_payload)
-        ledger.record_freeze(
+        for group, members in self.pre_freeze_exclusions.items():
+            ledger.exclude(group, "owner", members=members)
+        twins_sha = hashlib.sha256(_dumps(self.twins_payload)).hexdigest()
+        for name in twins_names:
+            assert ledger.store_payload(name.format(sha16=twins_sha[:16]), self.twins_payload) == twins_sha
+        ledger.record_freeze(  # exclusions_sha256=None: the ledger digests the exclusions inside its transaction
             split="sealed", set_sha256=sha_of(set_path or self.sealed_path), totals={"families": len(self.families)},
-            twins_sha256=twins_sha,
-            exclusions_sha256=exclusions_sha256 or exclusions_digest(ledger.exclusions()),
+            twins_sha256=twins_sha, exclusions_sha256=exclusions_sha256,
         )
 
     # -- fakes ------------------------------------------------------------------
@@ -248,11 +254,14 @@ class World:
         return [("tuning", str(self.golden_path)), (HELD, str(self.sealed_path)), ("realistic", str(self.realistic_path))]
 
     def token(self, slot: Any = 0, *, expansion: str = "live", rewrite_candidate: Optional[str] = None,
-              meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None):
+              meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
+              claim: bool = True):
+        """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
+        after its preflight)."""
         return sealed_run.acquire_slot_token(
             slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
             records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
-            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run,
+            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, claim=claim,
         )
 
     def run(self, slot: Any = 0, *, token: Any = None, modes: Optional[List[str]] = None, top_k: int = 6,

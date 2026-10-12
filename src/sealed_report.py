@@ -41,6 +41,10 @@ discordance (families the candidate gains minus families it loses, on the
 family-level strict hit@k of the primary mode under the ``all`` collapse);
 Durkalski's clustered McNemar by group and the exact family-level McNemar are
 printed as **labelled sensitivities**, never as the test.
+
+A confirmatory slot is never canonical and is not judged by the canonical guards: its report
+says "confirmatory" instead of "canonical"/"not canonical" and carries no "guards not met" line,
+and :func:`confirmatory_summary` gives the numbers-only lines the CLI prints for it.
 """
 
 from __future__ import annotations
@@ -248,6 +252,37 @@ def confirmatory_stats(
     }
 
 
+def confirmatory_summary(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> List[str]:
+    """The aggregates-only lines printed for a confirmatory slot: numbers only, no ids, no text.
+
+    The primary cluster sign-flip line first, then the families line and the two labelled
+    sensitivities (Durkalski, exact McNemar). Empty for a descriptive slot (0, 0b).
+    """
+    if not is_confirmatory(doc["slot"]):
+        return []
+    drop = dropped_families(doc, excluded)
+    rows = kept_rows(sealed_set(doc), drop)
+    base = doc.get("baseline")
+    if not base:
+        return ["no baseline in the stored run; no comparison"]
+    primary, k = doc["primary_mode"], doc["k"]
+    mine = family_hits(rows, primary)
+    paired_base = {f: bool(v) for f, v in base["hits"].items() if f not in drop}
+    stats = confirmatory_stats(mine, paired_base, doc["groups"])
+    n = stats["families"]
+    dur = stats["durkalski"]
+    return [
+        f"primary ({primary}, family strict hit@{k}): cluster sign-flip p = {stats['p_signflip']:.4f} "
+        f"({stats['groups_discordant']} of {stats['groups']} groups discordant; net {stats['net']:+d} families)",
+        f"families: candidate gains {stats['gains']}, loses {stats['losses']} of {n}; "
+        f"hit rate baseline {sum(paired_base.values())}/{n} -> candidate {sum(mine.values())}/{n}",
+        "sensitivity (labelled, not the test): Durkalski clustered McNemar by group: "
+        + ("unavailable" if dur is None else f"chi2 = {dur['chi2']:.3f}, p = {dur['p']:.4f}"),
+        f"sensitivity (labelled, not the test): exact McNemar on families: b = {stats['gains']}, "
+        f"c = {stats['losses']}, p = {stats['p_mcnemar']:.4f}",
+    ]
+
+
 def _inference_lines(doc: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], drop: FrozenSet[str]) -> List[str]:
     primary = doc["primary_mode"]
     k = doc["k"]
@@ -319,6 +354,7 @@ def format_sealed_report(
         excluded: group ids dropped from the sealed set's analysis.
         canonical: whether the run met every canonical guard.
         failed_guards: names of the guards it missed (a non-canonical rendering).
+            Both are ignored for a confirmatory slot, which is neither.
 
     Returns:
         Markdown with no ids, no question text and no per-family or
@@ -337,16 +373,18 @@ def format_sealed_report(
     groups_kept = {doc["groups"][f] for f in kept_families}
     groups_elig = {doc["groups"][f] for f in elig}
     floor = doc["floor"]
-    title_state = "canonical" if canonical else "not canonical"
+    confirmatory = is_confirmatory(doc["slot"])
+    title_state = "confirmatory" if confirmatory else ("canonical" if canonical else "not canonical")
     lines: List[str] = [f"# Legal RAG Evaluation Report v6 (sealed slot {doc['slot']}; {title_state})", ""]
     lines.append(f"- Date: {doc['created']}")
     lines.append(f"- Slot: {doc['slot']} ({'descriptive baseline' if not is_confirmatory(doc['slot']) else 'confirmatory'})")
     lines.append(f"- top_k: {doc['top_k']}; hit cut-off k = {k}")
     lines.append(f"- Retrieval modes: {', '.join(modes)}; primary mode: {primary}")
     lines.append("- Privacy: sealed (aggregates only: no ids, no per-family or per-chapter lines)")
-    lines.append(f"- Canonical run: {canonical}")
-    if failed_guards:
-        lines.append(f"- Guards not met: {', '.join(failed_guards)}")
+    if not confirmatory:  # the canonical guards judge slots 0 and 0b only
+        lines.append(f"- Canonical run: {canonical}")
+        if failed_guards:
+            lines.append(f"- Guards not met: {', '.join(failed_guards)}")
     lines.append(
         f"- git sha: {prov.get('git_sha')}; embedding model: {prov.get('embedding_model')}; "
         f"generation model: {prov.get('generation_model')}"

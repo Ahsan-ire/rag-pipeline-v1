@@ -166,10 +166,69 @@ def test_a_twins_record_off_its_record_refuses(world, no_calls):
     assert unclaimed(world) and no_calls == []
 
 
-def test_an_exclusion_list_off_its_record_refuses(bare, no_calls):
+def test_a_freeze_cannot_bind_an_exclusion_list_the_ledger_never_held(bare):
+    """record_freeze computes the digest inside its transaction and refuses any other (A9)."""
+    from src.sealed_ledger import ProtocolError
+
     bare.write_prereg()
     bare.write_records()
-    bare.freeze(exclusions_sha256=exclusions_digest([bare.families[4]]))  # the freeze bound a list the ledger never held
+    with pytest.raises(ProtocolError):
+        bare.freeze(exclusions_sha256=exclusions_digest([bare.families[4]]))
+    assert bare.ledger().freeze_record("sealed") is None
+
+
+def payload_files(world, name):
+    return [Path(os.environ["CC_SEALED_LEDGER"]).parent / "sealed_payloads" / f"{name}.json",
+            world.private / "sealed" / "ledger" / "payloads" / f"{name}.json"]
+
+
+def test_the_group_record_is_loaded_by_its_content_name_with_the_plain_alias_as_the_fallback(bare):
+    """sealed_tool stores ``twins_sealed_<sha16>`` (the freeze record's own twins_sha256) and keeps the plain
+    ``twins_sealed`` alias for now: the gate loads by the content name and falls back to the alias."""
+    bare.write_prereg()
+    bare.write_records()
+    bare.freeze(twins_names=("twins_sealed_{sha16}", "twins_sealed"))
+    freeze = bare.ledger().freeze_record("sealed")
+    content = f"twins_sealed_{freeze['twins_sha256'][:16]}"
+    both = len(sealed_run.load_group_edges(bare.ledger(), freeze))
+    for path in payload_files(bare, "twins_sealed"):
+        path.unlink()  # the alias is gone: the content name alone serves
+    assert len(sealed_run.load_group_edges(bare.ledger(), freeze)) == both == 2
+    for path in payload_files(bare, content):
+        path.unlink()
+    assert gate_of(lambda: bare.token(0)) == "twins_record"  # neither name verifies any more
+
+
+def test_a_freeze_that_stored_only_the_content_named_group_record_still_passes_the_gate(bare):
+    bare.write_prereg()
+    bare.write_records()
+    bare.freeze(twins_names=("twins_sealed_{sha16}",))
+    assert not any(p.exists() for p in payload_files(bare, "twins_sealed"))
+    assert bare.token(0).slot == "0"
+
+
+def test_a_tampered_content_named_group_record_falls_back_to_the_alias_and_both_must_fail_to_refuse(bare):
+    bare.write_prereg()
+    bare.write_records()
+    bare.freeze(twins_names=("twins_sealed_{sha16}", "twins_sealed"))
+    freeze = bare.ledger().freeze_record("sealed")
+    for path in payload_files(bare, f"twins_sealed_{freeze['twins_sha256'][:16]}"):
+        path.write_text(json.dumps({"edges": []}))
+    assert sealed_run.load_group_edges(bare.ledger(), freeze)  # the intact alias verifies
+    for path in payload_files(bare, "twins_sealed"):
+        path.write_text(json.dumps({"edges": []}))
+    assert gate_of(lambda: bare.token(0)) == "twins_record"
+
+
+def test_an_exclusion_list_off_its_record_refuses(bare, no_calls):
+    """Defence in depth: were a freeze record ever to bind another list, the gate would still refuse."""
+    from src import sealed_ledger
+
+    bare.write_prereg()
+    bare.write_records()
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(sealed_ledger, "exclusions_digest", lambda groups: exclusions_digest([bare.families[4]]))
+        bare.freeze()  # the freeze record now binds a list the ledger never held
     assert gate_of(lambda: bare.token(0)) == "exclusion_list"
     assert unclaimed(bare) and no_calls == []
 
@@ -228,11 +287,12 @@ def test_a_malformed_twins_record_refuses(bare, twins):
     assert gate_of(lambda: bare.token(0)) == "groups"
 
 
-def test_an_exclusion_naming_an_unknown_group_refuses(bare):
+def test_an_exclusion_naming_no_family_of_the_sealed_set_excludes_nothing_and_does_not_refuse(bare):
+    """A stale id is no longer a permanent refusal (A9): none of its families is in the frozen set."""
     bare.write_prereg()
     bare.write_records(exclusions=["f99999999"])
     bare.freeze()
-    assert gate_of(lambda: bare.token(0)) == "exclusion_list"
+    assert bare.token(0).excluded == frozenset()
 
 
 @pytest.mark.parametrize("slots", [{}, {"1": {"expansion": "live"}}])

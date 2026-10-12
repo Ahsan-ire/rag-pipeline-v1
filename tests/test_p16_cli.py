@@ -391,3 +391,51 @@ def test_repeated_question_in_the_regression_set_is_refused_before_any_call(monk
     with pytest.raises(CohortError):
         _run_real(monkeypatch, ["--golden", SAMPLE, "--regression", dup, *BOTH_SKIPS, "-o", str(tmp_path / "r.md")])
     assert calls == []
+
+
+# --- 16A-2a gate fix A7: no run but a sealed slot writes eval/results_v6.md ------------------------------------
+
+
+def test_the_canonical_sealed_report_is_refused_as_a_results_path_however_it_is_spelled(monkeypatch, tmp_path):
+    import os
+
+    from src import sealed_run
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "eval").mkdir()
+    os.symlink(tmp_path / "eval" / "results_v6.md", tmp_path / "alias.md")  # a dangling alias of the report
+    spellings = [
+        "eval/results_v6.md", "./eval/../eval/results_v6.md", str(tmp_path / "eval" / "results_v6.md"),
+        str(tmp_path / "alias.md"), str(sealed_run.results_v6_path()),
+    ]
+    for canonical in (False, True):  # even a run that is otherwise canonical cannot take it
+        for spelling in spellings:
+            with pytest.raises(ValueError, match="canonical sealed report"):
+                ev._resolve_results_path(spelling, canonical, [])
+    assert ev._resolve_results_path("eval/results_v6_other.md", False, [])[0] == "eval/results_v6_other.md"
+    assert ev._resolve_results_path("eval/results_v6.md.bak", True, [])[0] == "eval/results_v6.md.bak"
+
+
+def test_a_non_slot_run_with_o_pointing_at_results_v6_is_refused_before_any_work(monkeypatch, tmp_path):
+    from src import sealed_run
+
+    target = sealed_run.results_v6_path()  # under the suite's private-root fixture: eval/results_v6.md of the tmp tree
+    calls = _forbid_expand_query(monkeypatch)
+    with pytest.raises(ValueError, match="canonical sealed report"):
+        _run_real(monkeypatch, ["--golden", SAMPLE, *BOTH_SKIPS, "-o", str(target)])
+    assert not target.exists() and calls == []
+    assert not Path(str(target) + ".rows.json").exists()
+
+
+def test_run_eval_matrix_itself_refuses_results_v6_for_every_privacy_class(monkeypatch, tmp_path):
+    from src import sealed_run
+
+    target = str(sealed_run.results_v6_path())
+    for privacy in ("public", "private"):
+        with pytest.raises(ValueError, match="canonical sealed report"):
+            ev.run_eval_matrix(
+                [("golden", SAMPLE)], skip_refusals=True, skip_completeness=True, results_path=target,
+                privacy=privacy, retrieve_fn_factory=FakeRetrieval({}).factory(6),
+                provenance_fn=lambda: dict(PROVENANCE),
+            )
+        assert not Path(target).exists()

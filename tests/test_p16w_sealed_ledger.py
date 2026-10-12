@@ -39,6 +39,7 @@ from src.sealed_ledger import (
     check_ledger_path,
     default_ledger_path,
     digest_run_dir,
+    exclusions_digest,
     resolve_ledger_path,
 )
 
@@ -46,6 +47,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 DIGEST_C = "c" * 64
+NO_EXCLUSIONS = exclusions_digest([])  # what a freeze binds when no group has been excluded yet
 FORBIDDEN_WORDS = ("scope", "chapter", "stratum", "sealed")
 
 
@@ -215,36 +217,34 @@ def test_the_sealed_freeze_binds_the_three_digests_and_totals_and_is_final(tmp_p
     led = make(tmp_path)
     assert led.freeze_record("sealed") is None
     led.record_freeze(
-        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C,
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS,
         totals={"rows": 120, "families": 60, "groups": 52},
     )
     frozen = led.freeze_record("sealed")
     assert frozen["split"] == "sealed"
     assert frozen["set_sha256"] == DIGEST_A
     assert frozen["twins_sha256"] == DIGEST_B
-    assert frozen["exclusions_sha256"] == DIGEST_C
+    assert frozen["exclusions_sha256"] == NO_EXCLUSIONS
     assert frozen["totals"] == {"rows": 120, "families": 60, "groups": 52}
     with pytest.raises(ProtocolError):
         led.record_freeze(
-            split="sealed", set_sha256=DIGEST_B, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={}
+            split="sealed", set_sha256=DIGEST_B, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={}
         )
     assert led.freeze_record("sealed") == frozen  # unchanged: the frozen file is immutable for the epoch
     assert kinds_in(ledger_file()) == ["freeze"]
     with pytest.raises(ProtocolError):
         make(tmp_path).record_freeze(
-            split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={}
+            split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={}
         )  # a restarted process is refused too
 
 
 def test_each_split_freezes_once_and_only_sealed_needs_twins_and_exclusions(tmp_path):
     led = make(tmp_path)
-    with pytest.raises(ValueError):  # sealed without the twins record and the exclusion list
+    with pytest.raises(ValueError):  # sealed without the twins record (the exclusion list is computed when absent)
         led.record_freeze(split="sealed", set_sha256=DIGEST_A, totals={"families": 60})
-    with pytest.raises(ValueError):
-        led.record_freeze(split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, totals={"families": 60})
-    assert led.records() == []  # the refusals wrote nothing
+    assert led.records() == []  # the refusal wrote nothing
     led.record_freeze(
-        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={"families": 60}
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={"families": 60}
     )
     led.record_freeze(split="tuning", set_sha256=DIGEST_B, totals={"families": 150})  # no twins, no exclusions
     led.record_freeze(  # optional fields are accepted and kept when given
@@ -271,12 +271,12 @@ def test_each_split_freezes_once_and_only_sealed_needs_twins_and_exclusions(tmp_
 def test_the_mirror_names_the_split_as_a_value_and_still_carries_digests_only(tmp_path):
     led = make(tmp_path)
     led.record_freeze(
-        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={"families": 60}
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={"families": 60}
     )
     led.record_freeze(split="tuning", set_sha256=DIGEST_B, totals={"families": 150})
     sealed, tuning = (json.loads(line) for line in lines_of(mirror_file(tmp_path)))
     assert sealed["split"] == "sealed" and tuning["split"] == "tuning"  # a value, not a key
-    assert sealed["digests"] == {"set_sha256": DIGEST_A, "twins_sha256": DIGEST_B, "exclusions_sha256": DIGEST_C}
+    assert sealed["digests"] == {"set_sha256": DIGEST_A, "twins_sha256": DIGEST_B, "exclusions_sha256": NO_EXCLUSIONS}
     assert tuning["digests"] == {"set_sha256": DIGEST_B}
     for entry in (sealed, tuning):
         assert set(entry) == {"seq", "kind", "digest", "digests", "split"}
@@ -309,7 +309,7 @@ def test_a_second_freeze_of_one_split_in_the_file_fails_closed(tmp_path):
         lambda led: led.record_release(round_no=1, assignment_digest=DIGEST_A, totals={"Families": 1}),
         lambda led: led.record_release(round_no=1, assignment_digest=DIGEST_A, totals={"families": -1}),
         lambda led: led.record_release(round_no=1, assignment_digest=DIGEST_A, totals={"families": True}),
-        lambda led: led.record_freeze(split="sealed", set_sha256=DIGEST_A, twins_sha256="short", exclusions_sha256=DIGEST_C, totals={}),
+        lambda led: led.record_freeze(split="sealed", set_sha256=DIGEST_A, twins_sha256="short", exclusions_sha256=NO_EXCLUSIONS, totals={}),
         lambda led: led.record_freeze(split="tuning", set_sha256=DIGEST_A, exclusions_sha256="short", totals={}),
         lambda led: led.record_freeze(split="tuning", set_sha256="short", totals={}),
         lambda led: led.record_split_attempt(round_no=1, pool_digest=DIGEST_A, outcome="released", payload_sha256="short"),
@@ -647,7 +647,7 @@ def test_exclusions_append_and_accumulate_across_restarts(tmp_path):
 def test_a_post_freeze_exclusion_leaves_the_freeze_and_later_slots_alone(tmp_path):
     led = make(tmp_path)
     led.record_freeze(
-        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={"families": 60}
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={"families": 60}
     )
     frozen = led.freeze_record("sealed")
     advance(led, tmp_path, 0, ["claim", "store", "intent", "consumed"])
@@ -736,7 +736,7 @@ def _full_history(tmp_path: Path) -> SealedLedger:
     led.record_split_attempt(round_no=1, pool_digest=DIGEST_A, outcome="released")
     led.record_release(round_no=1, assignment_digest=DIGEST_B, totals={"families": 60})
     led.record_freeze(
-        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=DIGEST_C, totals={"families": 60}
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, exclusions_sha256=NO_EXCLUSIONS, totals={"families": 60}
     )
     advance(led, tmp_path, 0, ["claim", "store", "intent", "consumed"])
     led.exclude("grp-7", "s_hit")
@@ -766,7 +766,7 @@ def test_the_mirror_carries_record_kinds_and_digests_only(tmp_path):
             assert not any(word in key for word in FORBIDDEN_WORDS), key
         for value in entry.get("digests", {}).values():
             assert len(value) == 64
-    assert mirror[2]["digests"] == {"set_sha256": DIGEST_A, "twins_sha256": DIGEST_B, "exclusions_sha256": DIGEST_C}
+    assert mirror[2]["digests"] == {"set_sha256": DIGEST_A, "twins_sha256": DIGEST_B, "exclusions_sha256": NO_EXCLUSIONS}
     assert mirror[2]["split"] == "sealed"
     text = mirror_file(tmp_path).read_text()
     for word in ("scope", "chapter", "stratum"):
@@ -1158,3 +1158,35 @@ def test_payload_storage_fails_closed_on_a_broken_ledger_and_survives_a_restart(
     with pytest.raises(MirrorTampered):
         led.store_payload("q", {"k": 1})  # no payload is written beside a ledger that fails its checks
     assert not any(path.exists() for path in payload_paths(tmp_path, "q"))
+
+
+# ---------------------------------------------------------------------------
+# Durable ancestry (16A-2a gate fix A5)
+# ---------------------------------------------------------------------------
+
+
+def test_fsync_ancestry_syncs_every_directory_above_the_path_up_to_the_stop(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(sealed_ledger, "_fsync_dir", lambda d: synced.append(Path(d)))
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    sealed_ledger.fsync_ancestry(deep, stop_at=tmp_path / "a")
+    assert synced == [tmp_path / "a" / "b", tmp_path / "a"]  # the path itself is the caller's, the stop is inclusive
+    synced.clear()
+    sealed_ledger.fsync_ancestry(deep, stop_at=tmp_path / "elsewhere")  # not an ancestor: walks to the root
+    assert synced[:3] == [tmp_path / "a" / "b", tmp_path / "a", tmp_path] and synced[-1] == Path("/")
+
+
+def test_store_results_syncs_the_run_directorys_ancestry_before_it_records_slot_stored(tmp_path, monkeypatch):
+    led = make(tmp_path)
+    led.claim(0)
+    run = make_run(tmp_path, "run-1")
+    events = []
+    real_write = SealedLedger._write
+    monkeypatch.setattr(sealed_ledger, "_fsync_dir", lambda d: events.append(("fsync", Path(d))))
+    monkeypatch.setattr(SealedLedger, "_write", lambda self, rec: (events.append(("append", rec["kind"])), real_write(self, rec))[1])
+    led.store_results(0, run)
+    stored = events.index(("append", "slot_stored"))
+    before = [d for kind, d in events[:stored] if kind == "fsync"]
+    assert run in before and run.parent in before and run.parent.parent in before and tmp_path in before
+    assert Path("/") not in before  # it stops at the common ancestor of the run directory and the private copy

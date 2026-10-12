@@ -82,6 +82,18 @@ on slot 0, even with the render interrupted, disqualifies 0b for good. Slot 0
 is not "ended" while it holds stored results that are neither rendered nor
 consumed (its canonical status may still be decided), so 0b waits for that.
 
+Execution locks (a live slot is not a spent slot)
+-------------------------------------------------
+The ledger alone cannot tell a slot whose process is still running from one
+whose process died: both are "claimed, nothing stored". ``lock_slot(slot)``
+therefore takes a non-blocking exclusive ``flock`` on a per-slot lock file
+(``sealed_slot_locks/slot-<id>.lock`` next to the out-of-tree ledger); the gate
+takes it before it claims and the token keeps it for the whole run, and
+recovery takes it too. The kernel drops the lock with the process, so a crash
+leaves a free lock and a ledger that says SPENT, while a live run keeps the lock.
+``claim("0b")`` takes slot 0's lock (non-blocking) and is refused if it is held,
+and once 0b is claimed ``store_results``/``record_intent`` for slot 0 are refused.
+
 Dispatches
 ----------
 ``record_dispatch`` appends a ``dispatch`` record when ``scripts/sp_launch.py``
@@ -95,7 +107,10 @@ Groups and exclusions
 ``group_ids`` is the **one definition of a sealed group id** (the connected
 components of the twins record's edges over the frozen sealed families, named by
 the smallest member family): ``sealed_tool exclude`` and the slot gate both call
-it, so an exclusion recorded by one is always a group the other knows.
+it. A group's *name* can change when a later rejection removes its smallest
+member, so an exclusion also records its ``members`` (the group's families when it
+was made) and the gate resolves ``excluded_families()`` against the freeze-bound
+groups at run time instead of trusting the recorded name.
 ``exclusions_digest`` and ``SealedLedger.exclusions_at_freeze`` give the digest
 the sealed freeze binds, so the slot gate re-checks it from the ledger itself
 (no separate exclusion file).
@@ -113,12 +128,12 @@ import os
 import pwd
 import re
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext as _nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -162,6 +177,12 @@ SEALED_SPLIT = "sealed"
 #: Payload directories: out-of-tree (next to the ledger) and inside the private copy.
 PAYLOAD_DIRNAME = "sealed_payloads"
 PRIVATE_PAYLOAD_DIRNAME = "payloads"
+
+#: Files at a run directory's top level that the run-directory digest ignores (rendered output, see ``digest_run_dir``).
+DIGEST_EXEMPT = ("report.md", "report.md.tmp")
+
+#: Per-slot execution locks live next to the out-of-tree ledger (so the pytest-only override moves them too).
+SLOT_LOCK_DIRNAME = "sealed_slot_locks"
 
 #: A mirror key containing any of these is a leak (a4).
 FORBIDDEN_MIRROR_KEY_PARTS = ("scope", "chapter", "stratum", "sealed")
@@ -208,6 +229,10 @@ class ProtocolError(SealedLedgerError):
 
 class SlotRefused(ProtocolError):
     """``claim`` refused: the slot was claimed before, or 0b is not available."""
+
+
+class SlotBusy(SlotRefused):
+    """The slot's execution lock is held: another process is running or recovering it."""
 
 
 # ---------------------------------------------------------------------------
@@ -315,12 +340,69 @@ def _read_store(path: Path) -> _Store:
     return _Store(path, data[:complete_len].split(b"\n")[:-1], complete_len)
 
 
-def _fsync_dir(directory: Path) -> None:
+def _fsync_dir(directory: os.PathLike[str] | str) -> None:
     fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def fsync_dir(directory: os.PathLike[str] | str) -> None:
+    """fsync a directory, making the entries created or renamed in it durable."""
+    _fsync_dir(directory)
+
+
+def fsync_ancestry(path: os.PathLike[str] | str, stop_at: os.PathLike[str] | str | None = None) -> None:
+    """fsync every directory that holds an entry on the way down to ``path``.
+
+    ``path`` itself is not synced (its own contents are the caller's business);
+    its parent is, then the parent's parent and so on, so that a directory
+    created on the way is reachable after a crash. The walk ends at ``stop_at``
+    (inclusive) when it is an ancestor of ``path``, else at the filesystem root.
+    """
+    target = Path(os.path.abspath(path))
+    stop = Path(os.path.abspath(stop_at)) if stop_at is not None else None
+    if stop is not None and stop != target and stop not in target.parents:
+        stop = None
+    for parent in target.parents:
+        _fsync_dir(parent)
+        if parent == stop:
+            break
+
+
+class SlotLock:
+    """A held, exclusive, non-blocking ``flock`` on one slot's lock file (see ``SealedLedger.lock_slot``).
+
+    The lock lasts until :meth:`release` (idempotent), the end of a ``with``
+    block, garbage collection, or the death of the process: whichever comes
+    first. Closing the descriptor is what releases an ``flock``.
+    """
+
+    def __init__(self, fd: int, slot: str) -> None:
+        self._fd: Optional[int] = fd
+        self.slot = slot
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            os.close(fd)
+
+    def __enter__(self) -> "SlotLock":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.release()
+
+    def __del__(self) -> None:  # a dropped token must not keep its slot busy
+        try:
+            self.release()
+        except Exception:  # noqa: BLE001 - nothing may escape a finaliser (the interpreter may be shutting down)
+            pass
 
 
 def _append_line(path: Path, line: bytes, complete_len: int, *, mode: int) -> None:
@@ -520,6 +602,13 @@ def _may_use_0b(slots: Mapping[str, _SlotState]) -> bool:
     return "0b" not in slots and _slot0_ended_non_canonical(slots)
 
 
+def _check_claimable(sid: str, slots: Mapping[str, _SlotState]) -> None:
+    if sid in slots:
+        raise SlotRefused(f"slot {sid} was claimed before")
+    if sid == "0b" and not _may_use_0b(slots):
+        raise SlotRefused("slot 0b is not available")
+
+
 def below_floor(eligible_after_exclusion: int, floor: int) -> bool:
     """True when the eligible answerable families fell below the floor.
 
@@ -569,11 +658,18 @@ def digest_run_dir(run_dir: os.PathLike[str] | str) -> str:
 
     The digest changes if any stored result, sidecar or artifact is edited,
     added or removed. Symlinks are refused (their target could change later).
+    The one exception is ``DIGEST_EXEMPT``: ``report.md`` (and its temporary
+    file) at the directory's top level is the rendered output of a confirmatory
+    slot, written AFTER step 3 from the digested files, so it can never be part of
+    what step 3 recorded.
     """
     root = Path(run_dir)
     if not root.is_dir():
         raise ProtocolError("the run directory does not exist")
-    entries = sorted(p for p in root.rglob("*") if not p.is_dir() or p.is_symlink())
+    entries = sorted(
+        p for p in root.rglob("*")
+        if (not p.is_dir() or p.is_symlink()) and p.relative_to(root).as_posix() not in DIGEST_EXEMPT
+    )
     if not entries:
         raise ProtocolError("the run directory holds no results")
     outer = hashlib.sha256()
@@ -671,6 +767,8 @@ class SealedLedger:
         self._payload_dirs = (self._ledger.parent / PAYLOAD_DIRNAME, Path(private_copy_dir) / PRIVATE_PAYLOAD_DIRNAME)
         if _same_path(*self._payload_dirs):
             raise LedgerRefused("the two payload directories must be different")
+        self._lock_dir = self._ledger.parent / SLOT_LOCK_DIRNAME
+        self._copy_dir = Path(private_copy_dir)
         self._clock = clock or _utcnow
 
     # -- plumbing -----------------------------------------------------------
@@ -778,10 +876,14 @@ class SealedLedger:
     ) -> None:
         """Record one split's freeze: its file's sha256 and totals.
 
-        The ``sealed`` split also binds the twins record's and the exclusion
-        list's sha256 (both required); the others may omit them. A split's
-        frozen file is immutable for the epoch, so a second freeze of the SAME
-        split is refused (other splits freeze separately).
+        The ``sealed`` split also binds the twins record's sha256 (required) and
+        the exclusion list's: ``exclusions_sha256=None`` means "the exclusions
+        recorded so far", digested INSIDE this transaction (so an exclusion
+        cannot slip in between the digest and the freeze record); a given value
+        must equal that digest or ``ProtocolError`` is raised. The other splits
+        may omit both. A split's frozen file is immutable for the epoch, so a
+        second freeze of the SAME split is refused (other splits freeze
+        separately).
         """
         name = _token(split, "split")
         fields: Dict[str, Any] = {
@@ -789,15 +891,20 @@ class SealedLedger:
             "set_sha256": _hex64(set_sha256, "set_sha256"),
             "totals": _totals(totals),
         }
-        if name == SEALED_SPLIT and (twins_sha256 is None or exclusions_sha256 is None):
-            raise ValueError(f"the {SEALED_SPLIT} freeze binds the twins record and the exclusion list")
+        if name == SEALED_SPLIT and twins_sha256 is None:
+            raise ValueError(f"the {SEALED_SPLIT} freeze binds the twins record")
         if twins_sha256 is not None:
             fields["twins_sha256"] = _hex64(twins_sha256, "twins_sha256")
         if exclusions_sha256 is not None:
-            fields["exclusions_sha256"] = _hex64(exclusions_sha256, "exclusions_sha256")
+            _hex64(exclusions_sha256, "exclusions_sha256")
         with self._txn() as txn:
             if any(r["kind"] == "freeze" and r["split"] == name for r in txn.records):
                 raise ProtocolError(f"split {name!r} is already frozen; its frozen file is immutable")
+            if name == SEALED_SPLIT or exclusions_sha256 is not None:
+                current = exclusions_digest(r["group_id"] for r in txn.records if r["kind"] == "exclusion")
+                if exclusions_sha256 is not None and exclusions_sha256 != current:
+                    raise ProtocolError("exclusions_sha256 is not the digest of the exclusions recorded so far")
+                fields["exclusions_sha256"] = current
             txn.append("freeze", **fields)
 
     def freeze_record(self, split: str) -> Optional[Dict[str, Any]]:
@@ -870,40 +977,98 @@ class SealedLedger:
 
     # -- the slot protocol ----------------------------------------------------
 
+    @contextmanager
+    def _slot_zero_idle(self) -> Iterator[None]:
+        """Hold slot 0's execution lock (non-blocking) for the block, or refuse: slot 0 is still running."""
+        try:
+            guard = self.lock_slot("0")
+        except SlotBusy:
+            raise SlotBusy("slot 0 is still running; slot 0b is not available") from None
+        try:
+            yield
+        finally:
+            guard.release()
+
+    def slot_lock_path(self, slot: int | str) -> Path:
+        """The lock file of ``slot`` (what :meth:`lock_slot` flocks)."""
+        return self._lock_dir / f"slot-{_slot_id(slot)}.lock"
+
+    def lock_slot(self, slot: int | str) -> SlotLock:
+        """Take the slot's execution lock without waiting (see the module docstring).
+
+        The caller holds it for the whole run of the slot (or its recovery) and
+        calls ``release()``; the OS drops it if the process dies.
+
+        Raises:
+            SlotBusy: another process (or another holder in this one) has it.
+        """
+        sid = _slot_id(slot)
+        self._lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.slot_lock_path(sid), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise SlotBusy(f"slot {sid} is held by a running process") from None
+        except BaseException:
+            os.close(fd)
+            raise
+        return SlotLock(fd, sid)
+
     def claim(self, slot: int | str) -> str:
         """Step 1: claim the slot. Refused if it was claimed before (spent slots included).
 
-        Slot ``"0b"`` is also refused unless ``may_use_0b()``. Returns the
-        normalised slot id.
+        Slot ``"0b"`` is also refused unless ``may_use_0b()`` AND slot 0 is not
+        running right now (slot 0's execution lock is taken, non-blocking, for
+        the duration of the claim). Returns the normalised slot id.
+        """
+        sid = _slot_id(slot)
+        with self._slot_zero_idle() if sid == "0b" else _nullcontext():
+            with self._txn() as txn:
+                _check_claimable(sid, txn.slots)
+                txn.append("slot_claim", slot=sid)
+        return sid
+
+    def check_claimable(self, slot: int | str) -> None:
+        """Raise ``SlotRefused`` if ``claim(slot)`` would be refused on the ledger's state; append nothing.
+
+        Advisory (a gate's early answer): the claim itself re-checks under the lock, and for ``"0b"`` it
+        also needs slot 0 not to be running, which only the claim can establish.
         """
         sid = _slot_id(slot)
         with self._txn() as txn:
-            slots = txn.slots
-            if sid in slots:
-                raise SlotRefused(f"slot {sid} was claimed before")
-            if sid == "0b" and not _may_use_0b(slots):
-                raise SlotRefused("slot 0b is not available")
-            txn.append("slot_claim", slot=sid)
-        return sid
+            _check_claimable(sid, txn.slots)
 
     def store_results(self, slot: int | str, run_dir: os.PathLike[str] | str) -> str:
         """Step 3: record that durable results exist in ``run_dir``; returns their digest.
 
         The caller has written the files; this fsyncs them, digests the
-        directory (``digest_run_dir``) and records the digest and the run id
-        (the directory name).
+        directory (``digest_run_dir``), makes the directory's own ancestry
+        durable (a run directory created for this run is reachable after a
+        crash) and records the digest and the run id (the directory name).
         """
         sid = _slot_id(slot)
         run_id = _token(Path(run_dir).name, "run id", _ID)
         digest = digest_run_dir(run_dir)
+        fsync_ancestry(run_dir, stop_at=self._common_ancestor(Path(run_dir)))
         with self._txn() as txn:
             state = txn.slots.get(sid)
             if state is None:
                 raise ProtocolError(f"slot {sid} is not claimed")
+            if sid == "0" and "0b" in txn.slots:
+                raise ProtocolError("slot 0 was superseded by slot 0b; it can store nothing more")
             if state.stored is not None:
                 raise ProtocolError(f"slot {sid} already has stored results")
             txn.append("slot_stored", slot=sid, run_id=run_id, results_digest=digest)
         return digest
+
+    def _common_ancestor(self, run_dir: Path) -> Optional[Path]:
+        """The deepest directory above both ``run_dir`` and the private copy (the sealed tree's root), if any."""
+        try:
+            common = os.path.commonpath([os.path.abspath(run_dir), os.path.abspath(self._copy_dir)])
+        except ValueError:
+            return None
+        return Path(common) if common not in ("", os.sep) else None
 
     def record_intent(self, slot: int | str) -> None:
         """Step 4, canonical runs only: record the durable publication intent.
@@ -912,6 +1077,8 @@ class SealedLedger:
         """
         sid = _slot_id(slot)
         with self._txn() as txn:
+            if sid == "0" and "0b" in txn.slots:
+                raise ProtocolError("slot 0 was superseded by slot 0b; it can publish nothing")
             state = txn.slots.get(sid)
             if state is None or state.stored is None:
                 raise ProtocolError(f"slot {sid} has no stored results to publish")
@@ -961,15 +1128,49 @@ class SealedLedger:
 
     # -- exclusions -------------------------------------------------------------
 
-    def exclude(self, group_id: str, reason: str) -> None:
-        """Append an exclusion against a whole group (``reason`` is an enum token, e.g. ``s_hit``)."""
-        fields = {"group_id": _token(group_id, "group_id", _ID), "reason": _token(reason, "reason")}
+    def exclude(self, group_id: str, reason: str, members: Optional[Sequence[str]] = None) -> None:
+        """Append an exclusion against a whole group (``reason`` is an enum token, e.g. ``s_hit``).
+
+        ``members`` are the group's families at the time (family ids, never text);
+        ``None`` means ``[group_id]``, the group's own smallest-member name. The
+        gate resolves the families (``excluded_families``) against the frozen
+        groups at run time, so a group renamed by a later rejection still resolves.
+        """
+        fields: Dict[str, Any] = {"group_id": _token(group_id, "group_id", _ID), "reason": _token(reason, "reason")}
+        if members is None:
+            members = [fields["group_id"]]
+        elif isinstance(members, (str, bytes)):
+            raise ValueError("members must be a sequence of family ids")
+        names = sorted({_token(m, "member", _ID) for m in members})
+        if not names:
+            raise ValueError("an exclusion names at least one member family")
+        fields["members"] = names
         with self._txn() as txn:
             txn.append("exclusion", **fields)
 
     def exclusions(self) -> FrozenSet[str]:
         """The group ids excluded so far."""
         return frozenset(r["group_id"] for r in self.records("exclusion"))
+
+    def excluded_families(self) -> FrozenSet[str]:
+        """Every family named by an exclusion so far (the recorded ``members``; a legacy record: its group id).
+
+        The slot gate maps these onto the freeze-bound groups, so it never
+        depends on a group *name* that a later rejection may have changed.
+
+        Raises:
+            LedgerCorrupt: a record's ``members`` is not a list of family ids.
+        """
+        out = set()
+        for rec in self.records("exclusion"):
+            members = rec.get("members", [rec["group_id"]])
+            if not (
+                isinstance(members, list) and members
+                and all(isinstance(m, str) and _ID.fullmatch(m) for m in members)
+            ):
+                raise LedgerCorrupt(f"record {rec['seq']}: bad exclusion members")
+            out.update(members)
+        return frozenset(out)
 
     def exclusions_at_freeze(self, split: str = SEALED_SPLIT) -> Optional[FrozenSet[str]]:
         """The groups excluded BEFORE the named split's freeze record (``None`` if it is not frozen yet).

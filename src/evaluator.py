@@ -105,6 +105,20 @@ from src.tracing_guard import assert_tracing_off, tracing_problems
 # overwrite the trustworthy committed report.
 DEFAULT_RESULTS_PATH = "eval/results.md"
 PARTIAL_RESULTS_PATH = "eval/results_partial.md"
+# The canonical sealed report (16A-2a, D73) is written by the slot protocol (``src.sealed_run``) and by
+# nothing else: no other run may target it, canonical or not.
+CANONICAL_V6_PATH = "eval/results_v6.md"
+
+
+def _targets_v6_report(path: Optional[str]) -> bool:
+    """True if ``path`` is the canonical sealed report ``eval/results_v6.md`` (by file identity).
+
+    Both the repo-relative spelling and the private-root-derived one (``sealed_run.results_v6_path()``,
+    which the suite's private-root fixture moves) count, so no test and no run can reach either.
+    """
+    if path is None:
+        return False
+    return _same_path(path, CANONICAL_V6_PATH) or _same_path(path, _sealed_run.results_v6_path())
 
 # The four grounding-gate outcomes, in report order, so the gate-outcome
 # distribution is always zero-filled over the full vocabulary (a missing
@@ -1014,6 +1028,8 @@ def _resolve_results_path(
       it targets the canonical ``eval/results.md`` on a non-canonical run: the
       committed report must never be written by a non-canonical run, even when
       explicitly targeted (D46 fail-closed, tightened from the old warning).
+      The canonical sealed report ``eval/results_v6.md`` is refused outright:
+      only the sealed slot protocol writes it (16A-2a, D73).
     - With no explicit path, a fully canonical run writes ``eval/results.md``;
       anything less writes the gitignored ``eval/results_partial.md`` (with a
       note), so a partial run can never silently clobber the committed report.
@@ -1045,6 +1061,14 @@ def _resolve_results_path(
                     f"--results path {explicit_path!r} resolves to an input "
                     f"eval-set path; refusing to overwrite the eval set with a report"
                 )
+        if _targets_v6_report(explicit_path):
+            # 16A-2a (D73): the canonical sealed report belongs to the slot protocol alone. A non-slot run
+            # (even one that is otherwise canonical) can never write it, as it can never overwrite results.md
+            # on a non-canonical run.
+            raise ValueError(
+                f"--results path {explicit_path!r} resolves to the canonical sealed report "
+                f"{CANONICAL_V6_PATH}, which only a sealed slot run writes; refusing"
+            )
         if not is_canonical and _same_path(explicit_path, DEFAULT_RESULTS_PATH):
             # D46 fail-closed: an explicit --results at the committed canonical
             # path on a NON-canonical run now RAISES rather than warning — the
@@ -1755,6 +1779,7 @@ def run_eval_matrix(
     meter: Any = None,
     expansion: str = "live",
     slot_token: Any = None,
+    preflight_only: bool = False,
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1844,6 +1869,14 @@ def run_eval_matrix(
             only under ``eval/private/sealed/runs/<run id>/``. It returns
             ids-free facts, never rows. Rendering, the canonical decision and
             publication belong to ``src.sealed_run``.
+        preflight_only: with a ``slot_token`` that is NOT yet claimed, run every
+            check the run could refuse on (the numeric options, the token and set
+            bindings, the replay artifact's load and per-row preflight, the metered
+            clients, the absorbed map, each set's cohort and duplicate-id checks, and
+            the embedding model, Chroma index and BM25 sidecar of a default path) and
+            return ``{}`` before the token is begun and before any retrieval, expansion
+            or model call. ``src.sealed_run.preflight_slot`` uses it so that a refusal
+            never spends a slot.
 
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
@@ -1865,6 +1898,15 @@ def run_eval_matrix(
         raise ValueError(f"top_k must be >= 1, got {top_k}")
     if judge_sample is not None and judge_sample < 0:
         raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
+    if preflight_only and slot_token is None:
+        raise ValueError("preflight_only needs a slot token")
+    # 16A-2a (D73): no run but a sealed slot may target the canonical sealed report, whatever the privacy
+    # class: refused here, before any work, not at the write.
+    if _targets_v6_report(results_path):
+        raise ValueError(
+            f"--results targets the canonical sealed report {CANONICAL_V6_PATH}, which only a sealed "
+            f"slot run writes; refusing before any work"
+        )
 
     set_paths = [path for _label, path in set_specs]
     expansion_mode, artifact_path_arg = _parse_expansion_arg(expansion)
@@ -2134,6 +2176,33 @@ def run_eval_matrix(
             bm25_cache.append(load_bm25_index(persist_directory))
         return bm25_cache[0]
 
+    def _probe_backends() -> None:
+        """Preflight: load NOW the backends a default path would otherwise load at its first retrieval.
+
+        Only the default retrieval factory and the default generation path load anything (an injected
+        factory or ``generate_fn`` owns its retrieval). Needs the embedding model to match the index's
+        manifest, the Chroma collection to open and hold chunks, and the BM25 sidecar to load whenever
+        a hybrid, bm25 or rewrite arm (or the default answer pass) would use it: a run on a missing
+        sidecar would degrade silently and could never be canonical, so it must not spend a slot.
+
+        Raises:
+            GateRefused: ``retrieval_backend`` (detail: the exception class name, never its text).
+        """
+        need_vector = need_bm25 = False
+        if using_default_retrieve_factory:
+            need_vector = any(m in ("hybrid", "vector", REWRITE_MODE) for m in modes)
+            need_bm25 = any(m in ("hybrid", "bm25", REWRITE_MODE) for m in modes)
+        if using_default_generate_fn and generation_ran:
+            need_vector = need_bm25 = True
+        try:
+            if need_vector:
+                if not _get_vector().get(limit=1).get("ids"):
+                    raise LookupError("the Chroma collection holds no chunks")
+            if need_bm25 and _get_bm25() is None:
+                raise LookupError("the BM25 sidecar is missing or unreadable")
+        except Exception as exc:  # noqa: BLE001 - one fixed gate; the class name is the only detail printed
+            raise _sealed_run.backend_refused(exc) from None
+
     if retrieve_fn_factory is None:
 
         def retrieve_fn_factory(mode: str) -> Callable[..., List[Dict[str, Any]]]:
@@ -2222,7 +2291,7 @@ def run_eval_matrix(
             results_path=results_path, provenance_fn=provenance_fn,
             persist_directory=persist_directory, meter=meter,
             judge=judge, judge_fn=judge_fn, judge_sample=judge_sample, judge_dump_path=judge_dump_path,
-            slot_token=slot_token,
+            slot_token=slot_token, preflight_only=preflight_only, probe_backends=_probe_backends,
             bm25_in_play=using_default_retrieve_factory or using_default_generate_fn,
             bm25_probe=lambda: bool(bm25_cache) and bm25_cache[0] is not None,
         )
@@ -2736,6 +2805,28 @@ def _load_absorbed_map() -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]
     return dict(doc.get("map") or {}), _sha256_file(path)
 
 
+def _v6_set_head(token: Any, path: str, schema: int, privacy: str) -> Tuple[bool, List[Dict[str, Any]], str, Any]:
+    """One set of a v6 run, read and checked: ``(owned by the token, rows, sha256, cohort block)``.
+
+    The token's own set comes from the token's rows (the sealed loader read it at the gate), every other
+    set through ``load_any``. Raises ``ValueError`` on a duplicate row id (C4) and whatever
+    ``cohort_block`` refuses. Shared by the run and by the preflight, so they cannot disagree.
+    """
+    from src.eval_cohort import cohort_block
+    from src.eval_schema import load_any
+
+    owned = token is not None and token.approves(path)
+    rows = list(token.rows) if owned else load_any(path)
+    sha = token.set_sha256 if owned else _sha256_file(path)
+    cohort = cohort_block(
+        path=path, privacy=_privacy.SEALED if token is not None else privacy, schema=schema, sha256=sha,
+        rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
+    )
+    if cohort["rows"] != len({r["id"] for r in rows}):
+        raise ValueError("duplicate row id in set; C4 refuses the set")
+    return owned, rows, sha, cohort
+
+
 def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     """The report-v6 branch of ``run_eval_matrix`` (see ``src.eval_v6``).
 
@@ -2757,8 +2848,6 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     printed, and only ids-free facts are returned.
     """
     from src import eval_v6
-    from src.eval_cohort import cohort_block
-    from src.eval_schema import load_any
 
     token = kw.get("slot_token")
     modes = kw["modes"]
@@ -2768,6 +2857,13 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     ks = [k for k in HIT_KS if k <= top_k]
     k = max(ks) if ks else top_k
     absorbed, absorbed_sha = _load_absorbed_map()
+    if kw.get("preflight_only"):
+        # Everything below that could refuse without a call, and nothing that calls: each set's rows,
+        # cohort and duplicate-id check, then the backends a default path loads. Nothing is begun.
+        for (_label, path), schema in zip(kw["set_specs"], kw["schemas"]):
+            _v6_set_head(token, path, schema, privacy)
+        kw["probe_backends"]()
+        return {}
     if token is not None:
         token.begin()  # one claim, one run
         # "Just before the first call": nothing below this line has called a
@@ -2781,15 +2877,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     total_incomplete = 0
     total_unknown = 0
     for (label, path), schema in zip(kw["set_specs"], kw["schemas"]):
-        owned = token is not None and token.approves(path)
-        rows = list(token.rows) if owned else load_any(path)
-        sha = token.set_sha256 if owned else _sha256_file(path)
-        cohort = cohort_block(
-            path=path, privacy=_privacy.SEALED if token is not None else privacy, schema=schema, sha256=sha,
-            rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
-        )
-        if cohort["rows"] != len({r["id"] for r in rows}):
-            raise ValueError("duplicate row id in set; C4 refuses the set")
+        owned, rows, sha, cohort = _v6_set_head(token, path, schema, privacy)
         for r in rows:
             kw["expand"](r["question"])
         retrieval: Dict[str, Dict[str, Any]] = {}

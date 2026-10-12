@@ -214,7 +214,9 @@ def test_a_crash_between_steps_three_and_four_renders_from_storage_and_consumes_
         outcome = recover(world, 0)
     assert outcome.canonical and outcome.published and outcome.action == "render_from_storage"
     assert kinds(world) == ["freeze", "slot_claim", "slot_stored", "publication_intent", "slot_consumed"]
-    assert "canonical; published" in sealed_run.results_v6_path().read_text() or sealed_run.results_v6_path().is_file()
+    report = sealed_run.results_v6_path().read_text()  # the recovery really rendered and published it
+    assert report.splitlines()[0].endswith("(sealed slot 0; canonical)") and "Canonical run: True" in report
+    assert "## Sealed set" in report and "## Family rates (sealed)" in report
     assert world.ledger().recover(0).action is RecoveryAction.CONSUMED
 
 

@@ -65,7 +65,9 @@ def test_the_flags_thread_through_to_the_gate_and_the_runner(world, monkeypatch,
     code, out, err = cli(monkeypatch, capsys, world, "--top-k", "6", "--mode", "all", "--judge-sample", "5")
     assert code == 0
     token, kw = spy_run_slot["token"], spy_run_slot["kwargs"]
-    assert token.slot == "0" and token.expansion_mode == "live" and "slot_claim" in kinds(world)
+    assert token.slot == "0" and token.expansion_mode == "live"
+    # the CLI mints the token unclaimed: run_slot claims it after its preflight, right before the first call
+    assert "slot_claim" not in kinds(world) and token.claimed == [False]
     assert [label for label, _ in kw["set_specs"]] == ["golden", "held-out", "realistic"]
     assert kw["set_specs"][1][1] == str(world.sealed_path) and kw["modes"] == list(ev.EVAL_MODES)
     assert kw["top_k"] == 6 and kw["judge"] is True and kw["judge_sample"] == 5 and kw["expansion"] == "live"
@@ -175,7 +177,11 @@ def test_exit_codes_for_the_epoch_stops_the_publication_block_and_the_spend_limi
 
     # the spend limits after the claim: 3 (week) and 6 (run); each spends its slot (0b is the spare)
     for kind, slot, expected in (("week", "0", 3), ("run", "0b", 6)):
-        monkeypatch.setattr(sealed_run, "run_slot", lambda token, _k=kind, **kw: (_ for _ in ()).throw(SpendLimitReached(_k)))
+        def spend_out(token, _k=kind, **kw):  # what run_slot does: claim, then the meter stops the run
+            token.claim()
+            raise SpendLimitReached(_k)
+
+        monkeypatch.setattr(sealed_run, "run_slot", spend_out)
         code, out, err = cli(monkeypatch, capsys, world, slot=slot)
         assert code == expected and "spend limit reached" in err
         assert world.ledger().recover(slot).action is RecoveryAction.SPENT

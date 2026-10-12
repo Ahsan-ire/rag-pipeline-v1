@@ -24,7 +24,14 @@ two defences:
    * ``global_tracer``: a tracing context variable holds a tracer (for
      instance ``tracing_v2_enabled()`` is active) or a run collector;
    * ``tracer_callback``: a LangChain configure hook would attach a handler
-     (a context variable set, or its enabling environment variable set);
+     (a context variable set, or its enabling environment variable set), OR the
+     caller's inherited runnable config (``var_child_runnable_config``, set by
+     ``set_config_context`` or by an enclosing chain) already carries callbacks,
+     which every chain the run invokes would inherit (a tracer, a console
+     handler, anything that sees the prompts);
+   * ``llm_cache``: a global LLM cache is configured
+     (``langchain_core.globals.get_llm_cache()``), so a chat model would look up
+     and store serialised prompts and answers in it;
    * ``debug``: LangChain's global debug flag is on, which prints every
      prompt to stdout through the console callback.
 
@@ -35,7 +42,7 @@ text, so it is safe to print.
 from __future__ import annotations
 
 import os
-from typing import List, MutableMapping, Optional
+from typing import Any, List, MutableMapping, Optional
 
 #: The four variables that switch LangChain/LangSmith tracing on (a5).
 TRACING_VARS = (
@@ -71,6 +78,16 @@ def scrub_tracing_env(environ: Optional[MutableMapping[str, str]] = None) -> Non
         env[name] = "false"
 
 
+def _carries_handlers(callbacks: Any) -> bool:
+    """True if an inherited ``callbacks`` value (a list or a callback manager) holds any handler."""
+    if not callbacks:
+        return False
+    handlers = getattr(callbacks, "handlers", None)
+    if handlers is None:  # a plain list of handlers
+        return True
+    return bool(list(handlers)) or bool(list(getattr(callbacks, "inheritable_handlers", ())))
+
+
 def tracing_problems() -> List[str]:
     """The reasons tracing is, or may be, on right now (empty = off).
 
@@ -89,6 +106,7 @@ def tracing_problems() -> List[str]:
         problems.append("tracing_enabled")
     try:
         from langchain_core import globals as lc_globals
+        from langchain_core.runnables.config import var_child_runnable_config
         from langchain_core.tracers import context as tracer_context
         from langchain_core.utils.env import env_var_is_set
     except ImportError:
@@ -99,6 +117,11 @@ def tracing_problems() -> List[str]:
         if var.get() is not None or (env_var is not None and handler_class is not None and env_var_is_set(env_var)):
             if "tracer_callback" not in problems:
                 problems.append("tracer_callback")
+    inherited = var_child_runnable_config.get() or {}
+    if _carries_handlers(inherited.get("callbacks")) and "tracer_callback" not in problems:
+        problems.append("tracer_callback")
+    if lc_globals.get_llm_cache() is not None:
+        problems.append("llm_cache")
     if lc_globals.get_debug():
         problems.append("debug")
     return problems
