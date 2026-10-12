@@ -40,7 +40,8 @@ rejected, and how to carry the whole thing into a new project. Project
 | `.claude/skills/phase-gate/` | End-of-phase gate: full tests, pressure-tester, code review, hygiene, decisions.md check |
 | `.claude/skills/bake-off/` | Design tournament for expensive-to-reverse decisions, judged by the tuning eval set |
 | `eval/golden_set.jsonl` | Tuning set — the judge for bake-offs and iteration |
-| `eval/heldout_set.jsonl` | Headline set — never used for tuning or candidate selection |
+| `eval/heldout_set.jsonl` | heldout-v1: retired to regression in 16A-2a (D73; it was inspected) — scored with `--regression`, never used for tuning or candidate selection |
+| `eval/private/sealed/`, `scripts/sealed_tool.py`, `scripts/sp_launch.py` | Sealed held-out v2 (D72): drafted blind by the sealed processor (a fresh `claude -p` in an out-of-repo staging directory), read only through `src/eval_sealed_read.py`, run only in a claimed slot; its headline is canonical v6 `eval/results_v6.md` (D73) |
 | `.github/workflows/ci.yml` | Keyless CI: full suite + offline smoke eval with hard assertions |
 | `eval/sets.json`, `src/eval_sets.py` | Eval-set registry and `classify()` → the privacy floor every eval entry point checks (D65) |
 | `eval/private/` (gitignored, never committed) | Private and sealed eval material; private runs write only under `runs/<id>/` |
@@ -67,6 +68,21 @@ retrieval architecture): `/bake-off <decision>` — independent fresh-context
 candidates from a shared brief, cross-critique, eval-set verdict on the
 tuning set, ledger entry, and the losing design handed to the pressure-tester
 as extra attack surface when the winner is implemented.
+
+**Sealed-data lane (16A-2, D72).**
+- The orchestrator never sees sealed questions. It dispatches the sealed
+  processor with `scripts/sp_launch.py --kind probe|data`, and drives the
+  protocol with `scripts/sealed_tool.py`: intake, twins, split, sheets,
+  freeze, audit. It reads back only counts, digests and opaque ids.
+- The owner validates sealed rows on review sheets and escalates doubtful
+  ones to a colleague (D71 Q5).
+- Sealed data is run only by `pipeline eval --sealed-slot <n>` in a
+  pre-registered slot.
+- Run `scripts/sp_launch.py --sweep` before any Codex call. Critics follow
+  the sealed off-limits list in their agent files.
+- **Negative path:** if the sealed set cannot be frozen after round 2, the
+  phase merges its content-free records and the offline development
+  baseline, writes no `results_v6.md`, and the owner decides the tag (D64).
 
 ## Third-party models (revised 10 Sep 2026)
 

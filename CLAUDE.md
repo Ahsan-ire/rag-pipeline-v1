@@ -27,8 +27,10 @@ model's opinion, never on the held-out set.
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
 - Query: `python -m src.pipeline query "..." --top-k 6`
 - Extraction QA: `python scripts/extraction_qa.py ./data/Conveyancing_Handbook.pdf`
-- Eval (canonical v5, held-out headline; **makes live API calls** incl. Haiku
-  query expansion):
+- Eval (canonical v5, now historical: heldout-v1 retired to regression in
+  16A-2a, D73; the headline becomes canonical v6 `eval/results_v6.md`, written
+  only by a slot-0/0b sealed run, `pipeline eval --sealed-slot`; **makes live
+  API calls** incl. Haiku query expansion):
   `python -m src.pipeline eval --heldout eval/heldout_set.jsonl --realistic eval/realistic_set.jsonl --judge`
   — writes the committed `eval/results.md` only on a canonical run, i.e. ALL
   of: a held-out set AND a realistic set, each with answerable hybrid results,
