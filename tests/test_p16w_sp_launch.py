@@ -52,11 +52,27 @@ for rel, text in CFG.get("files", {}).items():
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
         fh.write(text)
+for rel, target in CFG.get("symlinks", {}).items():
+    os.makedirs("out", exist_ok=True)
+    os.symlink(target, os.path.join("out", rel))
 if CFG.get("ret") is not None:
     with open(os.path.join("out", "return.json"), "w") as fh:
         fh.write(CFG["ret"] if isinstance(CFG["ret"], str) else json.dumps(CFG["ret"]))
+if CFG.get("grandchild_pid_file"):  # a helper process in the same group, to prove a timeout kills the group
+    import subprocess
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    with open(CFG["grandchild_pid_file"], "w") as fh:
+        fh.write(str(child.pid))
+if CFG.get("sleep"):
+    import time
+    time.sleep(CFG["sleep"])
 sys.exit(CFG.get("exit", 0))
 '''
+
+
+def twin_line(a: str, b: str) -> str:
+    """One valid ``twins.jsonl`` line (an allowlisted ``out/`` file that carries recognisable text)."""
+    return json.dumps({"a": a, "b": b, "verdict": "twin"}) + "\n"
 
 
 class SimulatedCrash(BaseException):
@@ -187,14 +203,14 @@ def test_exact_argv_stdin_and_scrubbed_env(env, tmp_path, monkeypatch):
     (tree / "sub" / "deep.txt").write_text("deep", encoding="utf-8")
     (tmp_path / "unrelated.txt").write_text("not an input", encoding="utf-8")
 
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
     calls = []
 
     def spy(*args, **kwargs):
         calls.append((args, kwargs))
-        return real_run(*args, **kwargs)
+        return real_popen(*args, **kwargs)
 
-    monkeypatch.setattr(sp.subprocess, "run", spy)
+    monkeypatch.setattr(sp.subprocess, "Popen", spy)
     outcome = env.launch(inputs=[note, tree])
     assert outcome.exit_status == sp.EXIT_FAILED  # the default fake writes no return.json
     assert outcome.line == sp.INVALID
@@ -219,10 +235,12 @@ def test_exact_argv_stdin_and_scrubbed_env(env, tmp_path, monkeypatch):
         ["notes.txt", "bundle", "bundle/sub", "bundle/sub/deep.txt", "out", "stdout.log", "stderr.log"]
     )
 
-    # The launcher itself passed exactly the five variables, the task as input, no shell.
+    # The launcher itself passed exactly the five variables, the task on a stdin pipe (its text is in rec["stdin"]
+    # above), no shell, and its own session so a timeout can kill the whole group.
     [(args, kwargs)] = [c for c in calls if "-p" in c[0][0]]
     assert kwargs["env"] == {k: os.environ[k] for k in FIVE}
-    assert kwargs["input"] == env.task.read_bytes()
+    assert kwargs["stdin"] == subprocess.PIPE
+    assert kwargs["start_new_session"] is True
     assert not kwargs.get("shell")
     assert Path(args[0][0]).name == "claude" and Path(args[0][0]).parent == env.bin
 
@@ -360,7 +378,7 @@ def test_a_held_lock_refuses_dispatch_and_sweep(env):
 
 # --- the SP's words never reach the launcher's output ---------------------------------------
 def test_canary_on_sp_stdout_and_stderr_is_absent_from_launcher_output(env, capfd):
-    env.make_claude(canary=CANARY, files={"pool/draft.txt": "draft " + CANARY2}, ret={"status": "ok", "count": 3})
+    env.make_claude(canary=CANARY, files={"twins.jsonl": twin_line(CANARY2, "f0a1b2c3d")}, ret={"status": "ok", "count": 3})
     rc = env.main("--enum", "status", "--enum", "ok", "--enum", "count")
     captured = capfd.readouterr()
     assert rc == sp.EXIT_OK
@@ -372,7 +390,7 @@ def test_canary_on_sp_stdout_and_stderr_is_absent_from_launcher_output(env, capf
     work = env.work
     assert CANARY in (work / f"{line['dispatch_id']}.stdout.log").read_text()
     assert CANARY in (work / f"{line['dispatch_id']}.stderr.log").read_text()
-    assert (env.dest / line["dispatch_id"] / "pool" / "draft.txt").read_text() == "draft " + CANARY2
+    assert (env.dest / line["dispatch_id"] / "twins.jsonl").read_text() == twin_line(CANARY2, "f0a1b2c3d")
     assert env.staging_dirs() == []
 
 
@@ -715,17 +733,17 @@ def test_sweep_deletes_nothing_when_recovery_fails(env, monkeypatch):
 
 
 def test_crash_after_the_copy_leaves_staging_for_recovery(env, monkeypatch, capfd):
-    env.make_claude(canary=CANARY, files={"pool/draft.txt": "draft " + CANARY2}, ret={"count": 1})
+    env.make_claude(canary=CANARY, files={"twins.jsonl": twin_line(CANARY2, "f0a1b2c3d")}, ret={"count": 1})
     crash_at(monkeypatch, "after_rename")
     with pytest.raises(SimulatedCrash):
         env.launch(enums=["count"])
     crash_at(monkeypatch, None)
     [staging] = env.staging_dirs()  # kept: a move is still pending, so deleting it could lose data
-    assert (env.dest / staging / "pool" / "draft.txt").exists()
+    assert (env.dest / staging / "twins.jsonl").exists()
     assert sp.main(["--sweep"]) == sp.EXIT_OK
     assert capfd.readouterr().out == "swept 1\n"
     assert env.staging_dirs() == []
-    assert (env.dest / staging / "pool" / "draft.txt").read_text() == "draft " + CANARY2
+    assert (env.dest / staging / "twins.jsonl").read_text() == twin_line(CANARY2, "f0a1b2c3d")
     assert CANARY in (env.work / f"{staging}.stdout.log").read_text()
     assert sp.pending_moves(env.root / sp.JOURNAL_NAME) == []
 
@@ -792,11 +810,11 @@ def test_a_dispatch_the_ledger_cannot_record_is_refused_and_the_sp_never_runs(en
 
 
 def test_a_released_out_directory_lands_in_sp_out_and_the_logs_in_the_sealed_work_directory(env, repos):
-    env.make_claude(files={"pool.jsonl": "x\n"}, ret={"count": 1})
+    env.make_claude(files={"twins.jsonl": twin_line("f0a1b2c3d", "f1a1b2c3d")}, ret={"count": 1})
     assert env.launch("probe", enums=["count"]).exit_status == sp.EXIT_OK
     [p] = env.log("sp_probe.jsonl")
     sealed_work = env.private / "sealed" / "work"
-    assert (sealed_work / "sp_out" / p["dispatch_id"] / "pool.jsonl").read_text() == "x\n"
+    assert (sealed_work / "sp_out" / p["dispatch_id"] / "twins.jsonl").read_text() == twin_line("f0a1b2c3d", "f1a1b2c3d")
     assert (sealed_work / f"{p['dispatch_id']}.stdout.log").is_file()
     assert not (env.private / "sealed" / p["dispatch_id"]).exists()  # the old landing place is gone
 

@@ -8,7 +8,7 @@ Usage::
 
     python scripts/sp_launch.py --kind probe|data --task <task file> --brief <brief file>
                                 [--inputs <path> ...] [--enum <word> ...]
-                                [--prereg <sha> --branch <name>]
+                                [--prereg <sha> --branch <name>] [--timeout <seconds>]
     python scripts/sp_launch.py --sweep
 
 What a dispatch does, in order
@@ -34,12 +34,18 @@ What a dispatch does, in order
    SP's ``out/return.json`` if (and only if) every key and value matches
    :func:`validate_return`, else ``invalid``. A refusal prints one fixed reason
    on stderr (never text from the SP, git or an exception).
-7. If the SP exited 0 and the return validated, ``out/`` is moved to
-   ``<dest>/<dispatch id>/`` (production ``dest``:
+7. If the SP exited 0 and the return validated, and ``out/`` passes :func:`validate_out`
+   (below), ``out/`` is moved to ``<dest>/<dispatch id>/`` (production ``dest``:
    ``eval/private/sealed/work/sp_out/``, which ``sealed_tool intake`` reads); the
    two logs are always moved to ``<work>/<dispatch id>.stdout.log`` / ``.stderr.log``
    (production ``work``: ``eval/private/sealed/work/``). A failed or invalid run
    releases nothing but its logs. Moves are crash-safe (:func:`journaled_move`).
+   ``out/`` is an allowlist: ``pool.jsonl``, ``twins.jsonl``, ``return.json`` and
+   ``tutorial_map.json``, regular files only. Any other entry makes the run ``invalid``;
+   so does a ``pool.jsonl`` that :func:`src.eval_sealed_read.load_sealed` rejects (its rows
+   must carry ``"sealed": true``, which is what makes a file outside the private root
+   count as sealed), a ``twins.jsonl`` that is not ``{"a", "b", "verdict": "twin"}`` lines,
+   or a ``tutorial_map.json`` that is not ``{family id: tag}``.
 8. The staging directory is deleted in a ``finally`` (kept only while a move is
    still pending, because deleting it then would lose the data; the next launch
    or ``--sweep`` replays the journal first and deletes afterwards).
@@ -51,8 +57,8 @@ What a dispatch does, in order
    dispatch that dies mid-run is still on the record; if the ledger cannot record
    it the dispatch is refused (exit ``8``) and the SP never runs.
 
-Exit codes: ``0`` ok; ``1`` the SP failed, its return was invalid, or cleanup
-failed; ``2`` usage or input error; ``8`` refused (API key set, prereg not
+Exit codes: ``0`` ok; ``1`` the SP failed or timed out, its return or ``out/`` was invalid, or
+cleanup failed; ``2`` usage or input error; ``8`` refused (API key set, prereg not
 reachable, root override outside pytest, another dispatch holds the lock, the sealed ledger
 cannot record a ``data`` dispatch).
 
@@ -67,11 +73,13 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pwd
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -87,6 +95,7 @@ if REPO not in sys.path:
 # Imported as a module (not ``from ... import private_root``) so a test that
 # monkeypatches ``src.eval_privacy.private_root`` is honoured at call time.
 import src.eval_privacy as eval_privacy  # noqa: E402
+from src.eval_sealed_read import load_sealed  # noqa: E402  (the only sealed reader)
 from src.sealed_ledger import SealedLedger, SealedLedgerError  # noqa: E402
 
 EXIT_OK = 0
@@ -106,6 +115,16 @@ STDERR_LOG = "stderr.log"
 RESERVED_STAGING_NAMES = frozenset({OUT_DIR, STDOUT_LOG, STDERR_LOG})
 ENV_KEYS = ("HOME", "PATH", "USER", "LANG", "TMPDIR")
 INVALID = "invalid"
+DEFAULT_TIMEOUT = 3 * 60 * 60  # seconds the SP may run (D4)
+MAX_TIMEOUT = 7 * 24 * 60 * 60  # a sanity bound: a huge value overflows the OS wait
+STATUS_TIMEOUT = -124  # dispatch-log exit_status of a timed-out SP: no signal has this number, so it is unambiguous
+
+# What ``out/`` may hold (D3). Everything else is ``invalid`` and nothing but the logs is released.
+OUT_ALLOWED = frozenset({"pool.jsonl", "twins.jsonl", RETURN_NAME, "tutorial_map.json"})
+TWIN_ID_RE = re.compile(r"[A-Za-z0-9:_.-]{1,64}")  # a family id of any set in twins.jsonl (public ids are "q:<hex>")
+#: A tag in ``tutorial_map.json``: tutorials 2-17 without 7 (never T01 or T07), title-document sets 1-7.
+#: ``sealed_tool``'s ``intake`` applies the same rule.
+SP_TAG_RE = re.compile(r"T0[2-689]|T1[0-7]|TD[1-7]")
 
 # The exact argument vector (a7). The task is NOT in it: it goes on stdin.
 CLAUDE_ARGV_PREFIX: Tuple[str, ...] = (
@@ -295,6 +314,93 @@ def load_return(path: os.PathLike | str, enums: Collection[str] = ()) -> Optiona
 
 
 # ---------------------------------------------------------------------------
+# The out/ allowlist (D3)
+# ---------------------------------------------------------------------------
+def _read_utf8(path: Path) -> Optional[str]:
+    """The text of a regular (non-symlink) UTF-8 file, else ``None``."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        return path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _loads_strict(text: str) -> Any:
+    """``json.loads`` that refuses duplicate keys and NaN / Infinity (``ValueError`` / ``RecursionError``)."""
+    return json.loads(text, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant)
+
+
+def _valid_pool(path: Path) -> bool:
+    """``pool.jsonl`` loads through the one sealed loader (rows must carry ``"sealed": true``: outside the
+    private root that marker is what makes the file sealed, and the loader refuses anything else)."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        load_sealed(path)
+    except Exception:  # NotSealedInput, SchemaError, InventoryError, OSError ...: all just "invalid", no text kept
+        return False
+    return True
+
+
+def _valid_twins(path: Path) -> bool:
+    """``twins.jsonl``: zero or more ``{"a": id, "b": id, "verdict": "twin"}`` lines (a != b), as ``sealed_tool`` reads it."""
+    text = _read_utf8(path)
+    if text is None:
+        return False
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            obj = _loads_strict(line)
+        except (ValueError, RecursionError):
+            return False
+        if not (
+            isinstance(obj, dict) and set(obj) == {"a", "b", "verdict"} and obj["verdict"] == "twin"
+            and isinstance(obj["a"], str) and isinstance(obj["b"], str)
+            and TWIN_ID_RE.fullmatch(obj["a"]) and TWIN_ID_RE.fullmatch(obj["b"]) and obj["a"] != obj["b"]
+        ):
+            return False
+    return True
+
+
+def _valid_tutorial_map(path: Path) -> bool:
+    """``tutorial_map.json``: a non-empty ``{family id: tag}`` object with tags from :data:`SP_TAG_RE`."""
+    text = _read_utf8(path)
+    if text is None:
+        return False
+    try:
+        doc = _loads_strict(text)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(doc, dict) and bool(doc) and all(
+        isinstance(key, str) and FAMILY_ID_RE.fullmatch(key) and isinstance(value, str) and SP_TAG_RE.fullmatch(value)
+        for key, value in doc.items()
+    )
+
+
+def validate_out(out_dir: os.PathLike | str) -> bool:
+    """True iff ``out_dir`` holds only :data:`OUT_ALLOWED` regular files and each data file is well-formed.
+
+    ``pool.jsonl`` is validated by :func:`src.eval_sealed_read.load_sealed`, ``twins.jsonl`` and
+    ``tutorial_map.json`` by shape; ``return.json`` has its own check (:func:`load_return`). Any other
+    entry (a stray file, a directory, a symlink) or any failure makes it ``False``; it never raises and
+    never returns text from the files.
+    """
+    out_dir = Path(out_dir)
+    try:
+        if not stat.S_ISDIR(os.lstat(out_dir).st_mode):
+            return False
+        names = sorted(os.listdir(out_dir))
+        if any(name not in OUT_ALLOWED or not stat.S_ISREG(os.lstat(out_dir / name).st_mode) for name in names):
+            return False
+        checks = {"pool.jsonl": _valid_pool, "twins.jsonl": _valid_twins, "tutorial_map.json": _valid_tutorial_map}
+        return all(check(out_dir / name) for name, check in checks.items() if name in names)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Durable file helpers and the move journal
 # ---------------------------------------------------------------------------
 def _fsync_fd(fd: int) -> None:
@@ -318,6 +424,33 @@ def _fsync_dir(path: os.PathLike | str) -> None:
         os.close(fd)
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data`` (``os.write`` may write less); stop if a write makes no progress."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise MoveError("a write made no progress")
+        view = view[written:]
+
+
+def _mkdir_durable(path: Path) -> None:
+    """``mkdir -p``, fsyncing the parent of every directory created so the new ancestry survives a crash."""
+    missing: List[Path] = []
+    probe = path
+    while not os.path.lexists(probe):
+        missing.append(probe)
+        probe = probe.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _fsync_dir(directory.parent)
+    if not path.is_dir():
+        raise NotADirectoryError("a move destination's parent is not a directory")
+
+
 def _trim_torn_tail(fd: int) -> None:
     """Cut an unterminated last line (a crash mid-append) so the next append starts on a fresh line."""
     size = os.fstat(fd).st_size
@@ -332,7 +465,7 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
     try:
         _trim_torn_tail(fd)
-        os.write(fd, (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+        _write_all(fd, (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
         _fsync_fd(fd)
     finally:
         os.close(fd)
@@ -441,7 +574,9 @@ def pending_moves(journal: Path) -> List[Dict[str, Any]]:
 def _complete_item(tid: str, item: Dict[str, Any]) -> None:
     """Bring one journaled item to 'copied, verified, source deleted'. Idempotent.
 
-    * destination present: it must equal the journaled manifest, else stop;
+    * destination present: it must equal the journaled manifest, else stop; its parent
+      directory is fsynced again, because the rename that put it there may have been
+      followed by a failed fsync (a crash after the source is deleted could otherwise lose it);
     * else the source must still exist: copy to ``<dst>.<tid>.partial``, fsync,
       verify against the manifest, atomically rename into place;
     * then delete the source if it is still there.
@@ -450,10 +585,11 @@ def _complete_item(tid: str, item: Dict[str, Any]) -> None:
     if os.path.lexists(dst):
         if _manifest(dst) != manifest:
             raise MoveError("destination exists and differs from the journaled manifest")
+        _fsync_dir(dst.parent)
     else:
         if not os.path.lexists(src):
             raise MoveError("source and destination are both missing")
-        dst.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_durable(dst.parent)
         partial = dst.with_name(f"{dst.name}.{tid}.partial")
         if os.path.lexists(partial):
             _remove_path(partial)
@@ -475,7 +611,8 @@ def journaled_move(pairs: Sequence[Tuple[os.PathLike | str, os.PathLike | str]],
     """Move files or trees crash-safely: journal intent, copy, fsync, verify, delete.
 
     All pairs are one transaction. The ``begin`` record (with each source's
-    sha256 manifest) is fsynced before anything is copied; a destination appears
+    sha256 manifest) is fsynced before anything is copied (and the directories
+    the destinations need are created and made durable first); a destination appears
     only by an atomic rename of a verified copy; the source is deleted last; a
     ``done`` record closes the transaction. A crash anywhere leaves the journal
     pending, and :func:`recover_moves` finishes the job from the manifest. A
@@ -490,6 +627,8 @@ def journaled_move(pairs: Sequence[Tuple[os.PathLike | str, os.PathLike | str]],
         if not os.path.lexists(src):
             raise MoveError("source is missing")
         items.append({"src": str(src), "dst": str(dst), "manifest": _manifest(src)})
+    for item in items:  # new destination directories are durable before the intent is journaled
+        _mkdir_durable(Path(item["dst"]).parent)
     tid = secrets.token_hex(4)
     _append_jsonl(journal, {"v": 1, "t": "begin", "tid": tid, "items": items})
     _crash_point("after_begin")
@@ -639,8 +778,25 @@ def scrubbed_env() -> Dict[str, str]:
     return {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
 
 
-def _run_sp(argv: Sequence[str], env: Dict[str, str], task: bytes, staging: Path) -> int:
-    """Run claude in ``staging``; its stdout/stderr go to files there and are not read. -1 if it cannot start."""
+def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
+    """SIGKILL the SP's whole process group (it leads its own session) and reap it."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:  # already gone, or the group cannot be signalled: fall back to the direct child
+        with contextlib.suppress(OSError):
+            proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=30)
+
+
+def _run_sp(
+    argv: Sequence[str], env: Dict[str, str], task: bytes, staging: Path, timeout: float = DEFAULT_TIMEOUT
+) -> int:
+    """Run claude in ``staging``; its stdout/stderr go to files there and are not read.
+
+    Returns the exit status, ``-1`` if it cannot start, or :data:`STATUS_TIMEOUT` if it ran past ``timeout``
+    seconds (then its whole process group is killed).
+    """
     exe = shutil.which("claude", path=env.get("PATH", ""))
     if exe is None:
         return -1
@@ -648,12 +804,22 @@ def _run_sp(argv: Sequence[str], env: Dict[str, str], task: bytes, staging: Path
     out_fd = os.open(staging / STDOUT_LOG, flags, 0o600)
     err_fd = os.open(staging / STDERR_LOG, flags, 0o600)
     try:
-        proc = subprocess.run(
-            [exe, *argv[1:]], input=task, stdout=out_fd, stderr=err_fd, cwd=staging, env=env, check=False
-        )
+        try:
+            proc = subprocess.Popen(
+                [exe, *argv[1:]], stdin=subprocess.PIPE, stdout=out_fd, stderr=err_fd, cwd=staging, env=env,
+                start_new_session=True,
+            )
+        except OSError:
+            return -1
+        try:
+            proc.communicate(task, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            return STATUS_TIMEOUT
+        except BaseException:
+            _kill_group(proc)
+            raise
         return proc.returncode
-    except OSError:
-        return -1
     finally:
         os.close(out_fd)
         os.close(err_fd)
@@ -686,6 +852,7 @@ def _record_dispatch(ledger: SealedLedger, dispatch_id: str, kind: str, argv: Se
 def _dispatch(
     *, kind: str, root: Path, dest: Path, work: Path, log_path: Path, brief_text: str, task: bytes,
     inputs: Sequence[Path], enums: Collection[str], ledger: Optional[SealedLedger] = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Outcome:
     dispatch_id, staging = _new_staging(root)
     journal = root / JOURNAL_NAME
@@ -698,12 +865,15 @@ def _dispatch(
         argv = build_argv(brief_text)
         if ledger is not None:  # a data dispatch: on the record before the SP can run
             _record_dispatch(ledger, dispatch_id, kind, argv)
-        returncode = _run_sp(argv, scrubbed_env(), task, staging)
+        returncode = _run_sp(argv, scrubbed_env(), task, staging, timeout)
         _append_jsonl(log_path, {
             "argv_hash": argv_hash(argv), "dispatch_id": dispatch_id, "exit_status": returncode,
             "kind": kind, "ts": _utc_now(),
         })
-        line = load_return(out_dir / RETURN_NAME, enums)
+        timed_out = returncode == STATUS_TIMEOUT
+        line = None if timed_out else load_return(out_dir / RETURN_NAME, enums)
+        if returncode == 0 and line is not None and not validate_out(out_dir):
+            line = None  # a stray file or a malformed data file: the run is invalid, only the logs move
         released = returncode == 0 and line is not None
         pairs: List[Tuple[Path, Path]] = [
             (staging / STDOUT_LOG, work / f"{dispatch_id}.stdout.log"),
@@ -714,7 +884,10 @@ def _dispatch(
         pairs = [(s, d) for s, d in pairs if os.path.lexists(s)]
         if pairs:
             journaled_move(pairs, journal)
-        result = Outcome(EXIT_OK if released else EXIT_FAILED, line if line is not None else INVALID)
+        result = Outcome(
+            EXIT_OK if released else EXIT_FAILED, line if line is not None else INVALID,
+            "sp_launch: the SP ran past --timeout and was killed" if timed_out else None,
+        )
     finally:
         cleaned = _cleanup_staging(staging, journal)
     if not cleaned:
@@ -736,6 +909,7 @@ def launch(
     work: Optional[os.PathLike | str] = None,
     dispatch_log: Optional[os.PathLike | str] = None,
     ledger: Optional[SealedLedger] = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Outcome:
     """Run one SP dispatch (see the module docstring); never raises for an expected stop.
 
@@ -747,10 +921,16 @@ def launch(
     synthetic). ``ledger`` is the sealed ledger a ``data`` dispatch records itself in;
     ``None`` builds the epoch's ledger exactly as ``src.sealed_run.default_ledger`` does
     (private copy under ``<private root>/sealed/ledger``, mirror ``<eval dir>/sealed_ledger.jsonl``).
+    ``timeout`` is the SP's wall-clock limit in seconds (a positive number up to :data:`MAX_TIMEOUT`).
     """
     try:
         if kind not in KINDS:
             raise LaunchError(EXIT_USAGE, "--kind must be probe or data")
+        if (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or not 0 < timeout <= MAX_TIMEOUT
+        ):
+            raise LaunchError(EXIT_USAGE, "--timeout must be a positive number of seconds (at most 7 days)")
         try:
             allowed = _check_enums(enums)
         except ValueError:
@@ -791,7 +971,7 @@ def launch(
                 raise LaunchError(EXIT_USAGE, "claude was not found on PATH")
             return _dispatch(
                 kind=kind, root=root, dest=dest_dir, work=work_dir, log_path=log_path, brief_text=brief_text,
-                task=task_bytes, inputs=staged, enums=allowed, ledger=dispatch_ledger,
+                task=task_bytes, inputs=staged, enums=allowed, ledger=dispatch_ledger, timeout=timeout,
             )
     except LaunchError as exc:
         return Outcome(exc.status, None, f"sp_launch: {exc.reason}")
@@ -831,6 +1011,8 @@ def _parser() -> argparse.ArgumentParser:
                     help="a word the SP's return file may use as a key or value (repeatable)")
     ap.add_argument("--prereg", help="pre-registration commit sha (data; ignored for probe)")
     ap.add_argument("--branch", help="branch the prereg must be pushed to (data; ignored for probe)")
+    ap.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                    help=f"wall-clock limit for the SP, killed at expiry (default {DEFAULT_TIMEOUT}, i.e. 3 h)")
     ap.add_argument("--sweep", action="store_true", help="replay pending moves and delete stale staging, then exit")
     return ap
 
@@ -851,7 +1033,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except SystemExit as exc:
         return EXIT_USAGE if exc.code else EXIT_OK
     if args.sweep:
-        if any((args.kind, args.task, args.brief, args.inputs, args.enums, args.prereg, args.branch)):
+        if any((args.kind, args.task, args.brief, args.inputs, args.enums, args.prereg, args.branch, args.timeout is not None)):
             print("sp_launch: --sweep takes no other option", file=sys.stderr)
             return EXIT_USAGE
         return _emit(sweep_only())
@@ -861,6 +1043,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return _emit(launch(
         kind=args.kind, task=args.task, brief=args.brief, inputs=args.inputs, prereg=args.prereg,
         branch=args.branch, enums=args.enums,
+        timeout=DEFAULT_TIMEOUT if args.timeout is None else args.timeout,
     ))
 
 
