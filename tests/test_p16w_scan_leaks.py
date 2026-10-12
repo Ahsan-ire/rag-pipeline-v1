@@ -235,22 +235,26 @@ def test_public_needles_source_refused(sets, tmp_path, capsys):
     _assert_no_fixture_tokens("".join(capsys.readouterr()))
 
 
-def test_sealed_needles_source_refused(sets, tmp_path, _private_root_in_tmp, capsys):
+def test_sealed_needles_source_is_no_longer_refused_but_must_validate(sets, tmp_path, _private_root_in_tmp, capsys):
+    """16A-2a a2: exit 4 is retired. A sealed source goes through ``load_sealed``, so a
+    v1-shaped one (a sealed marker on a row without the schema-2 shape) is exit 2, by line and field."""
     out = tmp_path / "o.txt"
     out.write_text("x", encoding="utf-8")
     marked = _write_jsonl(tmp_path / "elsewhere" / "s.jsonl", [{"question": SHORT, "sealed": True}])
-    assert sl.main(["--output", str(out), "--needles", str(marked)]) == 4
+    assert sl.main(["--output", str(out), "--needles", str(marked)]) == 2
     under = _write_jsonl(_private_root_in_tmp / "sealed" / "s.jsonl", [{"question": SHORT}])
-    assert sl.main(["--output", str(out), "--needles", str(under)]) == 4
-    _assert_no_fixture_tokens("".join(capsys.readouterr()))
+    assert sl.main(["--output", str(out), "--needles", str(under)]) == 2
+    cap = capsys.readouterr()
+    assert "line 1: schema: expected schema 2" in cap.err
+    _assert_no_fixture_tokens(cap.out + cap.err)
 
 
-def test_sealed_run_input_refused(tmp_path, _private_root_in_tmp):
+def test_sealed_run_input_must_validate_not_refused_as_sealed(tmp_path, _private_root_in_tmp):
     q = _write_jsonl(_private_root_in_tmp / "runs" / "run-s" / "q.jsonl", [{"question": SHORT, "sealed": True}])
     _inputs(_private_root_in_tmp, "run-s", [{"path": str(q), "sha256": eval_sets.sha256_file(q), "kind": "questions"}])
     with pytest.raises(sl.ScanRefusal) as exc:
         sl.scan_output([], run_id="run-s")
-    assert exc.value.code == 4
+    assert exc.value.code == 2 and exc.value.reason == "sealed source does not validate"
 
 
 def test_unregistered_private_needles_accepted(tmp_path, eval_registry):
@@ -441,11 +445,27 @@ def test_merge_gate_gh_failure_is_exit2(repo, capsys):
 
 
 def test_precheck_refuses_unregistered_private_file(repo, _private_root_in_tmp, capsys):
-    stray = _write_jsonl(_private_root_in_tmp / "scratch.jsonl", [{"question": SHORT}])
+    """A non-JSONL file under the private root, outside ``work/``, is refused. (Until 16A-2a a2 a stray
+    ``.jsonl`` was too; now every such ``.jsonl`` is a needle source automatically.)"""
+    stray = _private_root_in_tmp / "scratch.txt"
+    stray.write_text(SHORT + "\n", encoding="utf-8")
     assert sl.main(["--merge-gate", "--base", "base", "--repo", str(repo)]) == 7
     cap = capsys.readouterr()
     assert str(stray) in cap.err and cap.out == ""
     _assert_no_fixture_tokens(cap.out + cap.err)
+
+
+def test_stray_private_jsonl_is_a_needle_source_automatically(repo, _private_root_in_tmp, capsys):
+    fresh = "wuzzle frimbo kendrath"  # not in the registered sets
+    stray = _write_jsonl(_private_root_in_tmp / "scratch.jsonl", [{"question": fresh}])
+    (repo / "leak.txt").write_text(f"x\n{fresh}\n", encoding="utf-8")
+    git(repo, "add", "leak.txt")
+    git(repo, "commit", "-q", "-m", "leak")
+    assert sl.main(["--merge-gate", "--base", "base", "--repo", str(repo)]) == 5
+    cap = capsys.readouterr()
+    assert any(line.endswith(f"\t{_ids(fresh)}\twhole\teval/private/scratch.jsonl") for line in cap.out.splitlines())
+    assert str(stray) not in cap.err
+    assert not any(t in (cap.out + cap.err).lower() for t in fresh.split())
 
 
 def test_precheck_refuses_questions_input_not_a_source(repo, _private_root_in_tmp, capsys):
