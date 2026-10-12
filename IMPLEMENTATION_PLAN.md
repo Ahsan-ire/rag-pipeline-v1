@@ -1429,7 +1429,7 @@ meter's sum for its real prompts first, sends nothing above €0.25, and settles
 per [W] item. **Gates:** plan gate on v4.1 (plan-auditor + Codex `gpt-6.1-sol`, read-only; the outline only for
 completeness) → implement → `/phase-gate 16A-1` → Codex merge review → PR, CI → merge, `v2.3.0`.
 
-### 16A-2 — eval data and re-baseline, in two phases (spec v5, 12 Oct 2026; plan-gate r1–r4 reconciled)
+### 16A-2 — eval data and re-baseline, in two phases (spec v6, 12 Oct 2026; plan-gate r1–r5 reconciled)
 **Authority:** design 003 §5 16A.3–16A.5 and 16A.7–16A.8 (normative), §1.2 Q1, Q3, Q7, §6 Phase 20 and 21 rows; astra
 B3, M8–M10; D46, D54, D57 (+ addendum), D61, D62, D64, D65–D70; **D71 binds** (its Q5 narrows 16A.4's second opinion to
 owner-escalated labels, disclosed in D75). **Two phases (S1):** **16A-2a** builds and tests the sealed tooling on
@@ -1477,16 +1477,21 @@ the same source tutorial, or the same primary evidence section (the first sectio
 are the connected components of all relations over every draft and every pinned family, computed **before** any edge
 is filtered (r4: P–A–B). A group containing a pinned development family, or a draft sharing an 8-token window with a
 public question, is **sealed-ineligible as a whole** and goes to development by quota and register; its edges are never
-passed to `split_families`. The remaining groups are passed as `edges`. In round 2 a draft related to a round-1 sealed
-group joins it (that pinned sealed endpoint is passed, so the unit stays sealed); a draft related to both a sealed
-group and a pinned development family is dropped. So no development-pinned family is ever in a passed group and
-`preassignment_conflicts` cannot arise. Demotion, exclusion and recheck act on the **whole group**; the group invariant
+passed to `split_families`. The remaining groups are passed as `edges`. In round 2 a draft related to any round-1
+sealed group is **dropped** (never joined, so no forced placement and no overfill; r5), and the SP drafts round-2
+families from tutorials and primary sections that no round-1 sealed group uses. So no pinned family is ever in a passed
+group and `preassignment_conflicts` cannot arise. Demotion, exclusion and recheck act on the **whole group**; the group invariant
 is checked after every move.
-**Inference (R2, r4):** in confirmatory slots the primary test is the **exact McNemar test on split-group outcomes**:
-each group's eligible families (answer or partial; a group with none is out) collapse to one paired outcome by the
-`all` rule (a tie is a MISS), so groups are the independent units and the test's size is ≤ α exactly; power and MDE
-come from `eval_stats.power`/`mde` with N = eligible groups. Durkalski's clustered McNemar (asymptotic, so approximate)
-and the family-level exact McNemar are reported as sensitivities. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
+**Inference (R2, r5):** the confirmatory **estimand** is the family-level difference in strict hit@6 over eligible
+families (answer or partial; the MWE's scale). The primary test is an **exact cluster sign-flip test**: each group g
+contributes d_g = (families the candidate gains) − (families it loses), and p is the exact probability, over
+independent random signs on every |d_g|, of a sum at least as extreme (one-sided per direction, enumerated by a dynamic
+programme over integer sums). Groups are independent, and under the paired-randomisation null (the two arms are
+exchangeable within each group, which implies a zero family-level difference) d_g is symmetric, so the size is ≤ α
+exactly under that null; within-group changes are never masked, and with all-singleton groups the test is the exact
+McNemar test. Power and MDE come from a seeded Monte Carlo of this test on the family scale, with the planned group
+sizes, under independent families (optimistic) and under full within-group correlation (pessimistic). Both are
+reported. Durkalski by group (asymptotic) and family-level exact McNemar are labelled sensitivities. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
 (answer or partial, not excluded); sealed 60 in the band gives 42–45; the group count is reported beside it.
 
 ### 16A-2a — sealed tooling — `phase-16a2-eval-data` → `v2.4.0`
@@ -1602,7 +1607,8 @@ a7. **Sealed-processor launcher (D72) [C].** `scripts/sp_launch.py --kind probe|
 a8. **Builders and tooling (D73) [C].** `scripts/handbook_sections.py` (b0's dump). `inputs-check`: every id in
     `eval/v2_pairing.json` is a public v1 id used at most once; every label in `eval/conflict_sections.json` is
     inventoried. `scripts/controls.py --rule c1|c2` computes the control list from draw sidecars and refuses a differing
-    committed list. `power` prints MDE and power from `eval_stats` for groups and for families; `prereg-check`
+    committed list. `eval_stats` gains `cluster_signflip_p(d, direction)` (exact) and `cluster_signflip_power(group_sizes,
+    discordance, effect, alpha, draws, seed, model)` ([W], synthetic); `power` prints both models; `prereg-check`
     validates a prereg and recomputes its quota formulas and power table.
 a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, tracing, residuals); D73 (canonical v6,
     `results_v6.md`, CLI, builders, heldout-v1 retired to regression per 003 16A.3). CLAUDE.md: sealed rules, tutorial
@@ -1632,8 +1638,7 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
 - **(e) `sealed_tool`:** printer fuzz; `twins` refuses a surviving twin, marks a draft tied to a pinned or public family
   sealed-ineligible and passes no edge for it; a pinned development family P, a draft A sharing P's primary section and a
   draft B sharing A's tutorial make the whole group P–A–B sealed-ineligible (r4); a round-2 draft related to a round-1
-  sealed group is passed with it and lands sealed, and one related to both that group and a pinned development family
-  is dropped; `split` honours register eligibility, refuses an unpushed prereg or
+  sealed group is dropped, and a round-2 pool whose other drafts fit the replacement quotas releases (r5); `split` honours register eligibility, refuses an unpushed prereg or
   undeclared round, records an infeasible attempt and releases nothing, and recovers a move crash between copy and
   delete; round 2 pins round 1 and fills sealed replacements and development shortfalls, and `freeze` refuses a round-2
   family without 2 phrasings, an owner approval or a `recheck`; `freeze` catches a changed
@@ -1654,9 +1659,12 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
   API key, or with a prereg not reachable from `origin/<branch>` (accepted when a later commit sits on top); a fake
   `claude` printing a canary leaves it out of the launcher's output; a failed run still deletes its staging directory
   and the next launch sweeps a stale one; the two kinds log apart.
-- **(j)** `controls.py` under both rules; `power` equals `mde()` at N = eligible groups; on synthetic paired arms the
-  group collapse (`all` rule, refusal-only groups out, a mixed group keeps its eligible families) feeds the exact test,
-  and Durkalski and the family test render as labelled sensitivities;
+- **(j)** `controls.py` under both rules; `cluster_signflip_p` matches brute-force enumeration on small cases, equals
+  the exact McNemar p with singleton groups, and on Codex's r5 fixture (20 two-family groups, gain and loss types
+  equally likely, true family effect 0) rejects at no more than α over exact enumeration; a group where one family
+  gains and another loses contributes 0, and a refusal-only group contributes nothing; `cluster_signflip_power` is
+  seed-deterministic and its MDE table equals the prereg's; Durkalski and the family test render as labelled
+  sensitivities;
   `disagree` reports scope, group structure and gaps apart (missing-group, extra-group, different-gap fixtures);
   `inputs-check` refuses a reused or non-public id and an uninventoried conflict label; `handbook_sections.py` on a
   synthetic chunk store yields every inventoried section.
@@ -1681,25 +1689,26 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     `min_share` (realistic: tutorial + colleague ≥ 0.25, D71 Q4; none elsewhere); the floor; calibration seed; primary
     metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse, a tie is a MISS); **MWE +0.10** absolute;
     α = 0.05 family-wise; **K_max = 4** confirmatory candidates per epoch, declared as one non-adaptive batch before the
-    first confirmatory slot, Holm across it; **primary test exact McNemar on group-collapsed outcomes** (Unit,
-    Inference), Durkalski by group and exact McNemar on families the sensitivities (R2, r4);
+    first confirmatory slot, Holm across it; **primary test the exact cluster sign-flip test on the family-level
+    estimand** (Inference), Durkalski by group and exact McNemar on families the sensitivities (R2, r5);
     rewrite-changing candidates expand live under `--rewrite-candidate` against the incumbent's replay; R = 5; the
     canonical v6 guards; power tables for groups and families. Slots: 0 = descriptive baseline (the canonical run),
     0b = spare, 1–4 = the batch, refused until 16B's sealed comparison passes its own gate. Later changes are amendments.
     **Adoption and controls — PENDING-OWNER (D64: eval protocol; asked 12 Oct).** The prereg waits for the choice:
     - **(A) Development evidence adopts; sealed is a non-inferiority guard.** Adopted when the development family effect
       is ≥ MWE, no critical control flips, unsupported claims do not rise, *and* sealed shows no harm (point estimate
-      ≥ 0, no Holm-significant loss under the clustered primary). Modest real gains below the sealed MDE can ship, but so
+      ≥ 0, no Holm-significant loss under the sign-flip primary). Modest real gains below the sealed MDE can ship, but so
       can a change overfitted to development and neutral on sealed. It departs from 003 §5 16B (003:255).
-    - **(B) Sealed confirmation only.** Adopted only on PASS (favours the candidate, clustered-primary Holm p ≤ α, effect
-      ≥ MWE, no control flip, unsupported claims not higher). The exact group test bounds false adoption by α, but with
-      35–45 eligible families in fewer groups a true gain below ≈ 0.25–0.29 is usually not adopted (family power at the
-      MWE ≤ 0.16; group power lower), which favours the incumbent.
+    - **(B) Sealed confirmation only.** Adopted only on PASS (favours the candidate, sign-flip-primary Holm p ≤ α, effect
+      ≥ MWE, no control flip, unsupported claims not higher). The exact sign-flip test bounds false adoption by α under the
+      paired-randomisation null, but with 35–45 eligible families in fewer groups a true gain below ≈ 0.25–0.29 is usually not
+      adopted (power at the MWE ≤ 0.16 under independence, lower under within-group correlation), which favours the
+      incumbent.
     - **Controls (C1):** public-lineage development families with strict completion rank ≤ 3 in raw hybrid and in
       hybrid+rewrite on every draw, which **reverses the D57 addendum** ("a rank-6 hit that any perturbation dislodges
       is real fragility"; D74 must say so). **(C2):** D57 as written: every incumbent strict HIT among them.
 
-    Under any choice FAIL = a control flip or a Holm-significant loss (clustered primary), and **Phase 21 keeps 003's
+    Under any choice FAIL = a control flip or a Holm-significant loss (sign-flip primary), and **Phase 21 keeps 003's
     rule: it ships only if it beats single-pass on sealed families** (§6). D57's re-open condition is **not** met here:
     under (A) an embedding arm spends a slot only on development evidence ≥ MWE, under (B) only if its development effect
     is ≥ the sealed MDE. b9 aligns CLAUDE.md's bake-off line, `.claude/skills/bake-off/SKILL.md:20–21` and
@@ -1976,6 +1985,15 @@ raised Au4-1…3 (MAJOR) and Au4-4 (MINOR). All are accepted and fixed in v5 by 
 | Au4 | 3 | MAJOR | ACCEPTED: same fix as Cx4-2 | Inference |
 | Au4 | 4 | MINOR | ACCEPTED: SP stdout/stderr logs move to `eval/private/sealed/work/`, so the precheck passes | a7 |
 | Au4 | — | residue | ACCEPTED: (k) plants in `eval/private/work/`; the criterion names only exclusion records; the forwarding log is rooted under `sealed/work/`; sealed escalations go only under `sealed/work/` | (k); 2b Tier-2; b5 |
+
+### 16A-2 plan-gate r5 dispositions (spec v5 `eeba82a`, 12 Oct)
+Codex r5 closed Cx4-1 and Cx4-2 and raised Cx5-1 (MAJOR); the plan-auditor's closure check closed Au4-1…4 and raised
+Au5-1 (MAJOR, the same as Cx5-1) and Au5-2 (MAJOR, conditional). Fixed in v6 by the orchestrator:
+| Src | # | Sev | Disposition | Where |
+|---|---|---|---|---|
+| Cx5 | 1 | MAJOR | ACCEPTED: the estimand is the family-level difference (the MWE's scale); the primary is an exact cluster sign-flip test on group net discordance (size ≤ α under the paired-randomisation null, no within-group masking, exact McNemar with singletons); power by seeded Monte Carlo under two correlation models; Codex's fixture is a test | Inference; a8; b1; options; 2a-(j) |
+| Au5 | 1 | MAJOR | ACCEPTED: same fix as Cx5-1 | Inference |
+| Au5 | 2 | MAJOR | ACCEPTED: a round-2 draft related to any round-1 sealed group is dropped, not joined; the SP drafts round 2 from sources no sealed group uses | Unit; 2a-(e) |
 
 ### 16A-2 appendix A — note for the reviewing colleague
 *(The owner sends this with each form. It names no client and quotes no Handbook text.)*
