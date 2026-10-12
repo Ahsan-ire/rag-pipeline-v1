@@ -22,10 +22,15 @@ Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``,
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
-6 a split attempt was infeasible (**nothing released**; recorded); 8 refused (prereg not pushed
-or round undeclared, wrong state, missing approval or recheck, changed assignment ...);
+6 a split attempt was infeasible (**nothing released**; recorded); 7 ``audit`` could not run (the handbook
+dump is absent, so its exemption would silently shrink; or SP staging is live or its moves cannot be recovered);
+8 refused (prereg not pushed or round undeclared, wrong state, missing approval or recheck, changed
+assignment, another state-changing command holds ``sealed/work/.lock`` ...);
 9 **freeze infeasible after round 2** (the D64 stop); 10 ledger stop (corrupt, tampered or lost
 private ledgers; the D64 stop).
+
+Every state-changing command (:data:`STATE_COMMANDS`) holds one exclusive, non-blocking flock on
+``sealed/work/.lock`` for its whole run, so two of them can never interleave; the second is refused (``locked``).
 
 Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``)
 ----------------------------------------------------------------------------------
@@ -46,7 +51,11 @@ Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``
   tags ``T02``-``T06``, ``T08``-``T17`` and ``TD1``-``TD7`` there, stored lower-case; ``T01`` and ``T07`` never).
 - ``W/sheets/``, ``W/escalations/``, ``W/twins_current_r<R>.json``, ``W/release.journal``.
 - ledger payloads (``store_payload``): ``twins_r<R>_<pool digest>``, ``assign_r<R>``,
-  ``twins_sealed`` -- content-free (ids, hashes, counts, enums).
+  ``twins_sealed_<sha16>`` (named by the first 16 hex digits of its own sha256, which is the freeze record's
+  ``twins_sha256``; a plain ``twins_sealed`` alias with the same bytes is stored for readers that predate the
+  naming) -- content-free (ids, hashes, counts, enums).
+- ``W/freeze_<split>.journal`` and ``W/freeze_<split>.data``: the whole freeze transaction, computed first and
+  journalled before anything changes (see **freeze**).
 
 Protocols
 ---------
@@ -77,9 +86,15 @@ verdict is for THIS content (digest, mtime, return ok, enough pairs); (4) twins:
 demotes its whole group to quarantine (approvals kept; after the sealed freeze, an exclusion instead), a twin
 inside sealed drops the later group; (5) approvals bound by row hash; (6) 2-3 phrasings (D64 stop); (7) band,
 strata, min_share, group invariant, floor, with the sealed band repaired by the fewest seeded group demotions;
-(8) quarantine moves, exclusions, the frozen file (mode 0444) and the ledger record. The sealed freeze stores the
-``twins_sealed`` payload (the rounds' twins records, the recheck, the demotions and the group ``edges``) and binds its
-sha256, the frozen file's sha256 and the digest of the exclusions recorded so far (``exclusions_digest``).
+(8) commit: the WHOLE transaction (the frozen file's bytes, the twins record, the demoted groups, the exclusions) is
+computed first and journalled to ``W/freeze_<split>.journal`` (+ ``.data``); then, in this order and each step
+idempotent, the frozen file (mode 0444), the ``twins_sealed_<sha16>`` payload, the ledger record, the exclusions and
+LAST the quarantine moves. A crash anywhere is finished from the journal by the next command (``freeze`` itself or any
+state-changing one), never by recomputing from a world the transaction had half changed. The sealed freeze binds the
+payload's sha256 (the rounds' twins records, the recheck, the demotions and the group ``edges``), the frozen file's
+sha256 and the exclusions recorded before the freeze (the ledger computes that digest inside the freeze transaction).
+After the sealed freeze a twin found by a later development recheck never moves a sealed family: it is an
+**exclusion** (naming its member families), and groups are built from the frozen file.
 
 **prereg** (``eval/prereg_16a2.json``): ``version``, ``branch``, ``rounds``, ``seeds`` (``split_r1``, ``split_r2``,
 ``repair``, ``calibration``), ``quota`` (``sealed``, ``spare``, ``floor_sealed``, ``floor_answerable``,
@@ -94,8 +109,11 @@ slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from `
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
+import fcntl
 import hashlib
+import inspect
 import io
 import itertools
 import json
@@ -109,7 +127,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 _ROOT = str(Path(__file__).resolve().parent.parent)
 if _ROOT not in sys.path:
@@ -141,6 +159,7 @@ EXIT_FAIL = 1
 EXIT_USAGE = 2
 EXIT_HIT = 5
 EXIT_SPLIT_INFEASIBLE = 6
+EXIT_AUDIT_REFUSED = 7  # audit cannot give a complete answer (not a finding): absent dump, live staging
 EXIT_REFUSED = 8
 EXIT_FREEZE_INFEASIBLE = 9
 EXIT_LEDGER_STOP = 10
@@ -189,6 +208,7 @@ REASONS = (
     "ledger_refused", "ledger_corrupt", "mirror_tampered", "epoch_stop", "ledger_protocol", "no_group",
     "inputs_invalid", "scan_source_invalid", "git_failed", "split_input_invalid", "freeze_infeasible",
     "round_order", "unknown_family", "nothing_to_do", "already_intaken", "tag_conflict",
+    "path_outside", "locked", "freeze_recovery_failed", "dump_missing", "staging_live",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -428,6 +448,61 @@ def default_ctx(printer: Printer, **overrides: Any) -> Ctx:
     repo = Path(overrides.pop("repo", None) or private.parent.parent)
     values = {k: (Path(v) if v is not None else None) for k, v in overrides.items()}
     return Ctx(printer=printer, private=private, repo=repo, **values)
+
+
+# ---------------------------------------------------------------------------
+# One lock for every state-changing command; names and destinations that cannot escape
+# ---------------------------------------------------------------------------
+LOCK_NAME = ".lock"
+#: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
+#: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``return``, ``audit``) take no lock.
+STATE_COMMANDS = frozenset(
+    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude"}
+)
+_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+@contextlib.contextmanager
+def state_lock(ctx: Ctx) -> Iterator[None]:
+    """Hold ``sealed/work/.lock`` exclusively, without waiting, for a whole state-changing command.
+
+    A second command finds it held and is refused (``locked``) before it reads or changes anything, so
+    ``exclude`` cannot land between a freeze's digest and its record, nor two ``apply`` runs interleave.
+    Closing the descriptor (or the process dying) releases the flock.
+    """
+    ctx.sealed_work.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(ctx.sealed_work / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Stop(EXIT_REFUSED, "locked") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def checked_name(name: Optional[str]) -> Optional[str]:
+    """A ``--name``: a plain basename of ``[A-Za-z0-9_-]{1,64}`` (never a path), else a usage refusal."""
+    if name is not None and not _NAME.fullmatch(name):
+        raise Stop(EXIT_USAGE, "usage")
+    return name
+
+
+def safe_dest(root: Path, subdir: str, filename: str) -> Path:
+    """``root/subdir/filename``, proved (symlink-safe) to lie inside the real ``root/subdir``.
+
+    Refused (``path_outside``) if ``filename`` holds a separator, if ``subdir`` (or an ancestor up to ``root``)
+    is a symlink that leads elsewhere, or if the destination itself is a symlink. Nothing is created here.
+    """
+    if not filename or "/" in filename or os.sep in filename or "\0" in filename:
+        raise Stop(EXIT_USAGE, "path_outside")
+    real_base = os.path.join(os.path.realpath(root), subdir)
+    base = root / subdir
+    dest = base / filename
+    if os.path.realpath(base) != real_base or os.path.islink(dest) or os.path.realpath(dest) != os.path.join(real_base, filename):
+        raise Stop(EXIT_USAGE, "path_outside")
+    return dest
 
 
 # ---------------------------------------------------------------------------
@@ -1245,7 +1320,9 @@ def build_supply(ctx: Ctx, round_no: int, pool: Mapping[str, Fam], tags: Mapping
     for fam in pool.values():
         if fam.register not in REGISTERS or fam.source not in SOURCES:
             raise Stop(EXIT_USAGE, "pool_register_missing")
-    _check_tags([*pool.values(), *pinned.values(), *sealed_pin.values()], tags)
+    # A tutorial tag is demanded of the pool and of the sealed families pinned in round 2. A migrated development
+    # family carries none (the SP never sees it, so `intake` cannot tag it): it simply joins no tutorial group.
+    _check_tags([*pool.values(), *sealed_pin.values()], tags)
     nodes: Dict[str, Node] = {}
     for kind, fams in (("quarantine", quarantine), ("sealed_pin", sealed_pin), ("pinned", pinned), ("draft", pool)):
         for fid, fam in fams.items():
@@ -1331,6 +1408,11 @@ def release_paths(ctx: Ctx, round_no: int) -> Dict[str, Path]:
     }
 
 
+def quarantined_by_release(payload: Mapping[str, Any]) -> Set[str]:
+    """Pool families a release sent to ``quarantine_r<R>.jsonl``: dropped (related to a round-1 sealed group) and surplus."""
+    return {*payload["dropped"], *payload.get("surplus", [])}
+
+
 def execute_release(ctx: Ctx, round_no: int, payload: Mapping[str, Any]) -> None:
     """Move a released round out of ``sealed/pool/``: stage, then one journaled transaction.
 
@@ -1346,7 +1428,10 @@ def execute_release(ctx: Ctx, round_no: int, payload: Mapping[str, Any]) -> None
         sp.recover_moves(ctx.journal)
     dests = release_paths(ctx, round_no)
     assignment: Mapping[str, str] = payload["assignment"]
-    expected = {name for name in set(assignment.values())} | ({"dropped"} if payload["dropped"] else set())
+    shelved = quarantined_by_release(payload)
+    # Only NEW families are written by a release: pinned ones already sit in their files (a round 2 with pinned
+    # realistic families and no new realistic draft never creates realistic_r2.jsonl).
+    expected = {name for fid, name in assignment.items() if fid not in payload["preassigned"]} | ({"dropped"} if shelved else set())
     stage = ctx.sealed_work / f"stage_r{round_no}"
     consumed = ctx.sealed_work / f"consumed_r{round_no}"
     if not (all(dests[n].exists() for n in expected) and not pool_files(ctx)):
@@ -1356,7 +1441,7 @@ def execute_release(ctx: Ctx, round_no: int, payload: Mapping[str, Any]) -> None
             raise Stop(EXIT_REFUSED, "pool_changed")
         buckets: Dict[str, List[Dict[str, Any]]] = {n: [] for n in dests}
         for fid, fam in pool.items():
-            name = assignment.get(fid) or ("dropped" if fid in payload["dropped"] else None)
+            name = assignment.get(fid) or ("dropped" if fid in shelved else None)
             if name is None:
                 raise Stop(EXIT_REFUSED, "pool_changed")
             buckets[name].extend(fam.rows)
@@ -1374,13 +1459,16 @@ def execute_release(ctx: Ctx, round_no: int, payload: Mapping[str, Any]) -> None
 
 
 def recover_state(ctx: Ctx) -> None:
-    """Finish a crashed move journal and every recorded release that was not completed."""
+    """Finish a crashed move journal, every recorded release that was not completed and every journalled freeze."""
     try:
         if ctx.journal.exists():
             sp.recover_moves(ctx.journal)
         ledger = ctx.ledger()
         for rec in ledger.records("release"):
             execute_release(ctx, int(rec["round"]), ledger.load_payload(assign_name(int(rec["round"])), rec["payload_sha256"]))
+        for split in SPLITS:
+            if freeze_journal_path(ctx, split).exists():
+                finish_freeze(ctx, split)
     except (sp.MoveError, OSError):
         raise Stop(EXIT_LEDGER_STOP, "move_recovery_failed") from None
 
@@ -1393,6 +1481,74 @@ def _read_pointer(ctx: Ctx, round_no: int) -> Dict[str, Any]:
     if not (isinstance(ptr, dict) and set(ptr) == {"payload", "sha256", "pool_digest"}):
         raise Stop(EXIT_REFUSED, "twins_missing")
     return ptr
+
+
+SURPLUS_TRIES = 24  # seeded surplus choices tried before an attempt is declared infeasible
+
+
+def restrict_twins(twins: Mapping[str, Any], keep: Set[str]) -> Dict[str, Any]:
+    """The twins attestation of ``keep`` only: batches, digest, covered pairs and edges re-derived for what remains."""
+    batches = {name: [f for f in ids if f in keep] for name, ids in twins["batches"].items()}
+    batches = {name: ids for name, ids in batches.items() if ids}
+    names = sorted(batches)
+    return {
+        "batches": batches,
+        "families_digest": families_digest(sorted(keep), names),
+        "pairs_covered": [[names[i], names[j]] for i in range(len(names)) for j in range(i, len(names))],
+        "edges": [list(e) for e in twins["edges"] if e[0] in keep and e[1] in keep],
+    }
+
+
+def surplus_choices(drafts: Sequence[str], edges: Iterable[Sequence[str]], count: int, seed: int, tries: int = SURPLUS_TRIES) -> Iterator[List[str]]:
+    """Seeded sets of exactly ``count`` drafts to shelve, whole twin units only; each distinct set once.
+
+    Units are the components of the drafts' group edges. Each try shuffles the units with ``Random("surplus:<seed>:<k>")``
+    and takes units, in that order, while they still fit the count; a try that cannot land exactly on ``count`` yields nothing.
+    """
+    uf = _UnionFind(drafts)
+    wanted = set(drafts)
+    for a, b in edges:
+        if a in wanted and b in wanted:
+            uf.union(a, b)
+    units = uf.components()
+    seen: Set[Tuple[str, ...]] = set()
+    for k in range(tries):
+        order = list(units)
+        random.Random(f"surplus:{seed}:{k}").shuffle(order)
+        left, chosen = count, []
+        for unit in order:
+            if len(unit) <= left:
+                chosen.extend(unit)
+                left -= len(unit)
+            if not left:
+                break
+        key = tuple(sorted(chosen))
+        if left == 0 and key not in seen:
+            seen.add(key)
+            yield list(key)
+
+
+def assign_round(
+    records: Mapping[str, Mapping[str, Any]], twins: Mapping[str, Any], preassigned: Mapping[str, str], quotas: Mapping[str, int],
+    seed: int, strata: Any, min_share: Any, surplus: int,
+) -> Tuple[Dict[str, str], List[str], List[Mapping[str, Any]], Mapping[str, Any]]:
+    """``split_families`` over ``records``, first shelving ``surplus`` drafts (round 2: more drafts than replacement slots).
+
+    Returns ``(assignment, shelved draft ids, the records split, the twins split)``. Raises ``SplitInfeasible`` if no
+    seeded choice of shelved drafts gives a feasible split (or none can land exactly on the surplus).
+    """
+    drafts = sorted(f for f in records if f not in preassigned)
+    choices: Iterable[List[str]] = [[]] if surplus <= 0 else surplus_choices(drafts, twins["edges"], surplus, seed)
+    last: Optional[SplitInfeasible] = None
+    for shelved in choices:
+        keep = {f for f in records if f not in shelved}
+        recs = [records[f] for f in sorted(keep)]
+        tw = twins if not shelved else restrict_twins(twins, keep)
+        try:
+            return split_families(recs, seed, quotas, strata, twins=tw, preassigned=preassigned, min_share=min_share), shelved, recs, tw
+        except SplitInfeasible as exc:
+            last = exc
+    raise last or SplitInfeasible("no surplus choice fits", {"quota_total": {"violated": True}})
 
 
 def _violated(node: Any) -> bool:
@@ -1434,12 +1590,17 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
     records = supply["records"]
     total = len(records)
     quota_doc = prereg["quota"]
+    pinned_n = {s: sum(1 for v in supply["preassigned"].values() if v == s) for s in SPLITS}
+    surplus = 0
     if round_no == 1:
-        quotas = compute_quotas(quota_doc, total, sum(1 for s in supply["preassigned"].values() if s == "realistic"))
+        quotas = compute_quotas(quota_doc, total, pinned_n["realistic"])
     else:
+        # Each split's quota is its pinned families plus its replacements, i.e. round 1's quota (a split can only be
+        # larger if more families were pinned into it since). Tuning is NOT "the rest": drafts beyond the replacement
+        # slots are surplus, shelved in quarantine_r2 rather than forced into a split.
         prior = ledger.load_payload(assign_name(1), releases[1]["payload_sha256"])["quotas"]
-        quotas = {"sealed": prior["sealed"], "realistic": prior["realistic"]}
-        quotas["tuning"] = total - quotas["sealed"] - quotas["realistic"]
+        quotas = {s: max(int(prior[s]), pinned_n[s]) for s in SPLITS}
+        surplus = max(0, (total - sum(pinned_n.values())) - sum(quotas[s] - pinned_n[s] for s in SPLITS))
     attempts = sum(1 for r in ledger.records("split_attempt") if r["round"] == round_no)
     if quotas["tuning"] < int(quota_doc["tuning_min"]):
         ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="quota_short")
@@ -1448,9 +1609,8 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
     seed = int(prereg["seeds"][f"split_r{round_no}"])
     strata, min_share = prereg.get("strata") or None, prereg.get("min_share") or None
     try:
-        assignment = split_families(
-            [records[f] for f in sorted(records)], seed, quotas, strata, twins=twins,
-            preassigned=supply["preassigned"], min_share=min_share,
+        assignment, shelved, split_records, split_twins = assign_round(
+            records, twins, supply["preassigned"], quotas, seed, strata, min_share, surplus,
         )
     except SplitInfeasible as exc:
         ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="infeasible")
@@ -1463,9 +1623,9 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         raise Stop(EXIT_USAGE, "split_input_invalid") from None
     payload = {
         "version": 1, "round": round_no, "seed": seed, "quotas": quotas, "strata": strata, "min_share": min_share,
-        "pool_digest": digest, "families": [records[f] for f in sorted(records)], "preassigned": supply["preassigned"],
-        "twins": twins, "assignment": assignment, "groups": supply["groups"], "ineligible": supply["ineligible"],
-        "dropped": supply["dropped"], "twins_payload": ptr["payload"], "twins_sha256": ptr["sha256"],
+        "pool_digest": digest, "families": split_records, "preassigned": supply["preassigned"],
+        "twins": split_twins, "assignment": assignment, "groups": supply["groups"], "ineligible": supply["ineligible"],
+        "dropped": supply["dropped"], "surplus": shelved, "twins_payload": ptr["payload"], "twins_sha256": ptr["sha256"],
     }
     sha = ledger.store_payload(assign_name(round_no), payload)
     ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="feasible", payload_sha256=sha)
@@ -1473,12 +1633,14 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
     new_totals = {s: sum(1 for f, v in assignment.items() if v == s and f in pool) for s in SPLITS}
     ledger.record_release(
         round_no=round_no, assignment_digest=sha_text(canon(assignment)),
-        totals={**new_totals, "families": total, "dropped": len(supply["dropped"])}, payload_sha256=sha,
+        totals={**new_totals, "families": total - len(shelved), "dropped": len(supply["dropped"]), "surplus": len(shelved)},
+        payload_sha256=sha,
     )
     execute_release(ctx, round_no, payload)
     ctx.printer.emit(
         "split", round=round_no, outcome="released", attempt=attempts + 1, sealed=totals["sealed"], tuning=totals["tuning"],
-        realistic=totals["realistic"], groups=len(supply["groups"]), dropped=len(supply["dropped"]), sha256=sha,
+        realistic=totals["realistic"], groups=len(supply["groups"]), dropped=len(supply["dropped"]), surplus=len(shelved),
+        sha256=sha,
     )
     return EXIT_OK
 
@@ -1536,11 +1698,14 @@ def split_of_file(kind: str, path: Path) -> Optional[str]:
     return "sealed" if kind == "sealed" else dev_split_of(path)
 
 
-def assert_not_frozen(ledger: SealedLedger, kind: str, paths: Iterable[Path]) -> None:
+def frozen_files(ledger: SealedLedger, kind: str, paths: Iterable[Path]) -> Set[Path]:
+    """The component files whose own split is frozen (a development kind has several splits; only those count)."""
+    out: Set[Path] = set()
     for path in paths:
         split = split_of_file(kind, path)
         if split is not None and ledger.freeze_record(split) is not None:
-            raise Stop(EXIT_REFUSED, "frozen")
+            out.add(path)
+    return out
 
 
 def load_pages(ctx: Ctx) -> Dict[str, str]:
@@ -1604,8 +1769,14 @@ def sheets_dir(ctx: Ctx, kind: str) -> Path:
     return ctx.work_for(kind) / "sheets"
 
 
+def sheet_dest(ctx: Ctx, kind: str, filename: str) -> Path:
+    """A file under ``<work>/sheets/``, contained (symlink-safe) there."""
+    return safe_dest(ctx.work_for(kind), "sheets", filename)
+
+
 def cmd_sheet(ctx: Ctx, kind: str, round_no: Optional[int], name: Optional[str], include_all: bool) -> int:
     """A review sheet (CSV): one line per phrasing, owner columns A / C / R / E, corrections, colleague's key."""
+    checked_name(name)
     recover_state(ctx)
     files, gone = load_kind(ctx, kind)
     approvals = load_approvals(ctx, kind)
@@ -1632,7 +1803,7 @@ def cmd_sheet(ctx: Ctx, kind: str, round_no: Optional[int], name: Optional[str],
             )
     out.sort(key=lambda r: (r["family_id"], r["phrasing_no"]))
     label = name or f"sheet_{kind}_{'r' + str(round_no) if round_no else 'all'}"
-    target = sheets_dir(ctx, kind) / f"{label}.csv"
+    target = sheet_dest(ctx, kind, f"{label}.csv")
     write_atomic(target, csv_bytes(SHEET_COLUMNS, out))
     ctx.printer.emit("sheet", kind=kind, rows=len(out), families=len({r["family_id"] for r in out}), sha256=sha_file(target))
     return EXIT_OK
@@ -1681,12 +1852,19 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
     ledger = ctx.ledger()
     files, gone = load_kind(ctx, kind)
     rows_by_id = live_rows(files, gone)
-    assert_not_frozen(ledger, kind, files)
+    frozen = frozen_files(ledger, kind, files)
+
+    def refuse_frozen(rid: str) -> None:
+        """A line naming a row of a frozen split is refused (rows of the other splits are unaffected)."""
+        if rid in rows_by_id and rows_by_id[rid][0] in frozen:
+            raise Stop(EXIT_REFUSED, "frozen")
+
     approvals = load_approvals(ctx, kind)
     if confirm is not None:
         lines, sha = read_sheet(Path(confirm), CONFIRM_COLUMNS)
         bound = 0
         for line in lines:
+            refuse_frozen(line["row_id"])
             if not ticked(line["OK"]):
                 continue
             rid = line["row_id"]
@@ -1709,6 +1887,7 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
     pending = stale = conflict = bad = 0
     for line in lines:
         rid = line["row_id"]
+        refuse_frozen(rid)
         if rid not in rows_by_id:
             stale += 1
             continue
@@ -1785,7 +1964,7 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
                     "ambiguous": "yes" if row.get("ambiguous") else "no",
                 }
             )
-        write_atomic(sheets_dir(ctx, kind) / f"{Path(str(sheet)).stem}.confirm.csv", csv_bytes(CONFIRM_COLUMNS, recs))
+        write_atomic(sheet_dest(ctx, kind, f"{Path(str(sheet)).stem}.confirm.csv"), csv_bytes(CONFIRM_COLUMNS, recs))
     ctx.printer.emit(
         "apply", kind=kind, approved=len(approved), changed=len(changed), rejected_families=len(rejected),
         escalated_families=len(escalated), pending=pending, sha256=sha,
@@ -1826,14 +2005,15 @@ def _write_form(ctx: Ctx, kind: str, label: str, title: str, items: Sequence[Tup
         if doubt:
             out.append(f"  Owner's doubt: {doubt}\n")
         out.append(FORM_ITEM_TAIL)
-    base = ctx.work_for(kind) / "escalations"
-    write_atomic(base / f"{label}.txt", "".join(out).encode("utf-8"))
-    write_json(base / f"{label}.refs.json", refs)
-    return base / f"{label}.txt"
+    form, refs_file = (safe_dest(ctx.work_for(kind), "escalations", f"{label}{ext}") for ext in (".txt", ".refs.json"))
+    write_atomic(form, "".join(out).encode("utf-8"))
+    write_json(refs_file, refs)
+    return form
 
 
 def cmd_escalate(ctx: Ctx, kind: str, sheet: str, name: Optional[str]) -> int:
     """Forms for the sheet's E-marked items, under ``work/escalations/`` of the kind (sealed or development)."""
+    checked_name(name)
     lines, _ = read_sheet(Path(sheet), SHEET_COLUMNS)
     fams = _family_rows(ctx, kind)
     doubts: Dict[str, str] = {}
@@ -1876,7 +2056,7 @@ def cmd_calibrate(ctx: Ctx, kind: str, seed: Optional[int]) -> int:
         }
         for fid in drawn for r in fams[fid][:1]
     ]
-    write_atomic(sheets_dir(ctx, kind) / "calibration.csv", csv_bytes(SHEET_COLUMNS, recs))
+    write_atomic(sheet_dest(ctx, kind, "calibration.csv"), csv_bytes(SHEET_COLUMNS, recs))
     digest = write_json(ctx.work_for(kind) / "calibration_draw.json", {"seed": use_seed, "families": drawn, "n": len(drawn)})
     ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=digest, form_sha256=sha_file(form))
     return EXIT_OK
@@ -2037,25 +2217,82 @@ def group_id_of(groups: Mapping[str, Sequence[str]], fid: str) -> Optional[str]:
     return None
 
 
-def cmd_exclude(ctx: Ctx, family: Optional[str], group: Optional[str], reason: str) -> int:
-    """Append an exclusion against the WHOLE sealed group (never a move or an unmark)."""
-    if reason not in EXCLUSION_REASONS or (family is None) == (group is None):
-        raise Stop(EXIT_USAGE, "usage")
-    ledger = ctx.ledger()
-    groups = sealed_group_index(ledger, load_sealed_side(ctx))
-    if family is not None:
-        if not _FAMILY_ID.fullmatch(family):
-            raise Stop(EXIT_USAGE, "usage")
-        gid = group_id_of(groups, family)
+def ledger_exclude(ledger: SealedLedger, group: str, reason: str, members: Iterable[str]) -> None:
+    """Append an exclusion naming its member families (``SealedLedger.exclude(..., members=...)``).
+
+    Adapter: a ledger whose ``exclude`` predates ``members`` records the group id alone.
+    """
+    if "members" in inspect.signature(ledger.exclude).parameters:
+        ledger.exclude(group, reason, members=sorted(set(members)))
     else:
-        gid = group if group in groups else None
-    if gid is None:
-        raise Stop(EXIT_REFUSED, "no_group")
-    if gid in ledger.exclusions():
-        ctx.printer.emit("exclude", outcome="already", members=len(groups[gid]))
-        return EXIT_OK
-    ledger.exclude(gid, reason)
-    ctx.printer.emit("exclude", outcome="ok", reason=reason, members=len(groups[gid]))
+        ledger.exclude(group, reason)
+
+
+def excluded_group_ids(ledger: SealedLedger, groups: Mapping[str, Sequence[str]]) -> Set[str]:
+    """The ids in ``groups`` that are excluded: named by the recorded id, or holding any family an exclusion named.
+
+    A group renamed since the exclusion (its smallest member left the sealed set) still resolves, by members.
+    Every recorded id is kept too, so a caller can test ``gid in result`` for ids that are not in ``groups``.
+    """
+    found: Set[str] = set(ledger.exclusions())
+    named_fn = getattr(ledger, "excluded_families", None)
+    if callable(named_fn):
+        named = named_fn()
+        if isinstance(named, Mapping):
+            named = {f for members in named.values() for f in members}
+        found |= {gid for gid, members in groups.items() if set(named) & set(members)}
+    return found
+
+
+def current_sealed_side(ctx: Ctx, ledger: SealedLedger) -> Dict[str, Fam]:
+    """The sealed families as they stand now.
+
+    Once the sealed set is frozen that is the frozen file (its sha256 checked against the freeze record), so
+    groups and twin handling never depend on component files a later command could touch; before it, the
+    surviving ``sealed_r*.jsonl`` families.
+    """
+    record = ledger.freeze_record("sealed")
+    if record is None:
+        return load_sealed_side(ctx)
+    path = frozen_path(ctx, "sealed")
+    if not path.is_file() or sha_file(path) != record["set_sha256"]:
+        raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed")
+    return group_families(load_sealed_rows(ctx, path), path, "sealed")
+
+
+def cmd_exclude(ctx: Ctx, families: Optional[Sequence[str]], group: Optional[str], reason: str) -> int:
+    """Append an exclusion against the WHOLE sealed group of each named family (never a move or an unmark).
+
+    ``--family`` may repeat (an S-hit can name several sealed families: ``audit`` prints one line each); every
+    family is resolved to its group BEFORE anything is written, so one unknown family changes nothing. Families of
+    one group give one exclusion. Each exclusion names its member families.
+    """
+    if reason not in EXCLUSION_REASONS or (not families) == (group is None):
+        raise Stop(EXIT_USAGE, "usage")
+    recover_state(ctx)
+    ledger = ctx.ledger()
+    groups = sealed_group_index(ledger, current_sealed_side(ctx, ledger))
+    wanted: List[str] = []
+    if families:
+        for family in families:
+            if not _FAMILY_ID.fullmatch(family):
+                raise Stop(EXIT_USAGE, "usage")
+            gid = group_id_of(groups, family)
+            if gid is None:
+                raise Stop(EXIT_REFUSED, "no_group")
+            if gid not in wanted:
+                wanted.append(gid)
+    else:
+        if group not in groups:
+            raise Stop(EXIT_REFUSED, "no_group")
+        wanted.append(str(group))
+    already = excluded_group_ids(ledger, groups)
+    for gid in wanted:
+        if gid in already:
+            ctx.printer.emit("exclude", outcome="already", members=len(groups[gid]))
+            continue
+        ledger_exclude(ledger, gid, reason, groups[gid])
+        ctx.printer.emit("exclude", outcome="ok", reason=reason, members=len(groups[gid]))
     return EXIT_OK
 
 
@@ -2076,9 +2313,14 @@ def _ceil_share(share: Any, quota: int) -> int:
 
 def evaluate_split(
     fams: Mapping[str, Fam], split: str, prereg: Mapping[str, Any], placement: Mapping[str, str],
-    groups: Mapping[str, Sequence[str]], excluded: Set[str],
+    groups: Mapping[str, Sequence[str]], excluded: Set[str], all_groups: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> List[str]:
-    """The constraint names a final split violates (empty = ready): band, strata, min_share, floor, group_invariant."""
+    """The constraint names a final split violates (empty = ready): band, strata, min_share, floor, group_invariant.
+
+    ``groups`` (the sealed set's groups) and ``excluded`` (group ids) decide the floor. The group invariant is
+    checked over ``all_groups`` -- the groups of EVERY released family, development included (default: ``groups``) --
+    so a group split across two splits is seen even when only some of its members are sealed.
+    """
     q = len(fams)
     refuse = sum(1 for f in fams.values() if f.scope == "refuse")
     bad: List[str] = []
@@ -2099,22 +2341,31 @@ def evaluate_split(
         quota = prereg["quota"]
         if q < int(quota["floor_sealed"]) or answerable < int(quota["floor_answerable"]):
             bad.append("floor")
-    for members in groups.values():
+    for members in (all_groups if all_groups is not None else groups).values():
         if len({placement[m] for m in members if m in placement}) > 1:
             bad.append("group_invariant")
             break
     return bad
 
 
-def repair_band(units: Sequence[Tuple[str, int, int]], floor_q: int, seed: int, max_k: int = 6, budget: int = 400_000) -> Optional[List[str]]:
-    """The fewest seeded group demotions that bring the sealed band right while ``floor_q`` families remain.
+def repair_band(
+    units: Sequence[Tuple[Any, ...]], floor_q: int, seed: int, max_k: int = 6, budget: int = 400_000, floor_answerable: int = 0,
+) -> Optional[List[str]]:
+    """The fewest seeded group demotions that bring the sealed band right while the floors still hold.
 
-    ``units`` are ``(group id, families, refuse families)``. Candidates are shuffled by ``seed``; subsets
-    are tried by increasing size, so the first hit is a minimum, and ties are broken by the seeded order.
+    ``units`` are ``(group id, families, refuse families[, answerable families])``; ``answerable`` is the number of
+    that group's families that count toward the floor (non-refusal and not excluded; default: families minus refuse
+    ones). Candidates are shuffled by ``seed``; subsets are tried by increasing size, so the first hit is a minimum,
+    and ties are broken by the seeded order. A subset is a hit only if ``floor_q`` families AND ``floor_answerable``
+    answerable families remain, so a repair never ends in a floor breach another subset would have avoided.
     """
     order = sorted(units)
     random.Random(seed).shuffle(order)
-    q, r = sum(u[1] for u in order), sum(u[2] for u in order)
+
+    def answerable(u: Tuple[Any, ...]) -> int:
+        return int(u[3]) if len(u) > 3 else int(u[1]) - int(u[2])
+
+    q, r, a = sum(u[1] for u in order), sum(u[2] for u in order), sum(answerable(u) for u in order)
     tried = 0
     for k in range(1, max_k + 1):
         for combo in itertools.combinations(order, k):
@@ -2122,13 +2373,17 @@ def repair_band(units: Sequence[Tuple[str, int, int]], floor_q: int, seed: int, 
             if tried > budget:
                 return None
             q2, r2 = q - sum(u[1] for u in combo), r - sum(u[2] for u in combo)
-            if q2 >= floor_q and BAND_MIN_DEN * r2 >= BAND_MIN_NUM * q2 and BAND_MAX_DEN * r2 <= BAND_MAX_NUM * q2:
+            a2 = a - sum(answerable(u) for u in combo)
+            if q2 >= floor_q and a2 >= floor_answerable and BAND_MIN_DEN * r2 >= BAND_MIN_NUM * q2 and BAND_MAX_DEN * r2 <= BAND_MAX_NUM * q2:
                 return [u[0] for u in combo]
     return None
 
 
 def move_to_quarantine(ctx: Ctx, kind: str, fids: Set[str], *, status: Optional[str]) -> int:
-    """Move whole sealed families to quarantine (demotion or rejection): quarantine first, then the components."""
+    """Move whole sealed families to quarantine (demotion or rejection): quarantine first, then the components.
+
+    Idempotent: a family already moved is in no component, so a repeat (a crash recovery) finds nothing more to do.
+    """
     files, gone = load_kind(ctx, kind)
     quarantined: Dict[str, List[Dict[str, Any]]] = {}
     new_files: Dict[Path, List[Dict[str, Any]]] = {}
@@ -2148,11 +2403,119 @@ def _verdict_lines(path: Path) -> int:
     return sum(1 for line in path.read_text(encoding="utf-8").split("\n") if line.strip())
 
 
+# -- the freeze transaction: computed first, journalled, then run step by idempotent step --------------------------
+def twins_payload_name(sha256: str) -> str:
+    """The content name of a sealed freeze's twins record: ``twins_sealed_<first 16 hex of its own sha256>``."""
+    return f"twins_sealed_{sha256[:16]}"
+
+
+def freeze_journal_path(ctx: Ctx, split: str) -> Path:
+    return ctx.sealed_work / f"freeze_{split}.journal"
+
+
+def freeze_data_path(ctx: Ctx, split: str) -> Path:
+    return ctx.sealed_work / f"freeze_{split}.data"
+
+
+def _freeze_crash(name: str) -> None:
+    """No-op seam between the freeze transaction's steps (``after_journal``, ``after_frozen``, ``after_payload``,
+    ``after_record``, ``after_exclude``, ``after_quarantine``); tests replace it with a function that raises."""
+
+
+def record_sealed_freeze(ledger: SealedLedger, **fields: Any) -> None:
+    """``record_freeze`` for the sealed split: the exclusion digest is computed inside the ledger's own transaction.
+
+    Adapter: a ledger that predates that (it requires the digest, and has no ``excluded_families``) is handed
+    the digest of the exclusions seen now instead.
+    """
+    if hasattr(ledger, "excluded_families"):
+        ledger.record_freeze(**fields, exclusions_sha256=None)
+    else:
+        ledger.record_freeze(**fields, exclusions_sha256=exclusions_digest(ledger.exclusions()))
+
+
+def _freeze_tx(ctx: Ctx, split: str) -> Dict[str, Any]:
+    path = freeze_journal_path(ctx, split)
+    try:
+        tx = json.loads(path.read_bytes().decode("utf-8"))
+        ok = (
+            isinstance(tx, dict) and tx.get("version") == 1 and tx.get("split") == split
+            and isinstance(tx.get("set_sha256"), str) and isinstance(tx.get("totals"), dict)
+            and isinstance(tx.get("leaving"), list) and isinstance(tx.get("exclude"), list) and isinstance(tx.get("emit"), dict)
+        )
+    except (OSError, ValueError, RecursionError):
+        ok = False
+    if not ok:
+        raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed")
+    return tx
+
+
+def finish_freeze(ctx: Ctx, split: str) -> Dict[str, Any]:
+    """Run (or resume) the journalled freeze transaction of ``split``; returns it. Every step is idempotent.
+
+    Order: the frozen file (from the staged bytes), the twins payload, the ledger record, the exclusions and,
+    last, the quarantine moves. Nothing is recomputed: a half-done transaction is finished, never re-derived
+    from the half-changed world. The journal is removed only when every step is done.
+    """
+    tx = _freeze_tx(ctx, split)
+    ledger = ctx.ledger()
+    data_path = freeze_data_path(ctx, split)
+    try:
+        data = data_path.read_bytes()
+    except OSError:
+        raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed") from None
+    if hashlib.sha256(data).hexdigest() != tx["set_sha256"]:
+        raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed")
+    target = frozen_path(ctx, split)
+    if not target.is_file() or sha_file(target) != tx["set_sha256"]:
+        write_atomic(target, data, mode=0o444)
+    _freeze_crash("after_frozen")
+    twins = tx.get("twins")
+    if twins:
+        for name in (twins["name"], "twins_sealed"):  # the content name, and the plain alias older readers load
+            if ledger.store_payload(name, twins["record"]) != tx["twins_sha256"]:
+                raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed")
+    _freeze_crash("after_payload")
+    existing = ledger.freeze_record(split)
+    if existing is None:
+        fields: Dict[str, Any] = {"split": split, "set_sha256": tx["set_sha256"], "totals": tx["totals"]}
+        if split == "sealed":
+            record_sealed_freeze(ledger, twins_sha256=tx["twins_sha256"], **fields)
+        else:
+            ledger.record_freeze(**fields)
+    elif existing["set_sha256"] != tx["set_sha256"]:
+        raise Stop(EXIT_LEDGER_STOP, "freeze_recovery_failed")
+    _freeze_crash("after_record")
+    for item in tx["exclude"]:
+        if item["group"] not in ledger.exclusions():
+            ledger_exclude(ledger, item["group"], "twin_dev_version", item["members"])
+    _freeze_crash("after_exclude")
+    if tx["leaving"]:
+        move_to_quarantine(ctx, "sealed", set(tx["leaving"]), status=None)
+    _freeze_crash("after_quarantine")
+    freeze_journal_path(ctx, split).unlink(missing_ok=True)
+    _fsync_dir(ctx.sealed_work)
+    data_path.unlink(missing_ok=True)
+    return tx
+
+
+def emit_freeze(ctx: Ctx, tx: Mapping[str, Any]) -> None:
+    extra = {"twins_sha256": tx["twins_sha256"]} if tx.get("twins_sha256") else {}
+    ctx.printer.emit(
+        "freeze", split=tx["split"], status="frozen", **tx["emit"], sha256=tx["set_sha256"], **tx["totals"], **extra,
+    )
+
+
 def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return: Optional[str]) -> int:
     """Freeze one split (sealed needs no development approval). See the module docstring for the order of checks."""
     split = resolve_split(split_name)
     kind = "sealed" if split == "sealed" else "development"
     prereg = load_prereg(ctx)
+    if freeze_journal_path(ctx, split).exists():  # a crash left this split's transaction half done: finish it, nothing more
+        tx = _freeze_tx(ctx, split)
+        recover_state(ctx)  # finishes the move journal, the releases and every pending freeze, this one included
+        emit_freeze(ctx, tx)
+        return EXIT_OK
     recover_state(ctx)
     ledger = ctx.ledger()
     if ledger.freeze_record(split) is not None:
@@ -2176,10 +2539,11 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         if replay != payload["assignment"]:
             raise Stop(EXIT_REFUSED, "replay_mismatch")
         expected.update({f: s for f, s in payload["assignment"].items() if f not in payload["preassigned"]})
-        dropped.update(payload["dropped"])
+        dropped.update(quarantined_by_release(payload))
 
     # 2. the released files must still hold what the assignment says
-    sealed_side, dev_side = load_sealed_side(ctx), load_dev(ctx)
+    sealed_frozen = ledger.freeze_record("sealed") is not None
+    sealed_side, dev_side = current_sealed_side(ctx, ledger), load_dev(ctx)
     sealed_q, dev_q = quarantined_ids(ctx, "sealed"), quarantined_ids(ctx, "development")
     moved = sum(
         1 for fid, s in expected.items()
@@ -2209,18 +2573,23 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         raise Stop(EXIT_REFUSED, "recheck_stale")
     twin_pairs = parse_verdict(vpath)
 
-    # 4. twins: with development the WHOLE group leaves sealed (approvals kept); inside sealed, one is dropped.
+    # 4. twins: before the sealed freeze, a twin with development demotes the WHOLE group (approvals kept) and a twin
+    #    inside sealed drops the later group. After it, nothing sealed ever moves: either becomes an exclusion
+    #    (naming its members). Groups are built from the frozen file once there is one.
     #    Everything up to step 8 is computed in memory: a refusal leaves no side effect.
     groups = sealed_group_index(ledger, sealed_side)
+    released = {fid for p in payloads.values() for fid in p["assignment"]}
+    all_groups = sealed_group_index(ledger, released)  # every released family, development included
     demote: Set[str] = set()
     exclude: Set[str] = set()
+    leave_or_exclude = exclude if sealed_frozen else demote
     for a, b in twin_pairs:
         sa, sb, da, db = a in sealed_side, b in sealed_side, a in dev_side, b in dev_side
         if (sa and db) or (sb and da):
             fid = a if sa else b
-            (demote if (split == "sealed" or ledger.freeze_record("sealed") is None) else exclude).add(group_id_of(groups, fid) or fid)
+            leave_or_exclude.add(group_id_of(groups, fid) or fid)
         elif sa and sb and (group_id_of(groups, a) or a) != (group_id_of(groups, b) or b):
-            demote.add(group_id_of(groups, max(a, b)) or max(a, b))
+            leave_or_exclude.add(group_id_of(groups, max(a, b)) or max(a, b))
     leaving = {m for gid in demote for m in groups.get(gid, [gid])} & set(sealed_side)
     sealed_after = {f: x for f, x in sealed_side.items() if f not in leaving}
     fams: Dict[str, Fam] = dict(sealed_after) if split == "sealed" else {f: x for f, x in dev_side.items() if x.split == split}
@@ -2245,43 +2614,44 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         place.update({f: str(x.split) for f, x in dev_side.items() if x.split})
         return place
 
-    excluded = set(ledger.exclusions()) | exclude
-    violated = evaluate_split(fams, split, prereg, placement(sealed_after), groups, excluded)
+    excluded = excluded_group_ids(ledger, groups) | exclude
+    violated = evaluate_split(fams, split, prereg, placement(sealed_after), groups, excluded, all_groups)
     repaired: List[str] = []
     if split == "sealed" and "band" in violated:
         by_group: Dict[str, List[str]] = {}
         for fid in fams:
             by_group.setdefault(group_id_of(groups, fid) or fid, []).append(fid)
-        units = [(gid, len(m), sum(1 for f in m if fams[f].scope == "refuse")) for gid, m in sorted(by_group.items())]
-        chosen = repair_band(units, int(prereg["quota"]["floor_sealed"]), int(prereg["seeds"]["repair"]))
+        units = [
+            (gid, len(m), sum(1 for f in m if fams[f].scope == "refuse"),
+             0 if gid in excluded else sum(1 for f in m if fams[f].scope != "refuse"))
+            for gid, m in sorted(by_group.items())
+        ]
+        chosen = repair_band(
+            units, int(prereg["quota"]["floor_sealed"]), int(prereg["seeds"]["repair"]),
+            floor_answerable=int(prereg["quota"]["floor_answerable"]),
+        )
         if chosen is not None:
             repaired = chosen
             leaving |= {f for gid in chosen for f in by_group[gid]}
             fams = {f: x for f, x in fams.items() if f not in leaving}
             sealed_after = fams
-            violated = evaluate_split(fams, split, prereg, placement(sealed_after), groups, excluded)
+            violated = evaluate_split(fams, split, prereg, placement(sealed_after), groups, excluded, all_groups)
     if violated:
         for name in violated:
             ctx.printer.emit("freeze_constraint", constraint=name)
         raise Stop(EXIT_FREEZE_INFEASIBLE, "freeze_infeasible", families=len(fams))
 
-    # 8. commit. Demoted and repaired groups go to quarantine (marked, approvals kept), exclusions are appended,
-    #    then the frozen file is written and the ledger records the freeze (twins record bound for sealed).
-    if leaving:
-        move_to_quarantine(ctx, "sealed", leaving, status=None)
-    for gid in sorted(exclude - ledger.exclusions()):
-        ledger.exclude(gid, "twin_dev_version")
+    # 8. commit. The whole transaction is decided HERE and journalled; the steps then run in finish_freeze.
     rows = [r for f in fams.values() for r in f.rows]
     data = dump_rows(rows, mark=split == "sealed")
-    target = frozen_path(ctx, split)
-    write_atomic(target, data, mode=0o444)
     set_sha = hashlib.sha256(data).hexdigest()
     answerable = sum(1 for fid, f in fams.items() if f.scope != "refuse" and (group_id_of(groups, fid) or fid) not in excluded)
     totals = {
         "families": len(fams), "rows": len(rows), "refuse_families": sum(1 for f in fams.values() if f.scope == "refuse"),
         "eligible_answerable": answerable, "groups": len({group_id_of(groups, f) or f for f in fams}),
     }
-    twins_sha = None
+    twins_tx: Optional[Dict[str, Any]] = None
+    twins_sha: Optional[str] = None
     if split == "sealed":
         record = {
             "version": 1, "rounds": {str(r): {"payload": p["twins_payload"], "sha256": p["twins_sha256"]} for r, p in sorted(payloads.items())},
@@ -2290,18 +2660,19 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
             # the slot gate's group record: its ids are group_ids(frozen families, these edges), as exclude's are
             "edges": release_edges(payloads.values()),
         }
-        twins_sha = ledger.store_payload("twins_sealed", record)
-        ledger.record_freeze(
-            split="sealed", set_sha256=set_sha, totals=totals, twins_sha256=twins_sha,
-            exclusions_sha256=exclusions_digest(ledger.exclusions()),
-        )
-    else:
-        ledger.record_freeze(split=split, set_sha256=set_sha, totals=totals)
-    extra = {"twins_sha256": twins_sha} if twins_sha else {}
-    ctx.printer.emit(
-        "freeze", split=split, status="frozen", demoted_groups=len(demote), repaired_groups=len(repaired),
-        excluded_groups=len(exclude), sha256=set_sha, **totals, **extra,
-    )
+        twins_sha = sha_text(canon(record))
+        twins_tx = {"name": twins_payload_name(twins_sha), "record": record}
+    already = excluded_group_ids(ledger, groups)
+    tx = {
+        "version": 1, "split": split, "set_sha256": set_sha, "totals": totals, "twins": twins_tx, "twins_sha256": twins_sha,
+        "leaving": sorted(leaving),
+        "exclude": [{"group": g, "members": sorted(groups.get(g, [g]))} for g in sorted(exclude - already)],
+        "emit": {"demoted_groups": len(demote), "repaired_groups": len(repaired), "excluded_groups": len(exclude)},
+    }
+    write_atomic(freeze_data_path(ctx, split), data)
+    write_json(freeze_journal_path(ctx, split), tx)
+    _freeze_crash("after_journal")
+    emit_freeze(ctx, finish_freeze(ctx, split))
     return EXIT_OK
 
 
@@ -2339,21 +2710,67 @@ def _history_blobs(repo: Path) -> List[Tuple[str, str]]:
     return found
 
 
+def staging_root_of(ctx: Ctx) -> Path:
+    try:
+        return ctx.staging_root if ctx.staging_root is not None else sp.resolve_staging_root()
+    except sp.RootRefused:
+        return sp.default_staging_root()
+
+
+def worktree_paths(repo: Path) -> List[Path]:
+    """Every worktree of the repository (``git worktree list``), the main one included; empty if git cannot say."""
+    try:
+        raw = sl._git(repo, "worktree", "list", "--porcelain").decode("utf-8", errors="replace")
+    except (sl.ScanRefusal, OSError):
+        return []
+    return [Path(line[len("worktree "):]) for line in raw.splitlines() if line.startswith("worktree ")]
+
+
+def project_dir_markers(ctx: Ctx) -> Tuple[List[str], str]:
+    """``(names a project directory CONTAINS, a prefix it STARTS with)`` for the sessions that may hold sealed text.
+
+    A session's directory name is its working directory with every non-alphanumeric character turned into ``-``.
+    The repository's and every worktree's mangled path can sit anywhere in the name (a scratchpad session is
+    ``-private-tmp-...-<mangled repo>-<id>-scratchpad``); the SP staging root's mangled path starts the name of a
+    session run from a staging directory.
+    """
+    contains = sorted({mangle_path(ctx.repo), *(mangle_path(p) for p in worktree_paths(ctx.repo))})
+    return contains, mangle_path(staging_root_of(ctx))
+
+
+def settle_staging(ctx: Ctx) -> None:
+    """Make SP staging scannable: no live dispatch or sweep, and every half-done move replayed first.
+
+    The lock is the launcher's own (``sp_launch``): held means a dispatch or sweep is running, so files are in
+    flux and the audit refuses. Pending moves are replayed (never deleted) so no output is half in, half out.
+    """
+    root = staging_root_of(ctx)
+    if not root.is_dir():
+        return
+    try:
+        with sp._exclusive_lock(root):
+            sp.recover_moves(root / sp.JOURNAL_NAME)
+    except sp.LaunchError:
+        raise Stop(EXIT_AUDIT_REFUSED, "staging_live") from None
+    except (sp.MoveError, OSError):
+        raise Stop(EXIT_AUDIT_REFUSED, "move_recovery_failed") from None
+
+
 def audit_targets(ctx: Ctx) -> Dict[str, List[Path]]:
     """The a6 target list as files per class: transcripts and memory, staging, logs, research, work, runs, dispatch logs."""
     root = ctx.projects_root if ctx.projects_root is not None else Path.home() / ".claude" / "projects"
-    prefix = mangle_path(ctx.repo)
+    contains, staging_prefix = project_dir_markers(ctx)
     targets: Dict[str, List[Path]] = {c: [] for c in TARGET_CLASSES}
     if root.is_dir():
-        for directory in sorted(d for d in root.iterdir() if d.is_dir() and d.name.startswith(prefix)):
+        mine = sorted(
+            d for d in root.iterdir()
+            if d.is_dir() and (d.name.startswith(staging_prefix) or any(marker in d.name for marker in contains))
+        )
+        for directory in mine:
             for path in _files_under(directory):
                 is_memory = "memory" in path.relative_to(directory).parts[:-1]
                 targets["memory" if is_memory else "transcript"].append(path)
-    try:
-        staging = ctx.staging_root if ctx.staging_root is not None else sp.resolve_staging_root()
-    except sp.RootRefused:
-        staging = sp.default_staging_root()
-    targets["staging"] = _files_under(staging)
+    targets["staging"] = _files_under(staging_root_of(ctx))
     targets["log"] = _files_under(ctx.repo / "logs")
     targets["research"] = _files_under(ctx.repo / "data" / "research")
     targets["work"] = _files_under(ctx.dev_work)
@@ -2365,7 +2782,14 @@ def audit_targets(ctx: Ctx) -> Dict[str, List[Path]]:
 def cmd_audit(ctx: Ctx) -> int:
     """S-needle scan over the a6 target list; counts per target class and each hit's family id."""
     try:
-        index = sl.build_needles(sl.collect_sources(), handbook_dump=ctx.handbook_dump)
+        sources = sl.collect_sources()
+        if any(src.sealed for src in sources):
+            # The handbook text is exempt from the S-needles. With the dump absent that exemption would silently
+            # shrink to nothing and every handbook phrase in a transcript would read as a leak: say so instead.
+            dump = Path(ctx.handbook_dump) if ctx.handbook_dump is not None else sl._repo_base() / sl.HANDBOOK_DUMP
+            if not (dump.is_file() and os.access(dump, os.R_OK)):
+                raise Stop(EXIT_AUDIT_REFUSED, "dump_missing")
+        index = sl.build_needles(sources, handbook_dump=ctx.handbook_dump)
     except sl.ScanRefusal:
         raise Stop(EXIT_USAGE, "scan_source_invalid") from None
     s_needles = len(index.s_whole) + len(index.s_windows) + len(index.s_short)
@@ -2379,6 +2803,7 @@ def cmd_audit(ctx: Ctx) -> int:
                 hits[klass][hit.family] = hits[klass].get(hit.family, 0) + 1
 
     if s_needles:
+        settle_staging(ctx)
         for klass, paths in audit_targets(ctx).items():
             for path in paths:
                 try:
@@ -2391,9 +2816,16 @@ def cmd_audit(ctx: Ctx) -> int:
             for klass, listing in (("tree", head), ("history", history)):
                 for sha in sorted({s for s, _ in listing}):
                     scan(klass, blobs.get(sha, b"").decode("utf-8", errors="replace"))
-            messages = sl._git(ctx.repo, "log", "--all", "--format=%B%x1e").decode("utf-8", errors="replace")
-            for message in messages.split("\x1e"):
-                scan("history", message)
+            # Messages of every commit AND annotated tag, read object by object (the merge gate's own walk):
+            # `git log --format=%B` shows no tag message, and splitting one stream on a delimiter byte can hide a needle.
+            commits = sl._git(ctx.repo, "rev-list", "--all").decode().split()
+            tag_objs = sl._git(ctx.repo, "for-each-ref", "refs/tags", "--format=%(objectname)").decode().split()
+            objects = sl._cat_blobs(ctx.repo, sorted(set(commits) | set(tag_objs)))
+            for sha in [*commits, *tag_objs]:
+                scanned["history"] += 1
+                for hit in sl._scan_message(objects.get(sha, b""), "history", index):
+                    if hit.family is not None:
+                        hits["history"][hit.family] = hits["history"].get(hit.family, 0) + 1
     total = 0
     for klass in TARGET_CLASSES:
         n = sum(hits[klass].values())
@@ -2437,7 +2869,8 @@ def cmd_power(ctx: Ctx, group_sizes: Optional[str], from_freeze: bool, discordan
     else:
         ledger = ctx.ledger()
         fams = group_families(load_sealed_rows(ctx, frozen_path(ctx, "sealed")))
-        groups, excluded = sealed_group_index(ledger, fams), ledger.exclusions()
+        groups = sealed_group_index(ledger, fams)
+        excluded = excluded_group_ids(ledger, groups)
         counts: Dict[str, int] = {}
         for fid, fam in fams.items():
             gid = group_id_of(groups, fid) or fid
@@ -2533,7 +2966,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("escalate", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"required": True}), ("--name", {"default": None}))
     add("calibrate", ("--kind", {"choices": KINDS, "required": True}), ("--seed", {"type": int, "default": None}))
     add("disagree", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"required": True}), ("--calibration", {"action": "store_true"}))
-    add("exclude", ("--family", {"default": None}), ("--group", {"default": None}), ("--reason", {"required": True}))
+    add("exclude", ("--family", {"action": "append", "default": None}), ("--group", {"default": None}), ("--reason", {"required": True}))
     add("audit")
     add("power", ("--group-sizes", {"default": None}), ("--from-freeze", {"action": "store_true"}),
         ("--discordance", {"type": float, "action": "append", "default": []}), ("--effect", {"type": float, "default": None}),
@@ -2544,6 +2977,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def dispatch(ctx: Ctx, a: argparse.Namespace) -> int:
+    """Run the command; a state-changing one holds ``sealed/work/.lock`` (non-blocking) for its whole run."""
+    if a.command in STATE_COMMANDS:
+        with state_lock(ctx):
+            return _run_command(ctx, a)
+    return _run_command(ctx, a)
+
+
+def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
     c = a.command
     if c == "ids":
         return cmd_ids(ctx, a.count, a.out)

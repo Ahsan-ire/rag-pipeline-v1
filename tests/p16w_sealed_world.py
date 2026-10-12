@@ -107,6 +107,9 @@ class World:
         self.sealed = self.root / "sealed"
         self.dev = self.root / "dev"
         self.sp_dir = tmp_path / "sp_out"  # SP output staged outside the private root
+        # `audit` refuses without a handbook dump (its exemption would silently be empty): a tiny synthetic one, no real text
+        self.handbook_dump = tmp_path / "handbook_dump.jsonl"
+        self.handbook_dump.write_text(json.dumps({"label": "ZZ.0", "page_start": 1, "page_end": 1, "text": "synthetic filler"}) + "\n", encoding="utf-8")
         self.prereg_path = self.repo / "eval" / "prereg_16a2.json"
         self._next = 0x100
         self._sec = 0
@@ -136,7 +139,7 @@ class World:
 
         out, err = _io.StringIO(), _io.StringIO()
         glob = ["--repo", str(self.repo), "--prereg", str(self.prereg_path)]
-        for key, value in opts.items():
+        for key, value in {"handbook_dump": self.handbook_dump, **opts}.items():
             glob += [f"--{key.replace('_', '-')}", str(value)]
         code = st.main([*glob, *map(str, argv)], out=out, err=err)
         self.history.append((list(map(str, argv)), code, out.getvalue(), err.getvalue()))

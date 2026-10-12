@@ -280,7 +280,8 @@ def test_a_crash_in_the_release_move_is_recovered_without_loss_or_repeat(world, 
 
 # --- round 2 ---------------------------------------------------------------------------------------------
 def _round2_world(w, replacement_phrasings: int = 2):
-    """Standard round 1, one sealed answer rejected; round-2 drafts: one sealed replacement, two for tuning, one related to a sealed group."""
+    """Standard round 1, one sealed answer rejected; round-2 drafts: one sealed replacement, one related to a sealed group,
+    and two more (tied to public ids) that the quotas have no slot for: surplus, not tuning's "rest"."""
     std = standard_released(w)
     rejected = std.sealed_singletons[0]
     code, _, err = w.run("sheet", "--kind", "sealed", "--name", "r1")
@@ -310,10 +311,12 @@ def test_round_two_drops_a_draft_related_to_a_round_one_sealed_group_and_release
     line = world.last(out, "split")
     assert line["outcome"] == "released" and line["dropped"] == "1"
     assert {r["family_id"] for r in read_rows(world.sealed / "sealed_r2.jsonl")} == {replacement}  # fills the sealed replacement
-    assert {r["family_id"] for r in read_rows(world.dev / "tuning_r2.jsonl")} == {t_refuse, t_answer}
-    assert {r["family_id"] for r in read_rows(world.sealed / "quarantine_r2.jsonl")} == {related}
+    assert line["surplus"] == "2"
+    assert not (world.dev / "tuning_r2.jsonl").exists()  # tuning is full (its 8 are pinned): the extra drafts are not forced into it
+    assert {r["family_id"] for r in read_rows(world.sealed / "quarantine_r2.jsonl")} == {related, t_refuse, t_answer}  # dropped + surplus
     payload = assign_payload(world, 2)
-    assert payload["quotas"] == {"sealed": 12, "realistic": 4, "tuning": 10}  # pinned + replacements: round 1's totals
+    assert payload["quotas"] == {"sealed": 12, "realistic": 4, "tuning": 8}  # each split: pinned + replacements = round 1's quota
+    assert payload["surplus"] == sorted([t_refuse, t_answer]) and t_refuse not in payload["assignment"]
     assert all(payload["assignment"][f] == "sealed" for f in std.sealed if f != rejected)  # round 1 survivors are pinned
     survivors = set(std.sealed) - {rejected}
     assert {f for f, s in payload["preassigned"].items() if s == "sealed"} == survivors  # as preassigned families
