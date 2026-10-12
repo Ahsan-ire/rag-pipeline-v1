@@ -16,7 +16,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
                    [--prereg F] [--handbook-dump F] [--claude-projects D] [--staging-root D]
                    <command> ...
 
-Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``twins``, ``split``,
+Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
 ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
 ``audit``, ``power``, ``prereg-check``, ``return``.
 
@@ -29,16 +29,21 @@ private ledgers; the D64 stop).
 
 Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``)
 ----------------------------------------------------------------------------------
-- ``sealed/pool/**.jsonl``       the SP's drafts (marked rows). ``split`` consumes them.
+- ``sealed/work/sp_out/<dispatch id>/``  where ``sp_launch`` releases an SP run's ``out/`` (``pool.jsonl``,
+  ``twins.jsonl``, ``tutorial_map.json``, ``return.json``); ``intake`` takes ``pool.jsonl`` and ``tutorial_map.json``
+  from here, ``twins`` and ``freeze`` read ``twins.jsonl`` and ``return.json`` in place.
+- ``sealed/pool/**.jsonl``       the SP's drafts (marked rows), one ``<dispatch id>.jsonl`` per ``intake``. ``split`` consumes them.
 - ``sealed/sealed_r<R>.jsonl``   the sealed side of round R's release (marked).
 - ``dev/tuning_r<R>.jsonl``, ``dev/realistic_r<R>.jsonl``  the development side (**unmarked**).
   Pinned development families are any other ``dev/tuning*.jsonl`` / ``dev/realistic*.jsonl``
   (the file-name prefix names the split); ``dev/quarantine*.jsonl`` is neither.
 - ``sealed/quarantine*.jsonl``   rejected, demoted or dropped sealed families (marked).
 - ``sealed/heldout-v2.jsonl``, ``dev/tuning-v2.jsonl``, ``dev/realistic-v2.jsonl``  frozen sets.
-- ``W/approvals.json`` / ``DW/approvals.json``  owner approvals bound to row hashes.
+- ``W/approvals.json`` / ``DW/approvals.json``  owner approvals bound to row hashes. ``W/approvals.json`` is also the
+  approvals source of truth for the slot gate (``src.sealed_run`` reads this very file: ``approved[row id]["row_hash"]``).
 - ``W/tutorial_map.json``        ``{family id: opaque tutorial tag}`` (the "same source tutorial"
-  relation; rows carry no tutorial id, so the SP's dispatch notes feed this map).
+  relation; rows carry no tutorial id, so ``intake`` merges the SP's ``out/tutorial_map.json`` into this map:
+  tags ``T02``-``T06``, ``T08``-``T17`` and ``TD1``-``TD7`` there, stored lower-case; ``T01`` and ``T07`` never).
 - ``W/sheets/``, ``W/escalations/``, ``W/twins_current_r<R>.json``, ``W/release.journal``.
 - ledger payloads (``store_payload``): ``twins_r<R>_<pool digest>``, ``assign_r<R>``,
   ``twins_sealed`` -- content-free (ids, hashes, counts, enums).
@@ -51,6 +56,13 @@ anything is filtered. A component holding a pinned development family, or a draf
 twin verdict naming a public id, or a shared 8-token window), is sealed-ineligible as a whole and its edges are
 not passed. In round 2 a draft in a component holding a round-1 sealed family is *dropped* (to
 ``sealed/quarantine_r2.jsonl``), never joined.
+
+**Group ids (``exclude``, ``freeze``, ``power`` and the slot gate).** One definition, one function
+(``src.sealed_ledger.group_ids``): the connected components of the released rounds' ``edges`` over the families
+that are *in the sealed set*, each named by its smallest member. The frozen sealed freeze stores those edges in the
+``twins_sealed`` payload, which is the slot gate's group record (digest-checked against the freeze record), so
+``exclude <group>`` and ``pipeline eval --sealed-slot`` can never name a group differently. Before the freeze the
+sealed set is the surviving ``sealed_r*.jsonl`` families, so a pre-freeze exclusion is provisional.
 
 **split.** Needs the pushed prereg (a7's ancestry rule) declaring the round, a current ``twins`` record for the
 pool, and passes the exact final quotas (``compute_quotas``) to ``split_families`` with the pinned families
@@ -65,14 +77,18 @@ verdict is for THIS content (digest, mtime, return ok, enough pairs); (4) twins:
 demotes its whole group to quarantine (approvals kept; after the sealed freeze, an exclusion instead), a twin
 inside sealed drops the later group; (5) approvals bound by row hash; (6) 2-3 phrasings (D64 stop); (7) band,
 strata, min_share, group invariant, floor, with the sealed band repaired by the fewest seeded group demotions;
-(8) quarantine moves, exclusions, the frozen file (mode 0444) and the ledger record.
+(8) quarantine moves, exclusions, the frozen file (mode 0444) and the ledger record. The sealed freeze stores the
+``twins_sealed`` payload (the rounds' twins records, the recheck, the demotions and the group ``edges``) and binds its
+sha256, the frozen file's sha256 and the digest of the exclusions recorded so far (``exclusions_digest``).
 
 **prereg** (``eval/prereg_16a2.json``): ``version``, ``branch``, ``rounds``, ``seeds`` (``split_r1``, ``split_r2``,
 ``repair``, ``calibration``), ``quota`` (``sealed``, ``spare``, ``floor_sealed``, ``floor_answerable``,
 ``realistic_min``, ``tuning_min``, ``examples``), ``band``, ``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``power``
 (``alpha``, ``discordance``, ``planned_groups``, ``draws``, ``seed``, ``table``), optional ``strata``,
 ``min_share`` (keyed by split; the source class ``tutorial_or_colleague`` pools those two sources) and the free keys
-named in :data:`PREREG_KEYS`. ``prereg-check`` recomputes ``quota.examples`` and ``power.table``.
+named in :data:`PREREG_KEYS`. ``prereg-check`` recomputes ``quota.examples`` and ``power.table``. The same file is the
+slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
+``quota.floor_answerable`` and the expansion mode of each slot from ``slots`` (``{"0": {"expansion": "live"}, ...}``).
 """
 
 from __future__ import annotations
@@ -114,6 +130,8 @@ from src.sealed_ledger import (  # noqa: E402
     ProtocolError,
     SealedLedger,
     SealedLedgerError,
+    exclusions_digest,
+    group_ids,
 )
 from scripts import scan_leaks as sl  # noqa: E402  (tokenisation, windows, S-needles, exemptions)
 from scripts import sp_launch as sp  # noqa: E402  (return validator, journaled move)
@@ -170,7 +188,7 @@ REASONS = (
     "twin_in_sealed", "calibration_short", "colleague_key_invalid", "frozen", "move_recovery_failed",
     "ledger_refused", "ledger_corrupt", "mirror_tampered", "epoch_stop", "ledger_protocol", "no_group",
     "inputs_invalid", "scan_source_invalid", "git_failed", "split_input_invalid", "freeze_infeasible",
-    "round_order", "unknown_family", "nothing_to_do",
+    "round_order", "unknown_family", "nothing_to_do", "already_intaken", "tag_conflict",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -188,12 +206,15 @@ ENUM_WORDS = frozenset(
 )
 ID_FIELDS = frozenset({("audit_hit", "family")})  # the only places an opaque family id is printed
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_FAMILY_ID = re.compile(r"f[0-9a-f]{8}")
+_FAMILY_ID = sp.FAMILY_ID_RE  # one pattern set for opaque ids (the launcher's return validator owns it)
 _KEY = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _KIND = re.compile(r"[a-z][a-z0-9_]{0,31}")
 _FIELD_PATH = re.compile(r"(?:<[a-z]+>|[a-z_]+)(?:\[[0-9]+\]|\.[a-z_]+)*")
 _EXT_ID = re.compile(r"[A-Za-z0-9:_.-]{1,64}")  # a family id of any set (public ids are "q:<hex>")
-_TAG = re.compile(r"[a-z0-9_]{1,24}")
+_TAG = re.compile(r"[a-z0-9_]{1,24}")  # a stored tutorial tag (lower-case)
+#: A tag as the SP writes it in ``out/tutorial_map.json`` (``intake``): tutorials 2-17 without 7 (never T01 or T07),
+#: and title-document sets 1-7. Stored lower-case, which is what ``_TAG`` accepts.
+_SP_TAG = re.compile(r"T0[2-689]|T1[0-7]|TD[1-7]")
 _BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 MAX_PRINT_INT = 10**9
 
@@ -359,6 +380,11 @@ class Ctx:
     @property
     def pool_dir(self) -> Path:
         return self.sealed_dir / "pool"
+
+    @property
+    def sp_out(self) -> Path:
+        """Where ``sp_launch`` releases an SP run's ``out/`` (``<dispatch id>/pool.jsonl`` ...)."""
+        return self.sealed_dir / "work" / "sp_out"
 
     @property
     def sealed_work(self) -> Path:
@@ -958,7 +984,7 @@ def gate_prereg(ctx: Ctx, prereg: Mapping[str, Any], round_no: int) -> str:
 # ---------------------------------------------------------------------------
 # ids, digest, count-migrated, inputs-check
 # ---------------------------------------------------------------------------
-_FID_ANY = re.compile(r"f[0-9a-f]{8}")
+_FID_ANY = sp.FAMILY_ID_RE
 
 
 def known_family_ids(ctx: Ctx) -> Set[str]:
@@ -1128,6 +1154,69 @@ def cmd_inputs_check(ctx: Ctx, pairing: Optional[str], conflicts: Optional[str],
             ctx.printer.emit("inputs_error", source=source, field=path if _FIELD_PATH.fullmatch(path) else "other", why=why)
         raise Stop(EXIT_USAGE, "inputs_invalid", errors=len(exc.errors)) from None
     ctx.printer.emit("inputs_check", status="ok", pairs=counts["pairs"], labels=counts["labels"])
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# intake
+# ---------------------------------------------------------------------------
+def cmd_intake(ctx: Ctx, dispatch: str) -> int:
+    """Take one released SP dispatch into the pool: ``sp_out/<id>/pool.jsonl`` and ``tutorial_map.json``.
+
+    Validates everything first and changes nothing if any check fails. The pool file must pass the one
+    sealed loader and hold only fresh family ids (none in the pool, development, the sealed side or any
+    quarantine); a tutorial-sourced family needs a tag. The tag map must be ``{family id: tag}`` over pool
+    family ids with tags in :data:`_SP_TAG`; its tags are stored lower-case and may not change a tag already
+    stored. Then the map is merged (idempotent) and the pool is moved to ``sealed/pool/<id>.jsonl`` under the
+    journaled move, so a crash is finished by :func:`recover_state`. Prints counts only.
+    """
+    if not sp.ID_RE.fullmatch(dispatch):
+        raise Stop(EXIT_USAGE, "usage")
+    recover_state(ctx)
+    src_dir = ctx.sp_out / dispatch
+    pool_src, map_src = src_dir / "pool.jsonl", src_dir / "tutorial_map.json"
+    present = [p for p in (pool_src, map_src) if p.exists() or p.is_symlink()]
+    if not present:
+        raise Stop(EXIT_USAGE, "input_missing")
+    if any(p.is_symlink() or not p.is_file() for p in present):
+        raise Stop(EXIT_USAGE, "input_invalid")
+    current = load_pool(ctx)
+    rows = load_sealed_rows(ctx, pool_src) if pool_src.is_file() else []
+    incoming = group_families(rows)
+    taken = {
+        *current, *load_dev(ctx, include_quarantine=True), *load_sealed_side(ctx),
+        *quarantined_ids(ctx, "sealed"), *quarantined_ids(ctx, "development"),
+    }
+    if set(incoming) & taken:
+        raise Stop(EXIT_USAGE, "input_invalid")
+    fresh: Dict[str, str] = {}
+    if map_src.is_file():
+        doc = read_json(map_src)
+        valid_ids = set(current) | set(incoming)
+        ok = isinstance(doc, dict) and bool(doc) and all(
+            isinstance(k, str) and bool(sp.FAMILY_ID_RE.fullmatch(k)) and k in valid_ids
+            and isinstance(v, str) and bool(_SP_TAG.fullmatch(v))
+            for k, v in doc.items()
+        )
+        if not ok:
+            raise Stop(EXIT_USAGE, "input_invalid")
+        fresh = {k: v.lower() for k, v in doc.items()}
+    merged = load_tutorial_map(ctx)
+    clash = sum(1 for k, v in fresh.items() if merged.get(k, v) != v)
+    if clash:
+        raise Stop(EXIT_REFUSED, "tag_conflict", families=clash)
+    _check_tags(incoming.values(), {**merged, **fresh})
+    dest = ctx.pool_dir / f"{dispatch}.jsonl"
+    if pool_src.is_file() and os.path.lexists(dest):
+        raise Stop(EXIT_REFUSED, "already_intaken")
+    if fresh:  # first: a crash before the move leaves a re-runnable intake (the merge is idempotent)
+        write_json(ctx.sealed_work / "tutorial_map.json", {**merged, **fresh})
+    if pool_src.is_file():
+        try:
+            sp.journaled_move([(pool_src, dest)], ctx.journal)
+        except (sp.MoveError, OSError):
+            raise Stop(EXIT_LEDGER_STOP, "move_recovery_failed") from None
+    ctx.printer.emit("intake", families=len(incoming), rows=len(rows), tags=len(fresh))
     return EXIT_OK
 
 
@@ -1918,15 +2007,27 @@ def release_payloads(ledger: SealedLedger) -> List[Dict[str, Any]]:
     return [ledger.load_payload(assign_name(int(r["round"])), r["payload_sha256"]) for r in ledger.records("release")]
 
 
-def sealed_group_index(ledger: SealedLedger) -> Dict[str, List[str]]:
-    """``{group id: members}`` over every released round; a family in no group is its own group."""
-    groups: Dict[str, List[str]] = {}
-    for payload in release_payloads(ledger):
-        groups.update(payload["groups"])
-        for fid, split in payload["assignment"].items():
-            if split == "sealed" and not any(fid in m for m in payload["groups"].values()):
-                groups.setdefault(fid, [fid])
-    return groups
+def release_edges(payloads: Iterable[Mapping[str, Any]]) -> List[List[str]]:
+    """The group edges of every released round, de-duplicated and sorted (what ``twins_sealed`` stores)."""
+    return [list(e) for e in sorted({(str(a), str(b)) for p in payloads for a, b in p["twins"]["edges"]})]
+
+
+def sealed_group_index(ledger: SealedLedger, live: Optional[Iterable[str]] = None) -> Dict[str, List[str]]:
+    """``{group id: members}`` over every released round; a family in no group is its own group.
+
+    The ids come from :func:`src.sealed_ledger.group_ids` (the one definition the slot gate shares): the
+    components of the released edges over ``live``, the families that are in the sealed set now (callers pass
+    the surviving ``sealed_r*.jsonl`` families, which after the sealed freeze are exactly the frozen set).
+    ``live=None`` means every family assigned to sealed at release.
+    """
+    payloads = release_payloads(ledger)
+    families = sorted(set(live)) if live is not None else sorted(
+        {fid for p in payloads for fid, split in p["assignment"].items() if split == "sealed"}
+    )
+    index: Dict[str, List[str]] = {}
+    for fid, gid in group_ids(families, [tuple(e) for e in release_edges(payloads)]).items():
+        index.setdefault(gid, []).append(fid)
+    return {gid: sorted(members) for gid, members in sorted(index.items())}
 
 
 def group_id_of(groups: Mapping[str, Sequence[str]], fid: str) -> Optional[str]:
@@ -1941,7 +2042,7 @@ def cmd_exclude(ctx: Ctx, family: Optional[str], group: Optional[str], reason: s
     if reason not in EXCLUSION_REASONS or (family is None) == (group is None):
         raise Stop(EXIT_USAGE, "usage")
     ledger = ctx.ledger()
-    groups = sealed_group_index(ledger)
+    groups = sealed_group_index(ledger, load_sealed_side(ctx))
     if family is not None:
         if not _FAMILY_ID.fullmatch(family):
             raise Stop(EXIT_USAGE, "usage")
@@ -2110,7 +2211,7 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
 
     # 4. twins: with development the WHOLE group leaves sealed (approvals kept); inside sealed, one is dropped.
     #    Everything up to step 8 is computed in memory: a refusal leaves no side effect.
-    groups = sealed_group_index(ledger)
+    groups = sealed_group_index(ledger, sealed_side)
     demote: Set[str] = set()
     exclude: Set[str] = set()
     for a, b in twin_pairs:
@@ -2186,11 +2287,13 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
             "version": 1, "rounds": {str(r): {"payload": p["twins_payload"], "sha256": p["twins_sha256"]} for r, p in sorted(payloads.items())},
             "recheck_verdict_sha256": sha_file(vpath), "recheck_twin_pairs": [list(p) for p in twin_pairs],
             "demoted_groups": sorted(demote), "repaired_groups": sorted(repaired), "families_sha256": set_sha,
+            # the slot gate's group record: its ids are group_ids(frozen families, these edges), as exclude's are
+            "edges": release_edges(payloads.values()),
         }
         twins_sha = ledger.store_payload("twins_sealed", record)
         ledger.record_freeze(
             split="sealed", set_sha256=set_sha, totals=totals, twins_sha256=twins_sha,
-            exclusions_sha256=sha_text(canon(sorted(ledger.exclusions()))),
+            exclusions_sha256=exclusions_digest(ledger.exclusions()),
         )
     else:
         ledger.record_freeze(split=split, set_sha256=set_sha, totals=totals)
@@ -2333,8 +2436,8 @@ def cmd_power(ctx: Ctx, group_sizes: Optional[str], from_freeze: bool, discordan
             raise Stop(EXIT_USAGE, "usage")
     else:
         ledger = ctx.ledger()
-        groups, excluded = sealed_group_index(ledger), ledger.exclusions()
         fams = group_families(load_sealed_rows(ctx, frozen_path(ctx, "sealed")))
+        groups, excluded = sealed_group_index(ledger, fams), ledger.exclusions()
         counts: Dict[str, int] = {}
         for fid, fam in fams.items():
             gid = group_id_of(groups, fid) or fid
@@ -2419,6 +2522,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--tutorial", {"required": True}), ("--quota-tuning", {"type": int, "default": None}), ("--quota-realistic", {"type": int, "default": None}))
     add("inputs-check", ("--pairing", {"default": None}), ("--conflicts", {"default": None}), ("--golden-ids", {"default": None}),
         ("--realistic-ids", {"default": None}))
+    add("intake", ("--dispatch", {"required": True}))
     add("twins", ("--round", {"type": int, "required": True}), ("--verdict", {"required": True}), ("--dev-verdict", {"default": None}),
         ("--tutorials", {"default": None}))
     add("split", ("--round", {"type": int, "required": True}))
@@ -2449,6 +2553,8 @@ def dispatch(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_count_migrated(ctx, a.golden, a.realistic, a.pairing, a.tutorial, a.quota_tuning, a.quota_realistic)
     if c == "inputs-check":
         return cmd_inputs_check(ctx, a.pairing, a.conflicts, a.golden_ids, a.realistic_ids)
+    if c == "intake":
+        return cmd_intake(ctx, a.dispatch)
     if c == "twins":
         return cmd_twins(ctx, a.round, a.verdict, a.dev_verdict, a.tutorials)
     if c == "split":

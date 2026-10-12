@@ -19,7 +19,7 @@ import src.evaluator as ev
 from src import eval_schema, sealed_run, tracing_guard
 from src.eval_privacy import SealedInputError
 from src.expansion_artifact import load_artifact, rewrite_identity
-from src.sealed_ledger import RecoveryAction
+from src.sealed_ledger import RecoveryAction, exclusions_digest
 from tests.p16_capture import PROVENANCE
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     HELD,
@@ -148,16 +148,39 @@ def test_a_sealed_file_off_its_record_refuses(world, no_calls):
     assert unclaimed(world) and no_calls == []
 
 
+def twins_payload_copies(world):
+    """Both stored copies of the freeze-bound group record: next to the out-of-tree ledger, and the private copy."""
+    return [Path(os.environ["CC_SEALED_LEDGER"]).parent / "sealed_payloads" / "twins_sealed.json",
+            world.private / "sealed" / "ledger" / "payloads" / "twins_sealed.json"]
+
+
 def test_a_twins_record_off_its_record_refuses(world, no_calls):
-    (world.records_dir / "twins.json").write_text(json.dumps({"edges": []}))
+    copies = twins_payload_copies(world)
+    assert all(p.is_file() for p in copies)  # the record is in the ledger, not in the records directory
+    assert not (world.records_dir / "twins.json").exists()
+    freeze = world.ledger().freeze_record("sealed")
+    copies[0].write_text(json.dumps({"edges": []}))
+    assert sealed_run.load_group_edges(world.ledger(), freeze)  # one intact copy still verifies against the freeze record
+    copies[1].write_text(json.dumps({"edges": []}))  # now neither copy matches its digest
     assert gate_of(lambda: world.token(0)) == "twins_record"
     assert unclaimed(world) and no_calls == []
 
 
-def test_an_exclusion_list_off_its_record_refuses(world, no_calls):
-    (world.records_dir / "exclusions.json").write_text(json.dumps({"version": 1, "groups": [world.families[4]]}))
-    assert gate_of(lambda: world.token(0)) == "exclusion_list"
-    assert unclaimed(world) and no_calls == []
+def test_an_exclusion_list_off_its_record_refuses(bare, no_calls):
+    bare.write_prereg()
+    bare.write_records()
+    bare.freeze(exclusions_sha256=exclusions_digest([bare.families[4]]))  # the freeze bound a list the ledger never held
+    assert gate_of(lambda: bare.token(0)) == "exclusion_list"
+    assert unclaimed(bare) and no_calls == []
+
+
+def test_an_exclusion_recorded_before_the_freeze_is_bound_and_after_it_is_simply_added(bare):
+    bare.write_prereg()
+    bare.write_records(exclusions=[bare.families[4]])
+    bare.freeze()
+    assert bare.token(0).excluded == {bare.families[4]}  # the freeze bound it
+    bare.ledger().exclude(bare.families[5], "s_hit")  # a later exclusion does not unbind the freeze record
+    assert bare.token("0b").excluded == {bare.families[4], bare.families[5]}
 
 
 def test_an_unbound_sealed_row_refuses(bare, no_calls):
@@ -172,7 +195,12 @@ def test_an_unbound_sealed_row_refuses(bare, no_calls):
     assert unclaimed(bare) and no_calls == []
 
 
-@pytest.mark.parametrize("content", ["not json", json.dumps({"version": 2}), json.dumps({"version": 1, "approved": {"x": "y"}})])
+@pytest.mark.parametrize("content", [
+    "not json", json.dumps({"version": 2}), json.dumps({"version": 1, "approved": {"x": "y"}}),
+    json.dumps({"version": 1, "approved": {"x": {"row_hash": "short", "sheet_sha256": "a" * 64}}}),
+    json.dumps({"version": 1, "approved": {"x": {"row_hash": "a" * 64}}}),
+    json.dumps({"version": 1, "approved": ["x"]}),
+])
 def test_a_malformed_approvals_file_refuses(bare, content):
     bare.write_prereg()
     bare.write_records()
@@ -192,11 +220,10 @@ def test_a_row_edited_after_approval_changes_its_hash_and_is_unbound(bare):
     assert gate_of(lambda: bare.token(0)) == "approvals"
 
 
-@pytest.mark.parametrize("twins", [{"edges": "no"}, {"edges": [["only-one"]]}, {"batches": {}}])
+@pytest.mark.parametrize("twins", [{"edges": "no"}, {"edges": [["only-one"]]}, {"batches": {}}, ["edges"]])
 def test_a_malformed_twins_record_refuses(bare, twins):
     bare.write_prereg()
-    bare.write_records()
-    (bare.records_dir / "twins.json").write_text(json.dumps(twins))
+    bare.write_records(twins=twins)
     bare.freeze()
     assert gate_of(lambda: bare.token(0)) == "groups"
 
@@ -532,11 +559,7 @@ def test_a_set_outside_the_sealed_directory_without_a_marker_is_not_a_sealed_set
     other.write_text(bare.sealed_path.read_text())
     bare.write_prereg()
     bare.write_records()
-    bare.ledger().record_freeze(
-        split="sealed", set_sha256=sha_of(other), totals={"families": 8},
-        twins_sha256=sha_of(bare.records_dir / "twins.json"),
-        exclusions_sha256=sha_of(bare.records_dir / "exclusions.json"),
-    )
+    bare.freeze(set_path=other)
     with pytest.raises(sealed_run.GateRefused) as info:
         sealed_run.acquire_slot_token(
             0, ledger=bare.ledger(), set_path=other, prereg_path=bare.prereg_path, records_dir=bare.records_dir,

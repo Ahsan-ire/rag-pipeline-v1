@@ -48,7 +48,7 @@ def crash_at(monkeypatch, owner, name, *, after=False):
 
 
 def recover(world, slot, **kw):
-    return sealed_run.recover_slot(slot, ledger=world.ledger(), records_dir=world.records_dir, **kw)
+    return sealed_run.recover_slot(slot, ledger=world.ledger(), **kw)
 
 
 def run_id_of(world, slot):
@@ -58,6 +58,15 @@ def run_id_of(world, slot):
 # ---------------------------------------------------------------------------
 # (c) Canaries: nothing free-text or fake-model leaves eval/private/sealed/
 # ---------------------------------------------------------------------------
+
+
+def outside_without_ledger_payloads(world):
+    """The text of every file outside ``sealed/`` except the out-of-tree ledger payloads (``sealed_payloads/``).
+
+    A payload is content-free but holds opaque ids by design: the freeze-bound group record (``twins_sealed``)
+    stores the twins edges, as the assignment payloads store every family.
+    """
+    return [p.read_text(errors="replace") for p in world.files_outside_sealed() if "sealed_payloads" not in p.parts]
 
 
 def test_canaries_in_every_free_text_field_and_fake_model_output_never_leave_sealed(
@@ -96,8 +105,9 @@ def test_canaries_in_every_free_text_field_and_fake_model_output_never_leave_sea
     assert len(outside) >= 5 and any("slot_claim" in text for text in outside)  # the ledgers are among them
     secrets = c.secrets()
     assert_no_leak(secrets, out.out, out.err, caplog.text, report, *outside, where="(canonical slot 0)")
-    # Opaque ids appear only inside sealed/ (and, for exclusions, the private ledger): not in any output.
-    for text in (out.out, out.err, caplog.text, report, *outside):
+    # Opaque ids appear only inside sealed/ and in the ledger's records and payloads (exclusions, the group
+    # record's edges): not in any output, and not in any other file.
+    for text in (out.out, out.err, caplog.text, report, *outside_without_ledger_payloads(world)):
         assert not [i for i in world.ids() if i in text]
     # Positive controls: the data really was there, inside sealed/runs/<id>/.
     run_dir = world.run_dir(run_id_of(world, 0))
@@ -140,7 +150,7 @@ def test_a_non_canonical_run_and_a_refusal_leak_nothing_either(world, capsys, ca
     out = capsys.readouterr()
     outside = [p.read_text(errors="replace") for p in world.files_outside_sealed()]
     assert_no_leak(world.canaries.secrets(), out.out, out.err, caplog.text, *outside)
-    for text in (out.out, out.err, caplog.text, *outside):
+    for text in (out.out, out.err, caplog.text, *outside_without_ledger_payloads(world)):
         assert not [i for i in world.ids() if i in text]
     assert "failed guards: refusals_scored" in out.out
 
@@ -430,14 +440,14 @@ def test_an_expansion_fallback_removes_only_the_no_fallbacks_guard(world, monkey
 
 
 def test_records_edited_during_the_run_remove_only_the_bound_records_guard(world):
-    twins = world.records_dir / "twins.json"
+    approvals = world.records_dir / "approvals.json"  # the one bound record that lives in a file, not in the ledger
     retrieval = world.retrieval()
     state = {"done": False}
 
     def edit_once(question):
         if not state["done"]:
             state["done"] = True
-            twins.write_text(twins.read_text() + " ")
+            approvals.write_text(approvals.read_text() + " ")
 
     assert world.run(0, generate=world.generator(retrieval, on_call=edit_once)).failed_guards == ("bound_records",)
 

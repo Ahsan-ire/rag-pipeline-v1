@@ -658,6 +658,62 @@ def test_a_post_freeze_exclusion_leaves_the_freeze_and_later_slots_alone(tmp_pat
     assert led.recover(0).action is RecoveryAction.CONSUMED
 
 
+def test_group_ids_are_the_components_of_the_edges_named_by_their_smallest_member():
+    from src.sealed_ledger import group_ids
+
+    assert group_ids(["fc", "fa", "fb", "fd", "fe"], [("fb", "fc"), ("fa", "fb"), ("fb", "fb")]) == {
+        "fa": "fa", "fb": "fa", "fc": "fa", "fd": "fd", "fe": "fe",
+    }
+    # an endpoint outside the families (a rejected or dropped draft) keeps its connectivity but is no member
+    assert group_ids(["fa", "fb", "fz"], [("fa", "fx"), ("fx", "fb")]) == {"fa": "fa", "fb": "fa", "fz": "fz"}
+    # the smallest SURVIVING member names the group: when "fa" is gone the group is "fb"
+    assert group_ids(["fb", "fc"], [("fa", "fb"), ("fb", "fc")]) == {"fb": "fb", "fc": "fb"}
+    assert group_ids([], [("fa", "fb")]) == {}
+    assert group_ids(iter(["fb", "fa"]), iter([("fa", "fb")])) == {"fa": "fa", "fb": "fa"}  # any iterable
+
+
+def test_exclusions_digest_is_the_canonical_sorted_set_and_the_freeze_binds_the_earlier_exclusions(tmp_path):
+    from src.sealed_ledger import exclusions_digest
+
+    assert exclusions_digest([]) == hashlib.sha256(b"[]").hexdigest()
+    assert exclusions_digest(["b", "a", "a"]) == exclusions_digest(("a", "b")) == hashlib.sha256(b'["a","b"]').hexdigest()
+    led = make(tmp_path)
+    assert led.exclusions_at_freeze() is None  # not frozen yet
+    led.exclude("grp-1", "exposure")
+    led.record_freeze(
+        split="sealed", set_sha256=DIGEST_A, twins_sha256=DIGEST_B, totals={"families": 60},
+        exclusions_sha256=exclusions_digest(led.exclusions()),
+    )
+    led.exclude("grp-2", "s_hit")  # after the freeze
+    assert led.exclusions_at_freeze() == frozenset({"grp-1"}) and led.exclusions() == frozenset({"grp-1", "grp-2"})
+    assert exclusions_digest(led.exclusions_at_freeze()) == led.freeze_record("sealed")["exclusions_sha256"]
+    assert make(tmp_path).exclusions_at_freeze("sealed") == frozenset({"grp-1"})
+    assert led.exclusions_at_freeze("tuning") is None  # another split that is not frozen
+
+
+def test_a_dispatch_record_holds_ids_an_enum_and_a_digest_and_the_mirror_only_its_kind(tmp_path):
+    led = make(tmp_path)
+    led.record_dispatch(dispatch_id="0a1b2c3d", dispatch_kind="data", argv_hash=DIGEST_A)
+    [rec] = led.records("dispatch")
+    assert set(rec) == {"v", "seq", "kind", "ts", "dispatch_id", "dispatch_kind", "argv_hash"}
+    assert (rec["dispatch_id"], rec["dispatch_kind"], rec["argv_hash"]) == ("0a1b2c3d", "data", DIGEST_A)
+    assert make(tmp_path).records("dispatch") == [rec]
+    [mirrored] = [json.loads(line) for line in lines_of(mirror_file(tmp_path))]
+    assert set(mirrored) == {"seq", "kind", "digest"} and mirrored["kind"] == "dispatch"
+    assert "0a1b2c3d" not in mirror_file(tmp_path).read_text()
+    # it is not a slot or a freeze event: the slot protocol and the freeze rule do not see it
+    assert led.claim(0) == "0" and led.freeze_record("sealed") is None
+    for bad in (
+        dict(dispatch_id="0A1B2C3D", dispatch_kind="data", argv_hash=DIGEST_A),  # an id is lower-case hex
+        dict(dispatch_id="0a1b2c3", dispatch_kind="data", argv_hash=DIGEST_A),
+        dict(dispatch_id="0a1b2c3d", dispatch_kind="the client buys a house", argv_hash=DIGEST_A),
+        dict(dispatch_id="0a1b2c3d", dispatch_kind="data", argv_hash="short"),
+    ):
+        with pytest.raises(ValueError):
+            led.record_dispatch(**bad)
+    assert len(led.records("dispatch")) == 1  # a bad call writes nothing
+
+
 def test_below_floor_signals_the_epoch_end(tmp_path):
     assert below_floor(34, 35) is True
     assert below_floor(35, 35) is False  # exactly at the floor is enough

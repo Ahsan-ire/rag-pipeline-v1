@@ -82,6 +82,24 @@ on slot 0, even with the render interrupted, disqualifies 0b for good. Slot 0
 is not "ended" while it holds stored results that are neither rendered nor
 consumed (its canonical status may still be decided), so 0b waits for that.
 
+Dispatches
+----------
+``record_dispatch`` appends a ``dispatch`` record when ``scripts/sp_launch.py``
+starts a ``data`` sealed-processor run: the 8-hex dispatch id, the launch kind
+(``dispatch_kind``: the record's own ``kind`` is ``dispatch``), the argument-vector
+hash and the UTC time. Nothing else. The committed mirror carries the record's
+kind and line digest only (no digest field is listed for it).
+
+Groups and exclusions
+---------------------
+``group_ids`` is the **one definition of a sealed group id** (the connected
+components of the twins record's edges over the frozen sealed families, named by
+the smallest member family): ``sealed_tool exclude`` and the slot gate both call
+it, so an exclusion recorded by one is always a group the other knows.
+``exclusions_digest`` and ``SealedLedger.exclusions_at_freeze`` give the digest
+the sealed freeze binds, so the slot gate re-checks it from the ledger itself
+(no separate exclusion file).
+
 Errors are ``BaseException`` subclasses, like D70's, so no broad
 ``except Exception`` can turn a refusal into a fall-through.
 """
@@ -100,7 +118,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -111,7 +129,8 @@ LEDGER_FILENAME = "sealed_ledger.jsonl"
 SCHEMA_VERSION = 1
 
 #: Record kinds (a4): split attempts, release/assignment, freeze, slot claim,
-#: results stored (step 3), publication intent, consumed, exclusion.
+#: results stored (step 3), publication intent, consumed, exclusion; plus (a7)
+#: the sealed-processor ``dispatch``.
 KINDS = (
     "split_attempt",
     "release",
@@ -121,6 +140,7 @@ KINDS = (
     "publication_intent",
     "slot_consumed",
     "exclusion",
+    "dispatch",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
@@ -149,6 +169,7 @@ FORBIDDEN_MIRROR_KEY_PARTS = ("scope", "chapter", "stratum", "sealed")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _TOKEN = re.compile(r"[a-z0-9_]{1,40}")
 _ID = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+_DISPATCH_ID = re.compile(r"[0-9a-f]{8}")
 _PAYLOAD_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 
@@ -508,6 +529,41 @@ def below_floor(eligible_after_exclusion: int, floor: int) -> bool:
     return _count(eligible_after_exclusion, "eligible_after_exclusion") < _count(floor, "floor")
 
 
+def group_ids(families: Iterable[str], edges: Iterable[Tuple[str, str]]) -> Dict[str, str]:
+    """Family -> group id: the connected components of ``edges``, each named by its smallest member family.
+
+    This is the one definition of a sealed group id (see the module docstring):
+    ``sealed_tool`` (``exclude``, ``freeze``, ``power``) and the slot gate both
+    call it with the frozen sealed families and the twins record's edges. An
+    edge endpoint outside ``families`` (a draft that was rejected or dropped)
+    keeps its connectivity but is never a member, and a family with no edge is
+    a group of its own.
+    """
+    members = set(families)
+    parent: Dict[str, str] = {f: f for f in members}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in sorted(edges):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    smallest: Dict[str, str] = {}
+    for f in sorted(members):
+        smallest.setdefault(find(f), f)
+    return {f: smallest[find(f)] for f in members}
+
+
+def exclusions_digest(groups: Iterable[str]) -> str:
+    """sha256 of the canonical JSON list of the sorted, distinct group ids (what the sealed freeze binds)."""
+    return hashlib.sha256(_dumps(sorted(set(groups)))).hexdigest()
+
+
 def digest_run_dir(run_dir: os.PathLike[str] | str) -> str:
     """sha256 over a run directory: every regular file's relative path and sha256.
 
@@ -750,6 +806,18 @@ class SealedLedger:
         found = [r for r in self.records("freeze") if r["split"] == name]
         return found[0] if found else None
 
+    # -- sealed-processor dispatches (a7) --------------------------------------------
+
+    def record_dispatch(self, *, dispatch_id: str, dispatch_kind: str, argv_hash: str) -> None:
+        """Record that a sealed-processor run was started (ids, an enum and a digest; the time is the record's ``ts``)."""
+        fields: Dict[str, Any] = {
+            "dispatch_id": _token(dispatch_id, "dispatch_id", _DISPATCH_ID),
+            "dispatch_kind": _token(dispatch_kind, "dispatch_kind"),
+            "argv_hash": _hex64(argv_hash, "argv_hash"),
+        }
+        with self._txn() as txn:
+            txn.append("dispatch", **fields)
+
     # -- payloads (content-free records too big for a ledger line) -------------------
 
     def store_payload(self, name: str, obj: Any) -> str:
@@ -902,5 +970,17 @@ class SealedLedger:
     def exclusions(self) -> FrozenSet[str]:
         """The group ids excluded so far."""
         return frozenset(r["group_id"] for r in self.records("exclusion"))
+
+    def exclusions_at_freeze(self, split: str = SEALED_SPLIT) -> Optional[FrozenSet[str]]:
+        """The groups excluded BEFORE the named split's freeze record (``None`` if it is not frozen yet).
+
+        This is the list the freeze binds with ``exclusions_sha256``: the ledger is append-only, so the
+        gate re-derives it from the ledger instead of reading a separate file.
+        """
+        records = self.records()
+        freeze = next((r for r in records if r["kind"] == "freeze" and r["split"] == _token(split, "split")), None)
+        if freeze is None:
+            return None
+        return frozenset(r["group_id"] for r in records if r["kind"] == "exclusion" and r["seq"] < freeze["seq"])
 
     below_floor = staticmethod(below_floor)

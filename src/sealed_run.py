@@ -17,24 +17,28 @@ never a path, hash or row detail) before any retrieval, expansion or model call:
 mode the command line selects is not the mode the prereg declares for the
 slot), ``meter`` (no active spend meter), ``tracing`` (tracing is on:
 :mod:`src.tracing_guard`), ``freeze_record`` (the sealed split is not frozen),
-``set_file`` / ``twins_record`` / ``exclusion_list`` (a file's sha256 differs
-from the freeze record), ``approvals`` (a sealed row's ``row_hash`` is not
-approval-bound), ``groups`` (the twins record is malformed), ``floor`` (fewer
-families than the floor after exclusions: the epoch ends, a D64 stop),
-``baseline`` (a confirmatory slot without a verified baseline run), and
-``claim`` (a4's claim refused: claimed before, or 0b not available).
+``set_file`` / ``twins_record`` / ``exclusion_list`` (the sealed file, the
+group record or the exclusions bound at the freeze differ from the freeze
+record), ``approvals`` (a sealed row is not approval-bound), ``groups`` (the
+group record is malformed), ``floor`` (fewer families than the floor after
+exclusions: the epoch ends, a D64 stop), ``baseline`` (a confirmatory slot
+without a verified baseline run), and ``claim`` (a4's claim refused: claimed
+before, or 0b not available).
 
-Formats this module defines (the plan leaves them to a5)
--------------------------------------------------------
-**Prereg** (``--prereg``; the keys this module reads, anything else is ignored)::
+Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
+----------------------------------------------------------------------------------------------
+**Prereg** (``--prereg``, the same ``eval/prereg_16a2.json`` that ``sealed_tool`` checks; this
+module reads only the keys below, anything else is ignored)::
 
     {"version": 1,
-     "floor": {"families": 50, "eligible": 35},
+     "quota": {"floor_sealed": 50, "floor_answerable": 35, ...},
      "slots": {"0":  {"expansion": "live"},
                "0b": {"expansion": "live"},
                "1":  {"expansion": "replay",    "artifact_sha256": "<64 hex>"},
                "2":  {"expansion": "candidate", "rewrite_candidate": "<64 hex config hash>"}}}
 
+The floor is ``quota.floor_sealed`` families and ``quota.floor_answerable`` eligible
+answerable families: the numbers ``sealed_tool freeze`` enforced, not a second copy.
 ``live``: ``--expansion live`` and no ``--rewrite-candidate``. ``replay``:
 ``--expansion <artifact>`` whose file sha256 equals ``artifact_sha256``.
 ``candidate``: ``--expansion live`` with ``--rewrite-candidate <config hash>``
@@ -42,22 +46,30 @@ equal to the declared hash *and* to the code's actual rewrite ``config_hash``
 (``expansion_artifact.rewrite_identity``). ``build:`` is never accepted: a live
 slot freezes its own expansions into its run directory.
 
-**Records directory** (``--slot-records``; default ``eval/private/sealed/work/``)::
+**Approvals** (``--slot-records`` directory, default ``eval/private/sealed/work/``): the file
+``sealed_tool apply`` writes, ``approvals.json``, read as it is::
 
-    approvals.json   {"version": 1, "approved": {"<row hash>": "<sheet sha256>"}}
-    twins.json       the 16A-1 twins record; only ``"edges": [[family, family], ...]`` is read
-    exclusions.json  {"version": 1, "groups": ["<group id>", ...]}   (the freeze-time list)
+    {"version": 1, "approved": {"<row id>": {"row_hash": "<64 hex>", "sheet_sha256": "<64 hex>"}, ...},
+     "pending_confirm": {...}, "rejected": [...], "escalated": [...]}
 
-The freeze record binds ``twins.json`` and ``exclusions.json`` by file sha256.
-Every sealed row's ``eval_schema.row_hash`` must be a key of ``approved`` (its
-value, the owner's sheet digest, must be a sha256).
+Every sealed row's ``eval_schema.row_hash`` must equal ``approved[row id]["row_hash"]`` (a
+changed row is not bound until the owner confirms it, so ``pending_confirm`` binds nothing).
+The file is not in the ledger, so the token remembers its sha256 and the ``bound_records``
+guard re-checks it after the run.
 
-**Groups.** The group map is the connected components of the twins record's
-``edges`` over families; a family with no edge is a group of its own. A group's
-id is its lexicographically smallest *sealed* family id (an edge may name a
-draft that is not in the sealed set: its connectivity is kept, it is not a
-member). Exclusions (``exclusions.json`` and the ledger's ``exclusion``
-records) name groups by that id; an unknown id refuses the gate.
+**Group record**: the freeze-bound ``twins_sealed`` payload in the ledger
+(``ledger.load_payload("twins_sealed", freeze["twins_sha256"])``, digest-checked against the
+freeze record). Only its ``"edges": [[family, family], ...]`` is read.
+
+**Exclusions**: ``SealedLedger.exclusions()``, no file. The freeze binds the digest of those
+recorded before it (``exclusions_digest``); the gate recomputes it from the ledger
+(``exclusions_at_freeze``), so a later exclusion (an S-hit, an exposure) simply adds to the list.
+
+**Groups.** ``src.sealed_ledger.group_ids`` -- the same function ``sealed_tool exclude`` uses --
+over the frozen set's families and the group record's edges: the connected components, a family
+with no edge a group of its own, each named by its smallest *sealed* family id (an edge may name
+a draft that is not in the sealed set: its connectivity is kept, it is not a member). Exclusions
+name groups by that id; an unknown id refuses the gate.
 
 The slot protocol (:func:`run_slot`, :func:`finish_slot`)
 ---------------------------------------------------------
@@ -94,7 +106,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple, Union
 
 from src import eval_privacy as _privacy
 from src.eval_privacy import PRIVATE, REPO_ROOT, new_run_id, sealed_run_dir, write_private
@@ -102,12 +114,16 @@ from src.eval_schema import InventoryError, SchemaError, row_hash
 from src.eval_sealed_read import NotSealedInput, load_sealed
 from src.eval_sets import sha256_file
 from src.sealed_ledger import (
+    EpochStop,
     ProtocolError,
     RecoveryAction,
     SealedLedger,
+    SealedLedgerError,
     SlotRefused,
     below_floor,
     digest_run_dir,
+    exclusions_digest,
+    group_ids,
 )
 from src.sealed_report import (
     RESULTS_KIND,
@@ -194,7 +210,7 @@ def default_ledger() -> SealedLedger:
 
 
 def default_records_dir() -> Path:
-    """``eval/private/sealed/work/``: approvals, twins and exclusions."""
+    """``eval/private/sealed/work/``: where ``sealed_tool apply`` writes ``approvals.json``."""
     return _privacy.private_root() / "sealed" / "work"
 
 
@@ -220,8 +236,11 @@ def normalise_slot(slot: Union[int, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Records: prereg, approvals, twins, exclusions, groups
+# Records: prereg, approvals, the group record, exclusions, groups
 # ---------------------------------------------------------------------------
+
+#: The ledger payload ``sealed_tool freeze --split sealed`` stores and binds: the group record.
+TWINS_PAYLOAD = "twins_sealed"
 
 
 def _read_json(path: Union[str, os.PathLike], gate: str) -> Any:
@@ -238,20 +257,25 @@ def _is_hex(value: Any) -> bool:
 def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     """Read and validate the prereg keys this module uses (see the module docstring).
 
+    The returned document carries the floor as ``doc["floor"] = {"families": quota.floor_sealed,
+    "eligible": quota.floor_answerable}``, derived from the prereg's quota (a top-level ``floor``
+    key in the file is ignored): the gate and ``sealed_tool freeze`` use the same two numbers.
+
     Raises:
-        GateRefused: ``prereg`` for a missing or malformed file, a bad floor or a
+        GateRefused: ``prereg`` for a missing or malformed file, a bad quota floor or a
             malformed slot declaration.
     """
     doc = _read_json(path, "prereg")
     if not isinstance(doc, dict) or doc.get("version") != 1:
         raise GateRefused("prereg")
-    floor = doc.get("floor")
+    quota = doc.get("quota")
     if not (
-        isinstance(floor, dict)
-        and all(isinstance(floor.get(k), int) and not isinstance(floor.get(k), bool) and floor[k] >= 0
-                for k in ("families", "eligible"))
+        isinstance(quota, dict)
+        and all(isinstance(quota.get(k), int) and not isinstance(quota.get(k), bool) and quota[k] >= 0
+                for k in ("floor_sealed", "floor_answerable"))
     ):
         raise GateRefused("prereg")
+    doc = {**doc, "floor": {"families": quota["floor_sealed"], "eligible": quota["floor_answerable"]}}
     slots = doc.get("slots")
     if not isinstance(slots, dict):
         raise GateRefused("prereg")
@@ -266,18 +290,34 @@ def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
 
 
 def load_approvals(path: Union[str, os.PathLike]) -> Dict[str, str]:
-    """``approvals.json`` -> ``{row hash: sheet sha256}`` (see the module docstring)."""
+    """``sealed_tool``'s ``approvals.json`` -> ``{row id: bound row hash}`` (see the module docstring)."""
     doc = _read_json(path, "approvals")
     approved = doc.get("approved") if isinstance(doc, dict) and doc.get("version") == 1 else None
-    if not isinstance(approved, dict) or not all(_is_hex(k) and _is_hex(v) for k, v in approved.items()):
+    if not isinstance(approved, dict):
         raise GateRefused("approvals")
-    return dict(approved)
+    bound: Dict[str, str] = {}
+    for row_id, entry in approved.items():
+        if not (isinstance(entry, dict) and _is_hex(entry.get("row_hash")) and _is_hex(entry.get("sheet_sha256"))):
+            raise GateRefused("approvals")
+        bound[row_id] = entry["row_hash"]
+    return bound
 
 
-def load_twins_edges(path: Union[str, os.PathLike]) -> List[Tuple[str, str]]:
-    """The ``edges`` of the twins record as family-id pairs."""
-    doc = _read_json(path, "twins_record")
-    edges = doc.get("edges") if isinstance(doc, dict) else None
+def load_group_edges(ledger: SealedLedger, freeze: Mapping[str, Any]) -> List[Tuple[str, str]]:
+    """The group edges from the freeze-bound ``twins_sealed`` payload, as family-id pairs.
+
+    The payload is read from whichever ledger copy verifies against the freeze record's
+    ``twins_sha256``.
+
+    Raises:
+        GateRefused: ``twins_record`` when no copy verifies (the record is off its freeze record),
+            ``groups`` when the payload has no well-formed ``edges``.
+    """
+    try:
+        payload = ledger.load_payload(TWINS_PAYLOAD, freeze["twins_sha256"])
+    except (EpochStop, KeyError, ValueError):
+        raise GateRefused("twins_record") from None
+    edges = payload.get("edges") if isinstance(payload, dict) else None
     if not isinstance(edges, list):
         raise GateRefused("groups")
     out: List[Tuple[str, str]] = []
@@ -288,40 +328,21 @@ def load_twins_edges(path: Union[str, os.PathLike]) -> List[Tuple[str, str]]:
     return out
 
 
-def load_exclusion_list(path: Union[str, os.PathLike]) -> FrozenSet[str]:
-    """``exclusions.json`` -> the freeze-time excluded group ids."""
-    doc = _read_json(path, "exclusion_list")
-    groups = doc.get("groups") if isinstance(doc, dict) and doc.get("version") == 1 else None
-    if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
-        raise GateRefused("exclusion_list")
-    return frozenset(groups)
+def check_exclusions_bound(ledger: SealedLedger, freeze: Mapping[str, Any]) -> FrozenSet[str]:
+    """Every group excluded so far, after checking the freeze-time list against the freeze record.
 
-
-def compute_groups(families: Iterable[str], edges: Iterable[Tuple[str, str]]) -> Dict[str, str]:
-    """Family -> group id: connected components of ``edges``, id = smallest member family.
-
-    Edge endpoints outside ``families`` keep their connectivity but are never
-    members (see the module docstring).
+    Raises:
+        GateRefused: ``exclusion_list`` when the exclusions recorded before the freeze no longer
+            digest to the freeze record's ``exclusions_sha256``.
     """
-    members = set(families)
-    parent: Dict[str, str] = {f: f for f in members}
+    at_freeze = ledger.exclusions_at_freeze(SEALED_SPLIT)
+    if at_freeze is None or exclusions_digest(at_freeze) != freeze.get("exclusions_sha256"):
+        raise GateRefused("exclusion_list")
+    return ledger.exclusions()
 
-    def find(x: str) -> str:
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
 
-    for a, b in sorted(edges):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-    smallest: Dict[str, str] = {}
-    for f in sorted(members):
-        root = find(f)
-        smallest.setdefault(root, f)
-    return {f: smallest[find(f)] for f in members}
+#: The one definition of a group id (``sealed_tool exclude`` calls the same function).
+compute_groups = group_ids
 
 
 def _eligible_counts(rows: Sequence[Mapping[str, Any]], groups: Mapping[str, str], excluded: FrozenSet[str]) -> Tuple[int, int]:
@@ -363,10 +384,11 @@ class SlotToken:
     approved_paths: Tuple[str, ...] = field(repr=False)
     artifact_sha256: Optional[str]
     floor: Mapping[str, int] = field(repr=False)
-    twins_path: str = field(repr=False)
+    ledger: Any = field(repr=False, compare=False)
     twins_sha256: str = field(repr=False)
-    exclusions_path: str = field(repr=False)
     exclusions_sha256: str = field(repr=False)
+    approvals_path: str = field(repr=False)
+    approvals_sha256: str = field(repr=False)
     baseline: Optional[Mapping[str, Any]] = field(repr=False)
     mint: object = field(repr=False, compare=False, default=None)
     used: List[bool] = field(repr=False, compare=False, default_factory=lambda: [False])
@@ -400,15 +422,25 @@ class SlotToken:
         return False
 
     def records_still_bound(self) -> bool:
-        """True iff the sealed file, twins record and exclusion list still match the freeze record."""
-        return all(
-            _file_sha(p) == sha
-            for p, sha in (
-                (self.set_path, self.set_sha256),
-                (self.twins_path, self.twins_sha256),
-                (self.exclusions_path, self.exclusions_sha256),
-            )
-        )
+        """True iff the bound records are still the ones the gate checked.
+
+        The sealed file and the approvals file still hash as at the gate, and the ledger still holds
+        the freeze record's group record and the exclusions it bound (a later exclusion is not a
+        change: the ledger is append-only and the freeze-time list is re-derived from it).
+        """
+        if _file_sha(self.set_path) != self.set_sha256 or _file_sha(self.approvals_path) != self.approvals_sha256:
+            return False
+        try:
+            freeze = self.ledger.freeze_record(SEALED_SPLIT)
+            if freeze is None or (freeze["twins_sha256"], freeze["exclusions_sha256"]) != (
+                self.twins_sha256, self.exclusions_sha256,
+            ):
+                return False
+            load_group_edges(self.ledger, freeze)
+            check_exclusions_bound(self.ledger, freeze)
+        except (GateRefused, SealedLedgerError):
+            return False
+        return True
 
 
 def _file_sha(path: Union[str, os.PathLike]) -> Optional[str]:
@@ -535,14 +567,11 @@ def acquire_slot_token(
     freeze = ledger.freeze_record(SEALED_SPLIT)
     if freeze is None:
         raise GateRefused("freeze_record")
-    records = Path(records_dir)
-    twins_path, exclusions_path = records / "twins.json", records / "exclusions.json"
+    approvals_path = Path(records_dir) / "approvals.json"
     if _file_sha(set_path) != freeze["set_sha256"]:
         raise GateRefused("set_file")
-    if _file_sha(twins_path) != freeze["twins_sha256"]:
-        raise GateRefused("twins_record")
-    if _file_sha(exclusions_path) != freeze["exclusions_sha256"]:
-        raise GateRefused("exclusion_list")
+    edges = load_group_edges(ledger, freeze)  # digest-checked against the freeze record ("twins_record")
+    excluded = check_exclusions_bound(ledger, freeze)  # the list bound at the freeze, plus any later exclusion
     try:
         rows = tuple(load_sealed(set_path))
     except (SchemaError, InventoryError, NotSealedInput, OSError, UnicodeDecodeError):
@@ -550,14 +579,14 @@ def acquire_slot_token(
     if not rows:
         raise GateRefused("set_file")
 
-    approved = load_approvals(records / "approvals.json")
-    if any(row_hash(r) not in approved for r in rows):
+    approved = load_approvals(approvals_path)
+    approvals_sha = _file_sha(approvals_path)
+    if approvals_sha is None or any(approved.get(r["id"]) != row_hash(r) for r in rows):
         raise GateRefused("approvals")
 
     families = sorted({r["family_id"] for r in rows})
-    groups = compute_groups(families, load_twins_edges(twins_path))
+    groups = compute_groups(families, edges)
     known_groups = set(groups.values())
-    excluded = load_exclusion_list(exclusions_path) | ledger.exclusions()
     if not excluded <= known_groups:
         raise GateRefused("exclusion_list")
 
@@ -594,10 +623,11 @@ def acquire_slot_token(
         approved_paths=tuple(approved_paths),
         artifact_sha256=artifact_sha,
         floor=dict(floor),
-        twins_path=str(twins_path),
+        ledger=ledger,
         twins_sha256=freeze["twins_sha256"],
-        exclusions_path=str(exclusions_path),
         exclusions_sha256=freeze["exclusions_sha256"],
+        approvals_path=str(approvals_path),
+        approvals_sha256=approvals_sha,
         baseline=baseline,
         mint=_MINT,
     )
@@ -908,19 +938,18 @@ class SlotOutcome:
     action: str
 
 
-def _exclusions_now(records_dir: Union[str, os.PathLike], ledger: SealedLedger) -> FrozenSet[str]:
+def _exclusions_now(ledger: SealedLedger) -> FrozenSet[str]:
+    """Every group excluded so far, from the ledger (the freeze-time list re-checked against its record)."""
     freeze = ledger.freeze_record(SEALED_SPLIT)
-    path = Path(records_dir) / "exclusions.json"
-    if freeze is None or _file_sha(path) != freeze["exclusions_sha256"]:
+    if freeze is None:
         raise GateRefused("exclusion_list")
-    return load_exclusion_list(path) | ledger.exclusions()
+    return check_exclusions_bound(ledger, freeze)
 
 
 def finish_slot(
     slot: Union[int, str],
     *,
     ledger: SealedLedger,
-    records_dir: Union[str, os.PathLike],
     scan: Optional[Callable[[str], Sequence[Optional[str]]]] = None,
     out: Callable[[str], None] = print,
     render: Optional[Callable[..., str]] = None,
@@ -954,7 +983,7 @@ def finish_slot(
         ledger.record_intent(sid)  # step 4: only a canonical run records an intent
     newly = 0
     if canonical:  # a non-canonical run publishes nothing: there is nothing to render or scan
-        excluded = _exclusions_now(records_dir, ledger)
+        excluded = _exclusions_now(ledger)
         if scan is None:
             notes: List[str] = []
             scan = default_scanner(doc["run_id"], notes)
@@ -977,7 +1006,6 @@ def run_slot(
     slot_token: SlotToken,
     *,
     ledger: SealedLedger,
-    records_dir: Union[str, os.PathLike],
     set_specs: Sequence[Tuple[str, str]],
     modes: Sequence[str],
     top_k: int,
@@ -1007,14 +1035,13 @@ def run_slot(
         slot_token=slot_token, **dict(matrix_kwargs or {}),
     )
     ledger.store_results(slot_token.slot, sealed_run_dir(slot_token.run_id, create=False))  # step 3
-    return finish_slot(slot_token.slot, ledger=ledger, records_dir=records_dir, scan=scan, out=out)
+    return finish_slot(slot_token.slot, ledger=ledger, scan=scan, out=out)
 
 
 def recover_slot(
     slot: Union[int, str],
     *,
     ledger: SealedLedger,
-    records_dir: Union[str, os.PathLike],
     scan: Optional[Callable[[str], Sequence[Optional[str]]]] = None,
     out: Callable[[str], None] = print,
 ) -> Optional[SlotOutcome]:
@@ -1032,4 +1059,4 @@ def recover_slot(
         raise GateRefused("claim", "spent")
     if rec.action is RecoveryAction.CONSUMED:
         raise GateRefused("claim", "consumed")
-    return finish_slot(sid, ledger=ledger, records_dir=records_dir, scan=scan, out=out)
+    return finish_slot(sid, ledger=ledger, scan=scan, out=out)

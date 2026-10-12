@@ -69,7 +69,7 @@ def test_the_flags_thread_through_to_the_gate_and_the_runner(world, monkeypatch,
     assert [label for label, _ in kw["set_specs"]] == ["golden", "held-out", "realistic"]
     assert kw["set_specs"][1][1] == str(world.sealed_path) and kw["modes"] == list(ev.EVAL_MODES)
     assert kw["top_k"] == 6 and kw["judge"] is True and kw["judge_sample"] == 5 and kw["expansion"] == "live"
-    assert isinstance(kw["meter"], SpendMeter) and kw["records_dir"] == world.records_dir
+    assert isinstance(kw["meter"], SpendMeter) and "records_dir" not in kw  # approvals are read at the gate only
     assert kw["skip_refusals"] is False and kw["skip_completeness"] is False
 
 

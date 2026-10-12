@@ -16,7 +16,7 @@ from scripts import sealed_tool as st
 from scripts import sp_launch as sp
 from src import eval_schema
 from tests.p16w_sealed_world import (  # noqa: F401  (fixtures)
-    CANARY, build_standard, fid_of, public_id, read_rows, repos, standard_released, world,
+    CANARY, build_standard, fid_of, public_id, read_rows, repos, standard_released, world, write_rows,
 )
 
 
@@ -351,3 +351,157 @@ def test_exclude_acts_on_the_whole_sealed_group_and_never_moves_a_row(world):
     for argv in (["--family", group[0], "--reason", "bogus"], ["--reason", "s_hit"], ["--family", group[0], "--group", group[0], "--reason", "s_hit"]):
         code, out, err = world.run("exclude", *argv)
         assert code == st.EXIT_USAGE
+
+
+def test_a_group_is_named_by_its_smallest_surviving_family_so_exclude_and_the_slot_gate_agree(world):
+    """The owner rejects the group's smallest member: the group id moves to the next family, not to a quarantined one."""
+    from src.sealed_ledger import group_ids
+
+    std = standard_released(world)
+    rejected, kept = sorted(std.sealed_groups[0])
+    code, _, err = world.run("sheet", "--kind", "sealed", "--name", "r1")
+    assert code == 0, err
+    world.mark_sheet(world.sheet_path("sealed", "r1"), {rejected: "R"}, default="A")
+    assert world.run("apply", "--kind", "sealed", "--sheet", world.sheet_path("sealed", "r1"))[0] == 0
+    code, out, err = world.run("exclude", "--family", kept, "--reason", "exposure")
+    assert code == 0, err
+    assert world.ledger().exclusions() == frozenset({kept})  # not `rejected`, which is no longer in the sealed set
+    assert world.run("exclude", "--family", rejected, "--reason", "exposure")[0] == st.EXIT_REFUSED  # quarantined: no group
+    # the slot gate's function, fed the same families and the released edges, names the same group
+    survivors = {r["family_id"] for r in read_rows(world.sealed / "sealed_r1.jsonl")} - {rejected}
+    edges = [tuple(e) for e in st.release_edges(st.release_payloads(world.ledger()))]
+    assert group_ids(survivors, edges)[kept] == kept
+    assert st.sealed_group_index(world.ledger(), survivors)[kept] == [kept]
+
+
+# --- intake: a released SP dispatch becomes pool and tutorial map -----------------------------------------
+DISPATCH = "0a1b2c3d"
+
+
+def sp_dispatch(w, specs, tags=None, dispatch=DISPATCH):
+    """What ``sp_launch`` leaves behind: ``sealed/work/sp_out/<id>/{pool.jsonl,tutorial_map.json}``."""
+    out = w.sealed / "work" / "sp_out" / dispatch
+    write_rows(out / "pool.jsonl", [r for s in specs for r in s.rows(sealed=True)])
+    if tags is not None:
+        (out / "tutorial_map.json").write_text(json.dumps(tags), encoding="utf-8")
+    return out
+
+
+def tutorial_map(w):
+    path = w.sealed / "work" / "tutorial_map.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def test_intake_moves_the_pool_merges_the_tags_and_prints_counts_only(world):
+    tut = world.spec("answer", source="tutorial", register="lay")
+    hb = world.spec("partial", source="handbook", register="modelled")
+    out = sp_dispatch(world, [tut, hb], {tut.fid: "T05"})
+    before = (out / "pool.jsonl").read_bytes()
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == 0, stderr
+    assert stdout == "intake families=2 rows=4 tags=1\n" and stderr == ""
+    moved = world.sealed / "pool" / f"{DISPATCH}.jsonl"
+    assert moved.read_bytes() == before and not (out / "pool.jsonl").exists()  # moved byte for byte
+    assert tutorial_map(world) == {tut.fid: "t05"}  # stored lower-case
+    assert (out / "tutorial_map.json").is_file()  # the SP's copy stays as the dispatch's record
+    assert sp.pending_moves(world.sealed / "work" / "release.journal") == []
+    # a second dispatch adds to the map and the pool without disturbing the first
+    tut2 = world.spec("answer", source="tutorial", register="terse")
+    sp_dispatch(world, [tut2], {tut2.fid: "TD3", hb.fid: "T17"}, dispatch="1b2c3d4e")
+    code, stdout, stderr = world.run("intake", "--dispatch", "1b2c3d4e")
+    assert code == 0, stderr
+    assert tutorial_map(world) == {tut.fid: "t05", tut2.fid: "td3", hb.fid: "t17"}
+    assert sorted(p.name for p in (world.sealed / "pool").iterdir()) == sorted([f"{DISPATCH}.jsonl", "1b2c3d4e.jsonl"])
+    assert {r["family_id"] for r in read_rows(moved)} == {tut.fid, hb.fid}
+
+
+@pytest.mark.parametrize("tag", ["T01", "T07", "T18", "T00", "TD0", "TD8", "t05", "T5", "T050", " T05", "T05\n", "X05", ""])
+def test_intake_refuses_a_tag_outside_the_sp_pattern_and_changes_nothing(world, tag):
+    tut = world.spec("answer", source="tutorial", register="lay")
+    out = sp_dispatch(world, [tut], {tut.fid: tag})
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == st.EXIT_USAGE and "reason=input_invalid" in stderr and stdout == ""
+    assert (out / "pool.jsonl").is_file() and not (world.sealed / "pool").exists() and tutorial_map(world) == {}
+
+
+def test_intake_accepts_every_tag_of_the_pattern(world):
+    tags = [f"T{n:02d}" for n in (2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)] + [f"TD{n}" for n in range(1, 8)]
+    specs = [world.spec("answer", source="tutorial", register="lay") for _ in tags]
+    sp_dispatch(world, specs, {s.fid: t for s, t in zip(specs, tags)})
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == 0, stderr
+    assert stdout == f"intake families={len(tags)} rows={2 * len(tags)} tags={len(tags)}\n"
+
+
+def test_intake_refusals_each_leave_the_dispatch_in_place(world):
+    tut = world.spec("answer", source="tutorial", register="lay")
+    other = world.spec("answer", source="handbook", register="modelled")
+    stray = world.spec("answer", source="handbook", register="modelled")  # a family that is not in the pool
+
+    def refused(reason, *, tags):
+        out = sp_dispatch(world, [tut, other], tags)
+        code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+        assert code == st.EXIT_USAGE and f"reason={reason}" in stderr and stdout == "", (code, stderr)
+        assert (out / "pool.jsonl").is_file()  # nothing moved
+
+    refused("tutorial_tag_missing", tags={other.fid: "T05"})  # a tutorial family needs a tag
+    refused("input_invalid", tags={stray.fid: "T05", tut.fid: "T05"})  # a tag for a family that is not drafted
+    refused("input_invalid", tags={"q:0123456789ab": "T05", tut.fid: "T05"})  # not a private family id
+    refused("input_invalid", tags=[])  # not an object
+    refused("input_invalid", tags={})  # an empty map is not a map
+    assert tutorial_map(world) == {} and not (world.sealed / "pool").exists()
+    # a bad dispatch id and a dispatch that does not exist
+    assert world.run("intake", "--dispatch", "../x")[0] == st.EXIT_USAGE
+    assert world.run("intake", "--dispatch", "ffffffff")[0] == st.EXIT_USAGE
+    # a map that contradicts a stored tag
+    sp_dispatch(world, [tut, other], {tut.fid: "T05"})
+    assert world.run("intake", "--dispatch", DISPATCH)[0] == 0
+    third = world.spec("answer", source="tutorial", register="lay")
+    out = sp_dispatch(world, [third], {third.fid: "T06", tut.fid: "T09"}, dispatch="2c3d4e5f")
+    code, stdout, stderr = world.run("intake", "--dispatch", "2c3d4e5f")
+    assert code == st.EXIT_REFUSED and "reason=tag_conflict" in stderr and (out / "pool.jsonl").is_file()
+    assert tutorial_map(world) == {tut.fid: "t05"}
+    # a family id already in the pool, and a dispatch id that was already taken
+    again = sp_dispatch(world, [tut], {tut.fid: "T05"}, dispatch="3d4e5f60")
+    code, stdout, stderr = world.run("intake", "--dispatch", "3d4e5f60")
+    assert code == st.EXIT_USAGE and "reason=input_invalid" in stderr and (again / "pool.jsonl").is_file()
+    sp_dispatch(world, [third], {third.fid: "T06"}, dispatch=DISPATCH)  # fresh SP output under a dispatch id already taken
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == st.EXIT_REFUSED and "reason=already_intaken" in stderr
+
+
+def test_intake_refuses_a_schema_invalid_pool_with_line_and_field_only_and_a_symlink(world, tmp_path):
+    fam = world.spec("answer", source="handbook", register="modelled")
+    out = sp_dispatch(world, [fam])
+    rows = read_rows(out / "pool.jsonl")
+    rows[1]["evidence"] = [[f"{CANARY}.9"]]  # a label outside the inventory
+    rows[1]["question"] = f"{CANARY} leaked?"
+    write_rows(out / "pool.jsonl", rows)
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == st.EXIT_USAGE and "schema_error line=2 field=evidence[0][0]" in stdout and CANARY not in stdout + stderr
+    assert (out / "pool.jsonl").is_file() and not (world.sealed / "pool").exists()
+    (out / "pool.jsonl").unlink()
+    real = tmp_path / "elsewhere.jsonl"
+    write_rows(real, fam.rows(sealed=True))
+    (out / "pool.jsonl").symlink_to(real)
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == st.EXIT_USAGE and "reason=input_invalid" in stderr and real.is_file()
+
+
+def test_a_crash_in_the_intake_move_is_finished_by_the_next_command(world, monkeypatch):
+    fam = world.spec("answer", source="handbook", register="modelled")
+    out = sp_dispatch(world, [fam])
+    before = (out / "pool.jsonl").read_bytes()
+
+    def boom(name: str) -> None:
+        if name == "after_copy":
+            raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(sp, "_crash_point", boom)
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)
+    assert code == st.EXIT_FAIL and "reason=internal" in stderr
+    monkeypatch.setattr(sp, "_crash_point", lambda name: None)
+    code, stdout, stderr = world.run("intake", "--dispatch", DISPATCH)  # recovery runs first, then finds nothing to take
+    assert code == st.EXIT_USAGE and "reason=input_missing" in stderr
+    assert (world.sealed / "pool" / f"{DISPATCH}.jsonl").read_bytes() == before and not (out / "pool.jsonl").exists()
+    assert sp.pending_moves(world.sealed / "work" / "release.journal") == []

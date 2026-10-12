@@ -2,7 +2,9 @@
 
 One sealed set (8 families, 2 phrasings each), two development sets, the
 freeze/approval/twins/exclusion records, a prereg and a ledger, all invented and
-schema-valid, all under ``tmp_path``. Every text-bearing value (question, gap
+schema-valid, all under ``tmp_path``. The records are in the formats ``sealed_tool``
+writes and the slot gate reads: ``approvals.json`` as ``apply`` writes it, the group
+record as the freeze-bound ``twins_sealed`` ledger payload, exclusions as ledger records. Every text-bearing value (question, gap
 keyword, evidence label, rewrite, intent, answer, judge claim) carries a
 ``P16-CANARY`` marker built from seeded invented words, so a leak is a plain
 window test (``tests/p16_canary.assert_no_leak``). The fake models never touch
@@ -27,7 +29,7 @@ from src import eval_privacy, eval_schema, eval_sets, sealed_run
 from src.eval_schema import row_hash
 from src.eval_sealed_read import load_sealed
 from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
-from src.sealed_ledger import SealedLedger
+from src.sealed_ledger import SealedLedger, exclusions_digest
 from tests.p16_capture import ANSWER, PARTIAL, PROVENANCE, REFUSE, FakeGeneration
 from tests.test_p16w_spend import make_meter
 
@@ -146,6 +148,8 @@ class World:
     families: List[str]
     group_of: Dict[str, str]
     prereg: Dict[str, Any] = field(default_factory=dict)
+    pre_freeze_exclusions: List[str] = field(default_factory=list)
+    twins_payload: Dict[str, Any] = field(default_factory=dict)
 
     # -- records ----------------------------------------------------------------
 
@@ -156,26 +160,37 @@ class World:
     def write_prereg(self, slots: Optional[Dict[str, Any]] = None, floor: Tuple[int, int] = (6, 4)) -> Path:
         self.prereg = {
             "version": 1,
-            "floor": {"families": floor[0], "eligible": floor[1]},
+            "quota": {"floor_sealed": floor[0], "floor_answerable": floor[1]},
             "slots": slots if slots is not None else {"0": {"expansion": "live"}, "0b": {"expansion": "live"}},
         }
         self.prereg_path.write_text(json.dumps(self.prereg), encoding="utf-8")
         return self.prereg_path
 
-    def write_records(self, *, approve: bool = True, exclusions: Optional[List[str]] = None) -> None:
+    def write_records(self, *, approve: bool = True, exclusions: Optional[List[str]] = None,
+                      twins: Optional[Dict[str, Any]] = None) -> None:
+        """``approvals.json`` as ``sealed_tool apply`` writes it; stage the group record and the exclusions
+        that ``freeze`` puts in the ledger (``twins`` replaces the group-record payload)."""
         rows = load_sealed(self.sealed_path)
-        approved = {row_hash(r): SHEET for r in rows} if approve else {}
+        approved = {r["id"]: {"row_hash": row_hash(r), "sheet_sha256": SHEET} for r in rows} if approve else {}
         self.records_dir.mkdir(parents=True, exist_ok=True)
-        (self.records_dir / "approvals.json").write_text(json.dumps({"version": 1, "approved": approved}))
+        (self.records_dir / "approvals.json").write_text(json.dumps({
+            "version": 1, "approved": approved, "pending_confirm": {}, "rejected": [], "escalated": [],
+        }))
         edges = [[self.families[a], self.families[b]] for a, b in SEALED_EDGES]
-        (self.records_dir / "twins.json").write_text(json.dumps({"edges": edges, "batches": {}}))
-        (self.records_dir / "exclusions.json").write_text(json.dumps({"version": 1, "groups": exclusions or []}))
+        self.twins_payload = twins if twins is not None else {"version": 1, "edges": edges}
+        self.pre_freeze_exclusions = list(exclusions or [])
 
-    def freeze(self) -> None:
-        self.ledger().record_freeze(
-            split="sealed", set_sha256=sha_of(self.sealed_path), totals={"families": len(self.families)},
-            twins_sha256=sha_of(self.records_dir / "twins.json"),
-            exclusions_sha256=sha_of(self.records_dir / "exclusions.json"),
+    def freeze(self, *, set_path: Optional[Path] = None, exclusions_sha256: Optional[str] = None) -> None:
+        """The sealed freeze, as ``sealed_tool freeze`` records it: the group record is stored as the
+        ``twins_sealed`` payload and bound by its sha256; the exclusions recorded so far are bound by digest."""
+        ledger = self.ledger()
+        for group in self.pre_freeze_exclusions:
+            ledger.exclude(group, "owner")
+        twins_sha = ledger.store_payload("twins_sealed", self.twins_payload)
+        ledger.record_freeze(
+            split="sealed", set_sha256=sha_of(set_path or self.sealed_path), totals={"families": len(self.families)},
+            twins_sha256=twins_sha,
+            exclusions_sha256=exclusions_sha256 or exclusions_digest(ledger.exclusions()),
         )
 
     # -- fakes ------------------------------------------------------------------
@@ -261,7 +276,7 @@ class World:
         }
         kwargs.update(matrix_extra or {})
         return sealed_run.run_slot(
-            tok, ledger=self.ledger(), records_dir=self.records_dir, set_specs=specs or self.specs,
+            tok, ledger=self.ledger(), set_specs=specs or self.specs,
             modes=modes or list(ev.EVAL_MODES), top_k=top_k, skip_refusals=skip_refusals,
             skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
             persist_directory="unused", meter=meter_obj, expansion=expansion, matrix_kwargs=kwargs,

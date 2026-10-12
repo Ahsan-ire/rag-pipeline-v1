@@ -1596,8 +1596,9 @@ a7. **Sealed-processor launcher (D72) [C].** `scripts/sp_launch.py --kind probe|
     form of the system-prompt flag is listed, so the launcher reads `docs/sealed/sealed-processor.md` itself. The SP's
     stdout and stderr go to files in the staging directory and are never printed: the launcher's only output is
     `sealed_tool return`'s validated line and its exit status. It then runs `sealed_tool.py` (ids, lexical screen,
-    validation, `return`), moves `out/` into `eval/private/sealed/` and the stdout/stderr logs into
-    `eval/private/sealed/work/` crash-safely (a3), and deletes the
+    validation, `return`), moves `out/` into `eval/private/sealed/work/sp_out/<id>/` (taken in by `sealed_tool
+    intake`; implementation note, 12 Oct: the SP's twin verdicts there are record files, its pool a sealed source) and
+    the stdout/stderr logs into `eval/private/sealed/work/` crash-safely (a3), and deletes the
     staging directory in a `finally`; each launch first sweeps stale staging directories, and `sp_launch.py --sweep`
     runs before any Codex call. A `data` dispatch first requires `git fetch` and `git
     merge-base --is-ancestor <prereg sha> origin/<branch>` and logs to `eval/private/sp_dispatch.jsonl` and the

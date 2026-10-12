@@ -70,7 +70,8 @@ class Env:
         self.tmp = tmp_path
         self.root = tmp_path / "sealed_sp"
         self.private = private
-        self.dest = private / "sealed"
+        self.work = private / "sealed" / "work"  # the two logs land here
+        self.dest = self.work / "sp_out"  # a released out/ lands in sp_out/<dispatch id>/
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.record = tmp_path / "record.jsonl"
@@ -368,7 +369,7 @@ def test_canary_on_sp_stdout_and_stderr_is_absent_from_launcher_output(env, capf
     assert CANARY not in captured.out + captured.err and CANARY2 not in captured.out + captured.err
     # The success path ran: the fake did print, and it landed in the work logs, not on the terminal.
     [line] = env.log("sp_probe.jsonl")
-    work = env.dest / "work"
+    work = env.work
     assert CANARY in (work / f"{line['dispatch_id']}.stdout.log").read_text()
     assert CANARY in (work / f"{line['dispatch_id']}.stderr.log").read_text()
     assert (env.dest / line["dispatch_id"] / "pool" / "draft.txt").read_text() == "draft " + CANARY2
@@ -415,6 +416,33 @@ def test_validate_return_rejects_everything_else(data):
     assert not sp.validate_return(data, enums=["status", "ok", "count", "a", "b", "c", "d", "e"])
 
 
+FAMILY = "f0a1b2c3d"
+ROW = f"{FAMILY}-1"
+
+
+@pytest.mark.parametrize("data", [
+    {"families": [FAMILY, "f00000000"], "status": "ok"},
+    {"rows": [ROW, f"{FAMILY}-0", f"{FAMILY}-2"], "status": "ok"},
+    {FAMILY: 3, ROW: 1, ID: 2, SHA: 4},  # every kind of id is also a legal key
+])
+def test_validate_return_accepts_private_family_and_row_ids_beside_dispatch_ids(data):
+    """The SP brief names family ids (``f`` + 8 hex) and row ids (``f...-n``) in its return file."""
+    assert sp.validate_return(data, enums=["status", "ok", "families", "rows"])
+    assert sp.ID_RE.fullmatch(ID) and sp.FAMILY_ID_RE.fullmatch(FAMILY) and sp.ROW_ID_RE.fullmatch(ROW)
+
+
+@pytest.mark.parametrize("bad", [
+    "F0a1b2c3d", "f0a1b2c", "f0a1b2c3d4", "g0a1b2c3d",   # case, length, not hex
+    f"{FAMILY}-", f"{FAMILY}-x", f"{FAMILY}--1", f"{FAMILY}-1-2", f"{FAMILY}-12345",  # a row id is the family id, "-" and 1-4 digits
+    f"{FAMILY}\n", f"{ROW}\n", f" {ROW}", f"{ROW} the client", "f0a1b2c3d-1 ",
+    f"{ID}-1",                                            # an 8-hex dispatch id has no row suffix
+])
+def test_validate_return_still_rejects_near_miss_ids(bad):
+    assert not sp.validate_return({"status": bad}, enums=["status"])
+    assert not sp.validate_return({bad: 1}, enums=["status"])
+    assert not sp.validate_return({"status": [bad]}, enums=["status"])
+
+
 def test_unsafe_enum_words_are_refused():
     for bad in ("two words", "", "x" * 33, "line\nbreak", "9start", "emoji\u2603"):
         with pytest.raises(ValueError):
@@ -451,7 +479,7 @@ def test_free_text_return_prints_invalid_and_releases_nothing(env, capfd):
     assert leak not in captured.out + captured.err
     [line] = env.log("sp_probe.jsonl")
     assert not (env.dest / line["dispatch_id"]).exists()  # out/ is not released
-    assert (env.dest / "work" / f"{line['dispatch_id']}.stdout.log").exists()  # the logs are kept
+    assert (env.work / f"{line['dispatch_id']}.stdout.log").exists()  # the logs are kept
     assert env.staging_dirs() == []
 
 
@@ -698,7 +726,7 @@ def test_crash_after_the_copy_leaves_staging_for_recovery(env, monkeypatch, capf
     assert capfd.readouterr().out == "swept 1\n"
     assert env.staging_dirs() == []
     assert (env.dest / staging / "pool" / "draft.txt").read_text() == "draft " + CANARY2
-    assert CANARY in (env.dest / "work" / f"{staging}.stdout.log").read_text()
+    assert CANARY in (env.work / f"{staging}.stdout.log").read_text()
     assert sp.pending_moves(env.root / sp.JOURNAL_NAME) == []
 
 
@@ -721,6 +749,56 @@ def test_the_two_kinds_log_to_different_files_and_never_log_text(env, repos):
     for name in ("sp_probe.jsonl", "sp_dispatch.jsonl"):
         text = (env.private / name).read_text(encoding="utf-8")
         assert CANARY not in text and "TASK" not in text and "BRIEF" not in text
+
+
+def _ledger_records(kind=None):
+    """The epoch's ledger as the launcher builds it (not via ``sealed_run``: importing that loads ``.env``)."""
+    from src.sealed_ledger import SealedLedger
+
+    private = sp.eval_privacy.private_root()
+    return SealedLedger(private / "sealed" / "ledger", mirror=private.parent / "sealed_ledger.jsonl").records(kind)
+
+
+def test_a_data_dispatch_is_also_recorded_in_the_out_of_tree_ledger_and_a_probe_is_not(env, repos):
+    """a7: a data dispatch logs to sp_dispatch.jsonl AND the sealed ledger; the mirror gets the kind and a digest."""
+    env.make_claude(canary=CANARY, ret={"count": 1})
+    assert env.launch("probe", enums=["count"]).exit_status == sp.EXIT_OK
+    assert _ledger_records() == []  # a probe leaves the epoch's ledger alone
+    assert env.launch("data", prereg=repos.first, branch="main", repo=repos.work, enums=["count"]).exit_status == sp.EXIT_OK
+    [d] = env.log("sp_dispatch.jsonl")
+    [rec] = _ledger_records("dispatch")
+    assert set(rec) == {"v", "seq", "kind", "ts", "dispatch_id", "dispatch_kind", "argv_hash"}
+    assert rec["dispatch_id"] == d["dispatch_id"] and rec["dispatch_kind"] == "data" and rec["argv_hash"] == d["argv_hash"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec["ts"])
+    mirror = [json.loads(line) for line in (env.private.parent / "sealed_ledger.jsonl").read_text().splitlines()]
+    assert [set(m) for m in mirror] == [{"seq", "kind", "digest"}]  # the kind and a digest, nothing else
+    assert mirror[0]["kind"] == "dispatch" and d["dispatch_id"] not in json.dumps(mirror)
+    for path in (Path(os.environ["CC_SEALED_LEDGER"]), env.private / "sealed" / "ledger" / "sealed_ledger.jsonl"):
+        assert CANARY not in path.read_text() and "TASK" not in path.read_text()
+
+
+def test_a_dispatch_the_ledger_cannot_record_is_refused_and_the_sp_never_runs(env, repos, capfd):
+    from src.sealed_ledger import LedgerCorrupt
+
+    class Broken:
+        def record_dispatch(self, **kw):
+            raise LedgerCorrupt("the ledger is damaged: secret text that must not be printed")
+
+    outcome = env.launch("data", prereg=repos.first, branch="main", repo=repos.work, ledger=Broken())
+    assert outcome.exit_status == sp.EXIT_REFUSED and outcome.line is None
+    assert outcome.message == "sp_launch: the sealed ledger could not record the dispatch"
+    assert env.records() == [] and env.staging_dirs() == []  # claude never started, staging was removed
+    assert env.log("sp_dispatch.jsonl") == []
+
+
+def test_a_released_out_directory_lands_in_sp_out_and_the_logs_in_the_sealed_work_directory(env, repos):
+    env.make_claude(files={"pool.jsonl": "x\n"}, ret={"count": 1})
+    assert env.launch("probe", enums=["count"]).exit_status == sp.EXIT_OK
+    [p] = env.log("sp_probe.jsonl")
+    sealed_work = env.private / "sealed" / "work"
+    assert (sealed_work / "sp_out" / p["dispatch_id"] / "pool.jsonl").read_text() == "x\n"
+    assert (sealed_work / f"{p['dispatch_id']}.stdout.log").is_file()
+    assert not (env.private / "sealed" / p["dispatch_id"]).exists()  # the old landing place is gone
 
 
 def test_script_runs_standalone():

@@ -505,6 +505,7 @@ def test_development_question_text_raises_private_hits_but_no_s_hit(repo, world,
 RECORDS = [
     "sealed/ledger/sealed_ledger.jsonl",
     "sealed/ledger/payloads/assignment-1.json",
+    "sealed/work/sp_out/0a1b2c3d/twins.jsonl",  # the SP's released twins verdict (ids only), a7
     "sp_dispatch.jsonl",
     "sp_probe.jsonl",
 ]
@@ -574,3 +575,36 @@ def test_a_canary_question_planted_in_a_record_file_is_a_hit(repo, world, capsys
     out = capsys.readouterr().out.splitlines()
     assert f"{planted}:1\t{FAM_SHORT}" in out
     assert [line for line in out if line.startswith(f"{planted}:2\t")]
+
+
+# --- a7's sp_out directory: twins.jsonl is a record, pool.jsonl a sealed needle source ------------
+POOL_Q = "unique plimsy tarnock quintoble gostrel vessuvio mardwyn pellick ostravy"
+
+
+def test_an_sp_twins_verdict_is_no_source_and_the_pool_beside_it_stays_a_sealed_source(repo, world, capsys):
+    out = _mkdir(world["root"] / "sealed" / "work" / "sp_out" / "0a1b2c3d")
+    (out / "twins.jsonl").write_text(
+        json.dumps({"a": FAM_LONG, "b": "q:0123456789ab", "verdict": "twin"}) + "\n", encoding="utf-8"
+    )
+    (out / "return.json").write_text(json.dumps({"status": "ok"}), encoding="utf-8")  # non-JSONL under work/: allowed
+    (out / "tutorial_map.json").write_text(json.dumps({FAM_LONG: "T05"}), encoding="utf-8")
+    assert not any("twins.jsonl" in s.label for s in sl.collect_sources())  # ids only: not a needle source
+    assert _gate(repo, world) == 0
+    capsys.readouterr()
+    # the pool the SP drafted into the same directory holds questions: a sealed source, hit anywhere else
+    _write(out / "pool.jsonl", [_row(0, "f5555abcd", question=POOL_Q)])
+    pools = [s for s in sl.collect_sources() if s.label.endswith("sp_out/0a1b2c3d/pool.jsonl")]
+    assert len(pools) == 1 and pools[0].sealed
+    (repo / "notes.md").write_text(POOL_Q + "\n", encoding="utf-8")
+    git(repo, "add", "notes.md")
+    git(repo, "commit", "-q", "-m", "notes")
+    assert _gate(repo, world) == 5
+    assert "f5555abcd" in capsys.readouterr().out
+
+
+def test_a_twins_file_below_the_one_sp_out_level_is_not_a_record(repo, world, capsys):
+    deeper = _mkdir(world["root"] / "sealed" / "work" / "sp_out" / "0a1b2c3d" / "more")
+    (deeper / "twins.jsonl").write_text(
+        json.dumps({"a": FAM_LONG, "b": FAM_OTHER, "verdict": "twin"}) + "\n", encoding="utf-8"
+    )
+    assert _gate(repo, world) == 2  # a sealed source that fails the loader: no record exemption this deep

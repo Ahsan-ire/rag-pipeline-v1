@@ -35,20 +35,26 @@ What a dispatch does, in order
    :func:`validate_return`, else ``invalid``. A refusal prints one fixed reason
    on stderr (never text from the SP, git or an exception).
 7. If the SP exited 0 and the return validated, ``out/`` is moved to
-   ``<dest>/<dispatch id>/``; the two logs are always moved to
-   ``<dest>/work/<dispatch id>.stdout.log`` / ``.stderr.log``. A failed or
-   invalid run releases nothing but its logs. Moves are crash-safe
-   (:func:`journaled_move`).
+   ``<dest>/<dispatch id>/`` (production ``dest``:
+   ``eval/private/sealed/work/sp_out/``, which ``sealed_tool intake`` reads); the
+   two logs are always moved to ``<work>/<dispatch id>.stdout.log`` / ``.stderr.log``
+   (production ``work``: ``eval/private/sealed/work/``). A failed or invalid run
+   releases nothing but its logs. Moves are crash-safe (:func:`journaled_move`).
 8. The staging directory is deleted in a ``finally`` (kept only while a move is
    still pending, because deleting it then would lose the data; the next launch
    or ``--sweep`` replays the journal first and deletes afterwards).
 9. A line with the dispatch id, kind, UTC time, argv hash and the SP's exit
    status (never any text) is appended to ``eval/private/sp_dispatch.jsonl``
-   (``data``) or ``eval/private/sp_probe.jsonl`` (``probe``).
+   (``data``) or ``eval/private/sp_probe.jsonl`` (``probe``). A ``data`` dispatch
+   also appends a ``dispatch`` record (dispatch id, kind, argv hash; the ledger adds
+   the UTC time) to the out-of-tree sealed ledger **before the SP starts**, so a
+   dispatch that dies mid-run is still on the record; if the ledger cannot record
+   it the dispatch is refused (exit ``8``) and the SP never runs.
 
 Exit codes: ``0`` ok; ``1`` the SP failed, its return was invalid, or cleanup
 failed; ``2`` usage or input error; ``8`` refused (API key set, prereg not
-reachable, root override outside pytest, another dispatch holds the lock).
+reachable, root override outside pytest, another dispatch holds the lock, the sealed ledger
+cannot record a ``data`` dispatch).
 
 The staging root can be moved **only under pytest** (``CC_SP_STAGING_ROOT``,
 same rules as ``CC_SPEND_LEDGER`` in :mod:`src.spend`).
@@ -81,6 +87,7 @@ if REPO not in sys.path:
 # Imported as a module (not ``from ... import private_root``) so a test that
 # monkeypatches ``src.eval_privacy.private_root`` is honoured at call time.
 import src.eval_privacy as eval_privacy  # noqa: E402
+from src.sealed_ledger import SealedLedger, SealedLedgerError  # noqa: E402
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -116,7 +123,12 @@ CLAUDE_ARGV_PREFIX: Tuple[str, ...] = (
 )
 
 # --- return-file allowlist -----------------------------------------------------
-ID_RE = re.compile(r"[0-9a-f]{8}")
+# One pattern set for every opaque id a return file may carry; ``sealed_tool``'s ``return`` command and its
+# printer reuse these names (``sp.FAMILY_ID_RE`` ...), so there is no second copy to drift.
+ID_RE = re.compile(r"[0-9a-f]{8}")  # a dispatch id
+FAMILY_ID_RE = re.compile(r"f[0-9a-f]{8}")  # a private family id
+ROW_ID_RE = re.compile(r"f[0-9a-f]{8}-[0-9]{1,4}")  # a row id: the family id and the phrasing number
+ID_PATTERNS = (ID_RE, FAMILY_ID_RE, ROW_ID_RE)
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 ENUM_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,31}")
 MAX_INT = 10**9  # a count, not a payload: bounds what an integer can smuggle
@@ -204,8 +216,11 @@ def _check_enums(enums: Collection[str]) -> frozenset:
 
 
 def _allowed_word(text: str, enums: frozenset) -> bool:
-    """An opaque id, a sha256, or one of the caller's enum words (``fullmatch``: no trailing newline)."""
-    return bool(ID_RE.fullmatch(text) or SHA256_RE.fullmatch(text)) or text in enums
+    """An opaque id (dispatch, family or row), a sha256, or one of the caller's enum words.
+
+    ``fullmatch`` throughout: a trailing newline never passes.
+    """
+    return any(pattern.fullmatch(text) for pattern in ID_PATTERNS) or bool(SHA256_RE.fullmatch(text)) or text in enums
 
 
 def _valid_node(node: Any, enums: frozenset, depth: int, budget: List[int]) -> bool:
@@ -231,7 +246,8 @@ def _valid_node(node: Any, enums: frozenset, depth: int, budget: List[int]) -> b
 def validate_return(data: Any, enums: Collection[str] = ()) -> bool:
     """True iff ``data`` is an object whose every key and value is on the allowlist.
 
-    Allowed: opaque ids (``[0-9a-f]{8}``), sha256 hex, non-negative integers
+    Allowed: opaque ids (a dispatch id ``[0-9a-f]{8}``, a private family id
+    ``f[0-9a-f]{8}`` or a row id ``f[0-9a-f]{8}-<n>``), sha256 hex, non-negative integers
     (JSON ints up to ``MAX_INT``, not bools, not digit strings) and the words in
     ``enums``; keys are strings of the id, sha256 or enum kinds. Lists and
     objects may nest to ``MAX_DEPTH``. Free text, floats and null never pass.
@@ -659,9 +675,17 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _record_dispatch(ledger: SealedLedger, dispatch_id: str, kind: str, argv: Sequence[str]) -> None:
+    """Append the ``dispatch`` record to the out-of-tree ledger; a ledger failure refuses the dispatch (no SP runs)."""
+    try:
+        ledger.record_dispatch(dispatch_id=dispatch_id, dispatch_kind=kind, argv_hash=argv_hash(argv))
+    except (SealedLedgerError, OSError, ValueError):
+        raise LaunchError(EXIT_REFUSED, "the sealed ledger could not record the dispatch") from None
+
+
 def _dispatch(
-    *, kind: str, root: Path, dest: Path, log_path: Path, brief_text: str, task: bytes,
-    inputs: Sequence[Path], enums: Collection[str],
+    *, kind: str, root: Path, dest: Path, work: Path, log_path: Path, brief_text: str, task: bytes,
+    inputs: Sequence[Path], enums: Collection[str], ledger: Optional[SealedLedger] = None,
 ) -> Outcome:
     dispatch_id, staging = _new_staging(root)
     journal = root / JOURNAL_NAME
@@ -672,6 +696,8 @@ def _dispatch(
         out_dir = staging / OUT_DIR
         out_dir.mkdir(mode=0o700)
         argv = build_argv(brief_text)
+        if ledger is not None:  # a data dispatch: on the record before the SP can run
+            _record_dispatch(ledger, dispatch_id, kind, argv)
         returncode = _run_sp(argv, scrubbed_env(), task, staging)
         _append_jsonl(log_path, {
             "argv_hash": argv_hash(argv), "dispatch_id": dispatch_id, "exit_status": returncode,
@@ -680,8 +706,8 @@ def _dispatch(
         line = load_return(out_dir / RETURN_NAME, enums)
         released = returncode == 0 and line is not None
         pairs: List[Tuple[Path, Path]] = [
-            (staging / STDOUT_LOG, dest / "work" / f"{dispatch_id}.stdout.log"),
-            (staging / STDERR_LOG, dest / "work" / f"{dispatch_id}.stderr.log"),
+            (staging / STDOUT_LOG, work / f"{dispatch_id}.stdout.log"),
+            (staging / STDERR_LOG, work / f"{dispatch_id}.stderr.log"),
         ]
         if released:
             pairs.insert(0, (out_dir, dest / dispatch_id))
@@ -707,14 +733,20 @@ def launch(
     enums: Collection[str] = (),
     repo: Optional[os.PathLike | str] = None,
     dest: Optional[os.PathLike | str] = None,
+    work: Optional[os.PathLike | str] = None,
     dispatch_log: Optional[os.PathLike | str] = None,
+    ledger: Optional[SealedLedger] = None,
 ) -> Outcome:
     """Run one SP dispatch (see the module docstring); never raises for an expected stop.
 
-    ``dest`` defaults to ``<private root>/sealed``, ``dispatch_log`` to
-    ``<private root>/sp_dispatch.jsonl`` (``data``) or ``sp_probe.jsonl``
-    (``probe``), ``repo`` to this checkout. ``prereg`` and ``branch`` are
-    required for ``data`` and ignored for ``probe`` (its prereg is synthetic).
+    ``work`` defaults to ``<private root>/sealed/work`` (the two logs), ``dest`` to
+    ``<work>/sp_out`` (the released ``out/`` directories, where ``sealed_tool intake``
+    reads them), ``dispatch_log`` to ``<private root>/sp_dispatch.jsonl`` (``data``)
+    or ``sp_probe.jsonl`` (``probe``), ``repo`` to this checkout. ``prereg`` and
+    ``branch`` are required for ``data`` and ignored for ``probe`` (its prereg is
+    synthetic). ``ledger`` is the sealed ledger a ``data`` dispatch records itself in;
+    ``None`` builds the epoch's ledger exactly as ``src.sealed_run.default_ledger`` does
+    (private copy under ``<private root>/sealed/ledger``, mirror ``<eval dir>/sealed_ledger.jsonl``).
     """
     try:
         if kind not in KINDS:
@@ -733,10 +765,19 @@ def launch(
         except RootRefused:
             raise LaunchError(EXIT_REFUSED, "the staging root override is refused here") from None
         private = eval_privacy.private_root()
-        dest_dir = Path(dest) if dest is not None else private / "sealed"
+        work_dir = Path(work) if work is not None else private / "sealed" / "work"
+        dest_dir = Path(dest) if dest is not None else work_dir / "sp_out"
         log_path = Path(dispatch_log) if dispatch_log is not None else private / (
             "sp_dispatch.jsonl" if kind == "data" else "sp_probe.jsonl"
         )
+        dispatch_ledger: Optional[SealedLedger] = None
+        if kind == "data":
+            try:
+                dispatch_ledger = ledger if ledger is not None else SealedLedger(
+                    private / "sealed" / "ledger", mirror=private.parent / "sealed_ledger.jsonl"
+                )
+            except (SealedLedgerError, OSError, ValueError):
+                raise LaunchError(EXIT_REFUSED, "the sealed ledger could not be opened") from None
         with _exclusive_lock(root):
             try:
                 sweep_stale(root)
@@ -749,8 +790,8 @@ def launch(
             if shutil.which("claude", path=os.environ.get("PATH", "")) is None:
                 raise LaunchError(EXIT_USAGE, "claude was not found on PATH")
             return _dispatch(
-                kind=kind, root=root, dest=dest_dir, log_path=log_path, brief_text=brief_text,
-                task=task_bytes, inputs=staged, enums=allowed,
+                kind=kind, root=root, dest=dest_dir, work=work_dir, log_path=log_path, brief_text=brief_text,
+                task=task_bytes, inputs=staged, enums=allowed, ledger=dispatch_ledger,
             )
     except LaunchError as exc:
         return Outcome(exc.status, None, f"sp_launch: {exc.reason}")

@@ -659,8 +659,8 @@ Examples:
     eval_parser.add_argument(
         "--slot-records",
         default=None,
-        help="With --sealed-slot: directory holding approvals.json, twins.json and "
-        "exclusions.json (default: eval/private/sealed/work/)",
+        help="With --sealed-slot: directory holding sealed_tool's approvals.json "
+        "(default: eval/private/sealed/work/); the group record and the exclusions come from the ledger",
     )
     eval_parser.add_argument(
         "--rewrite-candidate",
@@ -888,7 +888,7 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     try:
         ledger = sealed_run.default_ledger()
         records_dir = Path(args.slot_records) if args.slot_records else sealed_run.default_records_dir()
-        outcome = sealed_run.recover_slot(args.sealed_slot, ledger=ledger, records_dir=records_dir)
+        outcome = sealed_run.recover_slot(args.sealed_slot, ledger=ledger)
         if outcome is None:
             # A fresh slot. Everything that could refuse without spending the slot is checked first.
             sealed_paths = [p for _l, p in set_specs if eval_sets.is_sealed(p)]
@@ -938,7 +938,6 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
             outcome = sealed_run.run_slot(
                 token,
                 ledger=ledger,
-                records_dir=records_dir,
                 set_specs=set_specs,
                 modes=modes,
                 top_k=args.top_k,

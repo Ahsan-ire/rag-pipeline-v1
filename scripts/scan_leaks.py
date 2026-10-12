@@ -19,7 +19,8 @@ Sources
   (``runs/``, ``artifacts/``, ``sealed/runs/``, ``sealed/artifacts/``), found
   automatically, so a new private or sealed file needs no registration (the
   content-free **record files** in :data:`RECORD_FILES` -- the sealed ledger
-  copy, its payloads and the SP dispatch logs -- are not sources; the pre-check
+  copy, its payloads, the SP dispatch logs and the SP's released
+  ``sealed/work/sp_out/<id>/twins.jsonl`` -- are not sources; the pre-check
   allows them and ``--merge-gate`` scans them as targets);
 - each ``--needles <path>``: a v1 or v2 eval ``.jsonl`` that must classify
   ``private`` or ``sealed`` (a ``public`` one is refused, exit 2);
@@ -188,12 +189,16 @@ HANDBOOK_DUMP = Path("data") / "research" / "handbook_sections.jsonl"
 
 # Content-free record files the sealed tooling writes under the private root (paths relative to it, one `*` = one
 # path segment): a4 (src/sealed_ledger.py) the private ledger copy and its payloads/ directory (one <name>.json each),
-# a7 (scripts/sp_launch.py) the data and probe dispatch logs. They hold ids, hashes, counts and enums only, so they are
-# NOT needle sources (never passed to load_sealed or the set loaders) and the pre-check allows them, .json payloads
-# included; the merge gate and --output still scan them as TARGETS, so question text that leaks into one is a hit.
+# a7 (scripts/sp_launch.py) the data and probe dispatch logs, and the SP's twins verdict, which the launcher releases
+# to sealed/work/sp_out/<dispatch id>/twins.jsonl (family and public ids only: pairs of ids and the word "twin").
+# They hold ids, hashes, counts and enums only, so they are NOT needle sources (never passed to load_sealed or the
+# set loaders) and the pre-check allows them, .json payloads included; the merge gate and --output still scan them
+# as TARGETS, so question text that leaks into one is a hit. A pool.jsonl in the same sp_out directory is NOT a
+# record: it holds drafted questions, so it stays a sealed needle source (and sealed_tool intake moves it away).
 RECORD_FILES = (
     "sealed/ledger/sealed_ledger.jsonl",
     "sealed/ledger/payloads/*.json",
+    "sealed/work/sp_out/*/twins.jsonl",
     "sp_dispatch.jsonl",
     "sp_probe.jsonl",
 )

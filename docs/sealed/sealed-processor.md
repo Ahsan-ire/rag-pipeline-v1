@@ -72,6 +72,12 @@ Draft `task.json:count` new families, one seed phrasing each (row `…-0`), into
 - Mix the registers. Realistic families must be `lay` or `terse`.
 - For a round-2 draft, use only the tutorials and primary sections listed in
   `task.json:allowed_sources`.
+- Also write `out/tutorial_map.json`: one JSON object `{"<family id>": "<tag>"}` with an
+  entry for **every family whose `source` is `tutorial`**, and for no other family. The
+  tag names the tutorial the family was drawn from, so that two families drawn from the
+  same tutorial carry the same tag. Use only these tags: `T02` to `T17` for a tutorial
+  (never `T01` or `T07`) and `TD1` to `TD7` for a title-document set. Family ids and tags
+  only: no title, topic, name or text.
 
 `return.json`:
 ```
@@ -79,6 +85,9 @@ Draft `task.json:count` new families, one seed phrasing each (row `…-0`), into
  "by_scope": {"answer": n, "partial": n, "refuse": n},
  "by_register": {...}, "by_source": {...}, "sha256": "<of out/pool.jsonl>"}
 ```
+
+The `draft` task writes `out/pool.jsonl`, `out/tutorial_map.json` (when any family is
+tutorial-sourced) and `out/return.json`, and nothing else.
 
 ### `twins`
 Compare every family in `pool/` against every other pool family, and against every
