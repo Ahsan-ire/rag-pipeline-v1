@@ -2353,3 +2353,45 @@ The SP's stdout and stderr go to files and are never printed. The launcher print
 - Group-collapsed `all` outcomes as the primary: plan-gate r5 showed they test a different estimand from the family-level MWE and can mask within-group changes.
 - Durkalski as the primary: it is asymptotic and anti-conservative at small cluster counts (r4).
 - A one-sided per-direction primary: its α scope was unsettled (r6).
+
+**D72/D73 phase-gate round 1 (12 Oct 2026).** Codex returned REVISE (7 P1, 3 P2). The pressure-tester failed (g), since `results_v6.md` was writable by a non-slot run, and (e) on coverage. An Opus code review found 10 MAJOR and 14 MINOR. All were fixed in four file-disjoint areas, each fix with a test that failed on the earlier code.
+
+**Slot protocol:**
+- **Lock and 0b.** A per-slot flock is held for the whole run and for recovery. 0b cannot be claimed while slot 0's lock is held, and slot 0 cannot store or intend once 0b is claimed.
+- **Refusals before the claim.** The token is minted unclaimed, and `preflight_slot` checks option values, the replay artifact, the clients, the absorbed map, duplicates and the index before the claim. So "a refusal never spends a slot" now holds.
+- **Confirmatory slots and baselines.** Confirmatory slots render `sealed/runs/<id>/report.md`, which is never committed, and print numbers only. A baseline needs a publication intent.
+- **Durability.** The report's parent and the run-directory ancestry are fsynced before `consumed` and `stored` are recorded.
+
+**Guards:**
+- The tracing guard also refuses inherited runnable-config callbacks and any global LLM cache.
+- `eval/results_v6.md` is refused as a `--results` target.
+
+**Exclusions:** each exclusion carries its member families and is resolved against the freeze-bound groups at the gate. `record_freeze` computes the exclusions digest inside its own transaction.
+
+**sealed_tool:**
+- Sheet and form names are basenames, with symlink-checked destinations.
+- Release recovery ignores preassigned families.
+- The freeze is journalled and resumed, never recomputed. Its group payload is content-named, and quarantine moves come last.
+- Round-2 quotas equal round 1's. Surplus drafts are shelved to `quarantine_r2`, chosen by up to 24 seeded whole-unit tries, so a surplus never forces tuning.
+- After the sealed freeze, a sealed-sealed twin becomes an exclusion.
+- A development apply refuses only rows of a frozen split.
+- One flock (`sealed/work/.lock`) guards state-changing commands.
+- The audit:
+  - covers every project directory containing the repo's path, the staging-root prefix and the worktrees;
+  - refuses while staging is live;
+  - exits 7 when the handbook dump is absent;
+  - walks commit and tag objects.
+- Band repair honours `floor_answerable` and exclusions.
+
+**Scanner:**
+- Short questions are matched after JSON-escape decoding.
+- Only `dev/tuning*` and `dev/realistic*` grant development exemptions.
+- A needle maps to every sealed family that shares it.
+- `embed_latency.py` refuses sealed input.
+
+**Launcher:**
+- Durable recovery fsyncs, and journal writes complete before any move.
+- `out/` is allowlisted and validated before the move.
+- `--timeout` (default 3 h) kills the SP's process group.
+
+**Residual:** metered clients do not pass `cache=False`; the guard's global-cache refusal covers it.
