@@ -29,7 +29,10 @@ Rules:
   (tests, evals, `git diff`, `git log`). Nothing that mutates the working
   tree, the index store, or git state.
 - Respect the caller's off-limits list. In this repo that is always: `.env`,
-  `data/`, `chroma_db/`, and the held-out eval files.
+  `data/`, `chroma_db/`, the held-out eval files, `eval/private/sealed/`,
+  `Tutorial_Docs_for_review/` and the sealed-processor staging root
+  `~/.local/state/claudecode/sealed_sp/` (16A-2a, D72). Sealed criteria are
+  evidenced by `scripts/sealed_tool.py` counts only, never by opening a sealed file.
 
 Verdicts: CONFIRMED (pasted evidence shows the claim holds), REFUTED (pasted
 evidence shows it does not — state exactly what broke and how you triggered

@@ -20,7 +20,8 @@ Method:
 1. Read the plan file you were pointed at, in full.
 2. Read the parts of the codebase the plan touches (Grep/Glob/Read; Bash only
    for read-only commands such as `git log`, `git diff`, `ls`). Never read
-   `.env`, `data/`, `chroma_db/`, or held-out eval files.
+   `.env`, `data/`, `chroma_db/`, held-out eval files, `eval/private/sealed/`,
+   `Tutorial_Docs_for_review/` or `~/.local/state/claudecode/sealed_sp/` (D72).
 3. Read the project conventions (CLAUDE.md) and the decisions log
    (docs/decisions.md) — a plan that silently re-litigates a recorded
    decision, or diverges from a stated convention, fails on those grounds.
