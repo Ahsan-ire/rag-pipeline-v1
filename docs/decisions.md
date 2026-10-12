@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: Phase 16A-1 (eval instrument, D65–D70) on `phase-16a1-eval-instrument` → `v2.3.0`; 16A-2 (eval data) follows its own plan gate ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
+**Current phase: Phase 16A-2 (eval data + re-baseline) spec on `phase-16a2-eval-data`, inputs per D71; 16A-1 shipped as v2.3.0 (D65–D70); harness Track B stage B2 (workers + escape probes) merged in the harness repo; run under the standing go (D64), see docs/designs/003-roadmap-and-next-actions.md.**
 
-**Next: D71** (D60 is reserved for the third-party lane / global harness decision; D61–D70 landed).  (Update this line in the same commit as each new entry.)
+**Next: D72** (D60 is reserved for the third-party lane / global harness decision; D61–D71 landed).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -2241,3 +2241,18 @@ Wiring is eval-only:
 - SDK retries: unmetered attempts.
 - Metering after the fact: a call can cross the cap before it is counted.
 - A per-checkout ledger: worktrees and `git clean` would reset the cap.
+
+## D71 — OS-1 answers: tutorials, colleague queries, source mix, review and forwarding (owner, 12 Oct 2026)
+**Decision (owner's answers to 16A's OS-1, the inputs that 16A-2's spec was waiting on):**
+- **Q1, manifest refresh:** postponed to the owner's evening session on 12 Oct; the owner had no Terminal access that day. Until `harness-doctor` shows no drift, 16A-2's [W] lane runs as Claude. `--refresh` adopts the running work tree's manifest, so 16A-2 must not change `.harness/project.toml` before then.
+- **Q2, tutorials:** every tutorial the owner provides may be drafted from, not only T1 and T7. Tutorials stay R1 and private, and new ones go through the blind protocol (003 16A.7). On 12 Oct only T7's PDF and the T1/T7 candidate notes were in `data/tutorials/`; the owner adds the rest.
+- **Q3, colleague queries:** the owner's route is for colleagues to use the tool and for their queries to be collected, with the owner reviewing. That is Phase 20 (internal pilot), whose entry requirements are D64 owner stops: the licence position, ZDR/DPA for the actual org, firm AI-policy sign-off, named-user auth, and no raw-query logging. So **colleague queries do not feed 16A-2**. They enter a later set version through Phase 20's candidate-review path, with client identifiers removed. 16A-2's realistic slice comes from tutorials and Claude-drafted lay phrasings. The owner is available for reviews and eval labelling.
+- **Q4, source mix:** the default is approved. At least 25% of realistic families come from tutorial or colleague sources; any shortfall is filled with lay phrasings that Claude drafts, carrying the D46 self-retrieval caveat. The owner set no separate minimum for sealed.
+- **Q5, second review:** the owner validates every sealed, refusal and ambiguous label alone. Any label the owner is unsure of goes to a more experienced colleague, unnamed here so that no identifier enters the public repo. This **narrows 003 16A.4**: the second opinion covers escalated labels only, not every refusal or ambiguous row. The disagreement rate is therefore measured on escalated labels, a sample selected by the owner's own doubt, and is reported as such. 16A-2's spec (P3) sets the escalation form, the return channel and any blind calibration sample.
+- **Q6, forwarding:** tutorial- and handbook-derived eval material may go to that colleague. The owner takes this licensing and data-protection position under D64. Only the owner forwards it, it is never sent through a third-party model, and it covers only escalated and calibration items.
+
+**Why:** these are owner-only questions under D64: data sources, eval protocol, licensing and data protection. 16A-2's spec cannot fix P2 (pool and intake) or P3 (validation) without them.
+
+**Rejected:**
+- Collecting colleague queries now, through an ad-hoc deployment: it would bypass Phase 20's licence, DPA and AI-policy entry conditions.
+- Waiting for an independent second reviewer on every refusal and ambiguous label: the owner chose escalation, and the narrower measure is disclosed instead.
