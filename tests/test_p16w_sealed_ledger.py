@@ -1,7 +1,8 @@
 """Tests for src/sealed_ledger.py — the sealed-slot ledger and state machine
 (Phase 16A-2a item a4, D72; acceptance (f), the ledger's own parts).
 
-Synthetic data only. Every path is under ``tmp_path``: the autouse fixture
+Synthetic data only. Every path is under ``tmp_path``: the autouse fixture in
+``tests/conftest.py`` (hoisted there in a5, so the slot-run tests share it)
 points ``CC_SEALED_LEDGER`` at a per-test file (the module honours it only
 under pytest and refuses the real per-user ledger there), so no test can read
 or write ``~/.local/state/claudecode/sealed_ledger.jsonl``.
@@ -46,12 +47,6 @@ DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 DIGEST_C = "c" * 64
 FORBIDDEN_WORDS = ("scope", "chapter", "stratum", "sealed")
-
-
-@pytest.fixture(autouse=True)
-def _tmp_sealed_ledger(monkeypatch, tmp_path):
-    """Point the sealed ledger at a per-test file (never the per-user ledger)."""
-    monkeypatch.setenv("CC_SEALED_LEDGER", str(tmp_path / "state" / "sealed_ledger.jsonl"))
 
 
 # ---------------------------------------------------------------------------

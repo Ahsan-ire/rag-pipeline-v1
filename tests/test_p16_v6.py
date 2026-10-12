@@ -111,10 +111,36 @@ def test_v6_refuses_results_md(v6_env, tmp_path, monkeypatch):
     assert not Path(canonical).exists()
 
 
-def test_v6_refuses_judge(v6_env, tmp_path):
-    retrieval, _ = v6_env
-    with pytest.raises(ValueError, match="judge"):
-        _run(retrieval, [("golden", V2["golden"])], tmp_path, judge=True, judge_fn=lambda v: "{}")
+def test_v6_runs_the_judge_and_reports_the_unsupported_rate(v6_env, tmp_path):
+    """16A-2a (a5): v6 gains the judge on answer + partial rows: counts, the unsupported
+    rate with a Wilson CI in the report, and the claim text only in the dump."""
+    from tests.p16_capture import _judge_fn
+
+    retrieval, refusals = v6_env
+    dump = tmp_path / "judge_dump.jsonl"
+    result, text, _side = _run(
+        retrieval, [("golden", V2["golden"])], tmp_path, refusals=refusals, skip_refusals=False,
+        skip_completeness=False, judge=True, judge_fn=_judge_fn("clean"), judge_dump_path=str(dump),
+    )
+    block = result["sets"][0]["judge"]
+    rows = result["sets"][0]["rows"]
+    answerable = [r for r in rows if r["scope"] != "refuse"]
+    # Only answer + partial rows that produced a complete, non-refused answer are judged.
+    assert 0 < block["attempted"] <= len(answerable) < len(rows)
+    assert block["api_errors"] == 0 and block["parse_errors"] == 0
+    assert block["unsupported_claims"]["n"] > 0 and block["unsupported_claims"]["ci"] is not None
+    assert "## Judge" in text and "unsupported claims:" in text and "95% Wilson CI" in text
+    assert "synthetic claim" not in text  # claim text is never in the report
+    records = [json.loads(line) for line in dump.read_text().splitlines()]
+    assert len(records) == block["attempted"] and all(r["set"] == "golden" and r["id"] for r in records)
+    assert all("question" not in r for r in records)  # ids, not question text
+    assert any("synthetic claim" in json.dumps(r) for r in records)
+
+
+def test_v6_without_the_judge_has_no_judge_section(v6_env, tmp_path):
+    retrieval, refusals = v6_env
+    _result, text, _side = _run(retrieval, [("golden", V2["golden"])], tmp_path, refusals=refusals)
+    assert "## Judge" not in text
 
 
 def test_v6_family_collapse_counts_paraphrases_once(v6_env, tmp_path, eval_registry):

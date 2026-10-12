@@ -16,9 +16,19 @@ rows) and scored here:
 
 The report sections, in order: family counts with eligible denominators
 (retrieval: ``answer`` + ``partial``; scope and refusal: all), scope
-confusion, family rates, cohort blocks, expansion digest, run cost. Rows are
-named only by their opaque ids. **No v6 run is canonical in 16A-1 or writes
-``eval/results.md``** (P7 decides the canonical v6 run in 16A-2).
+confusion, family rates, then (16A-2a, a5) a judge section when the judge ran,
+cohort blocks, expansion digest, run cost. Rows are named only by their opaque
+ids. **No v6 run writes ``eval/results.md``.** Only a slot-gated sealed run can
+be canonical v6, and it renders through ``src.sealed_report`` (no ids at all)
+and publishes to ``eval/results_v6.md`` (``src.sealed_run``).
+
+**The judge (16A-2a, a5).** The faithfulness judge (``src.judge``) runs on the
+``answer`` and ``partial`` rows that produced a complete, non-refused answer.
+:func:`judge_summary` turns the per-row judgments into the *unsupported rate*:
+unsupported claims over judged claims, with a Wilson interval (descriptive:
+claims cluster within answers, so the interval is narrower than a clustered
+one), and the share of judged answers with at least one unsupported claim.
+Claim text exists only in the judge dump inside the run directory.
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ from src.eval_scoring import (
     score_partial,
 )
 from src.eval_stats import UNAVAILABLE, collapse_family, wilson_interval
+from src.judge import FAILURE_SUPPRESSION_THRESHOLD
 
 LABELLED_SCOPES = ("answer", "partial", "refuse")
 FAMILY_RULE = "all"
@@ -185,12 +196,68 @@ def scope_confusion(
     return table
 
 
-def _fmt_rate(rate: Mapping[str, Any]) -> str:
+def _fmt_rate(rate: Mapping[str, Any], unit: str = "families") -> str:
     n = rate["n"]
     if not n:
-        return "n/a (0 families)"
+        return f"n/a (0 {unit})"
     ci = rate["ci"]
     return f"{rate['hits']}/{n} = {rate['hits'] / n:.3f} (95% Wilson CI {ci[0]:.3f}-{ci[1]:.3f})"
+
+
+def judge_summary(judgments: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-answer judgments (``src.judge.judge_answer`` records) into the v6 judge block.
+
+    Each judgment needs ``ok``, ``error_type``, ``n_claims``, ``unsupported``
+    (and may carry anything else, which is ignored; claim text never enters the
+    block). The block holds counts and two rates, each with a Wilson interval:
+
+    - ``unsupported_claims``: unsupported claims / judged claims (the *unsupported
+      rate*; claims cluster within answers, so the interval is descriptive);
+    - ``answers_with_unsupported``: judged answers with at least one unsupported
+      claim / judged answers that made at least one checkable claim.
+
+    ``suppressed`` is true when more than ``FAILURE_SUPPRESSION_THRESHOLD`` of
+    the answers failed to judge (API or parse errors), as in v5: the rates are
+    then not to be trusted and the formatter says so instead of printing them.
+    """
+    attempted = len(judgments)
+    api = sum(1 for j in judgments if j.get("error_type") == "api")
+    parse = sum(1 for j in judgments if j.get("error_type") == "parse")
+    ok = [j for j in judgments if j.get("ok")]
+    scored = [j for j in ok if j["n_claims"] > 0]
+    claims = sum(j["n_claims"] for j in ok)
+    unsupported = sum(j["unsupported"] for j in ok)
+    failure_rate = (api + parse) / attempted if attempted else 0.0
+    return {
+        "attempted": attempted,
+        "api_errors": api,
+        "parse_errors": parse,
+        "zero_claim": len(ok) - len(scored),
+        "failure_rate": failure_rate,
+        "suppressed": failure_rate > FAILURE_SUPPRESSION_THRESHOLD,
+        "unsupported_claims": _rate(unsupported, claims),
+        "answers_with_unsupported": _rate(sum(1 for j in scored if j["unsupported"] > 0), len(scored)),
+    }
+
+
+def judge_lines(summary: Mapping[str, Any]) -> List[str]:
+    """Report lines for one set's :func:`judge_summary` (counts and rates only, never claim text)."""
+    lines = [
+        f"- answers judged: {summary['attempted']} (api errors {summary['api_errors']}, "
+        f"parse errors {summary['parse_errors']}, zero-claim {summary['zero_claim']})"
+    ]
+    if summary["suppressed"]:
+        lines.append(
+            f"- unsupported rate suppressed: judge failure rate {summary['failure_rate']:.3f} "
+            f"> {FAILURE_SUPPRESSION_THRESHOLD}"
+        )
+    else:
+        lines.append(f"- unsupported claims: {_fmt_rate(summary['unsupported_claims'], 'claims')}")
+        lines.append(
+            "- answers with at least one unsupported claim: "
+            f"{_fmt_rate(summary['answers_with_unsupported'], 'answers')}"
+        )
+    return lines
 
 
 def format_v6_report(result: Mapping[str, Any]) -> str:
@@ -247,6 +314,17 @@ def format_v6_report(result: Mapping[str, Any]) -> str:
             if key in fr:
                 lines.append(f"- {name}: {_fmt_rate(fr[key])}")
         lines.append("")
+
+    if any(s.get("judge") is not None for s in result["sets"]):
+        lines.append("## Judge (answer + partial rows; same model family as the generator)")
+        lines.append("")
+        for s in result["sets"]:
+            if s.get("judge") is None:
+                continue
+            lines.append(f"### {s['label']}")
+            lines.append("")
+            lines.extend(judge_lines(s["judge"]))
+            lines.append("")
 
     lines.append("## Cohort")
     lines.append("")
