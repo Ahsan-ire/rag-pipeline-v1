@@ -11,6 +11,18 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
+# Tracing guard (16A-2a a5, D73): as the CLI entry (``python -m src.pipeline``)
+# the process sets the four LangChain/LangSmith tracing variables to "false"
+# BEFORE any other ``src`` module is imported. ``src.generator`` calls
+# ``load_dotenv()`` at import and ``load_dotenv`` never overrides a variable that
+# is already set, so tracing switched on in the environment or in ``.env`` is
+# neutralised before the first metered call could send a prompt to a third
+# party. ``src.tracing_guard`` imports only the standard library.
+if __name__ == "__main__":
+    from src.tracing_guard import scrub_tracing_env
+
+    scrub_tracing_env()
+
 from src import grounding
 from src.audit import build_event, log_event
 from src.chunker import chunk_handbook, chunk_legal_document, locator_label
@@ -507,7 +519,10 @@ Examples:
     # per non-refused in-corpus answer. Offline/CI runs must pass BOTH
     # --skip-refusals and --skip-completeness (and omit --judge) — that pair
     # ALSO disables query expansion outright, so it stays the documented
-    # zero-API-call contract even on a keyed dev box (Phase 13, D46). A
+    # zero-API-call contract even on a keyed dev box (Phase 13, D46). Only an
+    # explicit --expansion option changes that under both skips: build:<path>
+    # makes live rewrite calls only (metered), a replayed artifact runs
+    # retrieval only with zero calls (16A-2a). A
     # canonical committed run now additionally requires --realistic, all four
     # EVAL_MODES, and zero query-expansion fallbacks (see run_eval_matrix).
     eval_parser = subparsers.add_parser(
@@ -532,6 +547,14 @@ Examples:
         help="Path to the realistic-slice JSONL (messy staff phrasing + "
         "near-domain negatives); required for a canonical run "
         "(e.g. eval/realistic_set.jsonl)",
+    )
+    eval_parser.add_argument(
+        "--regression",
+        default=None,
+        help="Path to a regression-set JSONL, scored as a FOURTH set labelled "
+        "'regression' alongside --golden/--heldout/--realistic (16A-2a: the "
+        "former held-out set, once consumed). It joins the privacy floor and "
+        "the cohort identity checks like every other set",
     )
     eval_parser.add_argument(
         "--mode",
@@ -593,8 +616,10 @@ Examples:
     eval_parser.add_argument(
         "--expansion",
         default="live",
-        help="'live' (default), 'build:<path>' to freeze this run's expansions, "
-        "or a frozen artifact path to replay in every arm (never canonical)",
+        help="'live' (default), 'build:<path>' to freeze this run's expansions "
+        "(live rewrite calls, metered, even under both --skip flags), or a "
+        "frozen artifact path to replay in every arm (never canonical; under "
+        "both --skip flags: retrieval only, zero API calls)",
     )
     eval_parser.add_argument(
         "--approved-eur",
@@ -614,6 +639,39 @@ Examples:
         "--approval-ref",
         default=None,
         help="Reference to the owner's approval of --owner-approved-eur",
+    )
+    # Phase 16A-2a (a5, D73): the slot-gated sealed run. Without --sealed-slot
+    # every entry still refuses sealed input (exit 4).
+    eval_parser.add_argument(
+        "--sealed-slot",
+        default=None,
+        metavar="SLOT",
+        help="Run the frozen sealed set (passed as --heldout) in this slot: 0, 0b, 1, 2... "
+        "Claims the slot only if every gate passes (freeze record, approvals, meter, "
+        "declared expansion mode, tracing off); re-running a slot that is already in the "
+        "ledger recovers it from storage and never makes a fresh call",
+    )
+    eval_parser.add_argument(
+        "--prereg",
+        default=None,
+        help="With --sealed-slot: the pre-registration JSON (per-slot expansion mode, floor)",
+    )
+    eval_parser.add_argument(
+        "--slot-records",
+        default=None,
+        help="With --sealed-slot: directory holding sealed_tool's approvals.json "
+        "(default: eval/private/sealed/work/); the group record and the exclusions come from the ledger",
+    )
+    eval_parser.add_argument(
+        "--rewrite-candidate",
+        default=None,
+        help="With --sealed-slot: the declared candidate rewrite config hash (a live "
+        "candidate arm; must equal the prereg's declaration and the code's own hash)",
+    )
+    eval_parser.add_argument(
+        "--baseline-run",
+        default=None,
+        help="With --sealed-slot 1..: the run id of the consumed slot 0/0b run to pair against",
     )
 
     args = parser.parse_args()
@@ -650,7 +708,9 @@ Examples:
 # (a D64 owner stop), 4 = sealed input refused, 6 = this run's own spend limit.
 EXIT_SPEND_WEEK = 3
 EXIT_SEALED = 4
+EXIT_HIT = 5  # a slot's pre-publication scan could not clear the report
 EXIT_SPEND_RUN = 6
+EXIT_EPOCH = 8  # a sealed epoch stop (lost or tampered ledger, below the floor): a D64 owner stop
 EXIT_USAGE = 2
 
 
@@ -660,8 +720,9 @@ def _eval_command(args: argparse.Namespace) -> int:
     The privacy class passed to the runner is ``classify``'s floor over the set
     paths (the CLI never chooses a class itself). Sealed input exits 4 before
     anything else runs. A live run (any pass other than the both-skips offline
-    form, or --judge) builds a spend meter from ``config/api_prices.toml``; the
-    offline command builds none. On a private run an unexpected error prints
+    form, --judge, or ``--expansion build:<path>``) builds a spend meter from
+    ``config/api_prices.toml``; the offline command and a replay under both
+    skips build none. On a private run an unexpected error prints
     only its exception type.
     """
     from src.eval_privacy import PUBLIC, SealedInputError, safe_error
@@ -681,7 +742,14 @@ def _eval_command(args: argparse.Namespace) -> int:
         set_specs.append(("held-out", args.heldout))
     if args.realistic:
         set_specs.append(("realistic", args.realistic))
+    if args.regression:
+        set_specs.append(("regression", args.regression))
     modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
+
+    if args.sealed_slot is not None:
+        # 16A-2a (a5): the only door a sealed set gets through. Everything the
+        # command does after this line is the slot protocol, never the floor below.
+        return _sealed_slot_command(args, set_specs, modes)
 
     paths = [p for _l, p in set_specs]
     if args.expansion != "live" and not args.expansion.startswith("build:"):
@@ -695,7 +763,15 @@ def _eval_command(args: argparse.Namespace) -> int:
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
 
-    live = (not (args.skip_refusals and args.skip_completeness)) or args.judge
+    # 16A-2a (a6): ``--expansion build:<path>`` is live even under both skips
+    # (live Haiku rewrite calls, nothing else), so it gets a meter. A replayed
+    # artifact is local (zero calls) and both skips alone stay zero-call: neither
+    # counts as live.
+    live = (
+        (not (args.skip_refusals and args.skip_completeness))
+        or args.judge
+        or args.expansion.startswith("build:")
+    )
     meter = None
     # A meter is built iff the run is live AND a usable key exists. Without a
     # key no Claude call can be made at all, so the run degrades as before
@@ -772,6 +848,153 @@ def _eval_command(args: argparse.Namespace) -> int:
             return 1
         raise
     _totals()
+    return 0
+
+
+def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list) -> int:
+    """Run ``pipeline eval --sealed-slot <n>``: the slot gate, the a4 protocol, the report (a5, D73).
+
+    The sealed set is the one passed as ``--heldout``; every other set must be
+    non-sealed. A slot already in the ledger is recovered from storage (no
+    fresh call): a spent or consumed slot is a ``claim`` refusal, stored results
+    are rendered. A new slot runs every gate (``src.sealed_run.acquire_slot_token``,
+    which takes the slot's execution lock) and is minted UNCLAIMED; ``run_slot`` then
+    preflights everything the run could still refuse (numeric options, replay artifact,
+    metered clients, absorbed map, duplicate ids, the index a default path loads) and only
+    then claims, right before the first model call, so a refusal never spends a slot.
+    Everything printed is a count, a hash, an enum, a gate
+    or guard name; never a path, a row id or text. Exit codes: 4 a gate refused,
+    5 the pre-publication scan could not clear the report, 8 a sealed epoch stop
+    (lost or tampered ledger, below the floor), 3 and 6 the spend limits.
+    """
+    from pathlib import Path
+
+    from src import eval_sets, sealed_run
+    from src.eval_privacy import SealedInputError, safe_error
+    from src.eval_schema import SchemaError, detect_schema, load_any
+    from src.evaluator import load_golden_set
+    from src.generator import api_key_usable
+    from src.sealed_ledger import SealedLedgerError
+    from src.spend import SpendLimitReached, SpendMeter, SpendMeterError, load_prices
+    from src.tracing_guard import TracingRefused
+
+    def refuse(gate: str, code: int = EXIT_SEALED) -> int:
+        print(f"[eval] sealed slot refused: gate={gate}", file=sys.stderr)
+        return code
+
+    if args.results_path is not None or args.prereg is None:
+        print("[eval] --sealed-slot needs --prereg and publishes only through its slot protocol (no --results)",
+              file=sys.stderr)
+        return EXIT_USAGE
+    if args.top_k < 1 or (args.judge_sample is not None and args.judge_sample < 0):
+        # Checked before the ledger is touched: these would otherwise be refused only after the claim.
+        print("[eval] --top-k must be >= 1 and --judge-sample >= 0; no slot was touched", file=sys.stderr)
+        return EXIT_USAGE
+    meter = None
+    run_totals = lambda: None  # noqa: E731 - replaced once a meter exists
+
+    try:
+        ledger = sealed_run.default_ledger()
+        records_dir = Path(args.slot_records) if args.slot_records else sealed_run.default_records_dir()
+        outcome = sealed_run.recover_slot(args.sealed_slot, ledger=ledger)
+        if outcome is None:
+            # A fresh slot. Everything that could refuse without spending the slot is checked first.
+            sealed_paths = [p for _l, p in set_specs if eval_sets.is_sealed(p)]
+            if args.heldout is None or sealed_paths != [args.heldout]:
+                return refuse("set_binding")
+            others = [p for _l, p in set_specs if p != args.heldout]
+            try:
+                for p in others:
+                    if detect_schema(p) == 1:
+                        load_golden_set(p)
+                    else:
+                        load_any(p)
+            except (SchemaError, OSError, ValueError):
+                return refuse("set_binding")
+            every = [p for _l, p in set_specs]
+            if any(os.path.samefile(a, b) for i, a in enumerate(every) for b in every[i + 1:]):
+                return refuse("set_binding")
+            if api_key_usable():
+                try:
+                    meter = SpendMeter(
+                        load_prices(os.path.join(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_prices.toml")),
+                        None,
+                        args.approved_eur,
+                        owner_approved_eur=args.owner_approved_eur,
+                        approval_ref=args.approval_ref,
+                    )
+                except (ValueError, SpendMeterError) as exc:
+                    print(f"[eval] spend meter could not be built: {safe_error(exc)}", file=sys.stderr)
+                    return EXIT_USAGE
+
+                def run_totals() -> None:  # noqa: F811
+                    print(f"[eval] spend: run EUR {meter.run_total_eur:.4f}, week EUR {meter.week_total_eur:.4f} "
+                          f"(ceiling EUR {meter.ceiling_eur:.2f})", file=sys.stderr)
+
+            token = sealed_run.acquire_slot_token(
+                args.sealed_slot,
+                ledger=ledger,
+                set_path=args.heldout,
+                prereg_path=args.prereg,
+                records_dir=records_dir,
+                expansion=args.expansion,
+                rewrite_candidate=args.rewrite_candidate,
+                meter=meter,
+                baseline_run=args.baseline_run,
+                top_k=args.top_k,  # refused here (gate=cutoff) unless it is the prereg's hit cut-off
+                claim=False,  # run_slot claims after its preflight, right before the first model call
+            )
+            outcome = sealed_run.run_slot(
+                token,
+                ledger=ledger,
+                set_specs=set_specs,
+                modes=modes,
+                top_k=args.top_k,
+                skip_refusals=args.skip_refusals,
+                skip_completeness=args.skip_completeness,
+                judge=args.judge,
+                judge_sample=args.judge_sample,
+                persist_directory=args.persist_directory,
+                meter=meter,
+                expansion=args.expansion,
+            )
+    except sealed_run.GateRefused as exc:
+        # (a gate refuses before any call, so no spend totals are printed)
+        detail = f" ({exc.detail})" if exc.detail else ""
+        print(f"[eval] sealed slot refused: gate={exc.gate}{detail}", file=sys.stderr)
+        return EXIT_EPOCH if exc.gate == "floor" else EXIT_SEALED
+    except TracingRefused as exc:
+        print(f"[eval] sealed slot refused: gate=tracing ({', '.join(exc.reasons)})", file=sys.stderr)
+        return EXIT_SEALED
+    except sealed_run.EpochEnded:
+        run_totals()
+        print("[eval] sealed epoch ends: fewer families than the floor after exclusion (D64 owner stop)",
+              file=sys.stderr)
+        return EXIT_EPOCH
+    except sealed_run.PublicationBlocked as exc:
+        run_totals()
+        print(f"[eval] publication blocked: {exc.reason}; the report was not published", file=sys.stderr)
+        return EXIT_HIT
+    except SpendLimitReached as exc:
+        run_totals()
+        print(f"[eval] spend limit reached ({exc.kind}); the slot is spent, no report written", file=sys.stderr)
+        return EXIT_SPEND_WEEK if exc.kind == "week" else EXIT_SPEND_RUN
+    except SpendMeterError as exc:
+        run_totals()
+        print(f"[eval] spend meter failed: {safe_error(exc)}; no report written", file=sys.stderr)
+        return EXIT_USAGE
+    except SealedLedgerError as exc:
+        print(f"[eval] sealed ledger stop: {type(exc).__name__} (D64 owner stop)", file=sys.stderr)
+        return EXIT_EPOCH
+    except SealedInputError:
+        print("[eval] sealed input refused", file=sys.stderr)
+        return EXIT_SEALED
+    except Exception as exc:  # noqa: BLE001 - a sealed run must not print str(exc)
+        run_totals()
+        print(f"[eval] error: {safe_error(exc)}", file=sys.stderr)
+        return 1
+    run_totals()
     return 0
 
 

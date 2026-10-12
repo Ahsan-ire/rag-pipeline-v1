@@ -27,8 +27,10 @@ model's opinion, never on the held-out set.
 - Index corpus: `python -m src.pipeline index ./data/Conveyancing_Handbook.pdf --type handbook`
 - Query: `python -m src.pipeline query "..." --top-k 6`
 - Extraction QA: `python scripts/extraction_qa.py ./data/Conveyancing_Handbook.pdf`
-- Eval (canonical v5, held-out headline; **makes live API calls** incl. Haiku
-  query expansion):
+- Eval (canonical v5, now historical: heldout-v1 retired to regression in
+  16A-2a, D73; the headline becomes canonical v6 `eval/results_v6.md`, written
+  only by a slot-0/0b sealed run, `pipeline eval --sealed-slot`; **makes live
+  API calls** incl. Haiku query expansion):
   `python -m src.pipeline eval --heldout eval/heldout_set.jsonl --realistic eval/realistic_set.jsonl --judge`
   — writes the committed `eval/results.md` only on a canonical run, i.e. ALL
   of: a held-out set AND a realistic set, each with answerable hybrid results,
@@ -49,7 +51,10 @@ model's opinion, never on the held-out set.
   `python -m src.pipeline eval --skip-refusals --skip-completeness` — both
   skips are required to make ZERO API calls: they suppress generation AND
   disable Haiku query expansion (the hybrid+rewrite row then renders as the
-  disabled fallback, equal to raw hybrid).
+  disabled fallback, equal to raw hybrid). Exception (16A-2a, D73): an
+  explicit `--expansion build:<path>` under both skips makes metered Haiku
+  rewrite calls only, and a replayed artifact under both skips runs
+  retrieval only with zero calls.
 - Query without expansion (debug/offline): add `--no-rewrite` to the query
   command.
 
@@ -63,8 +68,17 @@ model's opinion, never on the held-out set.
   `privacy` than the floor, never add a registry/classifier parameter to
   `src/` or `scripts/`, and with private sets present run
   `python scripts/scan_leaks.py --merge-gate --base main` before every push,
-  with `--pr <n>` once a PR exists (a hit in pushed history is a D64 owner stop). Sealed input is refused
-  everywhere in 16A-1 (exit 4); never strip a sealed marker.
+  with `--pr <n>` once a PR exists (a hit in pushed history is a D64 owner stop).
+- Sealed eval data (D72, 16A-2a): sealed input runs only inside a claimed
+  slot (`pipeline eval --sealed-slot <n>`) and is read only through
+  `src/eval_sealed_read.py`; every other run, retrieval, generation or
+  replay entry refuses it (exit 4). Only `scripts/sealed_tool.py` removes a
+  sealed marker (release). The orchestrator never opens
+  `eval/private/sealed/`, the sealed processor's staging root
+  (`~/.local/state/claudecode/sealed_sp/`) or `Tutorial_Docs_for_review/`
+  (beyond the 12 Oct table-of-contents read); sealed rows reach it only as
+  `sealed_tool` counts, digests and opaque ids. Run
+  `python scripts/sp_launch.py --sweep` before any Codex call.
 - Eval spend (D70): every live eval call goes through the spend meter
   (`src/spend.py`, ledger `~/.local/state/claudecode/anthropic_spend.jsonl`);
   the €40/UTC-week cap is hard — exit 3 is a D64 owner stop, never lift it
@@ -97,7 +111,7 @@ it *pointers* (file paths, branch names), not pasted content.
   of the diff vs main; fix findings forward or rebut them explicitly in the
   PR description.
 - Canonical call:
-  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, eval/private/, or held-out eval files."`
+  `codex exec --sandbox read-only "Adversarially review <plan file | the diff vs main> for phase N of IMPLEMENTATION_PLAN.md: real bugs, missing steps, spec divergence, weak tests. Cite file:line. Where a fix is small and mechanical, include a proposed unified diff in the finding (text only — you cannot apply it). Do NOT read data/, chroma_db/, chroma_db_arm_*/, eval/bakeoff/, eval/private/, Tutorial_Docs_for_review/, ~/.local/state/claudecode/sealed_sp/, or held-out eval files."`
 - Treat Codex findings like pressure-tester findings: verify each against
   the code before acting; it can be wrong or out of scope. Proposed diffs
   are suggestions, not patches: verify and apply them yourself — Codex

@@ -8,7 +8,8 @@ and no v1 rows mixed in. Each row::
      "evidence": [[sec, ...], ...],          # AND groups of OR lists; [] iff refuse
      "gaps": [{"id": ..., "keywords": [...]}, ...],   # partial only, non-empty
      # optional:
-     "type", "register", "source", "ambiguous", "owner_status", "second_status"}
+     "type", "register", "source", "ambiguous", "owner_status", "second_status",
+     "sealed"}                               # true only (16A-2a, D72)
 
 **Identity.** ``id`` is unique per set; ``family_id`` groups a scenario and its
 paraphrases. In a *public* set (``classify(path) == "public"``) both match
@@ -40,10 +41,18 @@ in an error, so errors are safe to print for private sets.
 :func:`detect_schema` classify the path first and raise
 :class:`~src.eval_privacy.SealedInputError` for sealed input before reading a
 row (the validator CLI exits 4).
+
+**Sealed key (16A-2a, a1).** A v2 row may carry ``"sealed": true`` and nothing
+else: any other value (``false``, ``1``, ``"true"``, ``null``) is a ``sealed``
+field error. The marker is what makes ``classify`` return ``sealed``. Sealed
+input stays unreadable through the loaders above; its one read-only loader is
+``src.eval_sealed_read``, which reuses this module's validator. :func:`row_hash`
+is the content hash a row's approval is bound to.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -83,7 +92,7 @@ TYPE_SCOPES: Dict[str, Tuple[str, ...]] = {
 }
 
 REQUIRED_KEYS = ("schema", "id", "family_id", "question", "scope", "evidence")
-OPTIONAL_KEYS = ("gaps", "type", "register", "source", "ambiguous", "owner_status", "second_status")
+OPTIONAL_KEYS = ("gaps", "type", "register", "source", "ambiguous", "owner_status", "second_status", "sealed")
 _ALLOWED_KEYS = frozenset(REQUIRED_KEYS + OPTIONAL_KEYS)
 _ENUMS: Dict[str, Tuple[str, ...]] = {
     "register": REGISTERS,
@@ -92,6 +101,9 @@ _ENUMS: Dict[str, Tuple[str, ...]] = {
     "second_status": SECOND_STATUSES,
 }
 _INVENTORY_KEYS = frozenset({"version", "map_sha256", "sections", "aliases"})
+# Keys a row hash ignores: the sealed marker and the two review statuses change
+# while a row's content (what an owner approves) stays the same (16A-2a, a1).
+ROW_HASH_EXCLUDED_KEYS = ("sealed", "owner_status", "second_status")
 
 ErrorTuple = Tuple[int, str, str]
 
@@ -118,17 +130,40 @@ def render_errors(errors: Iterable[ErrorTuple]) -> str:
     return "\n".join(f"line {line}: {field}: {reason}" for line, field, reason in errors)
 
 
+def row_hash(row: Mapping[str, Any]) -> str:
+    """sha256 of a row's canonical JSON without ``sealed``, ``owner_status`` and ``second_status``.
+
+    An owner's approval binds to this hash (16A-2a, a1), so it must change when
+    the row's content changes and not when only its review status or its sealed
+    marker does. Canonical JSON = sorted keys, no whitespace, ASCII escapes (the
+    form ``eval_split`` fingerprints use). The helper hashes whatever mapping it
+    is given: callers pass the normalised rows the loaders return, so the same
+    row always hashes the same. The hash is unsalted (P4: a committed set sha256
+    confirms only a whole file).
+    """
+    kept = {k: v for k, v in row.items() if k not in ROW_HASH_EXCLUDED_KEYS}
+    canonical = json.dumps(kept, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
 # --------------------------------------------------------------------------
 # Low-level reading (no text in errors)
 # --------------------------------------------------------------------------
-def _refuse_if_sealed(path: Path) -> str:
-    """Classify ``path``; raise for sealed input, else return its class.
+def _refuse_non_eval_suffix(path: Path) -> None:
+    """A ``.md``/``.py`` file is never an eval set: a file-level schema error (line 0).
 
-    A ``.md``/``.py`` file is never an eval set: refused as a file-level
-    schema error (line 0), so a sealed set renamed to ``.md`` is never read.
+    So a sealed set renamed to ``.md`` is never read, by any loader.
     """
     if path.suffix.lower() in (".md", ".py"):
         raise SchemaError([(0, "<file>", "not an eval input (.md/.py)")])
+
+
+def _refuse_if_sealed(path: Path) -> str:
+    """Classify ``path``; raise for sealed input, else return its class.
+
+    A ``.md``/``.py`` file is never an eval set (:func:`_refuse_non_eval_suffix`).
+    """
+    _refuse_non_eval_suffix(path)
     privacy = classify(path)
     if privacy == SEALED:
         raise SealedInputError("sealed eval input is refused in 16A-1 (exit 4)")
@@ -406,6 +441,9 @@ def _validate_v2_row(
             errors.append((line, key, reason))
     if "ambiguous" in row and not isinstance(row["ambiguous"], bool):
         errors.append((line, "ambiguous", "must be a boolean"))
+    # ``is not True`` rejects 1, "true" and null as well as false: the key is a marker, not a flag.
+    if "sealed" in row and row["sealed"] is not True:
+        errors.append((line, "sealed", "must be true"))
     return _normalised(
         schema=SCHEMA_VERSION,
         rid=row.get("id"),

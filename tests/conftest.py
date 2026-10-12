@@ -46,6 +46,17 @@ def _tmp_spend_ledger(monkeypatch, tmp_path):
     monkeypatch.setenv("CC_SPEND_LEDGER", str(tmp_path / "spend_ledger.jsonl"))
 
 
+@pytest.fixture(autouse=True)
+def _tmp_sealed_ledger(monkeypatch, tmp_path):
+    """Point the sealed ledger at a per-test file (Phase 16A-2a a4, hoisted for a5).
+
+    src.sealed_ledger honours CC_SEALED_LEDGER only under pytest and refuses the
+    real per-user ledger (~/.local/state/claudecode/sealed_ledger.jsonl) there,
+    so no test can read or write the owner's epoch.
+    """
+    monkeypatch.setenv("CC_SEALED_LEDGER", str(tmp_path / "state" / "sealed_ledger.jsonl"))
+
+
 @pytest.fixture
 def sample_document():
     """A sample legal document for testing."""

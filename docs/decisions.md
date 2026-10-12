@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: Phase 16A-1 (eval instrument, D65–D70) on `phase-16a1-eval-instrument` → `v2.3.0`; 16A-2 (eval data) follows its own plan gate ∥ harness Track B stage B2 (workers + escape probes), run under the standing go (D64) — see docs/designs/003-roadmap-and-next-actions.md. H shipped as v2.2.1 (D62).**
+**Current phase: Phase 16A-2a (sealed tooling, D72–D73) on `phase-16a2-eval-data` → `v2.4.0`, then 16A-2b (data + re-baseline, D74–D75); inputs per D71; 16A-1 shipped as v2.3.0 (D65–D70); harness Track B stage B2 (workers + escape probes) merged in the harness repo; run under the standing go (D64), see docs/designs/003-roadmap-and-next-actions.md.**
 
-**Next: D71** (D60 is reserved for the third-party lane / global harness decision; D61–D70 landed).  (Update this line in the same commit as each new entry.)
+**Next: D74** (D60 is reserved for the third-party lane / global harness decision; D61–D73 landed; D74–D75 are allocated to 16A-2b).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -2241,3 +2241,164 @@ Wiring is eval-only:
 - SDK retries: unmetered attempts.
 - Metering after the fact: a call can cross the cap before it is counted.
 - A per-checkout ledger: worktrees and `git clean` would reset the cap.
+
+## D71 — OS-1 answers: tutorials, colleague queries, source mix, review and forwarding (owner, 12 Oct 2026)
+**Decision (owner's answers to 16A's OS-1, the inputs that 16A-2's spec was waiting on):**
+- **Q1, manifest refresh:** postponed to the owner's evening session on 12 Oct; the owner had no Terminal access that day. Until `harness-doctor` shows no drift, 16A-2's [W] lane runs as Claude. `--refresh` adopts the running work tree's manifest, so 16A-2 must not change `.harness/project.toml` before then.
+- **Q2, tutorials:** every tutorial the owner provides may be drafted from, not only T1 and T7. Tutorials stay R1 and private, and new ones go through the blind protocol (003 16A.7). The owner's copies are in `Tutorial_Docs_for_review/` (gitignored, `never_commit`, `restricted_read`): the 2025 PPC Applied Land Law Student Tutorial Manual (17 tutorials plus 7 sets of title documents) and the separate T1 and T7 exercise sheets. Use of PPC tutorial material for eval questions is still question 9 of the Law Society email (003 §7), so tutorial-derived rows stay private (Q7).
+- **Q3, colleague queries:** the owner's route is for colleagues to use the tool and for their queries to be collected, with the owner reviewing. That is Phase 20 (internal pilot), whose entry requirements are D64 owner stops: the licence position, ZDR/DPA for the actual org, firm AI-policy sign-off, named-user auth, and no raw-query logging. So **colleague queries do not feed 16A-2**. They enter a later set version through Phase 20's candidate-review path, with client identifiers removed. 16A-2's realistic slice comes from tutorials and Claude-drafted lay phrasings. The owner is available for reviews and eval labelling.
+- **Q4, source mix:** the default is approved. At least 25% of realistic families come from tutorial or colleague sources; any shortfall is filled with lay phrasings that Claude drafts, carrying the D46 self-retrieval caveat. The owner set no separate minimum for sealed.
+- **Q5, second review:** the owner validates every sealed, refusal and ambiguous label alone. Any label the owner is unsure of goes to a more experienced colleague, unnamed here so that no identifier enters the public repo. This **narrows 003 16A.4**: the second opinion covers escalated labels only, not every refusal or ambiguous row. The disagreement rate is therefore measured on escalated labels, a sample selected by the owner's own doubt, and is reported as such. 16A-2's spec (P3) sets the escalation form, the return channel and any blind calibration sample.
+- **Q6, forwarding:** tutorial- and handbook-derived eval material may go to that colleague. The owner takes this licensing and data-protection position under D64. Only the owner forwards it, it is never sent through a third-party model, and it covers only escalated and calibration items.
+
+**Why:** these are owner-only questions under D64: data sources, eval protocol, licensing and data protection. 16A-2's spec cannot fix P2 (pool and intake) or P3 (validation) without them.
+
+**Rejected:**
+- Collecting colleague queries now, through an ad-hoc deployment: it would bypass Phase 20's licence, DPA and AI-policy entry conditions.
+- Waiting for an independent second reviewer on every refusal and ambiguous label: the owner chose escalation, and the narrower measure is disclosed instead.
+
+## D72 — Sealed protocol: trusted processors, the sealed processor, S-needles, ledgers and slots (16A-2a)
+**Decision:** sealed eval data has a narrow, code-enforced life. 16A-2a builds the tooling on synthetic data only; 16A-2b creates the data.
+
+**Trusted processors.** Only these may read sealed rows:
+- the owner;
+- the **sealed processor (SP)**;
+- the processes of `sealed_tool`, `scan_leaks` and a slot-gated run, which print only counts, digests, enums and (in named places) opaque ids;
+- Anthropic's API inside a claimed slot, with tracing refused;
+- the owner's colleague, for forwarded items (D71 Q6).
+
+Never the orchestrator's context, Codex, a worker or any third-party model.
+
+**One read path.** `src/eval_sealed_read.load_sealed` is the only reader. Every run, retrieval, generation and replay entry refuses sealed input (exit 4) unless it holds a single-use `SlotToken`.
+- An AST test bans any parameter named `*sealed*` in `src/` outside that module, and in `scripts/` outside `validate_eval_set`, `scan_leaks`, `sealed_tool` and `sp_launch`. This reconciles D65's ban on class-override parameters: there is one sanctioned reader, not a switch.
+- A row hash (canonical JSON without `sealed`, `owner_status` and `second_status`) is what approvals bind to.
+
+**The SP.** `scripts/sp_launch.py` runs `claude -p` in an out-of-repo staging directory (`~/.local/state/claudecode/sealed_sp/<id>/`). It uses:
+- an environment holding only HOME, PATH, USER, LANG and TMPDIR, with no API key, so the SP runs on the subscription and never on metered spend;
+- `--restricted --tools Read,Write,Edit,Glob,Grep`, an empty strict MCP config and no session persistence;
+- the brief `docs/sealed/sealed-processor.md` as the appended system prompt, with the task on stdin.
+
+The SP's stdout and stderr go to files and are never printed. The launcher prints one validated, content-free line. Outputs move by a journalled copy-verify-delete into `eval/private/sealed/work/sp_out/<id>/`. A data dispatch requires the pushed prereg to be an ancestor of `origin/<branch>`.
+- **Enforced** (`claude --help`, plus the 12 Oct pre-probe: canary read, repository read DENIED, no MCP tools): no Bash, MCP or user/project settings; file tools confined to the staging directory.
+- **Instruction-only:** what the SP drafts and returns, the same trust status as Codex in the global CLAUDE.md.
+
+**Scanner.** Every private `*.jsonl` outside `runs/` and `artifacts/` is a needle source; sealed ones are S-needles.
+- Exempt windows are public ∪ development ∪ handbook (the b0 dump). A sealed question under 8 tokens matches only as a whole value or line.
+- An S-hit prints the target and the family id only.
+- Content-free record files (the ledger copy, payloads, dispatch logs, SP twin verdicts) are not sources but are scanned as targets.
+- Non-JSONL files are allowed only under `work/`.
+
+**Ledgers and slots.** `src/sealed_ledger.py` keeps an out-of-tree ledger in D70's style (flock, fsync, torn tail), a private copy and a committed mirror of kinds and digests only. Content-free payloads (split records, assignments, the group record) are stored twice and verified by sha256, and losing both private copies stops the epoch.
+- Slot protocol:
+  1. claim, which is the last gate, so a refusal never spends a slot;
+  2. run;
+  3. store under `sealed/runs/<id>/`;
+  4. publication intent, for a canonical run only;
+  5. render and scan in-process, where a hit excludes the group and re-renders;
+  6. consumed.
+- Recovery never makes a fresh sealed call.
+- 0b is usable once, only after a non-canonical or spent slot 0.
+- Exclusions apply to whole groups. The frozen sealed file is immutable for the epoch.
+
+**Tracing.** The CLI entry scrubs the four LangChain/LangSmith tracing variables to `false` before importing `src`. The slot gate refuses if a global tracer or a callback is configured, or if tracing is still enabled before the first call.
+
+**Units.** A group is a connected component of all relations: twin verdicts, the same source tutorial, the same primary section. Groups are computed over every draft and every pinned family before any edge is filtered.
+- A group touching pinned development or public material is sealed-ineligible as a whole.
+- A round-2 draft related to a round-1 sealed group is dropped.
+- Demotion, exclusion and recheck act on whole groups.
+
+**Residuals (instruction-enforced):**
+- a sealed question typed into `pipeline query` by its holder;
+- an SP that ignores its brief;
+- files outside the audited set (cloud sessions included);
+- spend-ledger token counts;
+- work files holding text not yet in a JSONL;
+- the owner's and colleague's mail;
+- the orchestrator's restraint with the tutorial folder (only its table of contents was read, on 12 Oct);
+- a short sealed question embedded in prose.
+
+**Rejected:**
+- An in-session subagent as the SP: its transcript and final message return to the orchestrator.
+- `--bare`: it reads only `ANTHROPIC_API_KEY`, which would mean unmetered API spend.
+- A family-level analysis unit that silently counts correlated scenarios: see D73.
+
+## D73 — Canonical v6, results_v6.md, the CLI changes and the builders (16A-2a)
+**Decision:**
+- **`pipeline eval --sealed-slot <n>`** is the only sealed run. It gets its token only if all of these hold:
+  - the freeze record matches the sealed file, the group record and the exclusions;
+  - every sealed row is approval-bound;
+  - a meter is active;
+  - the expansion mode is the one the prereg declares for the slot;
+  - tracing is off.
+- **Report v6** gains:
+  - the judge on answer and partial rows, with the unsupported-claim rate and a Wilson CI;
+  - a sealed rendering of aggregates only: scope, register, and source with tutorial and Claude-drafted kept apart (the D46 caveat on the drafted part), plus the group count;
+  - for confirmatory slots, the **exact two-sided cluster sign-flip test** on group net discordance (`eval_stats.cluster_signflip_p`). Its size is ≤ α under the paired-randomisation null, it equals `mcnemar_exact` with singleton groups, and its power comes from a seeded Monte Carlo (`cluster_signflip_power`, independent and fully correlated models). Durkalski and family McNemar are labelled sensitivities.
+- **Canonical v6** = v5's guards (D46, D51, H1c), with the held-out clause met by the frozen sealed set, plus:
+  - slot 0 or 0b;
+  - the bound records;
+  - live expansion;
+  - the tracing guard.
+
+  Only canonical v6 writes the committed `eval/results_v6.md`. Its rows sidecar stays under `sealed/runs/`. `eval/results.md` keeps v5's writer and is now historical.
+- **heldout-v1 retires to regression** (003 16A.3, "any inspected hold-out retires"). `--regression <path>` scores it as a fourth set.
+- **CLI.** `--expansion build:<path>` is live under both skips, making metered rewrite calls only. A replayed artifact under both skips is retrieval-only with zero calls. Both skips alone stay zero-call.
+- **Builders:**
+  - `scripts/handbook_sections.py` (the b0 dump);
+  - `scripts/controls.py`: C1 is rank ≤ 3 in both modes on every draw; C2 is D57 as written, an incumbent strict hit in draw 1;
+  - `src/sealed_inputs.py` (pairing and conflict-label checks);
+  - `scripts/sealed_tool.py`, the single CLI for intake, twins, split, review sheets, freeze, escalation, calibration, disagreement, exclusion, audit, power and prereg checks.
+
+**Rejected:**
+- Group-collapsed `all` outcomes as the primary: plan-gate r5 showed they test a different estimand from the family-level MWE and can mask within-group changes.
+- Durkalski as the primary: it is asymptotic and anti-conservative at small cluster counts (r4).
+- A one-sided per-direction primary: its α scope was unsettled (r6).
+
+**D72/D73 phase-gate round 1 (12 Oct 2026).** Codex returned REVISE (7 P1, 3 P2). The pressure-tester failed (g), since `results_v6.md` was writable by a non-slot run, and (e) on coverage. An Opus code review found 10 MAJOR and 14 MINOR. All were fixed in four file-disjoint areas, each fix with a test that failed on the earlier code.
+
+**Slot protocol:**
+- **Lock and 0b.** A per-slot flock is held for the whole run and for recovery. 0b cannot be claimed while slot 0's lock is held, and slot 0 cannot store or intend once 0b is claimed.
+- **Refusals before the claim.** The token is minted unclaimed, and `preflight_slot` checks option values, the replay artifact, the clients, the absorbed map, duplicates and the index before the claim. So "a refusal never spends a slot" now holds.
+- **Confirmatory slots and baselines.** Confirmatory slots render `sealed/runs/<id>/report.md`, which is never committed, and print numbers only. A baseline needs a publication intent.
+- **Durability.** The report's parent and the run-directory ancestry are fsynced before `consumed` and `stored` are recorded.
+
+**Guards:**
+- The tracing guard also refuses inherited runnable-config callbacks and any global LLM cache.
+- `eval/results_v6.md` is refused as a `--results` target.
+
+**Exclusions:** each exclusion carries its member families and is resolved against the freeze-bound groups at the gate. `record_freeze` computes the exclusions digest inside its own transaction.
+
+**sealed_tool:**
+- Sheet and form names are basenames, with symlink-checked destinations.
+- Release recovery ignores preassigned families.
+- The freeze is journalled and resumed, never recomputed. Its group payload is content-named, and quarantine moves come last.
+- Round-2 quotas equal round 1's. Surplus drafts are shelved to `quarantine_r2`, chosen by up to 24 seeded whole-unit tries, so a surplus never forces tuning.
+- After the sealed freeze, a sealed-sealed twin becomes an exclusion.
+- A development apply refuses only rows of a frozen split.
+- One flock (`sealed/work/.lock`) guards state-changing commands.
+- The audit:
+  - covers every project directory containing the repo's path, the staging-root prefix and the worktrees;
+  - refuses while staging is live;
+  - exits 7 when the handbook dump is absent;
+  - walks commit and tag objects.
+- Band repair honours `floor_answerable` and exclusions.
+
+**Scanner:**
+- Short questions are matched after JSON-escape decoding.
+- Only `dev/tuning*` and `dev/realistic*` grant development exemptions.
+- A needle maps to every sealed family that shares it.
+- `embed_latency.py` refuses sealed input.
+
+**Launcher:**
+- Durable recovery fsyncs, and journal writes complete before any move.
+- `out/` is allowlisted and validated before the move.
+- `--timeout` (default 3 h) kills the SP's process group.
+
+**Residual:** metered clients do not pass `cache=False`; the guard's global-cache refusal covers it.
+
+**D72/D73 phase-gate round 2 (12 Oct 2026).** Closure checks. Codex closed all 10 of its findings and raised one new MAJOR. The pressure-tester passed (a)–(k), with CI green on b712614, and noted one residual. The code review closed 22 of 24 and found no new MAJOR, with three MINOR leftovers. Fixed:
+- **Cutoff.** Every sealed slot refuses before the claim unless `top_k` equals the prereg's `primary_metric.cutoff` (default 6). Results and baselines record the cutoff, a mismatched baseline is refused, and the report refuses mixed cutoffs. A rank-4 test covers it.
+- **Results path.** The `results_v6.md` and `results.md` guards compare case-insensitively, since the dev disk is case-insensitive APFS.
+- **Claim default.** `acquire_slot_token` defaults to `claim=False`.
+- **Stale staging.** The audit sweeps stale staging before scanning.
+- **Crash leftovers.** `sealed_tool` removes its own `write_atomic` temp leftovers on recovery.

@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src import eval_privacy as _privacy
 from src import eval_sets as _eval_sets
+from src import sealed_run as _sealed_run
 from src.bm25_index import load_bm25_index
 from src.eval_cohort import (
     build_sidecar,
@@ -94,6 +95,7 @@ from src.retriever import (
 # split_sentences moved to src.text_utils (16A-1 item 3); re-exported here so
 # ``from src.evaluator import split_sentences`` keeps working.
 from src.text_utils import split_sentences  # noqa: F401
+from src.tracing_guard import assert_tracing_off, tracing_problems
 
 # Canonical vs. partial report destinations (Phase 10 results-path guard, D38).
 # ``eval/results.md`` is committed and is ONLY written by a fully canonical run
@@ -103,6 +105,22 @@ from src.text_utils import split_sentences  # noqa: F401
 # overwrite the trustworthy committed report.
 DEFAULT_RESULTS_PATH = "eval/results.md"
 PARTIAL_RESULTS_PATH = "eval/results_partial.md"
+# The canonical sealed report (16A-2a, D73) is written by the slot protocol (``src.sealed_run``) and by
+# nothing else: no other run may target it, canonical or not.
+CANONICAL_V6_PATH = "eval/results_v6.md"
+
+
+def _targets_v6_report(path: Optional[str]) -> bool:
+    """True if ``path`` is the canonical sealed report ``eval/results_v6.md`` (by file identity).
+
+    Both the repo-relative spelling and the private-root-derived one (``sealed_run.results_v6_path()``,
+    which the suite's private-root fixture moves) count, so no test and no run can reach either.
+    A case-variant spelling (``eval/RESULTS_V6.md``) counts even when the report does not exist yet, because on a
+    case-insensitive filesystem it would create or overwrite the same file (``_same_report_path``).
+    """
+    if path is None:
+        return False
+    return _same_report_path(path, CANONICAL_V6_PATH) or _same_report_path(path, _sealed_run.results_v6_path())
 
 # The four grounding-gate outcomes, in report order, so the gate-outcome
 # distribution is always zero-filled over the full vocabulary (a missing
@@ -997,6 +1015,19 @@ def _same_path(a: str, b: str) -> bool:
         return os.path.realpath(a) == os.path.realpath(b)
 
 
+def _same_report_path(a: str, b: str) -> bool:
+    """``_same_path``, or the resolved paths are equal ignoring case: the guard for a committed report's name.
+
+    ``_same_path`` sees a case-variant alias only when both files exist (``samefile``); when the report is
+    not written yet (``eval/results_v6.md`` before the first slot) it falls back to a case-sensitive realpath
+    compare, which ``eval/RESULTS_V6.md`` passes even though, on a case-insensitive filesystem (the default
+    APFS), writing it creates the very file the guard protects. Comparing the resolved paths case-insensitively
+    closes that. On a case-sensitive filesystem it refuses a differently-cased sibling too: harmless for
+    names nobody has a reason to use.
+    """
+    return _same_path(a, b) or os.path.realpath(a).casefold() == os.path.realpath(b).casefold()
+
+
 def _resolve_results_path(
     explicit_path: Optional[str],
     is_canonical: bool,
@@ -1012,6 +1043,8 @@ def _resolve_results_path(
       it targets the canonical ``eval/results.md`` on a non-canonical run: the
       committed report must never be written by a non-canonical run, even when
       explicitly targeted (D46 fail-closed, tightened from the old warning).
+      The canonical sealed report ``eval/results_v6.md`` is refused outright:
+      only the sealed slot protocol writes it (16A-2a, D73).
     - With no explicit path, a fully canonical run writes ``eval/results.md``;
       anything less writes the gitignored ``eval/results_partial.md`` (with a
       note), so a partial run can never silently clobber the committed report.
@@ -1043,7 +1076,15 @@ def _resolve_results_path(
                     f"--results path {explicit_path!r} resolves to an input "
                     f"eval-set path; refusing to overwrite the eval set with a report"
                 )
-        if not is_canonical and _same_path(explicit_path, DEFAULT_RESULTS_PATH):
+        if _targets_v6_report(explicit_path):
+            # 16A-2a (D73): the canonical sealed report belongs to the slot protocol alone. A non-slot run
+            # (even one that is otherwise canonical) can never write it, as it can never overwrite results.md
+            # on a non-canonical run.
+            raise ValueError(
+                f"--results path {explicit_path!r} resolves to the canonical sealed report "
+                f"{CANONICAL_V6_PATH}, which only a sealed slot run writes; refusing"
+            )
+        if not is_canonical and _same_report_path(explicit_path, DEFAULT_RESULTS_PATH):
             # D46 fail-closed: an explicit --results at the committed canonical
             # path on a NON-canonical run now RAISES rather than warning — the
             # committed report must never be writable by a non-canonical run.
@@ -1584,7 +1625,7 @@ def run_eval(
     # committed canonical report, even when explicitly targeted — that report is
     # matrix-runner-only. Guard by FILE IDENTITY (_same_path) so a case-variant
     # or symlink alias of eval/results.md is caught too.
-    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH):
+    if results_path is not None and _same_report_path(results_path, DEFAULT_RESULTS_PATH):
         raise ValueError(
             f"run_eval refuses to write the canonical report "
             f"{DEFAULT_RESULTS_PATH!r}: the committed report is written ONLY by "
@@ -1752,6 +1793,8 @@ def run_eval_matrix(
     privacy: str,
     meter: Any = None,
     expansion: str = "live",
+    slot_token: Any = None,
+    preflight_only: bool = False,
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1824,6 +1867,31 @@ def run_eval_matrix(
             row is preflighted before any work, a missing entry or identity
             mismatch fails with zero expansion calls, and a replayed run is
             never canonical. The artifact's own class joins the privacy floor.
+            Under BOTH skip flags (16A-2a, a6): ``"live"`` stays zero-call (no
+            expansion, no generation); ``"build:<path>"`` makes live Haiku
+            rewrite calls only (no generation, no judge unless ``judge`` is
+            set) and needs a meter; a replayed artifact runs retrieval only
+            with the frozen expansions and zero API calls.
+        slot_token: a ``src.sealed_run.SlotToken`` (16A-2a, a5), minted only by
+            the slot gate after a successful claim. It is the ONLY way this
+            runner accepts a sealed set: with it, the one set the token
+            approves (and a declared replay artifact) is read from the token's
+            own rows instead of a loader, every other input still faces the
+            privacy floor (a second sealed input is refused), and the run is a
+            report-v6 slot run: it needs a meter, refuses ``results_path``,
+            prints nothing, and writes ``results.json``, ``rows.json``,
+            ``inputs.json``, the judge dump and (live) the expansion artifact
+            only under ``eval/private/sealed/runs/<run id>/``. It returns
+            ids-free facts, never rows. Rendering, the canonical decision and
+            publication belong to ``src.sealed_run``.
+        preflight_only: with a ``slot_token`` that is NOT yet claimed, run every
+            check the run could refuse on (the numeric options, the token and set
+            bindings, the replay artifact's load and per-row preflight, the metered
+            clients, the absorbed map, each set's cohort and duplicate-id checks, and
+            the embedding model, Chroma index and BM25 sidecar of a default path) and
+            return ``{}`` before the token is begun and before any retrieval, expansion
+            or model call. ``src.sealed_run.preflight_slot`` uses it so that a refusal
+            never spends a slot.
 
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
@@ -1845,6 +1913,15 @@ def run_eval_matrix(
         raise ValueError(f"top_k must be >= 1, got {top_k}")
     if judge_sample is not None and judge_sample < 0:
         raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
+    if preflight_only and slot_token is None:
+        raise ValueError("preflight_only needs a slot token")
+    # 16A-2a (D73): no run but a sealed slot may target the canonical sealed report, whatever the privacy
+    # class: refused here, before any work, not at the write.
+    if _targets_v6_report(results_path):
+        raise ValueError(
+            f"--results targets the canonical sealed report {CANONICAL_V6_PATH}, which only a sealed "
+            f"slot run writes; refusing before any work"
+        )
 
     set_paths = [path for _label, path in set_specs]
     expansion_mode, artifact_path_arg = _parse_expansion_arg(expansion)
@@ -1853,15 +1930,35 @@ def run_eval_matrix(
         floor_paths.append(artifact_path_arg)
     # 16A-1 (D65): the privacy floor is checked before any retrieval, expansion
     # or model call; sealed input raises SealedInputError here.
-    privacy = check_floor(require_class(privacy), _eval_sets.floor(floor_paths))
-    private = privacy != PUBLIC
     run_id: Optional[str] = None
     run_dir_path: Any = None
-    if private:
-        run_id, private_report_path, run_dir_path = _private_destination(results_path)
-        # Every input the run opens (sets, and a replayed artifact) is guarded.
-        _refuse_private_overwrite(private_report_path, run_dir_path, floor_paths)
-        results_path = None  # the private destination replaces it
+    if slot_token is not None:
+        # 16A-2a (a5): a slot token is the only way a sealed input gets past the
+        # floor. It approves exactly its own set (and a declared replay
+        # artifact); every other input still faces the floor, so a second sealed
+        # file is refused here. A slot run is private by construction.
+        _sealed_run.check_token_for_run(
+            slot_token, set_paths=set_paths, expansion_mode=expansion_mode,
+            artifact_path=artifact_path_arg, meter=meter, top_k=top_k,
+        )
+        if results_path is not None:
+            raise ValueError("a slot-gated run publishes only through its slot protocol; --results is refused")
+        other_paths = [p for p in floor_paths if not slot_token.approves(p)]
+        privacy = check_floor(
+            require_class(privacy), _privacy.strictest([_eval_sets.floor(other_paths), _privacy.PRIVATE])
+        )
+        private = True
+        run_id = slot_token.run_id
+        run_dir_path = _privacy.sealed_run_dir(run_id, create=False)
+        private_report_path = None
+    else:
+        privacy = check_floor(require_class(privacy), _eval_sets.floor(floor_paths))
+        private = privacy != PUBLIC
+        if private:
+            run_id, private_report_path, run_dir_path = _private_destination(results_path)
+            # Every input the run opens (sets, and a replayed artifact) is guarded.
+            _refuse_private_overwrite(private_report_path, run_dir_path, floor_paths)
+            results_path = None  # the private destination replaces it
     # Fail fast on the dangerous footgun (report over an eval set) BEFORE any
     # expensive generation, even though _resolve_results_path re-guards at write.
     # Compare by FILE IDENTITY (_same_path) so abs/rel/symlink AND case-variant
@@ -1917,6 +2014,10 @@ def run_eval_matrix(
 
     schemas_upfront = []
     for _label, path in set_specs:
+        if slot_token is not None and slot_token.approves(path):
+            # The token's set was validated by the sealed loader at the gate.
+            schemas_upfront.append(2)
+            continue
         schemas_upfront.append(_detect_schema(path))
         if schemas_upfront[-1] == 1:
             v1_cohort(load_golden_set(path), path=path, privacy=privacy, sha256=_sha256_file(path))
@@ -1930,7 +2031,7 @@ def run_eval_matrix(
     # D46's write-time refusal, which the H0 lock pins byte for byte (an
     # owner-level change, not this phase's; recorded in D68).
     knowably_noncanonical = 2 in schemas_upfront or expansion_mode == "replay" or private
-    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
+    if results_path is not None and _same_report_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
         raise ValueError(
             "--results targets the canonical report, but this run is not canonical and "
             "cannot be (report v6, replayed expansion or private input); refusing before any work"
@@ -1964,7 +2065,21 @@ def run_eval_matrix(
     # > 0). Only the hybrid+rewrite ABLATION ROW is gated on the mode being
     # selected; when the mode is present but expansion is disabled, that row
     # renders as the raw-hybrid fallback.
-    expansion_enabled = not (skip_refusals and skip_completeness)
+    #
+    # 16A-2a (a6): the offline contract is unchanged for ``expansion="live"`` —
+    # both skips and no expansion option stay at zero API calls. An explicit
+    # ``--expansion`` option is the one thing that re-enables expansion under
+    # both skips, in the two forms the data phase needs:
+    #   * ``build:<path>`` runs LIVE expansion (Haiku rewrite calls only — the
+    #     generation pass and the judge stay off, so nothing else is called) and
+    #     freezes the result; the CLI builds a meter for it (D70).
+    #   * a replayed artifact feeds its FROZEN expansions into the retrieval
+    #     rows — retrieval only, zero API calls of any kind (replay is local),
+    #     so it needs no meter.
+    expansion_enabled = (
+        not (skip_refusals and skip_completeness)
+        or expansion_mode in ("build", "replay")
+    )
     # One expansion per unique question text, shared across ALL sets, the
     # hybrid+rewrite ablation, AND the default generation pass (a question is
     # expanded at most once for the whole run). Entries land here ONLY when
@@ -1980,12 +2095,10 @@ def run_eval_matrix(
     if expansion_mode == "replay":
         from src.expansion_artifact import load_artifact
 
-        if not expansion_enabled:
-            raise ValueError("an expansion artifact needs expansion enabled (not both --skip flags)")
-        replay_artifact = load_artifact(artifact_path_arg)
+        replay_artifact = load_artifact(artifact_path_arg, slot_token=slot_token)
         preflight_rows = []
         for _label, path in set_specs:
-            for qtext, rid in _artifact_keys(path):
+            for qtext, rid in _artifact_keys(path, slot_token):
                 preflight_rows.append((rid, qtext))
                 replay_ids.setdefault(qtext, rid)
         replay_artifact.preflight(preflight_rows)
@@ -1999,8 +2112,6 @@ def run_eval_matrix(
                 raise ExpansionArtifactError(
                     "artifact entries for one question differ across sets; refusing to replay"
                 )
-    if expansion_mode == "build" and not expansion_enabled:
-        raise ValueError("build:<path> needs expansion enabled (not both --skip flags)")
     rewrite_replayed = 0
 
     # D70: refuse an unmetered default live path BEFORE any call, then build
@@ -2080,6 +2191,33 @@ def run_eval_matrix(
             bm25_cache.append(load_bm25_index(persist_directory))
         return bm25_cache[0]
 
+    def _probe_backends() -> None:
+        """Preflight: load NOW the backends a default path would otherwise load at its first retrieval.
+
+        Only the default retrieval factory and the default generation path load anything (an injected
+        factory or ``generate_fn`` owns its retrieval). Needs the embedding model to match the index's
+        manifest, the Chroma collection to open and hold chunks, and the BM25 sidecar to load whenever
+        a hybrid, bm25 or rewrite arm (or the default answer pass) would use it: a run on a missing
+        sidecar would degrade silently and could never be canonical, so it must not spend a slot.
+
+        Raises:
+            GateRefused: ``retrieval_backend`` (detail: the exception class name, never its text).
+        """
+        need_vector = need_bm25 = False
+        if using_default_retrieve_factory:
+            need_vector = any(m in ("hybrid", "vector", REWRITE_MODE) for m in modes)
+            need_bm25 = any(m in ("hybrid", "bm25", REWRITE_MODE) for m in modes)
+        if using_default_generate_fn and generation_ran:
+            need_vector = need_bm25 = True
+        try:
+            if need_vector:
+                if not _get_vector().get(limit=1).get("ids"):
+                    raise LookupError("the Chroma collection holds no chunks")
+            if need_bm25 and _get_bm25() is None:
+                raise LookupError("the BM25 sidecar is missing or unreadable")
+        except Exception as exc:  # noqa: BLE001 - one fixed gate; the class name is the only detail printed
+            raise _sealed_run.backend_refused(exc) from None
+
     if retrieve_fn_factory is None:
 
         def retrieve_fn_factory(mode: str) -> Callable[..., List[Dict[str, Any]]]:
@@ -2149,10 +2287,10 @@ def run_eval_matrix(
     # families by src.eval_v6 (never canonical, never eval/results.md).
     from src.eval_schema import detect_schema
 
-    schemas = [detect_schema(p) for p in set_paths]
+    schemas = [
+        2 if (slot_token is not None and slot_token.approves(p)) else detect_schema(p) for p in set_paths
+    ]
     if any(v == 2 for v in schemas):
-        if judge:
-            raise ValueError("the judge is not part of report v6 in 16A-1; run v6 without --judge")
         return _run_matrix_v6(
             set_specs=set_specs, schemas=schemas, modes=modes, top_k=top_k,
             skip_refusals=skip_refusals, skip_completeness=skip_completeness,
@@ -2167,6 +2305,10 @@ def run_eval_matrix(
             private_report_path=private_report_path if private else None,
             results_path=results_path, provenance_fn=provenance_fn,
             persist_directory=persist_directory, meter=meter,
+            judge=judge, judge_fn=judge_fn, judge_sample=judge_sample, judge_dump_path=judge_dump_path,
+            slot_token=slot_token, preflight_only=preflight_only, probe_backends=_probe_backends,
+            bm25_in_play=using_default_retrieve_factory or using_default_generate_fn,
+            bm25_probe=lambda: bool(bm25_cache) and bm25_cache[0] is not None,
         )
 
     sets: List[Dict[str, Any]] = []
@@ -2607,6 +2749,7 @@ def _run_expansion_identity(
     cache: Dict[str, Expansion],
     replay_artifact: Any,
     set_paths: Sequence[str],
+    slot_token: Any = None,
 ) -> Dict[str, Any]:
     """The run's expansion identity for the sidecar and report (items 5-6; ONE source).
 
@@ -2632,13 +2775,13 @@ def _run_expansion_identity(
         }
     entries: Dict[str, Expansion] = {}
     for path in set_paths:
-        for question, key in _artifact_keys(path):
+        for question, key in _artifact_keys(path, slot_token):
             if question in cache:
                 entries[key] = cache[question]
     return {"kind": "live", **rewrite_identity(), "digest": live_digest(entries)}
 
 
-def _artifact_keys(path: str) -> List[Tuple[str, str]]:
+def _artifact_keys(path: str, slot_token: Any = None) -> List[Tuple[str, str]]:
     """``(question, artifact row key)`` for every row of a v1 or v2 set.
 
     The key never depends on the run's privacy class, so an artifact built on
@@ -2647,11 +2790,17 @@ def _artifact_keys(path: str) -> List[Tuple[str, str]]:
     the unsalted ``q:`` + sha256(question)[:12] for schema 1 (the artifact
     already records each question's full sha256, so this adds no exposure, and
     artifacts of private sets live under the private root).
+
+    With a ``slot_token`` (16A-2a), the token's own set is keyed from the
+    token's rows (the sealed loader already read them); no other loader may
+    open a sealed file.
     """
     from src.eval_privacy import public_v1_id
     from src.eval_schema import detect_schema, load_any
 
     prefix = _sha256_file(path)[:16]
+    if slot_token is not None and slot_token.approves(path):
+        return [(r["question"], f"{prefix}/{r['id']}") for r in slot_token.rows]
     if detect_schema(path) == 2:
         return [(r["question"], f"{prefix}/{r['id']}") for r in load_any(path)]
     return [(e["question"], f"{prefix}/{public_v1_id(e['question'])}") for e in load_golden_set(path)]
@@ -2671,17 +2820,51 @@ def _load_absorbed_map() -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]
     return dict(doc.get("map") or {}), _sha256_file(path)
 
 
+def _v6_set_head(token: Any, path: str, schema: int, privacy: str) -> Tuple[bool, List[Dict[str, Any]], str, Any]:
+    """One set of a v6 run, read and checked: ``(owned by the token, rows, sha256, cohort block)``.
+
+    The token's own set comes from the token's rows (the sealed loader read it at the gate), every other
+    set through ``load_any``. Raises ``ValueError`` on a duplicate row id (C4) and whatever
+    ``cohort_block`` refuses. Shared by the run and by the preflight, so they cannot disagree.
+    """
+    from src.eval_cohort import cohort_block
+    from src.eval_schema import load_any
+
+    owned = token is not None and token.approves(path)
+    rows = list(token.rows) if owned else load_any(path)
+    sha = token.set_sha256 if owned else _sha256_file(path)
+    cohort = cohort_block(
+        path=path, privacy=_privacy.SEALED if token is not None else privacy, schema=schema, sha256=sha,
+        rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
+    )
+    if cohort["rows"] != len({r["id"] for r in rows}):
+        raise ValueError("duplicate row id in set; C4 refuses the set")
+    return owned, rows, sha, cohort
+
+
 def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     """The report-v6 branch of ``run_eval_matrix`` (see ``src.eval_v6``).
 
     Shares the runner's floor, destinations, expansion and meter set-up; scores
     every set in families; writes the report and rows sidecar (private: under
-    the run directory, with ``inputs.json``). Never canonical.
+    the run directory, with ``inputs.json``). Never canonical here.
+
+    The judge (16A-2a, a5) runs on the ``answer`` and ``partial`` rows that
+    produced a complete, non-refused answer, per set; the report gains a judge
+    section and the per-claim dump goes to ``judge_review.jsonl`` (the run
+    directory on a private run, ``judge_dump_path`` on a public one), never into
+    the report.
+
+    With a ``slot_token`` this is a sealed slot run: the token's set is read from
+    the token's rows, the working result is turned into the stored results
+    document (``src.sealed_run.build_results_doc``) and written, with the
+    sidecar, ``inputs.json``, the judge dump and the frozen expansion artifact,
+    under ``eval/private/sealed/runs/<run id>/``. Nothing is rendered or
+    printed, and only ids-free facts are returned.
     """
     from src import eval_v6
-    from src.eval_cohort import cohort_block
-    from src.eval_schema import load_any
 
+    token = kw.get("slot_token")
     modes = kw["modes"]
     top_k = kw["top_k"]
     privacy = kw["privacy"]
@@ -2689,19 +2872,27 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     ks = [k for k in HIT_KS if k <= top_k]
     k = max(ks) if ks else top_k
     absorbed, absorbed_sha = _load_absorbed_map()
+    if kw.get("preflight_only"):
+        # Everything below that could refuse without a call, and nothing that calls: each set's rows,
+        # cohort and duplicate-id check, then the backends a default path loads. Nothing is begun.
+        for (_label, path), schema in zip(kw["set_specs"], kw["schemas"]):
+            _v6_set_head(token, path, schema, privacy)
+        kw["probe_backends"]()
+        return {}
+    if token is not None:
+        token.begin()  # one claim, one run
+        # "Just before the first call": nothing below this line has called a
+        # model, an expansion or a retrieval; a late scrub is caught here.
+        assert_tracing_off()
 
     sets: List[Dict[str, Any]] = []
     sidecar_rows: List[Dict[str, Any]] = []
+    judge_records: List[Dict[str, Any]] = []
     total_errors = 0
+    total_incomplete = 0
+    total_unknown = 0
     for (label, path), schema in zip(kw["set_specs"], kw["schemas"]):
-        rows = load_any(path)
-        sha = _sha256_file(path)
-        cohort = cohort_block(
-            path=path, privacy=privacy, schema=schema, sha256=sha,
-            rows=((r["id"], r["family_id"], r["evidence"], r["scope"]) for r in rows),
-        )
-        if cohort["rows"] != len({r["id"] for r in rows}):
-            raise ValueError("duplicate row id in set; C4 refuses the set")
+        owned, rows, sha, cohort = _v6_set_head(token, path, schema, privacy)
         for r in rows:
             kw["expand"](r["question"])
         retrieval: Dict[str, Dict[str, Any]] = {}
@@ -2716,6 +2907,8 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
                     "completion_rank": sc["strict_rank"],
                 })
         answers_by_id = None
+        judge_summary_block = None
+        judge_by_id: Dict[str, Dict[str, Any]] = {}
         if kw["generation_ran"]:
             pseudo = [eval_v6.pseudo_v1(r) for r in rows]
             cache = generate_answers(
@@ -2723,7 +2916,15 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
                 **({"retries": 0} if kw["metered_generation"] else {}),
             )
             total_errors += sum(1 for a in cache.values() if a["result"] is None)
+            statuses = [_normalise_answer(a["result"])[1] for a in cache.values()]
+            total_incomplete += sum(1 for st in statuses if st in INCOMPLETE_STATUSES)
+            total_unknown += sum(1 for st in statuses if st == STATUS_UNKNOWN)
             answers_by_id = eval_v6.score_answers_v6(rows, cache)
+            if kw["judge"]:
+                judge_summary_block, judge_by_id = _judge_v6(
+                    label, rows, cache, judge_fn=kw["judge_fn"], judge_sample=kw["judge_sample"],
+                    records_out=judge_records,
+                )
         fams = {r["family_id"] for r in rows}
         # Same predicate as eval_v6.family_rates: a family is retrieval-eligible
         # iff none of its rows is refuse (the schema enforces one scope per family).
@@ -2736,14 +2937,32 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
             "retrieval": retrieval, "answers": answers_by_id,
             "confusion": None if answers_by_id is None else eval_v6.scope_confusion(rows, answers_by_id),
             "family_rates": eval_v6.family_rates(rows, retrieval, answers_by_id, k=k),
+            "judge": judge_summary_block, "judge_by_id": judge_by_id, "owned": owned,
         })
 
     cache_exp = kw["expansion_cache"]
     replayed = kw["replay_count"]()
+    rewrite_attempts = len(cache_exp)
+    rewrite_fallbacks = sum(1 for exp in cache_exp.values() if exp.status != STATUS_LIVE or len(exp.rewrites) == 0)
     expansion_id = _run_expansion_identity(
-        kw["expansion_enabled"], cache_exp, kw["replay_artifact"], [s["path"] for s in sets]
+        kw["expansion_enabled"], cache_exp, kw["replay_artifact"], [s["path"] for s in sets], token
     )
     meter = kw["meter"]
+    if token is not None:
+        provenance_fn = kw["provenance_fn"] or (
+            lambda: collect_provenance(persist_directory=kw["persist_directory"])
+        )
+        return _write_slot_run(
+            kw, token, sets, sidecar_rows, judge_records,
+            primary_mode=REWRITE_MODE if REWRITE_MODE in modes else ("hybrid" if "hybrid" in modes else modes[0]),
+            k=k, absorbed_sha=absorbed_sha, expansion_id=expansion_id, provenance=provenance_fn(),
+            replayed=replayed, cache_exp=cache_exp,
+            totals={
+                "generation_errors": total_errors, "generation_incomplete": total_incomplete,
+                "generation_unknown": total_unknown, "rewrite_attempts": rewrite_attempts,
+                "rewrite_fallbacks": rewrite_fallbacks,
+            },
+        )
     if private:
         resolved_path = kw["private_report_path"]
     else:
@@ -2757,7 +2976,9 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         "report_version": 6, "sets": sets, "modes": modes, "top_k": top_k, "k": k,
         "privacy": privacy, "run_id": kw["run_id"], "is_canonical": False,
         "results_path": resolved_path, "provenance": provenance_fn(),
-        "generation_errors": total_errors, "expansion_identity": expansion_id,
+        "generation_errors": total_errors, "generation_incomplete": total_incomplete,
+        "generation_unknown": total_unknown, "rewrite_attempts": rewrite_attempts,
+        "rewrite_fallbacks": rewrite_fallbacks, "expansion_identity": expansion_id,
         "expansion_mode": kw["expansion_mode"],
         "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
         "absorbed_map_sha256": absorbed_sha,
@@ -2782,13 +3003,166 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         )
         write_private(Path(resolved_path), report)
         _write_sidecar(resolved_path, sidecar, private=True)
+        # The judge dump (claim text) stays inside the run directory.
+        if kw["judge"] and judge_records:
+            write_private(Path(kw["run_dir_path"]) / "judge_review.jsonl", _dump_lines(judge_records))
         print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
               f"({len(sets)} set(s); not canonical)")
     else:
         print(report)
         _atomic_write(resolved_path, report)
         _write_sidecar(resolved_path, sidecar, private=False)
+        # The gitignored judge review dump (claim text lives ONLY here).
+        if kw["judge"] and kw["judge_dump_path"] and judge_records:
+            _atomic_write(kw["judge_dump_path"], _dump_lines(judge_records))
     return result
+
+
+def _dump_lines(records: Sequence[Mapping[str, Any]]) -> str:
+    """JSONL text for the judge dump (one record per judged answer)."""
+    return "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n"
+
+
+def _judge_v6(
+    label: str,
+    rows: Sequence[Mapping[str, Any]],
+    cache: Mapping[str, Mapping[str, Any]],
+    *,
+    judge_fn: Any,
+    judge_sample: Optional[int],
+    records_out: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    """Judge one set's ``answer`` and ``partial`` rows (report v6, 16A-2a a5).
+
+    Which answers are judged is v5's rule: the row is retrieval-eligible, its
+    generation produced a result, the status is complete, and the answer is not
+    a refusal. Returns ``(summary block, {row id: judgment})``; ``records_out``
+    gains one dump record per judged answer, keyed by row id (the dump never
+    holds the question text; claim text is the point of the dump and lives only
+    in the run directory or the gitignored review file).
+    """
+    from src.judge import judge_answers  # lazy: only imported when judging
+
+    items: List[Dict[str, str]] = []
+    for row in rows:
+        if row["scope"] == "refuse":
+            continue
+        result = (cache.get(row["question"]) or {}).get("result")
+        if result is None:
+            continue  # generation error: nothing to judge
+        if _normalise_answer(result)[1] in INCOMPLETE_STATUSES:
+            continue  # cut-off or declined draft is not a judgeable answer
+        if is_refusal(result["answer"]):
+            continue  # the judge is conditional on a non-refused answer
+        context = format_context(
+            [{"document": d, "score": 0.0, "metadata": d.metadata} for d in result.get("source_documents", [])]
+        )
+        items.append({"question": row["question"], "answer": result["answer"], "context": context})
+    judged = judge_answers(items, llm_fn=judge_fn, sample_n=judge_sample)
+    by_question = {row["question"]: row["id"] for row in rows}
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for record in judged.get("per_item", []):
+        rid = by_question[record["question"]]
+        by_id[rid] = record
+        records_out.append({"set": label, "id": rid, **{k: v for k, v in record.items() if k != "question"}})
+    from src import eval_v6
+
+    return eval_v6.judge_summary(list(by_id.values())), by_id
+
+
+def _write_slot_run(
+    kw: Mapping[str, Any],
+    token: Any,
+    sets: List[Dict[str, Any]],
+    sidecar_rows: List[Dict[str, Any]],
+    judge_records: List[Dict[str, Any]],
+    *,
+    primary_mode: str,
+    k: int,
+    absorbed_sha: Optional[str],
+    expansion_id: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+    replayed: int,
+    cache_exp: Mapping[str, Expansion],
+    totals: Mapping[str, int],
+) -> Dict[str, Any]:
+    """Tail of a sealed slot run: facts, the stored results document and the run directory (a4 step 3 files).
+
+    Everything lands under ``eval/private/sealed/runs/<run id>/`` and nothing
+    is printed. The canonical decision is NOT made here: it is a pure function
+    of the stored facts (``src.sealed_run.canonical_guards``), taken after the
+    ledger has stored the directory. Returns the facts and the run id only.
+    """
+    from pathlib import Path
+
+    from src.eval_cohort import dump_sidecar
+
+    modes = kw["modes"]
+    meter = kw["meter"]
+    heldout = next((s for s in sets if HELDOUT_LABEL_TOKEN in s["label"]), None)
+    realistic = next((s for s in sets if REALISTIC_LABEL_TOKEN in s["label"]), None)
+    paths = [p for _l, p in kw["set_specs"]]
+    judge_clean = bool(kw["judge"]) and all(
+        s["judge"] is not None and s["judge"]["attempted"] > 0
+        and s["judge"]["api_errors"] == 0 and s["judge"]["parse_errors"] == 0
+        for s in sets
+    )
+    heldout_owned = heldout is not None and bool(heldout["owned"])
+    facts: Dict[str, Any] = {
+        "slot": token.slot,
+        "heldout_is_frozen_set": heldout_owned,
+        "heldout_answerable": heldout_owned and any(
+            r["scope"] != "refuse" and token.groups[r["family_id"]] not in token.excluded for r in heldout["rows"]
+        ),
+        "realistic_answerable": realistic is not None and realistic["counts"]["retrieval_families"] > 0,
+        "all_modes": set(modes) == set(EVAL_MODES),
+        "distinct_sets": not any(
+            _same_path(paths[i], paths[j]) for i in range(len(paths)) for j in range(i + 1, len(paths))
+        ),
+        "refusals_scored": not kw["skip_refusals"],
+        "completeness_scored": not kw["skip_completeness"],
+        "top_k": kw["top_k"],
+        **totals,
+        "bm25_default_path_in_play": bool(kw["bm25_in_play"]),
+        "bm25_loaded": bool(kw["bm25_probe"]()),
+        "judge": bool(kw["judge"]),
+        "judge_clean": judge_clean,
+        "expansion_mode": token.expansion_mode,
+        # Re-verified now, after the run: the sealed file, twins record and exclusion
+        # list must still be the frozen ones, and tracing must still be off.
+        "bound_records": token.records_still_bound(),
+        "tracing_off": not tracing_problems(),
+    }
+    working = {
+        "sets": sets, "modes": modes, "top_k": kw["top_k"], "k": k, "primary_mode": primary_mode,
+        "answers_ran": kw["generation_ran"], "provenance": provenance,
+        "expansion_mode": token.expansion_mode, "expansion_identity": expansion_id,
+        "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
+        "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
+    }
+    doc = _sealed_run.build_results_doc(token, working, facts)
+    run_dir = Path(_privacy.sealed_run_dir(token.run_id, create=True))
+    built = None
+    if token.expansion_mode in ("live", "candidate") and kw["expansion_enabled"]:
+        from src.expansion_artifact import build_artifact, save_artifact
+
+        artifact = build_artifact(
+            [(key, question) for s in sets for question, key in _artifact_keys(s["path"], token)],
+            lambda q: cache_exp[q],
+            [{"path": s["path"], "sha256": s["sha256"], "kind": "questions"} for s in sets],
+        )
+        art_path = run_dir / "expansion_artifact.json"
+        built = {"path": str(art_path), "sha256": save_artifact(art_path, artifact, exclusive=True)}
+    write_inputs_json(run_dir, _run_inputs(sets, kw["replay_artifact"], built))
+    sidecar = build_sidecar(
+        privacy=_privacy.SEALED, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
+        expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
+    )
+    write_private(run_dir / "rows.json", dump_sidecar(sidecar))
+    if kw["judge"] and judge_records:
+        write_private(run_dir / "judge_review.jsonl", _dump_lines(judge_records))
+    _sealed_run.write_results_doc(run_dir, doc)
+    return {"report_version": 6, "slot": token.slot, "run_id": token.run_id, "facts": facts}
 
 
 def _parse_expansion_arg(expansion: str) -> Tuple[str, Optional[str]]:

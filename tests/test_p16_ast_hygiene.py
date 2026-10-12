@@ -7,6 +7,9 @@ runner or formatter is keyword-only with no default.
 (n): ``eval/private/`` is ignored, refused by the never-commit check and
 untracked; ``src.render`` no longer imports ``src.evaluator``; ``w_sweep``
 does not chdir at import.
+16A-2a (a1): no function takes a parameter whose name contains ``sealed``,
+except in ``src/eval_sealed_read.py`` and the four scripts that handle sealed
+rows (D65 reconciled in D72).
 """
 
 import ast
@@ -22,6 +25,8 @@ BANNED_PARAM_PARTS = ("registry", "classif", "privacy_class", "set_class", "floo
 ENTRY_FUNCS = {
     "src/evaluator.py": ("run_eval", "run_eval_matrix", "_format_report", "_format_matrix_report"),
 }
+SEALED_SRC_ALLOWED = ("src/eval_sealed_read.py",)
+SEALED_SCRIPTS_ALLOWED = ("validate_eval_set", "scan_leaks", "sealed_tool", "sp_launch")
 
 
 def _functions(tree):
@@ -44,6 +49,92 @@ def test_no_registry_or_classifier_parameters(path):
         for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs]:
             if any(part in arg.arg for part in BANNED_PARAM_PARTS):
                 pytest.fail(f"{path.name}:{fn.name}: parameter {arg.arg!r} sets a registry/class")
+
+
+def _sealed_param_violations(path, root):
+    """``(function, parameter)`` pairs breaking the sealed-parameter rule in one file.
+
+    The rule: outside ``src/eval_sealed_read.py`` (in ``src/``) and outside
+    ``scripts/{validate_eval_set,scan_leaks,sealed_tool,sp_launch}.py`` (in
+    ``scripts/``), no function or lambda has a parameter, of any kind, whose
+    name contains ``sealed`` in any casing. A file outside both directories is
+    held to the strict ``src/`` rule.
+    """
+    rel = path.resolve().relative_to(root.resolve())
+    if rel.as_posix() in SEALED_SRC_ALLOWED:
+        return []
+    if rel.parts[0] == "scripts" and rel.stem in SEALED_SCRIPTS_ALLOWED:
+        return []
+    bad = []
+    for fn in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        a = fn.args
+        params = [*a.posonlyargs, *a.args, *a.kwonlyargs, *filter(None, [a.vararg, a.kwarg])]
+        bad += [(getattr(fn, "name", "<lambda>"), p.arg) for p in params if "sealed" in p.arg.lower()]
+    return bad
+
+
+@pytest.mark.parametrize("path", CODE, ids=lambda p: str(p.relative_to(ROOT)))
+def test_no_sealed_parameters_outside_the_sealed_modules(path):
+    bad = _sealed_param_violations(path, ROOT)
+    assert not bad, f"{path.relative_to(ROOT)}: parameter(s) containing 'sealed': {bad}"
+
+
+def test_sealed_parameter_rule_has_its_allowed_files():
+    """The allowlist names real files (the two not yet written are listed by D72)."""
+    assert (ROOT / "src" / "eval_sealed_read.py").is_file()
+    for name in ("validate_eval_set", "scan_leaks"):
+        assert (ROOT / "scripts" / f"{name}.py").is_file()
+
+
+@pytest.mark.parametrize(
+    "rel,source",
+    [
+        ("src/other.py", "def f(sealed): pass\n"),
+        ("src/other.py", "def f(x, *, allow_sealed=False): pass\n"),
+        ("src/other.py", "def f(a, /, SealedInput): pass\n"),
+        ("src/other.py", "def f(*sealed_args): pass\n"),
+        ("src/other.py", "def f(**sealed_kw): pass\n"),
+        ("src/other.py", "class C:\n    async def m(self, sealed): pass\n"),
+        ("src/other.py", "g = lambda sealed: sealed\n"),
+        ("scripts/other_tool.py", "def f(sealed): pass\n"),
+        ("src/sealed_tool.py", "def f(sealed): pass\n"),  # only scripts/ has the script allowlist
+        ("scripts/eval_sealed_read.py", "def f(sealed): pass\n"),  # only src/ has the src allowlist
+    ],
+)
+def test_sealed_parameter_rule_fails_on_a_planted_violation(tmp_path, rel, source):
+    planted = tmp_path / rel
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(source, encoding="utf-8")
+    assert _sealed_param_violations(planted, tmp_path), source
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "src/eval_sealed_read.py",
+        "scripts/validate_eval_set.py",
+        "scripts/scan_leaks.py",
+        "scripts/sealed_tool.py",
+        "scripts/sp_launch.py",
+    ],
+)
+def test_sealed_parameter_rule_allows_the_named_files(tmp_path, rel):
+    planted = tmp_path / rel
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text("def f(sealed, *, allow_sealed=False): pass\n", encoding="utf-8")
+    assert _sealed_param_violations(planted, tmp_path) == []
+
+
+def test_sealed_parameter_rule_ignores_names_and_attributes(tmp_path):
+    """Only parameters count: a function, attribute or local named ``sealed`` is fine."""
+    planted = tmp_path / "src" / "ok.py"
+    planted.parent.mkdir(parents=True)
+    planted.write_text(
+        "def is_sealed(path):\n    sealed = path.sealed\n    return sealed\n", encoding="utf-8"
+    )
+    assert _sealed_param_violations(planted, tmp_path) == []
 
 
 @pytest.mark.parametrize("rel,names", sorted(ENTRY_FUNCS.items()))

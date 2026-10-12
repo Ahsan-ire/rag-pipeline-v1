@@ -10,6 +10,10 @@ Run it once per arm, with the arm's model in the environment::
 
 It prints a paste-ready Markdown row for the brief's arm table.
 
+Sealed input is refused (``classify(path) == "sealed"``: under ``eval/private/sealed/``
+or carrying a sealed marker), before the file is read: exit 4, as every eval entry
+point does. A sealed question must never reach an embedder or a printed row.
+
 The timing core (:func:`measure`) is a pure function over an injected
 ``embed_fn``, so the unit tests exercise it with a fake embedder and a fake
 clock and never load a model.
@@ -26,7 +30,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from src import embedder  # noqa: E402
+from src import eval_sets  # noqa: E402
+from src.eval_privacy import SEALED, SealedInputError  # noqa: E402
 
+EXIT_SEALED = 4
 DEFAULT_QUERIES = os.path.join("eval", "realistic_set.jsonl")
 DEFAULT_N = 20
 DEFAULT_WARMUP = 3
@@ -101,7 +108,13 @@ def load_queries(path: str, n: int = DEFAULT_N) -> List[str]:
 
     Returns:
         The first ``min(n, len(rows))`` questions, in file order.
+
+    Raises:
+        SealedInputError: if ``path`` classifies sealed (checked before the file
+            is opened).
     """
+    if eval_sets.classify(path) == SEALED:
+        raise SealedInputError("sealed eval input is refused (exit 4)")
     with open(path, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     questions = [r["question"] for r in rows]
@@ -109,7 +122,12 @@ def load_queries(path: str, n: int = DEFAULT_N) -> List[str]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point: load the model, time it, print the arm-table row."""
+    """CLI entry point: load the model, time it, print the arm-table row.
+
+    Returns:
+        0 on success; 4 (:data:`EXIT_SEALED`) when ``--queries`` is sealed input,
+        before the file is read or the model loaded.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Measure cold model-load time and per-query embed latency for the "
@@ -136,7 +154,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
-    queries = load_queries(args.queries, args.n)
+    try:
+        queries = load_queries(args.queries, args.n)
+    except SealedInputError:
+        print("embed_latency: sealed eval input is refused (exit 4)", file=sys.stderr)
+        return EXIT_SEALED
 
     start = perf_counter()
     embeddings = embedder.get_embedding_function()

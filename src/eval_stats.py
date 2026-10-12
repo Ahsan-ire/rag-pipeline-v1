@@ -23,11 +23,18 @@ compared to ``alpha`` as exact ``Fraction`` values, so a rejection decision neve
 depends on float rounding. Power sums are floats (``math.comb`` times powers),
 accurate to well beyond the 7 decimals the spec quotes. The MDE grid iterates
 integer hundredths, so grid points are exactly ``k / 100``.
+
+The exact cluster sign-flip test (``cluster_signflip_p``) enumerates its null
+distribution with integer counts (a dynamic programme over subset sums, no
+sampling) and compares to ``alpha`` as an exact ``Fraction``. Its power
+(``cluster_signflip_power``) is a seeded Monte Carlo: it uses a private
+``random.Random(seed)``, never the global generator, so a seed fixes the result.
 """
 
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
@@ -39,6 +46,7 @@ WILSON_Z = 1.96
 
 CollapseRule = Literal["all", "majority"]
 Sided = Literal["two", "directional"]
+SignflipModel = Literal["independent", "correlated"]
 
 __all__ = [
     "UNAVAILABLE",
@@ -50,10 +58,12 @@ __all__ = [
     "mcnemar_exact",
     "durkalski_chi2",
     "chi2_1df_sf",
+    "cluster_signflip_p",
     "wilson_interval",
     "conditional_power",
     "power",
     "mde",
+    "cluster_signflip_power",
     "holm",
     "flip_frequency",
     "family_flip_frequencies",
@@ -71,6 +81,12 @@ def _check_count(name: str, value: int) -> None:
         raise ValueError(f"{name} must be an int, got {value!r}")
     if value < 0:
         raise ValueError(f"{name} must be >= 0, got {value}")
+
+
+def _check_int(name: str, value: int) -> None:
+    """Raise ValueError unless ``value`` is an int (bool refused); sign is free."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an int, got {value!r}")
 
 
 def _check_alpha(alpha: float) -> None:
@@ -270,6 +286,69 @@ def durkalski_chi2(
 
 
 # --------------------------------------------------------------------------- #
+# Exact cluster sign-flip test
+# --------------------------------------------------------------------------- #
+
+
+@lru_cache(maxsize=16384)
+def _signflip_p_fraction(magnitudes: tuple[int, ...], observed: int) -> Fraction:
+    """Exact sign-flip p-value as a Fraction (internal, cached).
+
+    ``magnitudes`` are the positive |d_g|, sorted (the sort makes the cache key
+    order-free); ``observed`` is |sum d_g|. Counts the sign vectors s in
+    {-1, +1}^n with |sum s_g * |d_g|| >= observed, over all 2^n of them.
+
+    The counting is a subset-sum dynamic programme: ``ways[s]`` is the number
+    of subsets of the magnitudes that add up to s. A subset is "the groups
+    given a + sign", so its signed sum is s - (total - s) = 2s - total.
+    """
+    total = sum(magnitudes)
+    ways = [0] * (total + 1)
+    ways[0] = 1
+    reach = 0  # largest subset sum seen so far
+    for a in magnitudes:
+        # Descending s so each magnitude is used at most once (0/1 knapsack).
+        for s in range(reach, -1, -1):
+            if ways[s]:
+                ways[s + a] += ways[s]
+        reach += a
+    hits = sum(w for s, w in enumerate(ways) if abs(2 * s - total) >= observed)
+    return min(Fraction(1), Fraction(hits, 2 ** len(magnitudes)))
+
+
+def cluster_signflip_p(d: Sequence[int]) -> float:
+    """Exact two-sided cluster sign-flip test on per-group net discordance.
+
+    ``d[g]`` is group g's net discordance: the families the candidate gains
+    minus the families it loses. Under the paired-randomisation null the two
+    arms are exchangeable within each group, so each d_g is symmetric about 0
+    and independent across groups: randomly flipping the sign of every |d_g|
+    leaves the distribution unchanged. The p-value is
+
+        P(|sum s_g * |d_g|| >= |sum d_g|),  s_g = +1 or -1, fair and independent,
+
+    enumerated exactly (no sampling), so the size is at most alpha exactly. It
+    is two-sided: the sign of ``sum(d)`` gives the direction. Zero entries
+    contribute nothing (a group with one gain and one loss has d_g = 0); an
+    empty or all-zero ``d`` gives 1.0.
+
+    With every |d_g| <= 1 (singleton groups) this is ``mcnemar_exact(b, c)``
+    for b = #(+1) and c = #(-1), min(1, .) convention included: b = 7, c = 1
+    -> 0.0703125.
+
+    Args:
+        d: one int per group (negative allowed: the baseline won more families).
+
+    Raises:
+        ValueError: a non-int entry (bool refused).
+    """
+    for x in d:
+        _check_int("d entry", x)
+    magnitudes = tuple(sorted(abs(x) for x in d if x != 0))
+    return float(_signflip_p_fraction(magnitudes, abs(sum(d))))
+
+
+# --------------------------------------------------------------------------- #
 # Wilson interval
 # --------------------------------------------------------------------------- #
 
@@ -423,6 +502,100 @@ def mde(
             return k / 100
         k += 1
     return None
+
+
+def cluster_signflip_power(
+    group_sizes: Sequence[int],
+    discordance: float,
+    effect: float,
+    alpha: float,
+    draws: int,
+    seed: int,
+    model: SignflipModel,
+) -> float:
+    """Monte Carlo power of ``cluster_signflip_p`` on the family scale.
+
+    Each simulated trial draws every family's outcome: +1 (candidate gains)
+    with probability (discordance + effect) / 2, -1 (candidate loses) with
+    probability (discordance - effect) / 2, else 0 -- i.e. discordant with
+    probability ``discordance``, and a win given discordance with probability
+    g = (discordance + effect) / (2 * discordance), as in ``power``. Group
+    g's d_g is the sum of its families' outcomes. A trial rejects when the
+    two-sided p <= alpha AND sum(d) > 0 (rejections in the candidate's favour,
+    the convention of ``power(..., sided="directional")``); the p <= alpha
+    comparison is exact (Fraction). Power = rejections / ``draws``.
+
+    ``model`` sets the within-group dependence:
+
+    * ``"independent"``: every family is drawn on its own (optimistic).
+    * ``"correlated"``: one draw per group is shared by all its families, so
+      d_g = size * outcome (full within-group correlation; pessimistic).
+
+    With singleton groups the two models coincide, and ``"independent"``
+    estimates ``power(len(group_sizes), discordance, effect, alpha,
+    "directional")``. Seed-deterministic: a private ``random.Random(seed)`` is
+    used, so the same arguments always give the same value. The standard error
+    is about sqrt(power * (1 - power) / draws).
+
+    Args:
+        group_sizes: families per group, each >= 1. Empty gives 0.0.
+        discordance: P(a family is discordant), in [0, 1].
+        effect: p10 - p01 on the family scale; |effect| > discordance is
+            impossible and refused.
+        alpha: two-sided significance level in (0, 1).
+        draws: number of simulated trials, >= 1.
+        seed: integer seed (bool refused).
+        model: ``"independent"`` or ``"correlated"``.
+
+    Returns:
+        Estimated power in [0, 1]. discordance = 0 gives 0.0.
+
+    Raises:
+        ValueError: on any invalid argument.
+    """
+    for m in group_sizes:
+        _check_count("group size", m)
+        if m < 1:
+            raise ValueError(f"group size must be >= 1, got {m}")
+    _check_probability("discordance", discordance)
+    _check_alpha(alpha)
+    _check_count("draws", draws)
+    if draws < 1:
+        raise ValueError(f"draws must be >= 1, got {draws}")
+    _check_int("seed", seed)
+    if model not in ("independent", "correlated"):
+        raise ValueError(f"model must be 'independent' or 'correlated', got {model!r}")
+    if isinstance(effect, bool) or abs(effect) > discordance:
+        raise ValueError(
+            f"|effect| ({effect!r}) cannot exceed discordance ({discordance!r})"
+        )
+    if discordance == 0 or len(group_sizes) == 0:
+        return 0.0
+    gain = (discordance + effect) / (2.0 * discordance)
+    gain = min(1.0, max(0.0, gain))
+    gain_cut = discordance * gain  # u < gain_cut: +1; u < discordance: -1; else 0
+
+    def outcome(u: float) -> int:
+        """One family's outcome from a uniform draw ``u`` in [0, 1)."""
+        if u < gain_cut:
+            return 1
+        return -1 if u < discordance else 0
+
+    a = Fraction(alpha)
+    rng = random.Random(seed)
+    rejections = 0
+    for _ in range(draws):
+        if model == "correlated":
+            d = [m * outcome(rng.random()) for m in group_sizes]
+        else:
+            d = [sum(outcome(rng.random()) for _ in range(m)) for m in group_sizes]
+        total = sum(d)
+        if total <= 0:
+            continue
+        magnitudes = tuple(sorted(abs(x) for x in d if x != 0))
+        if _signflip_p_fraction(magnitudes, total) <= a:
+            rejections += 1
+    return rejections / draws
 
 
 # --------------------------------------------------------------------------- #

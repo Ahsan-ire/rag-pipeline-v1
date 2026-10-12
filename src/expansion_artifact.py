@@ -499,17 +499,26 @@ class ExpansionArtifact:
         )
 
 
-def load_artifact(path: Any) -> ExpansionArtifact:
+def load_artifact(path: Any, *, slot_token: Any = None) -> ExpansionArtifact:
     """Load an artifact: sealed refusal first, then schema validation.
 
+    A sealed artifact (one a slot run froze under ``eval/private/sealed/``) loads
+    only for a genuine ``slot_token`` (16A-2a, a5) that approves exactly this
+    path: the token's gate has already matched the file's sha256 to the prereg's
+    declared artifact.
+
     Raises:
-        SealedInputError: if ``path`` classifies sealed (checked before reading).
+        SealedInputError: if ``path`` classifies sealed and no token approves it
+            (checked before reading).
         ExpansionArtifactError: if the file is missing, not JSON, or malformed.
     """
     p = Path(path)
     privacy = classify(p)
     if privacy == SEALED:
-        raise SealedInputError("sealed eval input is refused in 16A-1 (exit 4)")
+        from src.sealed_run import is_slot_token
+
+        if not (is_slot_token(slot_token) and slot_token.approves(p)):
+            raise SealedInputError("sealed eval input is refused in 16A-1 (exit 4)")
     try:
         data = p.read_bytes()
     except OSError as exc:

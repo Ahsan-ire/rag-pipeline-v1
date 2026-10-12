@@ -1,9 +1,10 @@
 """Phase 16A-1 privacy primitives (D65): classes, the floor, opaque ids, private destinations.
 
-An eval input is ``public``, ``private`` or ``sealed`` (strictest last). In
-16A-1 ``sealed`` is a refusal only: every eval entry point refuses sealed input
-before any retrieval, expansion or model call (16A-2 adds trusted sealed
-processing).
+An eval input is ``public``, ``private`` or ``sealed`` (strictest last).
+``sealed`` is a refusal at every eval entry point, which refuses it before any
+retrieval, expansion or model call; its only read path is
+``src.eval_sealed_read`` (16A-2a, D72), and its only write locations are
+:func:`sealed_run_dir` and :func:`sealed_artifact_path`.
 
 This module owns the pieces every privacy-aware path shares:
 
@@ -14,8 +15,9 @@ This module owns the pieces every privacy-aware path shares:
 - :func:`safe_error`, the only rendering of an exception a private run may print
   (opaque id + exception type, never ``str(exc)``);
 - the private root (:func:`private_root`, ``eval/private/``) and contained
-  destinations under it (:func:`run_dir`, :func:`artifact_path`,
-  :func:`contained_path`): symlink and ``..`` escapes are refused.
+  destinations under it (:func:`run_dir`, :func:`artifact_path`, the sealed
+  pair under ``eval/private/sealed/``, :func:`contained_path`): symlink and
+  ``..`` escapes are refused.
 
 Nothing here reads eval rows; the registry and classifier live in
 ``src.eval_sets``.
@@ -245,6 +247,29 @@ def _check_root(root: Path) -> None:
             raise PrivatePathError("the private root or its eval/ parent is a symlink")
 
 
+def _run_dir_under(run_id: str, create: bool, *base: str) -> Path:
+    """``<private root>/<base...>/<run id>/``, contained and optionally created."""
+    if not _RUN_ID_RE.match(run_id):
+        raise ValueError("run id must match [A-Za-z0-9][A-Za-z0-9_-]{2,63}")
+    root = private_root()
+    _check_root(root)
+    path = contained_path(root, *base, run_id)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+        contained_path(root, *base, run_id)  # re-check after creation
+    return path
+
+
+def _artifact_path_under(name: str, *base: str) -> Path:
+    """A contained file path under ``<private root>/<base...>/`` (parent created)."""
+    root = private_root()
+    _check_root(root)
+    path = contained_path(root, *base, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    contained_path(root, *base, name)
+    return path
+
+
 def run_dir(run_id: str, *, create: bool = True) -> Path:
     """``eval/private/runs/<run id>/``, contained and (by default) created.
 
@@ -252,25 +277,32 @@ def run_dir(run_id: str, *, create: bool = True) -> Path:
         ValueError: for a run id outside ``[A-Za-z0-9_-]{3,64}``.
         PrivatePathError: on a symlink or ``..`` escape.
     """
-    if not _RUN_ID_RE.match(run_id):
-        raise ValueError("run id must match [A-Za-z0-9][A-Za-z0-9_-]{2,63}")
-    root = private_root()
-    _check_root(root)
-    path = contained_path(root, "runs", run_id)
-    if create:
-        path.mkdir(parents=True, exist_ok=True)
-        contained_path(root, "runs", run_id)  # re-check after creation
-    return path
+    return _run_dir_under(run_id, create, "runs")
 
 
 def artifact_path(name: str) -> Path:
     """A contained file path under ``eval/private/artifacts/`` (parent created)."""
-    root = private_root()
-    _check_root(root)
-    path = contained_path(root, "artifacts", name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    contained_path(root, "artifacts", name)
-    return path
+    return _artifact_path_under(name, "artifacts")
+
+
+def sealed_run_dir(run_id: str, *, create: bool = True) -> Path:
+    """``eval/private/sealed/runs/<run id>/``: where a slot-gated sealed run writes (16A-2a).
+
+    Same id rule and containment as :func:`run_dir`.
+
+    Raises:
+        ValueError: for a run id outside ``[A-Za-z0-9_-]{3,64}``.
+        PrivatePathError: on a symlink or ``..`` escape.
+    """
+    return _run_dir_under(run_id, create, "sealed", "runs")
+
+
+def sealed_artifact_path(name: str) -> Path:
+    """A contained file path under ``eval/private/sealed/artifacts/`` (parent created).
+
+    Same containment as :func:`artifact_path`.
+    """
+    return _artifact_path_under(name, "sealed", "artifacts")
 
 
 def open_exclusive_tmp(target: Path, mode: str = "w") -> Any:
