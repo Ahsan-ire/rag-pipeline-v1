@@ -255,13 +255,14 @@ class World:
 
     def token(self, slot: Any = 0, *, expansion: str = "live", rewrite_candidate: Optional[str] = None,
               meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
-              claim: bool = True):
+              claim: bool = True, top_k: Optional[int] = 6):
         """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
-        after its preflight)."""
+        after its preflight); the library default of the gate itself is unclaimed, this helper claims unless told
+        otherwise (so ``claim=True`` is passed explicitly, with the ``top_k`` the gate then checks)."""
         return sealed_run.acquire_slot_token(
             slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
             records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
-            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, claim=claim,
+            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, claim=claim, top_k=top_k,
         )
 
     def run(self, slot: Any = 0, *, token: Any = None, modes: Optional[List[str]] = None, top_k: int = 6,
@@ -275,7 +276,7 @@ class World:
         """Gate + claim + run + store + finish for one slot, with every model faked."""
         meter_obj = make_meter() if meter == "default" else meter
         tok = token or self.token(slot, expansion=expansion, rewrite_candidate=rewrite_candidate,
-                                  meter=meter_obj, baseline_run=baseline_run)
+                                  meter=meter_obj, baseline_run=baseline_run, top_k=top_k)
         retrieval = self.retrieval(hit)
         kwargs: Dict[str, Any] = {
             "retrieve_fn_factory": retrieval.factory(6),

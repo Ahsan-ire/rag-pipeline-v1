@@ -2395,3 +2395,10 @@ The SP's stdout and stderr go to files and are never printed. The launcher print
 - `--timeout` (default 3 h) kills the SP's process group.
 
 **Residual:** metered clients do not pass `cache=False`; the guard's global-cache refusal covers it.
+
+**D72/D73 phase-gate round 2 (12 Oct 2026).** Closure checks. Codex closed all 10 of its findings and raised one new MAJOR. The pressure-tester passed (a)–(k), with CI green on b712614, and noted one residual. The code review closed 22 of 24 and found no new MAJOR, with three MINOR leftovers. Fixed:
+- **Cutoff.** Every sealed slot refuses before the claim unless `top_k` equals the prereg's `primary_metric.cutoff` (default 6). Results and baselines record the cutoff, a mismatched baseline is refused, and the report refuses mixed cutoffs. A rank-4 test covers it.
+- **Results path.** The `results_v6.md` and `results.md` guards compare case-insensitively, since the dev disk is case-insensitive APFS.
+- **Claim default.** `acquire_slot_token` defaults to `claim=False`.
+- **Stale staging.** The audit sweeps stale staging before scanning.
+- **Crash leftovers.** `sealed_tool` removes its own `write_atomic` temp leftovers on recovery.

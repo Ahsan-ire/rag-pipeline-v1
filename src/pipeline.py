@@ -942,6 +942,7 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
                 rewrite_candidate=args.rewrite_candidate,
                 meter=meter,
                 baseline_run=args.baseline_run,
+                top_k=args.top_k,  # refused here (gate=cutoff) unless it is the prereg's hit cut-off
                 claim=False,  # run_slot claims after its preflight, right before the first model call
             )
             outcome = sealed_run.run_slot(

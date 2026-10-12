@@ -97,16 +97,19 @@ def test_a_planted_s_needle_in_each_target_class_is_counted_with_its_family_id(w
     assert code == st.EXIT_HIT == 5, err
     targets = {ln["target"]: ln for ln in lines(out, "audit_target")}
     assert set(targets) == set(st.TARGET_CLASSES)
-    for klass in ("transcript", "memory", "log", "research", "work", "run", "dispatch", "staging"):
+    for klass in ("transcript", "memory", "log", "research", "work", "run", "dispatch"):
         assert targets[klass]["files"] != "0", klass
     hits = {(ln["target"], ln["family"]): ln["count"] for ln in lines(out, "audit_hit")}
     fam = aw.fam
     expected = {
         ("transcript", fam["transcript"]), ("transcript", fam["worktree"]),  # a worktree's project directory counts too
         ("memory", fam["memory"]), ("log", fam["log"]), ("log", fam["short"]),  # the short question as a whole JSON value
-        ("research", fam["research"]), ("work", fam["work"]), ("run", fam["run"]), ("dispatch", fam["dispatch"]), ("staging", fam["staging"]),
+        ("research", fam["research"]), ("work", fam["work"]), ("run", fam["run"]), ("dispatch", fam["dispatch"]),
     }
     assert set(hits) == expected, hits
+    # the planted staging directory is a dead one (no dispatch holds the lock): the audit sweeps it before it scans,
+    # so its copied text is not an exposure (tests/test_p16w_fix_r2_hygiene.py covers the sweep itself)
+    assert ("staging", fam["staging"]) not in hits and not (aw.staging / "abcd1234").exists()
     assert not any(f == fam["elsewhere"] for _, f in hits)  # another project's directory is not ours
     assert targets["transcript"]["hits"] == "2" and targets["log"]["hits"] == "2" and targets["memory"]["hits"] == "1"
     assert targets["tree"]["hits"] == "0" and targets["history"]["hits"] == "0"

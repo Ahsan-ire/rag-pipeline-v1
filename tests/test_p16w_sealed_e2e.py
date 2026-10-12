@@ -334,6 +334,7 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     token = sealed_run.acquire_slot_token(
         1, ledger=w.ledger(), set_path=frozen, prereg_path=w.prereg_path, records_dir=w.sealed / "work",
         expansion="live", meter=make_meter(), baseline_run=w.ledger().recover(0).run_id,
+        claim=True, top_k=6,  # the gate claims only on request (the library default is unclaimed), and then it checks top_k
     )
     assert token.slot == "1" and token.excluded == frozenset({target_group[0]})
     assert token.groups[target_group[1]] == target_group[0] == token.groups[target_group[0]]

@@ -335,10 +335,16 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+#: ``write_atomic``'s temp name is ``.<name>.<2n hex digits>.tmp`` with n random bytes; the pattern that finds a
+#: crash's leftover (:func:`remove_atomic_leftovers`) is built from the same constant, so the two cannot drift apart.
+_ATOMIC_TMP_BYTES = 3
+_ATOMIC_TMP = re.compile(r"\..+\.[0-9a-f]{%d}\.tmp" % (2 * _ATOMIC_TMP_BYTES), re.DOTALL)
+
+
 def write_atomic(path: Path, data: bytes, mode: int = 0o600) -> None:
     """Write ``data`` to ``path`` atomically: temp file, fsync, rename, fsync the directory."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(3)}.tmp")
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(_ATOMIC_TMP_BYTES)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         view = memoryview(data)
@@ -1458,9 +1464,39 @@ def execute_release(ctx: Ctx, round_no: int, payload: Mapping[str, Any]) -> None
     write_atomic(marker, b"done\n")
 
 
+def remove_atomic_leftovers(ctx: Ctx) -> int:
+    """Delete the temp files a crashed :func:`write_atomic` left under ``sealed/`` and ``dev/``; return how many.
+
+    A crash between the write and the rename leaves ``.<name>.<6 hex>.tmp`` beside its destination. The
+    destination is either still the old file or absent, and the command that was writing it is re-run from its
+    stored inputs, so the leftover is worth nothing, and the scanner's pre-check refuses (exit 7) a private file it
+    cannot classify. Only a regular file whose name matches :data:`_ATOMIC_TMP` exactly is removed: no symlink is
+    followed or deleted, and the ledger's own directory (``sealed/ledger/``, with its own temp names) is not touched.
+    The caller holds the state lock, so no live write of ours has such a file open.
+    """
+    removed = 0
+    skip = ctx.sealed_dir / "ledger"
+    for top in (ctx.sealed_dir, ctx.dev_dir):
+        if top.is_symlink() or not top.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top):
+            here = Path(dirpath)
+            dirnames[:] = [d for d in dirnames if not (here / d).is_symlink() and here / d != skip]
+            for name in filenames:
+                path = here / name
+                if _ATOMIC_TMP.fullmatch(name) and path.is_file() and not path.is_symlink():
+                    path.unlink()
+                    removed += 1
+    return removed
+
+
 def recover_state(ctx: Ctx) -> None:
-    """Finish a crashed move journal, every recorded release that was not completed and every journalled freeze."""
+    """Finish a crashed move journal, every recorded release that was not completed and every journalled freeze.
+
+    It first removes the temp files a crashed :func:`write_atomic` left under ``sealed/`` and ``dev/``.
+    """
     try:
+        remove_atomic_leftovers(ctx)
         if ctx.journal.exists():
             sp.recover_moves(ctx.journal)
         ledger = ctx.ledger()
@@ -2739,17 +2775,20 @@ def project_dir_markers(ctx: Ctx) -> Tuple[List[str], str]:
 
 
 def settle_staging(ctx: Ctx) -> None:
-    """Make SP staging scannable: no live dispatch or sweep, and every half-done move replayed first.
+    """Make SP staging scannable: no live dispatch or sweep, stale entries swept, every half-done move replayed first.
 
     The lock is the launcher's own (``sp_launch``): held means a dispatch or sweep is running, so files are in
-    flux and the audit refuses. Pending moves are replayed (never deleted) so no output is half in, half out.
+    flux and the audit refuses (``staging_live``). Holding it proves no dispatch is live, so every staging
+    directory left is a dead one, and the launcher's own sweep (``sp_launch.sweep_stale``) removes them: the inputs a
+    dead dispatch copied in would otherwise read as an exposure of the very text they were staged from. The sweep
+    replays pending moves first (never deletes before the destination is complete), so no output is half in, half out.
     """
     root = staging_root_of(ctx)
     if not root.is_dir():
         return
     try:
         with sp._exclusive_lock(root):
-            sp.recover_moves(root / sp.JOURNAL_NAME)
+            sp.sweep_stale(root)
     except sp.LaunchError:
         raise Stop(EXIT_AUDIT_REFUSED, "staging_live") from None
     except (sp.MoveError, OSError):

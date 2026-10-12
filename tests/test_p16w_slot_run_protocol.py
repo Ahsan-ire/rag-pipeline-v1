@@ -379,10 +379,11 @@ def _first_answer_question(world):
     return next(r["question"] for r in world.sealed_rows if r["scope"] == "answer")
 
 
+#: ``top_k_6`` is not here: a sealed slot refuses any ``top_k`` other than the prereg's cut-off (6) before the claim
+#: (``cutoff``, tests/test_p16w_fix_r2_cutoff.py), so that guard can fail only through its stored fact (FACT_MUTATIONS).
 E2E_GUARDS = {
     "refusals_scored": ({"skip_refusals": True}, "refusals_scored"),
     "completeness_scored": ({"skip_completeness": True}, "completeness_scored"),
-    "top_k_6": ({"top_k": 5}, "top_k_6"),
     "all_modes": ({"modes": ["hybrid"]}, "all_modes"),
     "judge_clean": ({"judge": False}, "judge_clean"),
     "realistic_answerable": ({"specs": "no_realistic"}, "realistic_answerable"),

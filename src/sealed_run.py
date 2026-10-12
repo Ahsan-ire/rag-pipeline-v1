@@ -12,7 +12,7 @@ A token is minted only if **every** check passes; the checks that cannot spend
 the slot run first and the claim is the last one, so a refusal never costs a
 slot. The last check before the claim is the slot's execution lock (a slot that
 another process is running or recovering is ``claim: busy``). The CLI mints the
-token UNCLAIMED (``claim=False``); :func:`run_slot` then runs :func:`preflight_slot`
+token UNCLAIMED (the default, ``claim=False``); :func:`run_slot` then runs :func:`preflight_slot`
 (everything the run itself could still refuse: the numeric options, the replay
 artifact, the metered clients, the absorbed map, duplicate ids, and the embedding
 model, Chroma index and BM25 sidecar a default path loads) and only then claims,
@@ -21,7 +21,8 @@ between never costs a slot. A refusal raises :class:`GateRefused` naming one gat
 (a fixed token, never a path, hash or row detail) before any retrieval, expansion
 or model call:
 
-``slot``, ``prereg`` (a malformed or silent prereg), ``expansion_mode`` (the
+``slot``, ``prereg`` (a malformed or silent prereg), ``cutoff`` (``top_k`` is not the prereg's
+declared hit cut-off, 6 unless the prereg says otherwise: see below), ``expansion_mode`` (the
 mode the command line selects is not the mode the prereg declares for the
 slot), ``meter`` (no active spend meter), ``tracing`` (tracing is on:
 :mod:`src.tracing_guard`), ``freeze_record`` (the sealed split is not frozen),
@@ -42,6 +43,7 @@ module reads only the keys below, anything else is ignored)::
 
     {"version": 1,
      "quota": {"floor_sealed": 50, "floor_answerable": 35, ...},
+     "primary_metric": {"cutoff": 6},          # optional; the hit cut-off k, one of the evaluator's HIT_KS, default 6
      "slots": {"0":  {"expansion": "live"},
                "0b": {"expansion": "live"},
                "1":  {"expansion": "replay",    "artifact_sha256": "<64 hex>"},
@@ -49,6 +51,14 @@ module reads only the keys below, anything else is ignored)::
 
 The floor is ``quota.floor_sealed`` families and ``quota.floor_answerable`` eligible
 answerable families: the numbers ``sealed_tool freeze`` enforced, not a second copy.
+The **cut-off** is ``primary_metric.cutoff`` if the prereg declares one, else 6 (the primary
+metric is strict hit@6). Every sealed slot (0, 0b, 1-4) must run at ``top_k`` equal to it, and the
+check happens before the claim (:func:`check_cutoff`: the gate when it is given ``top_k``, and the
+evaluator's token re-check, which :func:`preflight_slot` runs and so does every real run): a run scored at a
+different cut-off is a different estimand, and a confirmatory slot compared with a baseline scored at
+another cut-off would show a spurious gain or loss (a section at rank 4 is a hit at 6 and a miss at 3).
+The stored results record the cut-off (``results.json``: ``cutoff``, also inside ``baseline``) and
+:func:`load_baseline` refuses a baseline whose stored cut-off differs from the candidate's.
 ``live``: ``--expansion live`` and no ``--rewrite-candidate``. ``replay``:
 ``--expansion <artifact>`` whose file sha256 equals ``artifact_sha256``.
 ``candidate``: ``--expansion live`` with ``--rewrite-candidate <config hash>``
@@ -85,9 +95,10 @@ a draft that is not in the sealed set: its connectivity is kept, it is not a mem
 
 The slot protocol (:func:`run_slot`, :func:`finish_slot`)
 ---------------------------------------------------------
-1. the slot is claimed (a4 step 1): by the gate for a token minted with ``claim=True`` (the
-   default), or by :func:`run_slot` after its preflight for a token minted with ``claim=False``
-   (the CLI);
+1. the slot is claimed (a4 step 1): by :func:`run_slot` after its preflight for a token minted
+   with ``claim=False`` (the default, and what the CLI does), or by the gate itself for a token
+   minted with ``claim=True`` (an explicit opt-in that skips the preflight, so the gate then
+   insists on being given ``top_k`` to check the cut-off before it claims);
 2. ``run_eval_matrix(..., slot_token=token)`` runs the matrix and writes, under
    ``eval/private/sealed/runs/<run id>/`` and never beside any report:
    ``results.json`` (the stored results document, ids and enums only),
@@ -173,7 +184,7 @@ _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 
 #: Every gate name :class:`GateRefused` can carry (fixed tokens; safe to print).
 GATES = (
-    "slot", "prereg", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
+    "slot", "prereg", "cutoff", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
     "retrieval_backend",
 )
@@ -296,12 +307,34 @@ def _is_hex(value: Any) -> bool:
     return isinstance(value, str) and bool(_HEX64.fullmatch(value))
 
 
+#: The hit cut-off a sealed slot runs at when the prereg declares none: the primary metric is strict hit@6.
+DEFAULT_CUTOFF = 6
+
+
+def _declared_cutoff(primary_metric: Any) -> int:
+    """``primary_metric.cutoff`` if the prereg declares one, else :data:`DEFAULT_CUTOFF`.
+
+    Raises:
+        GateRefused: ``prereg`` when a declared cut-off is not one of the evaluator's ``HIT_KS`` (a run
+            can only be scored at those, so any other value could never be met).
+    """
+    if not isinstance(primary_metric, dict) or "cutoff" not in primary_metric:
+        return DEFAULT_CUTOFF
+    from src.evaluator import HIT_KS
+
+    cutoff = primary_metric["cutoff"]
+    if isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff not in HIT_KS:
+        raise GateRefused("prereg")
+    return cutoff
+
+
 def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     """Read and validate the prereg keys this module uses (see the module docstring).
 
     The returned document carries the floor as ``doc["floor"] = {"families": quota.floor_sealed,
     "eligible": quota.floor_answerable}``, derived from the prereg's quota (a top-level ``floor``
-    key in the file is ignored): the gate and ``sealed_tool freeze`` use the same two numbers.
+    key in the file is ignored): the gate and ``sealed_tool freeze`` use the same two numbers. It
+    also carries ``doc["cutoff"]``, the hit cut-off every sealed slot must run at (the module docstring).
 
     Raises:
         GateRefused: ``prereg`` for a missing or malformed file, a bad quota floor or a
@@ -317,7 +350,8 @@ def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
                 for k in ("floor_sealed", "floor_answerable"))
     ):
         raise GateRefused("prereg")
-    doc = {**doc, "floor": {"families": quota["floor_sealed"], "eligible": quota["floor_answerable"]}}
+    doc = {**doc, "floor": {"families": quota["floor_sealed"], "eligible": quota["floor_answerable"]},
+           "cutoff": _declared_cutoff(doc.get("primary_metric"))}
     slots = doc.get("slots")
     if not isinstance(slots, dict):
         raise GateRefused("prereg")
@@ -448,6 +482,7 @@ class SlotToken:
     approved_paths: Tuple[str, ...] = field(repr=False)
     artifact_sha256: Optional[str]
     floor: Mapping[str, int] = field(repr=False)
+    cutoff: int = field(repr=False)  # the prereg's hit cut-off: the only top_k this slot may run at
     ledger: Any = field(repr=False, compare=False)
     twins_sha256: str = field(repr=False)
     exclusions_sha256: str = field(repr=False)
@@ -585,13 +620,30 @@ def _check_expansion(
     return mode, None, None
 
 
-def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str) -> Dict[str, Any]:
+def check_cutoff(cutoff: int, top_k: Any) -> None:
+    """Refuse a run whose ``top_k`` is not the prereg's hit cut-off ``cutoff``.
+
+    Called before the slot is claimed (the gate when it is given ``top_k``, the evaluator's token
+    re-check and so :func:`preflight_slot`) and again by that re-check on every real run. A different ``top_k``
+    would score the sealed rows at a different cut-off (strict hit@3 against the baseline's hit@6, say),
+    which the primary comparison cannot absorb.
+
+    Raises:
+        GateRefused: ``cutoff`` when ``top_k`` is not exactly the cut-off (a bool or a non-integer never is).
+    """
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k != cutoff:
+        raise GateRefused("cutoff")
+
+
+def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str, cutoff: int) -> Dict[str, Any]:
     """Verify a stored slot 0 / 0b run and return its per-mode family hits (for a confirmatory slot).
 
     The run must be a consumed ``0``/``0b`` slot of the same sealed set whose
     run directory still digests to what the ledger recorded, and it must have
     a publication intent: the baseline is the run that published the canonical
-    report (when 0b is the canonical one, slot 0 is not a baseline).
+    report (when 0b is the canonical one, slot 0 is not a baseline). It must also have been scored
+    at the candidate's hit cut-off ``cutoff``: a stored cut-off that differs (or is not recorded)
+    makes its hits incomparable with the candidate's.
 
     Raises:
         GateRefused: ``baseline`` for anything else.
@@ -613,8 +665,11 @@ def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str) -> Dict
         raise GateRefused("baseline") from None
     if doc.get("kind") != RESULTS_KIND or sealed["sha256"] != set_sha256:
         raise GateRefused("baseline")
+    if doc.get("cutoff") != cutoff or doc.get("k") != cutoff or isinstance(doc.get("cutoff"), bool):
+        raise GateRefused("baseline", "cutoff")
     return {
         "run_id": run_id,
+        "cutoff": cutoff,
         "results_digest": stored[0]["results_digest"],
         "hits_by_mode": {m: family_hits(sealed["rows"], m) for m in doc["modes"]},
     }
@@ -631,17 +686,23 @@ def acquire_slot_token(
     rewrite_candidate: Optional[str] = None,
     meter: Any = None,
     baseline_run: Optional[str] = None,
-    claim: bool = True,
+    claim: bool = False,
+    top_k: Optional[int] = None,
 ) -> SlotToken:
-    """Run every gate for ``slot`` and, if all pass, mint the token (claiming the slot unless ``claim=False``).
+    """Run every gate for ``slot`` and, if all pass, mint the token (claiming the slot only if ``claim=True``).
 
     See the module docstring for the gates, their order and the formats. The
     claim is the last step, so any refusal leaves the slot unclaimed. Just
     before it the gate takes the slot's execution lock (non-blocking; the token
-    keeps it until :func:`run_slot` ends). With ``claim=False`` the token comes
+    keeps it until :func:`run_slot` ends). By default the token comes
     back unclaimed (the gate only checks that the slot COULD be claimed) and
     :func:`run_slot` claims it after its preflight, right before the first model
-    call: that is how the CLI makes every refusal precede the claim.
+    call: that is how the CLI makes every refusal precede the claim, and why a library
+    caller must opt in (``claim=True``) to claim at the gate, skipping that preflight.
+
+    ``top_k`` is the cut-off the caller will run at. When given it is checked against the prereg's
+    hit cut-off right away (``cutoff``); ``claim=True`` requires it, because the gate is then the last
+    place that can refuse before the claim. Without it (the CLI path) :func:`preflight_slot` checks it.
 
     Raises:
         GateRefused: a gate refused (its name is on the exception).
@@ -653,6 +714,8 @@ def acquire_slot_token(
     decl = prereg["slots"].get(sid)
     if decl is None:
         raise GateRefused("prereg")
+    if top_k is not None or claim:
+        check_cutoff(prereg["cutoff"], top_k)  # None with claim=True is refused too: the gate cannot vouch for it
     mode, artifact_sha, artifact_path = _check_expansion(decl, expansion, rewrite_candidate)
 
     from src.spend import SpendMeter
@@ -697,7 +760,9 @@ def acquire_slot_token(
     if is_confirmatory(sid):
         if not baseline_run:
             raise GateRefused("baseline")
-        baseline = load_baseline(baseline_run, ledger=ledger, set_sha256=freeze["set_sha256"])
+        baseline = load_baseline(
+            baseline_run, ledger=ledger, set_sha256=freeze["set_sha256"], cutoff=prereg["cutoff"],
+        )
     elif baseline_run:
         raise GateRefused("baseline")
 
@@ -711,8 +776,8 @@ def acquire_slot_token(
         except SlotBusy:
             raise GateRefused("claim", "busy") from None
         token = _mint_token(
-            sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor, ledger,
-            approvals_path, approvals_sha, baseline, lock,
+            sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor,
+            prereg["cutoff"], ledger, approvals_path, approvals_sha, baseline, lock,
         )
         if claim:
             token.claim()
@@ -739,6 +804,7 @@ def _mint_token(
     approved_paths: List[str],
     artifact_sha: Optional[str],
     floor: Mapping[str, int],
+    cutoff: int,
     ledger: SealedLedger,
     approvals_path: Path,
     approvals_sha: Optional[str],
@@ -758,6 +824,7 @@ def _mint_token(
         approved_paths=tuple(approved_paths),
         artifact_sha256=artifact_sha,
         floor=dict(floor),
+        cutoff=cutoff,
         ledger=ledger,
         twins_sha256=freeze["twins_sha256"],
         exclusions_sha256=freeze["exclusions_sha256"],
@@ -776,18 +843,21 @@ def check_token_for_run(
     expansion_mode: str,
     artifact_path: Optional[str],
     meter: Any,
+    top_k: int,
 ) -> None:
     """The evaluator's own re-check of a token before it does any work (defence in depth).
 
     Raises:
         GateRefused: not a genuine token, the sealed file is not among the sets
-            exactly once or changed since the gate, no meter, or the expansion
-            the evaluator parsed is not the one the token was minted for.
+            exactly once or changed since the gate, no meter, the expansion
+            the evaluator parsed is not the one the token was minted for, or ``top_k`` is not the
+            prereg's hit cut-off (``cutoff``: this is also what makes :func:`preflight_slot` refuse it).
     """
     from src.spend import SpendMeter
 
     if not is_slot_token(slot_token):
         raise GateRefused("slot")
+    check_cutoff(slot_token.cutoff, top_k)
     owned = [p for p in set_paths if slot_token.approves(p)]
     if len(owned) != 1:
         raise GateRefused("set_binding")
@@ -888,6 +958,8 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
     gap or evidence text. ``result`` is the evaluator's v6 working result.
     """
     k, primary = result["k"], result["primary_mode"]
+    if result["top_k"] != slot_token.cutoff or k != slot_token.cutoff:
+        raise ValueError("the run was not scored at the prereg's hit cut-off")
     sets = []
     for s in result["sets"]:
         owned = bool(s.get("owned"))
@@ -906,12 +978,14 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
         baseline = {
             "run_id": slot_token.baseline["run_id"],
             "results_digest": slot_token.baseline["results_digest"],
+            "cutoff": slot_token.baseline["cutoff"],
             "hits": by_mode[primary],
         }
     return {
         "version": RESULTS_VERSION, "kind": RESULTS_KIND, "slot": slot_token.slot, "run_id": slot_token.run_id,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "top_k": result["top_k"], "k": k, "modes": list(result["modes"]), "primary_mode": primary,
+        "top_k": result["top_k"], "k": k, "cutoff": slot_token.cutoff,
+        "modes": list(result["modes"]), "primary_mode": primary,
         "answers_ran": bool(result["answers_ran"]),
         "provenance": dict(result["provenance"]),
         "expansion": {
@@ -1194,7 +1268,8 @@ def preflight_slot(
 
     Same arguments as :func:`run_slot` (which calls it before claiming an unclaimed token), so that
     a refusal costs no slot. It runs the evaluator up to (not including)
-    the first retrieval, expansion or model call: the numeric options, the token and set bindings,
+    the first retrieval, expansion or model call: the numeric options, the token and set bindings
+    (and ``top_k`` against the prereg's hit cut-off: a different one is a ``cutoff`` refusal here, before the claim),
     the replay artifact (loaded and preflighted against every row), the metered clients, the absorbed
     map, the per-set cohort and duplicate-id checks, and, when a default retrieval or generation path
     is in play, the embedding model, Chroma index and BM25 sidecar it would load. Makes no call.

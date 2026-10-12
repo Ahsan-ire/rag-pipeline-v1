@@ -115,10 +115,12 @@ def _targets_v6_report(path: Optional[str]) -> bool:
 
     Both the repo-relative spelling and the private-root-derived one (``sealed_run.results_v6_path()``,
     which the suite's private-root fixture moves) count, so no test and no run can reach either.
+    A case-variant spelling (``eval/RESULTS_V6.md``) counts even when the report does not exist yet, because on a
+    case-insensitive filesystem it would create or overwrite the same file (``_same_report_path``).
     """
     if path is None:
         return False
-    return _same_path(path, CANONICAL_V6_PATH) or _same_path(path, _sealed_run.results_v6_path())
+    return _same_report_path(path, CANONICAL_V6_PATH) or _same_report_path(path, _sealed_run.results_v6_path())
 
 # The four grounding-gate outcomes, in report order, so the gate-outcome
 # distribution is always zero-filled over the full vocabulary (a missing
@@ -1013,6 +1015,19 @@ def _same_path(a: str, b: str) -> bool:
         return os.path.realpath(a) == os.path.realpath(b)
 
 
+def _same_report_path(a: str, b: str) -> bool:
+    """``_same_path``, or the resolved paths are equal ignoring case: the guard for a committed report's name.
+
+    ``_same_path`` sees a case-variant alias only when both files exist (``samefile``); when the report is
+    not written yet (``eval/results_v6.md`` before the first slot) it falls back to a case-sensitive realpath
+    compare, which ``eval/RESULTS_V6.md`` passes even though, on a case-insensitive filesystem (the default
+    APFS), writing it creates the very file the guard protects. Comparing the resolved paths case-insensitively
+    closes that. On a case-sensitive filesystem it refuses a differently-cased sibling too: harmless for
+    names nobody has a reason to use.
+    """
+    return _same_path(a, b) or os.path.realpath(a).casefold() == os.path.realpath(b).casefold()
+
+
 def _resolve_results_path(
     explicit_path: Optional[str],
     is_canonical: bool,
@@ -1069,7 +1084,7 @@ def _resolve_results_path(
                 f"--results path {explicit_path!r} resolves to the canonical sealed report "
                 f"{CANONICAL_V6_PATH}, which only a sealed slot run writes; refusing"
             )
-        if not is_canonical and _same_path(explicit_path, DEFAULT_RESULTS_PATH):
+        if not is_canonical and _same_report_path(explicit_path, DEFAULT_RESULTS_PATH):
             # D46 fail-closed: an explicit --results at the committed canonical
             # path on a NON-canonical run now RAISES rather than warning — the
             # committed report must never be writable by a non-canonical run.
@@ -1610,7 +1625,7 @@ def run_eval(
     # committed canonical report, even when explicitly targeted — that report is
     # matrix-runner-only. Guard by FILE IDENTITY (_same_path) so a case-variant
     # or symlink alias of eval/results.md is caught too.
-    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH):
+    if results_path is not None and _same_report_path(results_path, DEFAULT_RESULTS_PATH):
         raise ValueError(
             f"run_eval refuses to write the canonical report "
             f"{DEFAULT_RESULTS_PATH!r}: the committed report is written ONLY by "
@@ -1924,7 +1939,7 @@ def run_eval_matrix(
         # file is refused here. A slot run is private by construction.
         _sealed_run.check_token_for_run(
             slot_token, set_paths=set_paths, expansion_mode=expansion_mode,
-            artifact_path=artifact_path_arg, meter=meter,
+            artifact_path=artifact_path_arg, meter=meter, top_k=top_k,
         )
         if results_path is not None:
             raise ValueError("a slot-gated run publishes only through its slot protocol; --results is refused")
@@ -2016,7 +2031,7 @@ def run_eval_matrix(
     # D46's write-time refusal, which the H0 lock pins byte for byte (an
     # owner-level change, not this phase's; recorded in D68).
     knowably_noncanonical = 2 in schemas_upfront or expansion_mode == "replay" or private
-    if results_path is not None and _same_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
+    if results_path is not None and _same_report_path(results_path, DEFAULT_RESULTS_PATH) and knowably_noncanonical:
         raise ValueError(
             "--results targets the canonical report, but this run is not canonical and "
             "cannot be (report v6, replayed expansion or private input); refusing before any work"

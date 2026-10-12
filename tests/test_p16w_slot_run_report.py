@@ -140,7 +140,7 @@ def confirmatory(stored, candidate_hits, base_hits):
         if row["scope"] != "refuse":
             cell = row["retrieval"][doc["primary_mode"]]
             cell["strict_hit"] = candidate_hits[row["family_id"]]
-    doc["baseline"] = {"run_id": "r0", "results_digest": "0" * 64, "hits": dict(base_hits)}
+    doc["baseline"] = {"run_id": "r0", "results_digest": "0" * 64, "cutoff": doc["cutoff"], "hits": dict(base_hits)}
     return doc
 
 

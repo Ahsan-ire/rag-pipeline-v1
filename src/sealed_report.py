@@ -18,12 +18,12 @@ them.
 Stored document (version 1), the parts this module reads::
 
     {"version": 1, "kind": "sealed_slot_results", "slot", "run_id", "created",
-     "top_k", "k", "modes", "primary_mode", "answers_ran", "provenance",
+     "top_k", "k", "cutoff", "modes", "primary_mode", "answers_ran", "provenance",
      "expansion": {"mode", "identity", "rewrite_live", "rewrite_replayed"},
      "run_cost": {"run_eur", "week_eur"} | null,
      "floor": {"families", "eligible"},
      "groups": {family_id: group_id},          # the sealed set's group map
-     "baseline": null | {"hits": {family_id: bool}},   # confirmatory slots
+     "baseline": null | {"cutoff", "hits": {family_id: bool}},   # confirmatory slots
      "sets": [{"label", "role": "sealed" | "development", "sha256",
                "cohort": {...},
                "rows": [{"id", "family_id", "scope", "register", "source",
@@ -41,6 +41,9 @@ discordance (families the candidate gains minus families it loses, on the
 family-level strict hit@k of the primary mode under the ``all`` collapse);
 Durkalski's clustered McNemar by group and the exact family-level McNemar are
 printed as **labelled sensitivities**, never as the test.
+
+``cutoff`` is the prereg's hit cut-off the run was scored at (equal to ``k``); a confirmatory slot's
+baseline must carry the same one, and the renderer refuses a document where it does not (:func:`check_cutoff`).
 
 A confirmatory slot is never canonical and is not judged by the canonical guards: its report
 says "confirmatory" instead of "canonical"/"not canonical" and carries no "guards not met" line,
@@ -95,6 +98,23 @@ SOURCES_ORDER = ("tutorial", "handbook", "colleague", "legacy", None)
 def is_confirmatory(slot: str) -> bool:
     """Slots other than ``0`` and ``0b`` are confirmatory (1-4 in the prereg)."""
     return slot not in DESCRIPTIVE_SLOTS
+
+
+def check_cutoff(doc: Mapping[str, Any]) -> None:
+    """Refuse a stored document whose hit cut-off is unrecorded, is not its ``k``, or differs from its baseline's.
+
+    A baseline scored at another cut-off has other hits (a section at rank 4 is a hit at 6 and a miss at
+    3), so pairing it with this run would manufacture gains or losses from the cut-off alone.
+
+    Raises:
+        ValueError: any of the three.
+    """
+    cutoff = doc.get("cutoff")
+    if isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff != doc["k"]:
+        raise ValueError("the stored run does not record the hit cut-off it was scored at")
+    base = doc.get("baseline")
+    if base and base.get("cutoff") != cutoff:
+        raise ValueError("the baseline and the candidate were scored at different hit cut-offs")
 
 
 def sealed_set(doc: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -258,6 +278,7 @@ def confirmatory_summary(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> Li
     The primary cluster sign-flip line first, then the families line and the two labelled
     sensitivities (Durkalski, exact McNemar). Empty for a descriptive slot (0, 0b).
     """
+    check_cutoff(doc)
     if not is_confirmatory(doc["slot"]):
         return []
     drop = dropped_families(doc, excluded)
@@ -361,6 +382,7 @@ def format_sealed_report(
         per-chapter line. Deterministic in its arguments (the date is the
         stored run's creation time), so a republish reproduces it exactly.
     """
+    check_cutoff(doc)
     k, modes, primary, answers_ran = doc["k"], list(doc["modes"]), doc["primary_mode"], doc["answers_ran"]
     prov = doc["provenance"]
     sealed = sealed_set(doc)
