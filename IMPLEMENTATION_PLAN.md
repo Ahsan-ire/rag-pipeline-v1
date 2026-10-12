@@ -2010,6 +2010,11 @@ Au5-1 (MAJOR, the same as Cx5-1) and Au5-2 (MAJOR, conditional). Fixed in v6 by 
 | Cx6 | 2 | MAJOR | ACCEPTED: one two-sided test per candidate, Holm over the K two-sided p-values; the family-wise α covers rejections in either direction | b1 |
 | Au6 | 1 | MAJOR | ACCEPTED: the sign-flip primary is two-sided at α (the direction is read from the sign), equal to `mcnemar_exact` with singletons; the Monte Carlo power under independence with singletons reproduces `eval_stats.power(..., "directional")`, so the quoted power and MDE figures stand | Inference; a8; 2a-(j) |
 
+**Plan-gate result (12 Oct 2026): READY.** Codex `gpt-6.1-sol` r7 READY on `1c36c4d` (Cx5-1, Cx6-1, Cx6-2 closed; no
+new BLOCKER/MAJOR); plan-auditor r7 PASS (Au6-1 closed; none new). Rounds: r1 full (Codex 2/7/2, auditor 2/10/20); r2
+full, fresh auditor (0/4+2 open; 1/13/12); r3 full, fresh auditor (0/2/1; 1/9/8); r4–r7 closure checks scoped to each
+diff (2+3, 1+2, 2+1, 0+0 new MAJORs). 16A-2a may be built; 16A-2b's prereg waits on the PENDING-OWNER adoption rule.
+
 ### 16A-2 appendix A — note for the reviewing colleague
 *(The owner sends this with each form. It names no client and quotes no Handbook text.)*
 
