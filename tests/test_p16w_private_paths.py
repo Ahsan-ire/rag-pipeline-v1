@@ -11,6 +11,8 @@ from src.eval_privacy import (
     contained_path,
     run_dir,
     safe_error,
+    sealed_artifact_path,
+    sealed_run_dir,
     write_inputs_json,
     write_private,
 )
@@ -151,4 +153,95 @@ def test_symlink_planted_at_artifact_temp_path_is_refused(tmp_path, _private_roo
                          [{"path": "x.jsonl", "sha256": "a" * 64, "kind": "questions"}])
     with pytest.raises(PrivatePathError):
         save_artifact(target, art)
+    assert not outside.exists()
+
+
+# --- 16A-2a (a1): sealed/runs/<id>/ and sealed/artifacts/ ---------------------------
+def test_sealed_run_dir_created_under_the_sealed_root(_private_root_in_tmp):
+    from src.eval_sets import classify
+
+    d = sealed_run_dir("run-s01")
+    assert d == _private_root_in_tmp / "sealed" / "runs" / "run-s01" and d.is_dir()
+    assert not (_private_root_in_tmp / "runs").exists()
+    assert sealed_run_dir("run-s01", create=False) == d
+    assert classify(d / "report.jsonl") == "sealed"  # whatever lands there is sealed by location
+
+
+def test_sealed_run_dir_create_false_makes_nothing(_private_root_in_tmp):
+    d = sealed_run_dir("run-s02", create=False)
+    assert d == _private_root_in_tmp / "sealed" / "runs" / "run-s02" and not d.exists()
+    assert not (_private_root_in_tmp / "sealed").exists()
+
+
+@pytest.mark.parametrize("bad", ["..", "../x", "a/b", "", "x", "has space", ".hidden"])
+def test_sealed_run_id_charset(bad):
+    with pytest.raises((ValueError, PrivatePathError)):
+        sealed_run_dir(bad)
+
+
+def test_sealed_artifact_path_under_the_sealed_root(_private_root_in_tmp):
+    p = sealed_artifact_path("x.json")
+    assert p == _private_root_in_tmp / "sealed" / "artifacts" / "x.json"
+    assert p.parent.is_dir() and not p.exists()
+    assert not (_private_root_in_tmp / "artifacts").exists()
+    write_private(p, "{}\n")
+    assert p.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_sealed_destinations_refuse_dotdot_and_absolute_escapes(_private_root_in_tmp):
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("../escape.json")
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("../../artifacts/escape.json")
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("/etc/passwd")
+    with pytest.raises(PrivatePathError):
+        contained_path(_private_root_in_tmp, "sealed", "runs", "../../../outside")
+
+
+def test_sealed_destinations_refuse_a_symlink_at_any_level(tmp_path, _private_root_in_tmp):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sealed = _private_root_in_tmp / "sealed"
+    (sealed / "runs").mkdir(parents=True)
+    os.symlink(outside, sealed / "runs" / "evil")
+    with pytest.raises(PrivatePathError):
+        sealed_run_dir("evil")
+    os.symlink(outside, sealed / "artifacts")
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("x.json")
+    assert list(outside.iterdir()) == []
+
+
+def test_symlinked_sealed_root_refused(tmp_path, _private_root_in_tmp):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _private_root_in_tmp.mkdir(parents=True)
+    os.symlink(outside, _private_root_in_tmp / "sealed")
+    with pytest.raises(PrivatePathError):
+        sealed_run_dir("run-s03")
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("x.json")
+    assert list(outside.iterdir()) == []
+
+
+def test_symlinked_private_root_refused_for_sealed_destinations(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linkroot"
+    os.symlink(real, link)
+    monkeypatch.setattr("src.eval_privacy.private_root", lambda: link)
+    with pytest.raises(PrivatePathError):
+        sealed_run_dir("run-s04")
+    with pytest.raises(PrivatePathError):
+        sealed_artifact_path("x.json")
+    assert list(real.iterdir()) == []
+
+
+def test_symlink_planted_at_a_sealed_temp_path_is_refused(tmp_path, _private_root_in_tmp):
+    d = sealed_run_dir("run-s05")
+    outside = tmp_path / "outside_leak.md"
+    os.symlink(outside, d / "report.md.tmp")
+    with pytest.raises(PrivatePathError):
+        write_private(d / "report.md", "SEALED QUESTION TEXT\n")
     assert not outside.exists()
