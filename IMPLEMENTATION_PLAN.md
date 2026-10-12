@@ -1429,7 +1429,7 @@ meter's sum for its real prompts first, sends nothing above €0.25, and settles
 per [W] item. **Gates:** plan gate on v4.1 (plan-auditor + Codex `gpt-6.1-sol`, read-only; the outline only for
 completeness) → implement → `/phase-gate 16A-1` → Codex merge review → PR, CI → merge, `v2.3.0`.
 
-### 16A-2 — eval data and re-baseline, in two phases (spec v4, 12 Oct 2026; plan-gate r1–r3 reconciled)
+### 16A-2 — eval data and re-baseline, in two phases (spec v5, 12 Oct 2026; plan-gate r1–r4 reconciled)
 **Authority:** design 003 §5 16A.3–16A.5 and 16A.7–16A.8 (normative), §1.2 Q1, Q3, Q7, §6 Phase 20 and 21 rows; astra
 B3, M8–M10; D46, D54, D57 (+ addendum), D61, D62, D64, D65–D70; **D71 binds** (its Q5 narrows 16A.4's second opinion to
 owner-escalated labels, disclosed in D75). **Two phases (S1):** **16A-2a** builds and tests the sealed tooling on
@@ -1472,15 +1472,21 @@ forwarding log under `eval/private/sealed/work/`; (4) Anthropic's API inside a c
 third-party model.
 **Unit (S8, R1, R7):** the **family** (one scenario, one scope) is the unit of split and counting. The SP's all-pairs
 twin verdict merges (as phrasings) or drops any twin inside the new pool; a twin of a pinned development (v1, T1/T7,
-earlier batches), public or regression family joins it as a phrasing or is dropped. A draft with a split-group edge to a
-pinned development family, or an 8-token window shared with a public question, is **sealed-ineligible** and goes to
-development by quota and register; such edges are never passed to `split_families`. Among sealed-eligible new drafts,
-families from one tutorial or sharing a primary evidence section (the first section of their first evidence group)
-form a **split group**, passed as `edges`, so no pinned family is ever in a group and `preassignment_conflicts` cannot
-arise. Demotion, exclusion and recheck act on the **whole group**; the group invariant is checked after every move.
-**Inference (R2):** in confirmatory slots the primary test is Durkalski's clustered McNemar by split group (a singleton
-group is an independent family); family-level exact McNemar is the sensitivity; power and MDE are reported on eligible
-groups (conservative) and on families. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
+earlier batches), public or regression family joins it as a phrasing or is dropped. A **relation** is a twin verdict,
+the same source tutorial, or the same primary evidence section (the first section of the first evidence group). Groups
+are the connected components of all relations over every draft and every pinned family, computed **before** any edge
+is filtered (r4: P–A–B). A group containing a pinned development family, or a draft sharing an 8-token window with a
+public question, is **sealed-ineligible as a whole** and goes to development by quota and register; its edges are never
+passed to `split_families`. The remaining groups are passed as `edges`. In round 2 a draft related to a round-1 sealed
+group joins it (that pinned sealed endpoint is passed, so the unit stays sealed); a draft related to both a sealed
+group and a pinned development family is dropped. So no development-pinned family is ever in a passed group and
+`preassignment_conflicts` cannot arise. Demotion, exclusion and recheck act on the **whole group**; the group invariant
+is checked after every move.
+**Inference (R2, r4):** in confirmatory slots the primary test is the **exact McNemar test on split-group outcomes**:
+each group's eligible families (answer or partial; a group with none is out) collapse to one paired outcome by the
+`all` rule (a tie is a MISS), so groups are the independent units and the test's size is ≤ α exactly; power and MDE
+come from `eval_stats.power`/`mde` with N = eligible groups. Durkalski's clustered McNemar (asymptotic, so approximate)
+and the family-level exact McNemar are reported as sensitivities. **Floor (families, 003):** ≥ 50 approved sealed and ≥ 35 eligible answerable
 (answer or partial, not excluded); sealed 60 in the band gives 42–45; the group count is reported beside it.
 
 ### 16A-2a — sealed tooling — `phase-16a2-eval-data` → `v2.4.0`
@@ -1512,7 +1518,10 @@ a3. **`scripts/sealed_tool.py` (D72) [C; synthetic tests].** Loads via a1's load
       `eligible` follows register: realistic takes only lay or terse drafts and tutorial-sourced families; modelled
       drafts may go only to tuning or sealed. **Round 2** (once, after validation and recheck, before freeze; R3)
       replaces every sealed rejection or demotion and every development shortfall against quota or band; its drafts are
-      twin-checked and rechecked; surviving round-1 families are pinned and each split's quota = pinned + replacements.
+      twin-checked, paraphrased by the SP to 2 phrasings, owner-validated on a round-2 sheet (b5) and rechecked before
+      freeze; a round-2 family the owner rejects is dropped (there is no round 3), and a resulting shortfall is the stop
+      "freeze infeasible after round 2"; surviving round-1 families are pinned and each split's quota = pinned +
+      replacements.
       Release **moves** development families from
       `sealed/pool/` to `eval/private/dev/`, unmarked (the only sanctioned unmarking), by copy, fsync, verify and delete
       under a move journal that recovery replays; launcher outputs move the same way.
@@ -1580,7 +1589,8 @@ a7. **Sealed-processor launcher (D72) [C].** `scripts/sp_launch.py --kind probe|
     form of the system-prompt flag is listed, so the launcher reads `docs/sealed/sealed-processor.md` itself. The SP's
     stdout and stderr go to files in the staging directory and are never printed: the launcher's only output is
     `sealed_tool return`'s validated line and its exit status. It then runs `sealed_tool.py` (ids, lexical screen,
-    validation, `return`), moves `out/` and the logs into `eval/private/sealed/` crash-safely (a3), and deletes the
+    validation, `return`), moves `out/` into `eval/private/sealed/` and the stdout/stderr logs into
+    `eval/private/sealed/work/` crash-safely (a3), and deletes the
     staging directory in a `finally`; each launch first sweeps stale staging directories, and `sp_launch.py --sweep`
     runs before any Codex call. A `data` dispatch first requires `git fetch` and `git
     merge-base --is-ancestor <prereg sha> origin/<branch>` and logs to `eval/private/sp_dispatch.jsonl` and the
@@ -1620,9 +1630,13 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
   ordinary conveyancing wording, development text and handbook windows raise no S-hit; a non-JSONL file outside
   `work/` exits 7; S-hits in a file, blob, commit message and faked PR body print target and family id only.
 - **(e) `sealed_tool`:** printer fuzz; `twins` refuses a surviving twin, marks a draft tied to a pinned or public family
-  sealed-ineligible and passes no edge for it; `split` honours register eligibility, refuses an unpushed prereg or
+  sealed-ineligible and passes no edge for it; a pinned development family P, a draft A sharing P's primary section and a
+  draft B sharing A's tutorial make the whole group P–A–B sealed-ineligible (r4); a round-2 draft related to a round-1
+  sealed group is passed with it and lands sealed, and one related to both that group and a pinned development family
+  is dropped; `split` honours register eligibility, refuses an unpushed prereg or
   undeclared round, records an infeasible attempt and releases nothing, and recovers a move crash between copy and
-  delete; round 2 pins round 1 and fills sealed replacements and development shortfalls; `freeze` catches a changed
+  delete; round 2 pins round 1 and fills sealed replacements and development shortfalls, and `freeze` refuses a round-2
+  family without 2 phrasings, an owner approval or a `recheck`; `freeze` catches a changed
   assignment, a missing approval or `recheck`, a sealed phrasing planted in a development row (whole group demoted,
   approvals kept, group invariant intact), a band breach (fewest seeded group demotions to quarantine) and a phrasing or
   floor breach (the D64 stop), and passes the sealed freeze with development unapproved; `return` rejects free text.
@@ -1640,11 +1654,14 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
   API key, or with a prereg not reachable from `origin/<branch>` (accepted when a later commit sits on top); a fake
   `claude` printing a canary leaves it out of the launcher's output; a failed run still deletes its staging directory
   and the next launch sweeps a stale one; the two kinds log apart.
-- **(j)** `controls.py` under both rules; `power` equals `mde()`; Durkalski by group on synthetic paired arms;
+- **(j)** `controls.py` under both rules; `power` equals `mde()` at N = eligible groups; on synthetic paired arms the
+  group collapse (`all` rule, refusal-only groups out, a mixed group keeps its eligible families) feeds the exact test,
+  and Durkalski and the family test render as labelled sensitivities;
   `disagree` reports scope, group structure and gaps apart (missing-group, extra-group, different-gap fixtures);
   `inputs-check` refuses a reused or non-public id and an uninventoried conflict label; `handbook_sections.py` on a
   synthetic chunk store yields every inventoried section.
-- **(k) Audit:** a planted S-needle in a synthetic transcript, memory file, log or run is counted with its family id.
+- **(k) Audit:** a planted S-needle in a synthetic transcript, memory file, log, run or `eval/private/work/` file is
+  counted with its family id.
 
 **16A-2a Tier-2:** one `probe` dispatch from the orchestrator's shell on canary-only data: a file read outside the
 staging directory is denied, no MCP tool is present and no memory directory is created (the environment scrub is
@@ -1664,8 +1681,8 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     `min_share` (realistic: tutorial + colleague ≥ 0.25, D71 Q4; none elsewhere); the floor; calibration seed; primary
     metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse, a tie is a MISS); **MWE +0.10** absolute;
     α = 0.05 family-wise; **K_max = 4** confirmatory candidates per epoch, declared as one non-adaptive batch before the
-    first confirmatory slot, Holm across it; **primary test Durkalski's clustered McNemar by split group**, exact
-    McNemar on families the sensitivity (R2);
+    first confirmatory slot, Holm across it; **primary test exact McNemar on group-collapsed outcomes** (Unit,
+    Inference), Durkalski by group and exact McNemar on families the sensitivities (R2, r4);
     rewrite-changing candidates expand live under `--rewrite-candidate` against the incumbent's replay; R = 5; the
     canonical v6 guards; power tables for groups and families. Slots: 0 = descriptive baseline (the canonical run),
     0b = spare, 1–4 = the batch, refused until 16B's sealed comparison passes its own gate. Later changes are amendments.
@@ -1675,9 +1692,9 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
       ≥ 0, no Holm-significant loss under the clustered primary). Modest real gains below the sealed MDE can ship, but so
       can a change overfitted to development and neutral on sealed. It departs from 003 §5 16B (003:255).
     - **(B) Sealed confirmation only.** Adopted only on PASS (favours the candidate, clustered-primary Holm p ≤ α, effect
-      ≥ MWE, no control flip, unsupported claims not higher). False adoption is bounded by α, but with 35–45 families in
-      fewer groups a true gain below ≈ 0.25–0.29 is usually not adopted (family power at the MWE ≤ 0.16; group power
-      lower), which favours the incumbent.
+      ≥ MWE, no control flip, unsupported claims not higher). The exact group test bounds false adoption by α, but with
+      35–45 eligible families in fewer groups a true gain below ≈ 0.25–0.29 is usually not adopted (family power at the
+      MWE ≤ 0.16; group power lower), which favours the incumbent.
     - **Controls (C1):** public-lineage development families with strict completion rank ≤ 3 in raw hybrid and in
       hybrid+rewrite on every draw, which **reverses the D57 addendum** ("a rank-6 hit that any perturbation dislodges
       is real fragility"; D74 must say so). **(C2):** D57 as written: every incumbent strict HIT among them.
@@ -1708,10 +1725,10 @@ b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets
     owner validates every sealed family, every refusal or ambiguous label anywhere, every new development label (fast
     review), every SP paraphrase of a migrated family, and the flagged items: T01-Bb; realistic-v1's planning-extension
     refusal (relabelled under D61); T07-Ab/T07-Ba secondary groups; the pre-1975 date conflict (b0). **Escalation:**
-    decision E makes `escalate` write a form (Appendix A) under `eval/private/sealed/work/escalations/` or
-    `eval/private/work/escalations/`: item ref, phrasing(s) and the owner's one-line doubt, never the owner's key, so the
+    decision E makes `escalate` write a form (Appendix A) under `eval/private/sealed/work/escalations/` (sealed items) or
+    `eval/private/work/escalations/` (development items only): item ref, phrasing(s) and the owner's one-line doubt, never the owner's key, so the
     colleague answers independently. Only the owner forwards it (email or paper, never via a third-party model), logs
-    date and item refs in `work/forwarding_log.csv` (no names) and types the colleague's full key into the sheet; both
+    date and item refs in `eval/private/sealed/work/forwarding_log.csv` (no names) and types the colleague's full key into the sheet; both
     keys are kept, the owner decides, the orchestrator sees counts. Open after 10 days → the owner decides
     (`second_status: missing`), or a still-doubted sealed family is rejected. **Disagreement** per dimension: scope;
     AND/OR group structure (a missing or extra required group, or a different alternative set, under related matching);
@@ -1744,8 +1761,8 @@ b9. **Docs [C]:** D74 (prereg, the owner's choice, under C1 the D57-addendum rev
 
 **Owner hours (forecast):** sealed 60 families × 7 min = 7.0 h; new development families 40 × 4 min = 2.7 h; T1/T7 rows
 24 × 3.5 min + flagged items 4 × 15 min = 2.4 h; v1 refusal labels 11 × 2 min = 0.4 h; SP paraphrases of migrated
-single-phrasing families ≈ 55 × 1.5 min = 1.4 h; escalations (~10%) 10 × 15 min = 2.5 h; confirm sheets ≈ 0.5 h.
-**Required ≈ 17 h**; optional calibration + 0.75 h; the colleague ≈ 3 h. Realistic only as ~11 sessions of 1.5 h over
+single-phrasing families ≈ 55 × 1.5 min = 1.4 h; escalations (~10%) 10 × 15 min = 2.5 h; confirm sheets ≈ 0.5 h; round-2 replacements (if needed) ≈ 10 families × 7 min = 1.2 h.
+**Required ≈ 17–18 h**; optional calibration + 0.75 h; the colleague ≈ 3 h. Realistic only as ~11 sessions of 1.5 h over
 3–4 weeks, so b5 is staged: sealed sheets and their escalations first (≈ 10 h, the critical path), development sheets
 second (≈ 7 h). Third phrasings, a late calibration and colleague queries go to a later version (**set-version
 hook**, D71 Q3: a new registry name or sealed epoch via Phase 20's candidate review, never the frozen sealed set).
@@ -1768,7 +1785,7 @@ the prereg pushed before the first `data` dispatch record; `prereg-check` passes
 split and freeze in the private ledger, kinds and digests in the mirror; sealed ≥ 50 families and ≥ 35 eligible
 answerable, tuning ≥ 60 and realistic ≥ 40 families, each with 2–3 phrasings, every split in the band (rows reported),
 realistic tutorial share ≥ 25%; every sealed, refusal and ambiguous label owner-approved and hash-bound; escalation
-counts and disagreement per dimension; calibration done or "not done"; every audit hit has an exclusion or retirement
+counts and disagreement per dimension; calibration done or "not done"; every audit hit has an exclusion
 record, and unexcluded hits = 0 (R5); baseline, draws and controls
 recorded; probe, forecast and slot 0 in D76; `results_v6.md` from a canonical run within the week's cap; `scan_leaks
 --merge-gate --base main --pr <n>` clean. **Stops (D64):** b1's owner question; the weekly cap (exit 3) or lifting it;
@@ -1946,6 +1963,19 @@ ACCEPTED under **R1** edges only among sealed-eligible drafts, **R2** clustered 
 | Au3 | c6 | MINOR | ACCEPTED (R6): (k) no longer plants in development files | 2a-(k) |
 | Au3 | c7 | MINOR | ACCEPTED: "every sealed row is approval-bound" | a5; 2a-(b) |
 | Au3 | c8 | MINOR | ACCEPTED: the real probe checks read denial, no MCP, no memory directory; the scrub is 2a-(i)'s; managed settings disclosed | a7; 2a Tier-2 |
+
+### 16A-2 plan-gate r4 dispositions (spec v4 `a010d32`, 12 Oct)
+Codex r4 closed Cx3-1…3 and raised Cx4-1, Cx4-2 (MAJOR); the r3 plan-auditor's closure check closed all 24 Au3 rows and
+raised Au4-1…3 (MAJOR) and Au4-4 (MINOR). All are accepted and fixed in v5 by the orchestrator:
+| Src | # | Sev | Disposition | Where |
+|---|---|---|---|---|
+| Cx4 | 1 | MAJOR | ACCEPTED: groups are the connected components of all relations over drafts and pinned families, computed before filtering; ineligibility covers the whole group (P–A–B case tested) | Unit; 2a-(e) |
+| Cx4 | 2 | MAJOR | ACCEPTED: the primary test is exact McNemar on group-collapsed outcomes (size ≤ α exactly; power and MDE at N = eligible groups); Durkalski is an approximate sensitivity | Inference; b1; option (B); 2a-(j) |
+| Au4 | 1 | MAJOR | ACCEPTED: round-2 families are paraphrased, owner-validated and rechecked before freeze; rejection → dropped, shortfall → the listed stop; hours +1.2 h | a3; 2a-(e); owner hours |
+| Au4 | 2 | MAJOR | ACCEPTED: a round-2 draft related to a round-1 sealed group joins it; related to both that group and pinned development → dropped; the round-1 straddle is closed by whole-group ineligibility | Unit; 2a-(e) |
+| Au4 | 3 | MAJOR | ACCEPTED: same fix as Cx4-2 | Inference |
+| Au4 | 4 | MINOR | ACCEPTED: SP stdout/stderr logs move to `eval/private/sealed/work/`, so the precheck passes | a7 |
+| Au4 | — | residue | ACCEPTED: (k) plants in `eval/private/work/`; the criterion names only exclusion records; the forwarding log is rooted under `sealed/work/`; sealed escalations go only under `sealed/work/` | (k); 2b Tier-2; b5 |
 
 ### 16A-2 appendix A — note for the reviewing colleague
 *(The owner sends this with each form. It names no client and quotes no Handbook text.)*
