@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "branch": "phase-16a2b-data",
+  "rounds": [
+    1,
+    2
+  ],
+  "seeds": {
+    "split_r1": 4721112936955565465,
+    "split_r2": 2060714279786243518,
+    "repair": 4132900947249597239,
+    "calibration": 1958881144304175148
+  },
+  "quota": {
+    "sealed": 60,
+    "spare": 10,
+    "floor_sealed": 50,
+    "floor_answerable": 35,
+    "realistic_min": 42,
+    "tuning_min": 60,
+    "examples": [
+      {
+        "pool_total": 170,
+        "preassigned_realistic": 31,
+        "sealed": 60,
+        "realistic": 42,
+        "tuning": 68
+      },
+      {
+        "pool_total": 180,
+        "preassigned_realistic": 47,
+        "sealed": 60,
+        "realistic": 47,
+        "tuning": 73
+      },
+      {
+        "pool_total": 160,
+        "preassigned_realistic": 31,
+        "sealed": 60,
+        "realistic": 42,
+        "tuning": 58
+      }
+    ]
+  },
+  "band": {
+    "min_pct": 25,
+    "max_pct": 30
+  },
+  "strata": {},
+  "min_share": {
+    "realistic": {
+      "tutorial_or_colleague": 0.25
+    }
+  },
+  "mwe": 0.1,
+  "alpha": 0.05,
+  "k_max": 4,
+  "draws_r": 5,
+  "primary_metric": {
+    "cutoff": 6,
+    "metric": "strict_hit",
+    "mode": "hybrid+rewrite",
+    "set": "sealed",
+    "unit": "family",
+    "eligible_scopes": [
+      "answer",
+      "partial"
+    ],
+    "estimand": "family_level_difference",
+    "mwe_scale": "absolute",
+    "test": "exact_cluster_signflip",
+    "sided": "two",
+    "direction": "sign_of_sum_d_g",
+    "alpha_scope": "family_wise",
+    "multiplicity": "holm",
+    "sensitivities": [
+      "durkalski_by_group",
+      "mcnemar_exact_families"
+    ]
+  },
+  "collapse": {
+    "rule": "all",
+    "tie": "miss"
+  },
+  "adoption": {
+    "rule": "a",
+    "decision": "d74",
+    "development_family_effect_min": 0.1,
+    "critical_control_flips_max": 0,
+    "unsupported_claim_rate": "not_higher",
+    "sealed_guard": "non_inferiority",
+    "sealed_point_estimate_min": 0,
+    "sealed_holm_significant_loss": "forbidden",
+    "label": "adopted_on_development_evidence",
+    "fail_if": [
+      "critical_control_flip",
+      "holm_significant_sealed_loss"
+    ],
+    "departs_from": "design_003_s5_16b",
+    "phase_21": "beats_single_pass_on_sealed",
+    "embedding_arm_slot": "development_effect_ge_mwe",
+    "rejected": [
+      "b"
+    ],
+    "confirmatory_batch": {
+      "slots": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "k_max": 4,
+      "declared": "one_non_adaptive_batch_before_first_confirmatory_slot",
+      "multiplicity": "holm",
+      "state": "refused_until_16b_sealed_comparison_gate",
+      "slots_declared_by": "batch_declaration_record_before_slot_1",
+      "expansion": "replay",
+      "replays": "canonical_baseline_expansion_artifact",
+      "rewrite_changing_candidate": {
+        "expansion": "candidate",
+        "flag": "rewrite_candidate",
+        "arm": "live",
+        "against": "incumbent_replay"
+      }
+    }
+  },
+  "controls": {
+    "rule": "c1",
+    "decision": "d74",
+    "families": "public_lineage_development",
+    "metric": "strict_completion_rank",
+    "rank_ceiling": 3,
+    "modes": [
+      "hybrid",
+      "hybrid+rewrite"
+    ],
+    "draws": "every",
+    "draws_r": 5,
+    "collapse": "all",
+    "computed": "once_on_frozen_development_versions",
+    "committed": "before_slot_1",
+    "recomputed_mid_batch": false,
+    "flip": "fail",
+    "reverses": "d57_addendum",
+    "rejected": [
+      "c2"
+    ]
+  },
+  "slots": {
+    "0": {
+      "expansion": "live",
+      "role": "descriptive_baseline",
+      "builds": "run_dir_expansion_artifact",
+      "canonical": "v6_guards"
+    },
+    "0b": {
+      "expansion": "live",
+      "role": "spare",
+      "builds": "run_dir_expansion_artifact",
+      "canonical": "v6_guards",
+      "usable": "once_after_non_canonical_or_spent_slot_0"
+    }
+  },
+  "drafting_rule": {
+    "attempt_1": {
+      "families_approx": 100,
+      "tutorial_sourced_approx": 50,
+      "handbook_drafted_approx": 50,
+      "per_unseen_tutorial_approx": 3,
+      "unseen_tutorials": 15,
+      "per_title_document_set_max": 1,
+      "title_document_sets": 7,
+      "never_drafted_from": [
+        "t01",
+        "t07"
+      ],
+      "refusal_pct_approx": 30,
+      "plus": "development_refusal_deficits",
+      "seed_phrasings_per_family": 1,
+      "registers": [
+        "lay",
+        "modelled",
+        "terse"
+      ],
+      "conflict_label_families": "development_only"
+    },
+    "next_attempt": {
+      "when": [
+        "quota_short",
+        "infeasible"
+      ],
+      "action": "sp_drafts_more_before_next_attempt",
+      "split_seed": "same_per_round",
+      "released": "first_feasible_attempt"
+    },
+    "round_2": {
+      "purpose": "replacements",
+      "order": [
+        "round_1_split",
+        "b5_validation",
+        "sp_recheck",
+        "round_2",
+        "freeze"
+      ],
+      "quotas": "equal_round_1",
+      "related_to_round_1_sealed_group": "dropped",
+      "sources": "tutorials_and_primary_sections_unused_by_round_1_sealed_groups",
+      "surplus": "quarantine_r2"
+    },
+    "paraphrase": {
+      "phrasings_min": 2,
+      "phrasings_max": 3,
+      "migrated_top_up_to": 2,
+      "t1_t7_cap": 3
+    },
+    "infeasible_after_round_2": "d64_owner_stop"
+  },
+  "power": {
+    "alpha": 0.05,
+    "discordance": [
+      0.2,
+      0.3,
+      0.5
+    ],
+    "planned_groups": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+    ],
+    "draws": 10000,
+    "seed": 5722486815998357046,
+    "table": [
+      {
+        "model": "independent",
+        "discordance": 0.2,
+        "power_pm": 164,
+        "mde_hundredths": 20
+      },
+      {
+        "model": "independent",
+        "discordance": 0.3,
+        "power_pm": 125,
+        "mde_hundredths": 25
+      },
+      {
+        "model": "independent",
+        "discordance": 0.5,
+        "power_pm": 102,
+        "mde_hundredths": 32
+      },
+      {
+        "model": "correlated",
+        "discordance": 0.2,
+        "power_pm": 87,
+        "mde_hundredths": null
+      },
+      {
+        "model": "correlated",
+        "discordance": 0.3,
+        "power_pm": 83,
+        "mde_hundredths": 29
+      },
+      {
+        "model": "correlated",
+        "discordance": 0.5,
+        "power_pm": 72,
+        "mde_hundredths": 41
+      }
+    ]
+  }
+}
