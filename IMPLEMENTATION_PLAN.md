@@ -1699,7 +1699,7 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     rewrite-changing candidates expand live under `--rewrite-candidate` against the incumbent's replay; R = 5; the
     canonical v6 guards; power tables for groups and families. Slots: 0 = descriptive baseline (the canonical run),
     0b = spare, 1–4 = the batch, refused until 16B's sealed comparison passes its own gate. Later changes are amendments.
-    **Adoption and controls — PENDING-OWNER (D64: eval protocol; asked 12 Oct).** The prereg waits for the choice:
+    **Adoption and controls — decided by the owner on 13 Oct: (A) with (C1) (D74).** The options were:
     - **(A) Development evidence adopts; sealed is a non-inferiority guard.** Adopted when the development family effect
       is ≥ MWE, no critical control flips, unsupported claims do not rise, *and* sealed shows no harm (point estimate
       ≥ 0, no Holm-significant loss under the sign-flip primary). Modest real gains below the sealed MDE can ship, but so

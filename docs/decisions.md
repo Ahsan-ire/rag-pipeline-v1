@@ -4,9 +4,9 @@
 > Append-only. If a decision is reversed, add a new entry — don't edit history.
 > This file goes in `docs/decisions.md`.
 
-**Current phase: Phase 16A-2a (sealed tooling, D72–D73) on `phase-16a2-eval-data` → `v2.4.0`, then 16A-2b (data + re-baseline, D74–D75); inputs per D71; 16A-1 shipped as v2.3.0 (D65–D70); harness Track B stage B2 (workers + escape probes) merged in the harness repo; run under the standing go (D64), see docs/designs/003-roadmap-and-next-actions.md.**
+**Current phase: Phase 16A-2b (data + re-baseline, D74–D75) on `phase-16a2b-data` → `v2.5.0`; 16A-2a shipped as v2.4.0 (D72–D73); inputs per D71; 16A-1 shipped as v2.3.0 (D65–D70); harness Track B stage B2 (workers + escape probes) merged in the harness repo; run under the standing go (D64), see docs/designs/003-roadmap-and-next-actions.md.**
 
-**Next: D74** (D60 is reserved for the third-party lane / global harness decision; D61–D73 landed; D74–D75 are allocated to 16A-2b).  (Update this line in the same commit as each new entry.)
+**Next: D75** (D60 is reserved for the third-party lane / global harness decision; D61–D74 landed; D75 is allocated to 16A-2b's canonical run).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -2402,3 +2402,23 @@ The SP's stdout and stderr go to files and are never printed. The launcher print
 - **Claim default.** `acquire_slot_token` defaults to `claim=False`.
 - **Stale staging.** The audit sweeps stale staging before scanning.
 - **Crash leftovers.** `sealed_tool` removes its own `write_atomic` temp leftovers on recovery.
+
+## D74 — 16A-2b pre-registration: the owner's adoption and controls choice (13 Oct 2026)
+**Decision (owner, D64 eval protocol):** option **(A)** with controls **(C1)**, as set out in IMPLEMENTATION_PLAN.md § 16A-2b, b1.
+- **Adoption.** A retrieval change is adopted when **all** of these hold:
+  - its development family effect is ≥ the MWE (+0.10);
+  - no critical control flips;
+  - unsupported claims do not rise;
+  - the sealed set shows no harm: a point estimate ≥ 0 and no Holm-significant loss under the exact cluster sign-flip primary (D73).
+
+  Such a change is labelled "adopted on development evidence" in the ledger and the README.
+- **This departs from design 003 §5 16B** ("sealed families are the judge"). With 35–45 eligible sealed families, the sealed set confirms only gains of about +0.24 or more, while typical retrieval changes are worth +0.05 to +0.15. So sealed confirmation alone (B) would almost never adopt anything. The owner accepts the risk that a change overfitted to development but neutral on sealed can ship. The sealed non-inferiority guard and the controls bound that risk.
+- **Phase 21 (agentic) keeps 003's rule:** it ships only if it beats single-pass on sealed families.
+- **Controls (C1)** are public-lineage development families with strict completion rank ≤ 3, in raw hybrid and in hybrid+rewrite, on every draw. This **reverses the D57 addendum**, which held that "a rank-6 hit that any perturbation dislodges is real fragility". The reason: with R = 5 live draws now measured, draw-unstable knife-edges are measured noise, not regressions. Keeping them would revive "zero flips anywhere" and entrench the incumbent, the outcome 003 16A.5 set out to avoid. A control flip is still a FAIL under any choice.
+- **D57's re-open condition is not met by sealed alone.** An embedding arm spends a slot only on development evidence ≥ MWE.
+- **Owner workload:** about 17–18 h at about 1.5 h per session over 3–4 weeks, accepted.
+- **Calibration:** the colleague will do the optional 15-item calibration, but is likely busy for some weeks after exams. Calibration is therefore scheduled when they are free and is off the critical path. Escalated items left unanswered for 10 days fall to the owner (`second_status: missing`), as b5 specifies.
+
+**Why:** OS questions asked on 12 Oct and answered by the owner on 13 Oct. The prereg (b1) waited on this choice.
+
+**Rejected:** (B), sealed confirmation only, because at this N it adopts almost nothing. (C2), D57 as written, because it entrenches the incumbent on draw noise.
