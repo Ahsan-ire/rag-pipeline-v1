@@ -222,8 +222,29 @@ def _cli_draws(tmp_path, sha, *, tweak=None):
     return paths
 
 
-def _argv(rule, draws, dev, out):
-    argv = ["--rule", rule, "--dev-set", str(dev), "--list", str(out)]
+def _freeze(dev, split="tuning"):
+    """Record the dev file's sha256 as the split's freeze (the version the controls bind to), once."""
+    from src.sealed_run import default_ledger
+
+    ledger = default_ledger()
+    if ledger.freeze_record(split) is None:
+        ledger.record_freeze(split=split, set_sha256=sha256_file(dev), totals={"families": 1})
+
+
+def _prereg(tmp_path, rule, draws_r, ceiling=None):
+    path = tmp_path / f"prereg_{rule}.json"
+    path.write_text(json.dumps({"controls": {
+        "rule": rule, "rank_ceiling": controls.RANK_CEILING[rule] if ceiling is None else ceiling, "draws_r": draws_r,
+    }}), encoding="utf-8")
+    return path
+
+
+def _argv(rule, draws, dev, out, *, freeze=True, prereg=None):
+    """The CLI arguments: the rule comes from a prereg file written next to ``out``; the dev set is frozen first."""
+    if freeze:
+        _freeze(dev)
+    prereg = prereg or _prereg(out.parent, rule, len(draws))
+    argv = ["--prereg", str(prereg), "--dev-set", str(dev), "--list", str(out)]
     for d in draws:
         argv += ["--draw", d]
     return argv
@@ -283,3 +304,34 @@ def test_cli_exit_codes_for_unusable_and_sealed_input(tmp_path, capsys):
     assert not out.exists()
     captured = capsys.readouterr()
     assert CANARY not in captured.out + captured.err
+
+
+def test_cli_reads_rule_ceiling_and_draw_count_from_the_prereg(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    # rank ceiling that is not the rule's
+    assert controls.main(_argv("c1", draws, dev, out, prereg=_prereg(tmp_path, "c1", len(draws), ceiling=6))) == controls.EXIT_UNUSABLE
+    assert "rank ceiling" in capsys.readouterr().err
+    # c1: the number of draw files must be draws_r
+    assert controls.main(_argv("c1", draws, dev, out, prereg=_prereg(tmp_path, "c1", len(draws) + 1))) == controls.EXIT_UNUSABLE
+    assert "draws_r" in capsys.readouterr().err
+    # c2 does not count draws
+    assert controls.main(_argv("c2", draws, dev, out, prereg=_prereg(tmp_path, "c2", 99))) == 0
+    # no --rule flag any more
+    with pytest.raises(SystemExit):
+        controls.main(["--rule", "c1", "--dev-set", str(dev), "--draw", draws[0]])
+
+
+def test_cli_refuses_a_dev_set_that_is_not_its_frozen_version(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == controls.EXIT_UNUSABLE  # never frozen
+    assert "not its frozen version" in capsys.readouterr().err
+    assert not out.exists()
+    _freeze(dev, "realistic")  # a realistic freeze counts too
+    assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == 0
+    changed = _dev_set(tmp_path, _rows() + [_v2("f0002dddd", 0, "legacy")], name="changed.jsonl")  # a later version
+    other = _cli_draws(tmp_path, sha256_file(changed))
+    assert controls.main(_argv("c1", other, changed, tmp_path / "p.json", freeze=False)) == controls.EXIT_UNUSABLE

@@ -15,7 +15,7 @@ import logging
 import re
 from scripts import sealed_tool as st
 from tests.p16w_sealed_world import (  # noqa: F401  (fixtures)
-    CANARY, read_rows, repos, standard_released, world,
+    CANARY, b1a_blocks, read_rows, repos, standard_released, world,
 )
 from tests.test_p16w_sealed_tool import assert_allowlisted
 
@@ -60,7 +60,8 @@ def assert_sealed_text_stays_under_sealed(world, tmp_path):
 
 def test_canaries_in_every_free_text_field_never_reach_stdout_stderr_or_the_log(world, caplog, tmp_path):
     caplog.set_level(logging.DEBUG)
-    world.prereg_extra = {"drafting_rule": f"{CANARY} draft more families under the rule"}
+    rule = b1a_blocks(mwe=0.1, draws_r=5)["drafting_rule"]
+    world.prereg_extra = {"drafting_rule": {**rule, "note": f"{CANARY} draft more families under the rule"}}
     std = standard_released(world, sealed_mark=SEALED_MARK, dev_mark=DEV_MARK)
     run = world.run
     run("ids", "--count", "3", "--out", tmp_path / f"{CANARY}-ids.txt")

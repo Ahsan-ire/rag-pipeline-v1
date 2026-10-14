@@ -23,6 +23,7 @@ outside ``eval/private/sealed/``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -34,7 +35,7 @@ import pytest
 import src.evaluator as ev
 from scripts import sealed_tool as st
 from scripts import sp_launch as sp
-from src import sealed_run
+from src import eval_privacy, sealed_run
 from src.eval_sealed_read import load_sealed
 from src.sealed_ledger import RecoveryAction
 from tests import p16_slot as slot
@@ -149,7 +150,6 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
         return w.sealed / "work" / "sp_out" / dispatch
 
     # --- the world: prereg pushed first (a data dispatch needs it on the remote) --------------------------------
-    w.prereg_extra = {"slots": {"0": {"expansion": "live"}, "0b": {"expansion": "live"}, "1": {"expansion": "live"}}}
     std = build_standard(w, sealed_mark=SEALED_MARK, dev_mark=DEV_MARK)
     w.write_prereg()
     prereg_sha = w.commit_prereg(push=True)
@@ -331,12 +331,19 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     assert w.ledger().exclusions() == frozenset({target_group[0]})  # the whole group, named by its smallest family
 
     # a slot-1 gate (a confirmatory slot, paired with slot 0's stored run) sees the exclusion
+    cand = "7" * 64
+    code, out, err = w.run("declare-batch", "--candidate", cand)  # slot 1 needs the batch declaration (b1a)
+    assert code == 0 and w.last(out, "batch_declared")["candidates"] == "1", err
+    baseline_id = w.ledger().recover(0).run_id
+    artifact = eval_privacy.sealed_run_dir(baseline_id, create=False) / "expansion_artifact.json"  # slot 0's, replayed
     token = sealed_run.acquire_slot_token(
         1, ledger=w.ledger(), set_path=frozen, prereg_path=w.prereg_path, records_dir=w.sealed / "work",
-        expansion="live", meter=make_meter(), baseline_run=w.ledger().recover(0).run_id,
+        expansion=str(artifact), meter=make_meter(), baseline_run=baseline_id,
         claim=True, top_k=6,  # the gate claims only on request (the library default is unclaimed), and then it checks top_k
     )
     assert token.slot == "1" and token.excluded == frozenset({target_group[0]})
+    assert token.candidate_config_hash == cand and token.prereg_sha256 == hashlib.sha256(w.prereg_path.read_bytes()).hexdigest()  # the real prereg binding
+    assert token.prereg_commit == prereg_sha
     assert token.groups[target_group[1]] == target_group[0] == token.groups[target_group[0]]
     survivors = {r["family_id"] for r in read_rows(w.sealed / "sealed_r1.jsonl")}
     assert set(token.groups.values()) == set(st.sealed_group_index(w.ledger(), survivors))  # exclude's ids are the gate's ids
@@ -346,7 +353,7 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     records = w.ledger().records()
     assert [r["kind"] for r in records] == [
         "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze",
-        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "slot_claim",
+        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "batch_declaration", "slot_claim",
     ]
     dispatches = [r for r in records if r["kind"] == "dispatch"]
     assert [d["dispatch_id"] for d in dispatches] == [d["dispatch_id"] for d in env.log("sp_dispatch.jsonl")] == [draft, twins, recheck]

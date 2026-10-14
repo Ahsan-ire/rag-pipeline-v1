@@ -18,7 +18,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
 
 Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
 ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
-``audit``, ``power``, ``prereg-check``, ``return``.
+``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``return``.
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
@@ -99,9 +99,14 @@ After the sealed freeze a twin found by a later development recheck never moves 
 **prereg** (``eval/prereg_16a2.json``): ``version``, ``branch``, ``rounds``, ``seeds`` (``split_r1``, ``split_r2``,
 ``repair``, ``calibration``), ``quota`` (``sealed``, ``spare``, ``floor_sealed``, ``floor_answerable``,
 ``realistic_min``, ``tuning_min``, ``examples``), ``band``, ``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``power``
-(``alpha``, ``discordance``, ``planned_groups``, ``draws``, ``seed``, ``table``), optional ``strata``,
-``min_share`` (keyed by split; the source class ``tutorial_or_colleague`` pools those two sources) and the free keys
-named in :data:`PREREG_KEYS`. ``prereg-check`` recomputes ``quota.examples`` and ``power.table``. The same file is the
+(``alphas`` = [alpha, alpha / k_max], ``discordance``, ``planned_groups``, ``draws``, ``seed``, ``table``,
+``family_table``), optional ``strata``, ``min_share`` (keyed by split; the source class ``tutorial_or_colleague``
+pools those two sources) and the b1a blocks, all required and checked against their registered values:
+``primary_metric`` (cut-off 6, hybrid+rewrite, strict_hit), ``collapse`` (``{"rule": "all"}``), ``adoption`` (rule a,
+the confirmatory batch, the development evidence, unsupported claims and control flip definitions), ``controls``
+(rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 replay ``slot0_canonical`` after a batch declaration) and
+``drafting_rule`` (refusal share 0.275 over the whole pool, at most 3 round-1 attempts). ``prereg-check`` recomputes
+``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``. The same file is the
 slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
 ``quota.floor_answerable`` and the expansion mode of each slot from ``slots`` (``{"0": {"expansion": "live"}, ...}``).
 """
@@ -209,6 +214,7 @@ REASONS = (
     "inputs_invalid", "scan_source_invalid", "git_failed", "split_input_invalid", "freeze_infeasible",
     "round_order", "unknown_family", "nothing_to_do", "already_intaken", "tag_conflict",
     "path_outside", "locked", "freeze_recovery_failed", "dump_missing", "staging_live",
+    "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -463,7 +469,7 @@ LOCK_NAME = ".lock"
 #: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
 #: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``return``, ``audit``) take no lock.
 STATE_COMMANDS = frozenset(
-    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude"}
+    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
 )
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -895,7 +901,10 @@ PREREG_KEYS = frozenset(
         "k_max", "draws_r", "power", "primary_metric", "collapse", "adoption", "controls", "slots", "drafting_rule",
     }
 )
-PREREG_REQUIRED = ("version", "branch", "rounds", "seeds", "quota", "band", "mwe", "alpha", "k_max", "draws_r", "power")
+PREREG_REQUIRED = (
+    "version", "branch", "rounds", "seeds", "quota", "band", "mwe", "alpha", "k_max", "draws_r", "power",
+    "primary_metric", "collapse", "adoption", "controls", "slots", "drafting_rule",
+)
 PREREG_ERRORS = ("missing", "wrong_type", "out_of_range", "unknown_key", "mismatch")
 
 
@@ -930,20 +939,143 @@ def mc_mde_hundredths(groups: Sequence[int], disc: float, alpha: float, draws: i
 
 
 def power_cells(power: Mapping[str, Any], mwe: float) -> List[Dict[str, Any]]:
-    """The prereg's power table, recomputed: model-major, one cell per discordance."""
+    """The prereg's power table, recomputed: model-major, then alpha, then discordance."""
     cells = []
     for model in MODELS:
+        for alpha in power["alphas"]:
+            for disc in power["discordance"]:
+                effect = min(mwe, disc)
+                args = (power["planned_groups"], disc)
+                cells.append(
+                    {
+                        "model": model, "alpha": alpha, "discordance": disc,
+                        "power_pm": mc_power_pm(*args, effect, alpha, power["draws"], power["seed"], model),
+                        "mde_hundredths": mc_mde_hundredths(*args, alpha, power["draws"], power["seed"], model),
+                    }
+                )
+    return cells
+
+
+def family_cells(power: Mapping[str, Any], mwe: float) -> List[Dict[str, Any]]:
+    """The singleton-family table, recomputed from ``eval_stats``: per alpha, per discordance, n = all planned groups' families."""
+    n = sum(power["planned_groups"])
+    cells = []
+    for alpha in power["alphas"]:
         for disc in power["discordance"]:
-            effect = min(mwe, disc)
-            args = (power["planned_groups"], disc)
+            ref = eval_stats.mde(n, disc, alpha)
             cells.append(
                 {
-                    "model": model, "discordance": disc,
-                    "power_pm": mc_power_pm(*args, effect, power["alpha"], power["draws"], power["seed"], model),
-                    "mde_hundredths": mc_mde_hundredths(*args, power["alpha"], power["draws"], power["seed"], model),
+                    "alpha": alpha, "discordance": disc, "families": n,
+                    "power_pm": round(1000 * eval_stats.power(n, disc, min(mwe, disc), alpha, "directional")),
+                    "mde_hundredths": round(100 * ref) if ref is not None else None,
                 }
             )
     return cells
+
+
+_ABSENT = object()
+
+
+def _at(doc: Any, path: str) -> Any:
+    """The value at a dotted path, or ``_ABSENT``."""
+    for part in path.split("."):
+        if not isinstance(doc, dict) or part not in doc:
+            return _ABSENT
+        doc = doc[part]
+    return doc
+
+
+def _eq(a: Any, b: Any) -> bool:
+    """Strict JSON equality (``True`` is not ``1``; ``1`` equals ``1.0`` only for numbers)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(_eq(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_eq(x, y) for x, y in zip(a, b))
+    if _is_num(a) and _is_num(b):
+        return a == b
+    return type(a) is type(b) and a == b
+
+
+def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
+    """The b1a registered values: primary metric, collapse, adoption, controls, slots, drafting rule (``mismatch``)."""
+
+    def want(path: str, value: Any) -> None:
+        got = _at(doc, path)
+        if got is _ABSENT or not _eq(got, value):
+            errors.append((path, "mismatch"))
+
+    want("primary_metric.cutoff", 6)
+    want("primary_metric.mode", "hybrid+rewrite")
+    want("primary_metric.metric", "strict_hit")
+    want("collapse", {"rule": "all"})
+    want("k_max", 4)
+    want("adoption.rule", "a")
+    want("adoption.confirmatory_batch.k_max", 4)
+    want("adoption.confirmatory_batch.holm_k", 4)
+    want("adoption.confirmatory_batch.slots", ["1", "2", "3", "4"])
+    want("adoption.confirmatory_batch.replays", "slot0_canonical")
+    want("adoption.development_evidence", {
+        "metric": "strict_hit", "cutoff": 6, "collapse": "all", "mode": "hybrid+rewrite",
+        "sets": ["tuning", "realistic"], "versions": "frozen_at_slot_0", "draws": doc.get("draws_r"),
+        "statistic": "mean_over_draws_of_family_difference",
+    })
+    want("adoption.unsupported_claims", {
+        "unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent", "max_excess_abs": 0.01,
+    })
+    want("adoption.control_flip", {
+        "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite", "draws": "any",
+        "versions": "frozen_at_slot_0",
+    })
+    want("adoption.development_family_effect_min", doc.get("mwe"))
+    adoption = doc.get("adoption")
+    if isinstance(adoption, dict) and "sealed_guard" in adoption:
+        errors.append(("adoption.sealed_guard", "unknown_key"))
+    want("controls.rule", "c1")
+    want("controls.rank_ceiling", 3)
+    want("controls.modes", ["hybrid", "hybrid+rewrite"])
+    want("controls.draws_r", doc.get("draws_r"))
+    want("controls.collapse", "all")
+    want("controls.binds_to", "development_freeze_records")
+    slots = doc.get("slots")
+    if not isinstance(slots, dict) or set(slots) != {"0", "0b", "1", "2", "3", "4"}:
+        errors.append(("slots", "mismatch"))
+    else:
+        for sid in ("0", "0b"):
+            want(f"slots.{sid}.expansion", "live")
+        for sid in ("1", "2", "3", "4"):
+            want(f"slots.{sid}", {
+                "expansion": "replay", "artifact": "slot0_canonical", "role": "confirmatory",
+                "requires": "batch_declaration",
+            })
+    a1 =_at(doc, "drafting_rule.attempt_1")
+    if isinstance(a1, dict):
+        for old in ("refusal_pct_approx", "plus"):
+            if old in a1:
+                errors.append((f"drafting_rule.attempt_1.{old}", "unknown_key"))
+    want("drafting_rule.attempt_1.refusal_share_target", 0.275)
+    share = _at(doc, "drafting_rule.attempt_1.refusal_share_target")
+    if _is_num(share) and not 0.25 <= share <= 0.30:
+        errors.append(("drafting_rule.attempt_1.refusal_share_target", "out_of_range"))
+    want("drafting_rule.attempt_1.refusal_share_counts", "pool_including_preassigned")
+    want("drafting_rule.attempt_1.realistic_lay_min_share", 0.5)
+    want("drafting_rule.next_attempt.max_round_1_attempts", 3)
+    want("drafting_rule.next_attempt.after_cap", "split_infeasible_stop")
+    want("drafting_rule.paraphrase.t1_t7_cap", 3)
+
+
+def _check_examples_labels(quota: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
+    """A quota example may carry ``label``: ``quota_short`` exactly when its tuning is below ``tuning_min``."""
+    for i, ex in enumerate(quota.get("examples", [])):
+        if not isinstance(ex, dict) or not _is_int(ex.get("tuning"), -10**9):
+            continue
+        short = ex["tuning"] < quota["tuning_min"]
+        label = ex.get("label")
+        if "label" in ex and label != ("quota_short" if short else "ok"):
+            errors.append((f"quota.examples[{i}]", "mismatch"))
+        elif short and "label" not in ex:
+            errors.append((f"quota.examples[{i}]", "mismatch"))
 
 
 def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]]:
@@ -979,10 +1111,12 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
             examples = quota.get("examples", [])
             if need("quota.examples", isinstance(examples, list)):
                 for i, ex in enumerate(examples):
-                    ok = isinstance(ex, dict) and set(ex) == {"pool_total", "preassigned_realistic", "sealed", "realistic", "tuning"}
+                    ok = isinstance(ex, dict) and set(ex) - {"label"} == {"pool_total", "preassigned_realistic", "sealed", "realistic", "tuning"}
                     if need(f"quota.examples[{i}]", ok) and recompute:
                         want = compute_quotas(quota, ex["pool_total"], ex["preassigned_realistic"])
                         need(f"quota.examples[{i}]", all(ex[k] == want[k] for k in want), "mismatch")
+                if isinstance(examples, list):
+                    _check_examples_labels(quota, errors)
     band = doc["band"]
     need("band", band == {"min_pct": 25, "max_pct": 30}, "mismatch")
     need("mwe", _is_num(doc["mwe"]) and 0 < doc["mwe"] <= 1, "out_of_range")
@@ -992,15 +1126,20 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
     pw = doc["power"]
     if need("power", isinstance(pw, dict)):
         ok = (
-            set(pw) <= {"alpha", "discordance", "planned_groups", "draws", "seed", "table"}
-            and _is_num(pw.get("alpha")) and 0 < pw["alpha"] < 1
+            set(pw) <= {"alphas", "discordance", "planned_groups", "draws", "seed", "table", "family_table"}
+            and isinstance(pw.get("alphas"), list) and bool(pw["alphas"])
+            and all(_is_num(a) and 0 < a < 1 for a in pw["alphas"])
             and isinstance(pw.get("discordance"), list) and bool(pw["discordance"])
             and all(_is_num(d) and 0 < d <= 1 for d in pw["discordance"])
             and isinstance(pw.get("planned_groups"), list) and bool(pw["planned_groups"])
             and all(_is_int(g, 1) for g in pw["planned_groups"])
             and _is_int(pw.get("draws"), 1) and isinstance(pw.get("seed"), int) and not isinstance(pw.get("seed"), bool)
         )
-        if need("power", ok) and recompute and not errors:
+        if need("power", ok):
+            ok = _is_num(doc["alpha"]) and _is_int(doc["k_max"], 1) and pw["alphas"] == [doc["alpha"], doc["alpha"] / doc["k_max"]]
+            need("power.alphas", ok, "mismatch")
+        if ok and recompute and not errors:
+            need("power.family_table", pw.get("family_table") == family_cells(pw, float(doc["mwe"])), "mismatch")
             want_cells = power_cells(pw, float(doc["mwe"]))
             table = pw.get("table")
             same = (
@@ -1008,6 +1147,8 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
                 and all(isinstance(t, dict) and all(t.get(k) == w[k] for k in w) for t, w in zip(table, want_cells))
             )
             need("power.table", same, "mismatch")
+    if not errors:
+        _check_b1a(doc, errors)
     strata, min_share = doc.get("strata", {}), doc.get("min_share", {})
     need("strata", isinstance(strata, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in strata.items()))
     need("min_share", isinstance(min_share, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in min_share.items()))
@@ -1060,6 +1201,16 @@ def gate_prereg(ctx: Ctx, prereg: Mapping[str, Any], round_no: int) -> str:
     except sp.LaunchError:
         raise Stop(EXIT_REFUSED, "prereg_not_pushed") from None
     return sha
+
+
+def bind_prereg_sha(ctx: Ctx, prereg: Mapping[str, Any]) -> str:
+    """The prereg's file sha256 if it is committed, unmodified and pushed (``gate_prereg``'s rule, without a round)."""
+    sha = prereg_commit(ctx)
+    try:
+        sp.check_prereg(sha, str(prereg["branch"]), repo=ctx.repo)
+    except sp.LaunchError:
+        raise Stop(EXIT_REFUSED, "prereg_not_pushed") from None
+    return sha_file(ctx.prereg_file)
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1760,10 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         raise Stop(EXIT_REFUSED, "round1_missing")
     if ledger.freeze_record("sealed") is not None:
         raise Stop(EXIT_REFUSED, "already_frozen")
+    if round_no == 1:  # the cap on round-1 attempts: past it the split is infeasible, a stop (b1a, Au11)
+        cap = int(prereg["drafting_rule"]["next_attempt"]["max_round_1_attempts"])
+        if sum(1 for r in ledger.records("split_attempt") if r["round"] == 1) >= cap:
+            raise Stop(EXIT_REFUSED, "split_infeasible")
     pool = load_pool(ctx)
     if not pool:
         raise Stop(EXIT_REFUSED, "pool_empty")
@@ -2066,10 +2221,26 @@ def cmd_escalate(ctx: Ctx, kind: str, sheet: str, name: Optional[str]) -> int:
     return EXIT_OK
 
 
-def cmd_calibrate(ctx: Ctx, kind: str, seed: Optional[int]) -> int:
-    """Draw 15 approved families by the prereg seed (5 refuse-or-partial, 10 answer) for a calibration form."""
-    use_seed = seed if seed is not None else int(load_prereg(ctx)["seeds"]["calibration"])
-    fams = _family_rows(ctx, kind)
+def cmd_calibrate(ctx: Ctx, kind: str) -> int:
+    """Draw 15 approved families by the prereg seed (5 refuse-or-partial, 10 answer) for a calibration form.
+
+    Only after every split is frozen, only from families in the frozen split file(s) of ``kind`` (sealed: the
+    sealed file; development: tuning and realistic), once: a second draw must recompute identically (then it
+    only re-emits) or ``calibration_drawn`` is refused.
+    """
+    use_seed = int(load_prereg(ctx)["seeds"]["calibration"])
+    ledger = ctx.ledger()
+    if any(ledger.freeze_record(sp_name) is None for sp_name in SPLITS):
+        raise Stop(EXIT_REFUSED, "splits_not_frozen")
+    in_scope = ("sealed",) if kind == "sealed" else DEV_SPLITS
+    frozen_ids: Set[str] = set()
+    for name in in_scope:
+        path = frozen_path(ctx, name)
+        if not path.is_file():
+            raise Stop(EXIT_REFUSED, "splits_not_frozen")
+        rows = load_sealed_rows(ctx, path) if name == "sealed" else load_dev_rows(ctx, path)
+        frozen_ids.update(str(r["family_id"]) for r in rows)
+    fams = {f: r for f, r in _family_rows(ctx, kind).items() if f in frozen_ids}
     approvals = load_approvals(ctx, kind)["approved"]
     ok = [
         fid for fid, rows in fams.items()
@@ -2081,6 +2252,15 @@ def cmd_calibrate(ctx: Ctx, kind: str, seed: Optional[int]) -> int:
         raise Stop(EXIT_REFUSED, "calibration_short", refuse_or_partial=len(hard), answer=len(easy))
     rng = random.Random(use_seed)
     drawn = sorted([*rng.sample(hard, 5), *rng.sample(easy, 10)])
+    draw_doc = {"seed": use_seed, "families": drawn, "n": len(drawn)}
+    draw_path = ctx.work_for(kind) / "calibration_draw.json"
+    if draw_path.is_file():
+        if read_json(draw_path, "input_invalid") != draw_doc:
+            raise Stop(EXIT_REFUSED, "calibration_drawn")
+        form_old = safe_dest(ctx.work_for(kind), "escalations", "calibration_form.txt")
+        extra = {"form_sha256": sha_file(form_old)} if form_old.is_file() else {}
+        ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=sha_file(draw_path), **extra)
+        return EXIT_OK
     items = [(fid, fams[fid][:1], "") for fid in drawn]
     form = _write_form(ctx, kind, "calibration_form", "Calibration form (a random few questions, used to check the key as a whole)", items)
     pages = load_pages(ctx)
@@ -2093,7 +2273,7 @@ def cmd_calibrate(ctx: Ctx, kind: str, seed: Optional[int]) -> int:
         for fid in drawn for r in fams[fid][:1]
     ]
     write_atomic(sheet_dest(ctx, kind, "calibration.csv"), csv_bytes(SHEET_COLUMNS, recs))
-    digest = write_json(ctx.work_for(kind) / "calibration_draw.json", {"seed": use_seed, "families": drawn, "n": len(drawn)})
+    digest = write_json(draw_path, draw_doc)
     ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=digest, form_sha256=sha_file(form))
     return EXIT_OK
 
@@ -2515,6 +2695,8 @@ def finish_freeze(ctx: Ctx, split: str) -> Dict[str, Any]:
     existing = ledger.freeze_record(split)
     if existing is None:
         fields: Dict[str, Any] = {"split": split, "set_sha256": tx["set_sha256"], "totals": tx["totals"]}
+        if tx.get("prereg_sha256"):
+            fields["prereg_sha256"] = tx["prereg_sha256"]
         if split == "sealed":
             record_sealed_freeze(ledger, twins_sha256=tx["twins_sha256"], **fields)
         else:
@@ -2552,6 +2734,7 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         recover_state(ctx)  # finishes the move journal, the releases and every pending freeze, this one included
         emit_freeze(ctx, tx)
         return EXIT_OK
+    prereg_sha = bind_prereg_sha(ctx, prereg)  # every freeze is made under a committed, unmodified, pushed prereg
     recover_state(ctx)
     ledger = ctx.ledger()
     if ledger.freeze_record(split) is not None:
@@ -2644,6 +2827,11 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
     if short:
         raise Stop(EXIT_FREEZE_INFEASIBLE, "phrasing_breach", families=short)
 
+    # 6b. the development splits' freeze-time minimums (nothing is written before this)
+    minimum = {"tuning": int(prereg["quota"]["tuning_min"]), "realistic": int(prereg["quota"]["realistic_min"])}.get(split)
+    if minimum is not None and len(fams) < minimum:
+        raise Stop(EXIT_FREEZE_INFEASIBLE, "freeze_infeasible", split=split, families=len(fams), minimum=minimum)
+
     # 7. band, strata, min_share, group invariant, floor; a sealed band breach is repaired by seeded group demotions
     def placement(sealed_ids: Iterable[str]) -> Dict[str, str]:
         place = {f: "sealed" for f in sealed_ids}
@@ -2704,7 +2892,11 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         "leaving": sorted(leaving),
         "exclude": [{"group": g, "members": sorted(groups.get(g, [g]))} for g in sorted(exclude - already)],
         "emit": {"demoted_groups": len(demote), "repaired_groups": len(repaired), "excluded_groups": len(exclude)},
+        "prereg_sha256": prereg_sha,
     }
+    if split == "sealed":  # source split of the frozen families, counts only
+        n_tutorial = sum(1 for f in fams.values() if source_class(f.source) == "tutorial_or_colleague")
+        tx["emit"].update(tutorial=n_tutorial, drafted=len(fams) - n_tutorial)
     write_atomic(freeze_data_path(ctx, split), data)
     write_json(freeze_journal_path(ctx, split), tx)
     _freeze_crash("after_journal")
@@ -2889,12 +3081,12 @@ def cmd_power(ctx: Ctx, group_sizes: Optional[str], from_freeze: bool, discordan
     """
     prereg = read_json(ctx.prereg_file) if ctx.prereg_file.is_file() else {}
     pw = prereg.get("power", {}) if isinstance(prereg, dict) else {}
-    alpha_v = alpha if alpha is not None else pw.get("alpha")
+    alphas = [alpha] if alpha is not None else list(pw.get("alphas", []))
     effect_v = effect if effect is not None else (prereg.get("mwe") if isinstance(prereg, dict) else None)
     draws_v = draws if draws is not None else pw.get("draws")
     seed_v = seed if seed is not None else pw.get("seed")
     discs = list(discordance) or list(pw.get("discordance", []))
-    if None in (alpha_v, effect_v, draws_v, seed_v) or not discs:
+    if not alphas or None in (effect_v, draws_v, seed_v) or not discs:
         raise Stop(EXIT_USAGE, "usage")
     if (group_sizes is None) == (not from_freeze):
         raise Stop(EXIT_USAGE, "usage")
@@ -2917,21 +3109,24 @@ def cmd_power(ctx: Ctx, group_sizes: Optional[str], from_freeze: bool, discordan
                 counts[gid] = counts.get(gid, 0) + 1
         sizes = sorted(counts.values())
     n = sum(sizes)
-    for disc in discs:
-        eff = min(float(effect_v), float(disc))
-        for model in MODELS:
-            mde = mc_mde_hundredths(sizes, disc, float(alpha_v), int(draws_v), int(seed_v), model)
+    for alpha_v in alphas:
+        for disc in discs:
+            eff = min(float(effect_v), float(disc))
+            for model in MODELS:
+                mde = mc_mde_hundredths(sizes, disc, float(alpha_v), int(draws_v), int(seed_v), model)
+                ctx.printer.emit(
+                    "power", model=model, families=n, groups=len(sizes), alpha_ppm=round(1e6 * float(alpha_v)),
+                    discordance_pm=round(1000 * disc), effect_pm=round(1000 * eff),
+                    power_pm=mc_power_pm(sizes, disc, eff, float(alpha_v), int(draws_v), int(seed_v), model),
+                    mde_hundredths=mde if mde is not None else "none", draws=int(draws_v),
+                )
+            ref = eval_stats.mde(n, disc, float(alpha_v))
             ctx.printer.emit(
-                "power", model=model, families=n, groups=len(sizes), discordance_pm=round(1000 * disc), effect_pm=round(1000 * eff),
-                power_pm=mc_power_pm(sizes, disc, eff, float(alpha_v), int(draws_v), int(seed_v), model),
-                mde_hundredths=mde if mde is not None else "none", draws=int(draws_v),
+                "power_reference", model="independent", families=n, alpha_ppm=round(1e6 * float(alpha_v)),
+                discordance_pm=round(1000 * disc),
+                power_pm=round(1000 * eval_stats.power(n, disc, eff, float(alpha_v), "directional")),
+                mde_hundredths=round(100 * ref) if ref is not None else "none",
             )
-        ref = eval_stats.mde(n, disc, float(alpha_v))
-        ctx.printer.emit(
-            "power_reference", model="independent", families=n, discordance_pm=round(1000 * disc),
-            power_pm=round(1000 * eval_stats.power(n, disc, eff, float(alpha_v), "directional")),
-            mde_hundredths=round(100 * ref) if ref is not None else "none",
-        )
     return EXIT_OK
 
 
@@ -2949,8 +3144,26 @@ def cmd_prereg_check(ctx: Ctx, committed: bool) -> int:
         raise Stop(EXIT_FAIL, "prereg_invalid", errors=len(errors))
     ctx.printer.emit(
         "prereg_check", status="ok", rounds=len(doc["rounds"]), quota_examples=len(doc["quota"].get("examples", [])),
-        power_cells=len(doc["power"].get("table", [])), committed=1 if committed else 0,
+        power_cells=len(doc["power"].get("table", [])), family_cells=len(doc["power"].get("family_table", [])),
+        committed=1 if committed else 0,
     )
+    return EXIT_OK
+
+
+def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
+    """Declare the confirmatory batch (1-4 candidate config hashes, slot order) once, after the sealed freeze."""
+    ledger = ctx.ledger()
+    if ledger.freeze_record("sealed") is None:
+        raise Stop(EXIT_REFUSED, "freeze_missing")
+    if ledger.batch_declaration() is not None:
+        raise Stop(EXIT_REFUSED, "batch_declared")
+    try:
+        digest = ledger.record_batch_declaration(list(candidates))
+    except ValueError:
+        raise Stop(EXIT_REFUSED, "batch_invalid") from None
+    except ProtocolError:
+        raise Stop(EXIT_REFUSED, "batch_declared") from None
+    ctx.printer.emit("batch_declared", candidates=len(candidates), sha256=digest)
     return EXIT_OK
 
 
@@ -3003,7 +3216,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("apply", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"default": None}), ("--confirm", {"default": None}))
     add("freeze", ("--split", {"required": True}), ("--recheck-verdict", {"default": None}), ("--recheck-return", {"default": None}))
     add("escalate", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"required": True}), ("--name", {"default": None}))
-    add("calibrate", ("--kind", {"choices": KINDS, "required": True}), ("--seed", {"type": int, "default": None}))
+    add("calibrate", ("--kind", {"choices": KINDS, "required": True}))
     add("disagree", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"required": True}), ("--calibration", {"action": "store_true"}))
     add("exclude", ("--family", {"action": "append", "default": None}), ("--group", {"default": None}), ("--reason", {"required": True}))
     add("audit")
@@ -3011,6 +3224,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--discordance", {"type": float, "action": "append", "default": []}), ("--effect", {"type": float, "default": None}),
         ("--alpha", {"type": float, "default": None}), ("--draws", {"type": int, "default": None}), ("--seed", {"type": int, "default": None}))
     add("prereg-check", ("--committed", {"action": "store_true"}))
+    add("declare-batch", ("--candidate", {"action": "append", "default": [], "dest": "candidates"}))
     add("return", ("path", {}), ("--enum", {"action": "append", "default": [], "dest": "enums"}))
     return ap
 
@@ -3048,7 +3262,7 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
     if c == "escalate":
         return cmd_escalate(ctx, a.kind, a.sheet, a.name)
     if c == "calibrate":
-        return cmd_calibrate(ctx, a.kind, a.seed)
+        return cmd_calibrate(ctx, a.kind)
     if c == "disagree":
         return cmd_disagree(ctx, a.kind, a.sheet, a.calibration)
     if c == "exclude":
@@ -3059,6 +3273,8 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_power(ctx, a.group_sizes, a.from_freeze, a.discordance, a.effect, a.alpha, a.draws, a.seed)
     if c == "prereg-check":
         return cmd_prereg_check(ctx, a.committed)
+    if c == "declare-batch":
+        return cmd_declare_batch(ctx, a.candidates)
     return cmd_return(ctx, a.path, a.enums)
 
 

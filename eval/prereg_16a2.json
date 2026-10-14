@@ -24,21 +24,24 @@
         "preassigned_realistic": 31,
         "sealed": 60,
         "realistic": 42,
-        "tuning": 68
+        "tuning": 68,
+        "label": "ok"
       },
       {
         "pool_total": 180,
         "preassigned_realistic": 47,
         "sealed": 60,
         "realistic": 47,
-        "tuning": 73
+        "tuning": 73,
+        "label": "ok"
       },
       {
         "pool_total": 160,
         "preassigned_realistic": 31,
         "sealed": 60,
         "realistic": 42,
-        "tuning": 58
+        "tuning": 58,
+        "label": "quota_short"
       }
     ]
   },
@@ -79,16 +82,13 @@
     ]
   },
   "collapse": {
-    "rule": "all",
-    "tie": "miss"
+    "rule": "all"
   },
   "adoption": {
     "rule": "a",
     "decision": "d74",
     "development_family_effect_min": 0.1,
     "critical_control_flips_max": 0,
-    "unsupported_claim_rate": "not_higher",
-    "sealed_guard": "non_inferiority",
     "sealed_point_estimate_min": 0,
     "sealed_holm_significant_loss": "forbidden",
     "label": "adopted_on_development_evidence",
@@ -115,13 +115,42 @@
       "state": "refused_until_16b_sealed_comparison_gate",
       "slots_declared_by": "batch_declaration_record_before_slot_1",
       "expansion": "replay",
-      "replays": "canonical_baseline_expansion_artifact",
+      "replays": "slot0_canonical",
       "rewrite_changing_candidate": {
         "expansion": "candidate",
         "flag": "rewrite_candidate",
         "arm": "live",
         "against": "incumbent_replay"
-      }
+      },
+      "holm_k": 4,
+      "spent_slot_counts": true
+    },
+    "development_evidence": {
+      "metric": "strict_hit",
+      "cutoff": 6,
+      "collapse": "all",
+      "mode": "hybrid+rewrite",
+      "sets": [
+        "tuning",
+        "realistic"
+      ],
+      "versions": "frozen_at_slot_0",
+      "draws": 5,
+      "statistic": "mean_over_draws_of_family_difference"
+    },
+    "unsupported_claims": {
+      "unit": "claim",
+      "where": "candidate_sealed_slot",
+      "against": "incumbent",
+      "max_excess_abs": 0.01
+    },
+    "control_flip": {
+      "from": "strict_hit",
+      "to": "miss",
+      "cutoff": 6,
+      "mode": "hybrid+rewrite",
+      "draws": "any",
+      "versions": "frozen_at_slot_0"
     }
   },
   "controls": {
@@ -144,7 +173,8 @@
     "reverses": "d57_addendum",
     "rejected": [
       "c2"
-    ]
+    ],
+    "binds_to": "development_freeze_records"
   },
   "slots": {
     "0": {
@@ -159,6 +189,30 @@
       "builds": "run_dir_expansion_artifact",
       "canonical": "v6_guards",
       "usable": "once_after_non_canonical_or_spent_slot_0"
+    },
+    "1": {
+      "expansion": "replay",
+      "artifact": "slot0_canonical",
+      "role": "confirmatory",
+      "requires": "batch_declaration"
+    },
+    "2": {
+      "expansion": "replay",
+      "artifact": "slot0_canonical",
+      "role": "confirmatory",
+      "requires": "batch_declaration"
+    },
+    "3": {
+      "expansion": "replay",
+      "artifact": "slot0_canonical",
+      "role": "confirmatory",
+      "requires": "batch_declaration"
+    },
+    "4": {
+      "expansion": "replay",
+      "artifact": "slot0_canonical",
+      "role": "confirmatory",
+      "requires": "batch_declaration"
     }
   },
   "drafting_rule": {
@@ -174,15 +228,17 @@
         "t01",
         "t07"
       ],
-      "refusal_pct_approx": 30,
-      "plus": "development_refusal_deficits",
+      "refusal_share_target": 0.275,
+      "refusal_share_counts": "pool_including_preassigned",
+      "refusal_drafts": "round(target_x_pool_total)_minus_preassigned_refusals",
       "seed_phrasings_per_family": 1,
       "registers": [
         "lay",
         "modelled",
         "terse"
       ],
-      "conflict_label_families": "development_only"
+      "conflict_label_families": "development_only",
+      "realistic_lay_min_share": 0.5
     },
     "next_attempt": {
       "when": [
@@ -191,7 +247,9 @@
       ],
       "action": "sp_drafts_more_before_next_attempt",
       "split_seed": "same_per_round",
-      "released": "first_feasible_attempt"
+      "released": "first_feasible_attempt",
+      "max_round_1_attempts": 3,
+      "after_cap": "split_infeasible_stop"
     },
     "round_2": {
       "purpose": "replacements",
@@ -216,7 +274,10 @@
     "infeasible_after_round_2": "d64_owner_stop"
   },
   "power": {
-    "alpha": 0.05,
+    "alphas": [
+      0.05,
+      0.0125
+    ],
     "discordance": [
       0.2,
       0.3,
@@ -257,39 +318,131 @@
     "table": [
       {
         "model": "independent",
+        "alpha": 0.05,
         "discordance": 0.2,
         "power_pm": 164,
         "mde_hundredths": 20
       },
       {
         "model": "independent",
+        "alpha": 0.05,
         "discordance": 0.3,
         "power_pm": 125,
         "mde_hundredths": 25
       },
       {
         "model": "independent",
+        "alpha": 0.05,
         "discordance": 0.5,
         "power_pm": 102,
         "mde_hundredths": 32
       },
       {
+        "model": "independent",
+        "alpha": 0.0125,
+        "discordance": 0.2,
+        "power_pm": 50,
+        "mde_hundredths": null
+      },
+      {
+        "model": "independent",
+        "alpha": 0.0125,
+        "discordance": 0.3,
+        "power_pm": 46,
+        "mde_hundredths": 28
+      },
+      {
+        "model": "independent",
+        "alpha": 0.0125,
+        "discordance": 0.5,
+        "power_pm": 32,
+        "mde_hundredths": 38
+      },
+      {
         "model": "correlated",
+        "alpha": 0.05,
         "discordance": 0.2,
         "power_pm": 87,
         "mde_hundredths": null
       },
       {
         "model": "correlated",
+        "alpha": 0.05,
         "discordance": 0.3,
         "power_pm": 83,
         "mde_hundredths": 29
       },
       {
         "model": "correlated",
+        "alpha": 0.05,
         "discordance": 0.5,
         "power_pm": 72,
         "mde_hundredths": 41
+      },
+      {
+        "model": "correlated",
+        "alpha": 0.0125,
+        "discordance": 0.2,
+        "power_pm": 17,
+        "mde_hundredths": null
+      },
+      {
+        "model": "correlated",
+        "alpha": 0.0125,
+        "discordance": 0.3,
+        "power_pm": 24,
+        "mde_hundredths": null
+      },
+      {
+        "model": "correlated",
+        "alpha": 0.0125,
+        "discordance": 0.5,
+        "power_pm": 22,
+        "mde_hundredths": 45
+      }
+    ],
+    "family_table": [
+      {
+        "alpha": 0.05,
+        "discordance": 0.2,
+        "families": 42,
+        "power_pm": 186,
+        "mde_hundredths": 20
+      },
+      {
+        "alpha": 0.05,
+        "discordance": 0.3,
+        "families": 42,
+        "power_pm": 142,
+        "mde_hundredths": 24
+      },
+      {
+        "alpha": 0.05,
+        "discordance": 0.5,
+        "families": 42,
+        "power_pm": 101,
+        "mde_hundredths": 32
+      },
+      {
+        "alpha": 0.0125,
+        "discordance": 0.2,
+        "families": 42,
+        "power_pm": 68,
+        "mde_hundredths": null
+      },
+      {
+        "alpha": 0.0125,
+        "discordance": 0.3,
+        "families": 42,
+        "power_pm": 48,
+        "mde_hundredths": 27
+      },
+      {
+        "alpha": 0.0125,
+        "discordance": 0.5,
+        "families": 42,
+        "power_pm": 35,
+        "mde_hundredths": 36
       }
     ]
   }

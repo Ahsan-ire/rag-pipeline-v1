@@ -281,6 +281,7 @@ def test_identical_rankings_with_the_evidence_at_rank_four_never_pair_a_hit_at_6
     capsys.readouterr()
 
     # (a) the candidate at cut-off 3: refused by the gate, before the claim, with the slot untouched
+    world.ensure_batch(1)
     kind_before = kinds(world)
     with pytest.raises(sealed_run.GateRefused) as info:
         run_with(world, 1, retrieval, top_k=3, expansion="live", rewrite_candidate=config_hash, baseline_run=r0)

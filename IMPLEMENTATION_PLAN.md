@@ -1719,16 +1719,60 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     under (A) an embedding arm spends a slot only on development evidence ≥ MWE, under (B) only if its development effect
     is ≥ the sealed MDE. b9 aligns CLAUDE.md's bake-off line, `.claude/skills/bake-off/SKILL.md:20–21` and
     `docs/harness.md` principle 3 with the choice.
+b1a. **Prereg completeness and binding (13 Oct; prereg plan-gate r1: Codex REVISE 1 MAJOR, plan-auditor 1 BLOCKER / 5
+    MAJOR / 10 MINOR, all ACCEPTED; implemented before the prereg is pushed, so none becomes an amendment) [C].**
+    - **Drafting arithmetic (Au1).** The registered rule targets a pool refusal share of 0.275 (mid-band), counting the
+      preassigned refusals. Draft refusals = round(0.275 × pool_total) − preassigned refusals. Each later attempt adds
+      drafts that keep the pool at 0.275 by the same formula. There are at most 3 round-1 attempts; a 4th is the stop
+      "split infeasible" (Au11).
+    - **Confirmatory slots (Au2, Au9).** The prereg declares slots 1–4 as replay of `slot0_canonical`. The gate
+      resolves that to the sha256 of the canonical slot's (0, or 0b with an intent) run-directory
+      `expansion_artifact.json`, which the ledger's `slot_stored` record now carries. Candidates are bound by a
+      `batch_declaration` ledger record: K ≤ 4 candidate config hashes in slot order (candidate i runs in slot i),
+      mirrored as a digest, required before any claim of slots 1–4, and appendable once. The gate writes the slot's
+      declared candidate into its stored results; checking that a run's computed configuration equals it is 16B's
+      (16B defines candidate identity). Holm always uses K = 4, fixed in advance (Au14), and a spent confirmatory
+      slot still counts.
+    - **Adoption inputs (Au3).**
+      - Development evidence is the family-level strict-hit@6 difference (`all` collapse) in hybrid+rewrite. It is
+        computed on tuning-v2 ∪ realistic-v2 as frozen at slot 0, as the mean over the R = 5 retrieval draws.
+      - "Unsupported claims not higher" means the candidate's claim-level unsupported rate on its sealed slot is
+        ≤ the incumbent's + 0.01 absolute.
+      - A control flip is a strict HIT@6 → MISS in hybrid+rewrite on any draw of the frozen development versions.
+    - **Version binding (Au4).** Controls and development evidence bind to the development set sha256s frozen at
+      slot 0. Later development versions never change this epoch's controls or adoption inputs.
+    - **Freeze-time minimums (Au5).** `freeze` also checks tuning ≥ `tuning_min` (60) and realistic ≥
+      `realistic_min` (42). A breach after round 2 is the stop "freeze infeasible after round 2".
+    - **Binding the pushed prereg (Au6, Au10).** The slot gate loads the prereg only if it is committed and is an
+      ancestor of `origin/main` or of `origin/<branch>` (`split` and `freeze` use the same rule). It records the
+      prereg file's sha256 (the committed blob's bytes) and commit in the slot's stored results, and the sha256 in
+      each freeze record.
+    - **Checks (Au7, Cx1, Au8).**
+      - `prereg-check` validates adoption = a, controls = c1, the cutoff, slots, drafting rule, collapse and caps.
+      - `controls.py` reads its rule, ceiling and draw count from the prereg, and refuses a development set whose
+        sha256 is not its split's freeze record (Au4).
+      - `calibrate` takes its seed only from the prereg.
+      - The power table has cells at α ∈ {0.05, 0.0125} for both group models, plus a singleton-family table from
+        `eval_stats.power`/`mde`, all recomputed by `prereg-check`.
+    - **Calibration (Au12).** It is drawn once, after every split is frozen, from frozen approved families, by the
+      prereg seed. The draw file is immutable.
+    - **Visibility (Au13).** The sealed freeze reports its source split (tutorial vs drafted), counts only.
+    - **Cosmetic (Au15, Au16).**
+      - The owner-hours forecast is recomputed at b5.
+      - The tie key is dropped.
+      - The non-inferiority wording is replaced by its two checks.
+      - The quota-short example is labelled.
+      - Register proportions are registered (realistic lay ≥ 0.5 of new realistic-eligible drafts).
 b2. **Migration and quotas [C].** Golden-v1, realistic-v1 and the 24 T1/T7 rows become v2 development rows (`source`
     `legacy`/`tutorial`) in `eval/private/dev/`, keeping their phrasings (T1/T7 capped at 3); the v1 files stay
     byte-frozen. **Counting** (`count-migrated`): each golden or realistic row is one family, a pair in
     `eval/v2_pairing.json` one realistic family; T1/T7 rows group by exercise (the id without its phrasing letter); a
     refusal family's migrated scope is `refuse`. Golden-only families go to tuning; paired, unpaired realistic and T1/T7
-    families to realistic. Each development split's refusal deficit (to reach 25% of its quota) is drafted as refusal
-    families in its register.
+    families to realistic. The refusal drafts follow b1a's rule (pool share 0.275 including the preassigned
+    refusals), placed in the registers of the splits that lack them.
 b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and the tutorial folder (the 15 unseen
     tutorials and 7 title-document sets; never T1 or T7): one seed phrasing per family; scope, evidence (inventory
-    sections), gaps, `ambiguous`; ~30% refusals plus b2's deficits; lay, modelled and terse registers; written only
+    sections), gaps, `ambiguous`; refusals by b1a's 0.275 rule; lay, modelled and terse registers; written only
     under `sealed/pool/`, every row marked. Attempt 1 ≈ 100 families: ≈ 50 tutorial-sourced (about 3 per unseen
     tutorial, at most 1 per title-document set), ≈ 50 handbook-drafted. Families on a b0 conflict label are dev-only.
 b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin verdict; the orchestrator covers the
@@ -1767,8 +1811,8 @@ b7. **Development baseline, controls, cost probe (D76) [C].** On the frozen deve
     `--approved-eur 3`), plus the meter's worst case priced in-process over the final development prompts.
 b8. **Slot 0 [C].** With the week's remaining cap ≥ 2 × the forecast: `pipeline eval --sealed-slot 0` over heldout-v2,
     realistic-v2, tuning-v2 and `--regression` heldout-v1 (four modes, refusals, completeness, judge), live expansion
-    with `build:` into `sealed/artifacts/slot0.json` (0b builds `slot0b.json`; the ledger names the artifact later slots
-    replay), `--approved-eur` 2 × the forecast. Canonical → `results_v6.md` and a ledger outcome; otherwise guard names,
+    (the gate refuses `build:`; the run directory's `expansion_artifact.json` is the artifact, and its sha256 in the
+    `slot_stored` record is what slots 1–4 replay as `slot0_canonical`, b1a), `--approved-eur` 2 × the forecast. Canonical → `results_v6.md` and a ledger outcome; otherwise guard names,
     then 0b once; a second failure goes to the owner.
 b9. **Docs [C]:** D74 (prereg, the owner's choice, under C1 the D57-addendum reversal), D75 (data and validation, owner
     hours, the D71 Q5 narrowing), D76 (re-baseline: cost, results, MDE at the final N); README headline with the source

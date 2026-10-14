@@ -113,7 +113,7 @@ def test_sealed_freeze_needs_no_development_approval_and_binds_the_records(world
     assert record["exclusions_sha256"] == hashlib.sha256(b"[]").hexdigest()
     mirror = [json.loads(ln) for ln in world.repo.joinpath("eval", "sealed_ledger.jsonl").read_text().splitlines()]
     freeze_line = [m for m in mirror if m["kind"] == "freeze"][0]
-    assert freeze_line["split"] == "sealed" and set(freeze_line["digests"]) == {"set_sha256", "twins_sha256", "exclusions_sha256"}
+    assert freeze_line["split"] == "sealed" and set(freeze_line["digests"]) == {"set_sha256", "twins_sha256", "exclusions_sha256", "prereg_sha256"}
     assert not any(k in json.dumps(mirror) for k in ("scope", "chapter", "stratum", "families", "answerable"))
     # frozen: a second freeze and any further review are refused
     assert world.run("freeze", "--split", "sealed")[0] == st.EXIT_REFUSED

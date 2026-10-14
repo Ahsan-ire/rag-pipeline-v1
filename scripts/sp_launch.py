@@ -736,11 +736,12 @@ def _read_text(path: os.PathLike | str, what: str) -> str:
 # Refusals and the claude invocation
 # ---------------------------------------------------------------------------
 def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str) -> None:
-    """Require ``git fetch`` then ``merge-base --is-ancestor <sha> origin/<branch>``.
+    """Require ``git fetch`` then ``merge-base --is-ancestor <sha>`` of ``origin/<branch>`` OR of ``origin/main``.
 
     Raises :class:`LaunchError` (refused) unless the commit is an ancestor of
-    (or equal to) the fetched branch tip. A prereg with later commits on top
-    passes. ``ls-remote`` would only prove a ref exists, not that the commit is
+    (or equal to) the fetched branch tip, or of the fetched main tip (a merged,
+    deleted branch's ref fails the first test; main then carries the commit).
+    A prereg with later commits on top passes. ``ls-remote`` would only prove a ref exists, not that the commit is
     in its history.
     """
     if not SHA_RE.fullmatch(sha or ""):
@@ -754,12 +755,16 @@ def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str) -> None:
         reachable = subprocess.run(
             ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, f"origin/{branch}"], check=False, **quiet
         )
+        if reachable.returncode != 0:  # a deleted branch's ref: the commit may be on main
+            reachable = subprocess.run(
+                ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, "origin/main"], check=False, **quiet
+            )
     except OSError:
         raise LaunchError(EXIT_REFUSED, "git could not be run; the prereg cannot be checked") from None
     if fetched.returncode != 0:
         raise LaunchError(EXIT_REFUSED, "git fetch failed; the prereg cannot be checked")
     if reachable.returncode != 0:
-        raise LaunchError(EXIT_REFUSED, "the prereg commit is not reachable from origin/<branch>")
+        raise LaunchError(EXIT_REFUSED, "the prereg commit is not reachable from origin/<branch> or origin/main")
 
 
 def build_argv(brief_text: str) -> List[str]:

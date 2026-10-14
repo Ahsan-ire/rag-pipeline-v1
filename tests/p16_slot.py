@@ -37,6 +37,8 @@ from tests.test_p16w_spend import make_meter
 SECTIONS = ["901.1", "901.2", "902.7.3"]
 HELD = "held-out"
 SHEET = "a" * 64
+BOUND_COMMIT, BOUND_PREREG_SHA = "c" * 40, "d" * 64  # what the tests' patched ``sealed_run.bind_prereg`` returns
+CANDIDATES = [c * 64 for c in "1234"]  # a four-candidate batch (slot i runs candidate i)
 _CONS, _VOW = "bcdfghjklmnpqrstvwxz", "aeiou"
 TRACING_VARS = ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING")
 
@@ -167,6 +169,15 @@ class World:
         self.prereg_path.write_text(json.dumps(self.prereg), encoding="utf-8")
         return self.prereg_path
 
+    def declare_batch(self, n: int = 4) -> str:
+        """Declare the first ``n`` of :data:`CANDIDATES` as the confirmatory batch (after the freeze)."""
+        return self.ledger().record_batch_declaration(CANDIDATES[:n])
+
+    def ensure_batch(self, slot: Any) -> None:
+        """Declare the default batch before a confirmatory slot (1-4) is first used, unless one exists."""
+        if str(slot) in ("1", "2", "3", "4") and self.ledger().batch_declaration() is None:
+            self.declare_batch()
+
     def write_records(self, *, approve: bool = True, exclusions: Optional[Any] = None,
                       twins: Optional[Dict[str, Any]] = None) -> None:
         """``approvals.json`` as ``sealed_tool apply`` writes it; stage the group record and the exclusions
@@ -255,10 +266,13 @@ class World:
 
     def token(self, slot: Any = 0, *, expansion: str = "live", rewrite_candidate: Optional[str] = None,
               meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
-              claim: bool = True, top_k: Optional[int] = 6):
+              claim: bool = True, top_k: Optional[int] = 6, declare: bool = True):
         """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
         after its preflight); the library default of the gate itself is unclaimed, this helper claims unless told
-        otherwise (so ``claim=True`` is passed explicitly, with the ``top_k`` the gate then checks)."""
+        otherwise (so ``claim=True`` is passed explicitly, with the ``top_k`` the gate then checks). A confirmatory
+        slot gets the default four-candidate batch declared first unless ``declare=False``."""
+        if declare:
+            self.ensure_batch(slot)
         return sealed_run.acquire_slot_token(
             slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
             records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
@@ -401,6 +415,7 @@ def make_world(root: Path, monkeypatch: Any) -> World:
         refusal_questions=refusal_q, partial_questions=partial_q, families=families, group_of=group_of,
     )
     monkeypatch.setattr(ev, "expand_query", world.expand())
+    monkeypatch.setattr(sealed_run, "bind_prereg", lambda path: (BOUND_COMMIT, BOUND_PREREG_SHA))
     return world
 
 

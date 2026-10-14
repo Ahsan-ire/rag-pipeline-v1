@@ -135,9 +135,11 @@ slot 0 runs, and two recoveries of one slot cannot both finish it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -177,6 +179,7 @@ from src.tracing_guard import TracingRefused, assert_tracing_off
 
 SEALED_SPLIT = "sealed"
 EXPANSION_MODES = ("live", "replay", "candidate")
+SLOT0_CANONICAL = "slot0_canonical"  # a replay slot's artifact: the canonical slot's stored expansion artifact
 RESULTS_FILE = "results.json"
 REPORT_FILE = "report.md"  # a confirmatory slot's rendered report, inside its run directory
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -186,7 +189,7 @@ _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 GATES = (
     "slot", "prereg", "cutoff", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
-    "retrieval_backend",
+    "retrieval_backend", "prereg_binding", "batch",
 )
 
 #: The canonical-v6 guards, in report order. Each is a pure function of the stored facts.
@@ -328,6 +331,60 @@ def _declared_cutoff(primary_metric: Any) -> int:
     return cutoff
 
 
+def _load_sp_launch() -> Any:
+    """``scripts/sp_launch.py`` as a module (its prereg ancestry rule is the one the slot gate uses)."""
+    import importlib
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    return importlib.import_module("scripts.sp_launch")
+
+
+def _git_bytes(repo: Path, *args: str) -> Optional[bytes]:
+    """Stdout of ``git -C repo args`` or ``None`` if git fails or cannot run."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args], check=False, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def bind_prereg(path: Union[str, os.PathLike]) -> Tuple[str, str]:
+    """Return ``(commit sha, file sha256)`` of a prereg that is committed, unmodified and pushed.
+
+    The commit is the last one touching the file (its copy must equal the working file's bytes) and
+    must be an ancestor of ``origin/<prereg branch>`` or ``origin/main`` (``sp_launch.check_prereg``).
+    The repo is the git toplevel of the file's directory.
+
+    Raises:
+        GateRefused: ``prereg_binding`` for any failure.
+    """
+    try:
+        file = Path(path).resolve()
+        data = file.read_bytes()
+        branch = json.loads(data).get("branch")
+        top = _git_bytes(file.parent, "rev-parse", "--show-toplevel")
+        if top is None or not isinstance(branch, str):
+            raise GateRefused("prereg_binding")
+        repo = Path(top.decode().strip()).resolve()
+        rel = file.relative_to(repo).as_posix()
+        out = _git_bytes(repo, "log", "-1", "--format=%H", "--", rel)
+        sha = (out or b"").decode().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) or _git_bytes(repo, "show", f"{sha}:{rel}") != data:
+            raise GateRefused("prereg_binding")
+        sp = _load_sp_launch()
+        try:
+            sp.check_prereg(sha, branch, repo=repo)
+        except sp.LaunchError:
+            raise GateRefused("prereg_binding") from None
+    except (OSError, ValueError, AttributeError):
+        raise GateRefused("prereg_binding") from None
+    return sha, hashlib.sha256(data).hexdigest()
+
+
 def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     """Read and validate the prereg keys this module uses (see the module docstring).
 
@@ -358,8 +415,14 @@ def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     for sid, decl in slots.items():
         if not _SLOT.fullmatch(str(sid)) or not isinstance(decl, dict) or decl.get("expansion") not in EXPANSION_MODES:
             raise GateRefused("prereg")
-        if decl["expansion"] == "replay" and not _is_hex(decl.get("artifact_sha256")):
-            raise GateRefused("prereg")
+        if decl["expansion"] == "replay":
+            explicit, canonical = "artifact_sha256" in decl, "artifact" in decl
+            if explicit == canonical:  # exactly one of the two forms
+                raise GateRefused("prereg")
+            if explicit and not _is_hex(decl["artifact_sha256"]):
+                raise GateRefused("prereg")
+            if canonical and decl["artifact"] != SLOT0_CANONICAL:
+                raise GateRefused("prereg")
         if decl["expansion"] == "candidate" and not _is_hex(decl.get("rewrite_candidate")):
             raise GateRefused("prereg")
     return doc
@@ -493,6 +556,9 @@ class SlotToken:
     used: List[bool] = field(repr=False, compare=False, default_factory=lambda: [False])
     lock: Any = field(repr=False, compare=False, default=None)  # the slot's execution lock, held to the run's end
     claimed: List[bool] = field(repr=False, compare=False, default_factory=lambda: [False])
+    prereg_sha256: Optional[str] = field(repr=False, default=None)  # the bound prereg's file sha256
+    prereg_commit: Optional[str] = field(repr=False, default=None)  # and the commit that last changed it
+    candidate_config_hash: Optional[str] = field(repr=False, default=None)  # a confirmatory slot's declared candidate
 
     def __post_init__(self) -> None:
         if self.mint is not _MINT:
@@ -597,9 +663,12 @@ def _expansion_mode(expansion: str, rewrite_candidate: Optional[str]) -> str:
 
 
 def _check_expansion(
-    decl: Mapping[str, Any], expansion: str, rewrite_candidate: Optional[str]
+    decl: Mapping[str, Any], expansion: str, rewrite_candidate: Optional[str], ledger: Optional[SealedLedger] = None
 ) -> Tuple[str, Optional[str], Optional[str]]:
     """Match the command line against the prereg's declaration.
+
+    A replay declaration naming ``slot0_canonical`` resolves to the ledger's canonical expansion
+    artifact sha256 (``GateRefused("expansion_mode")`` when there is none or no ledger is given).
 
     Returns:
         ``(mode, artifact sha256 or None, artifact path or None)``.
@@ -608,8 +677,13 @@ def _check_expansion(
     if mode != decl["expansion"]:
         raise GateRefused("expansion_mode")
     if mode == "replay":
+        want = decl.get("artifact_sha256")
+        if decl.get("artifact") == SLOT0_CANONICAL:
+            want = ledger.canonical_artifact_sha256() if ledger is not None else None
+            if want is None:
+                raise GateRefused("expansion_mode")
         sha = _file_sha(expansion)
-        if sha is None or sha != decl["artifact_sha256"]:
+        if sha is None or sha != want:
             raise GateRefused("expansion_mode")
         return mode, sha, expansion
     if mode == "candidate":
@@ -711,12 +785,13 @@ def acquire_slot_token(
     """
     sid = normalise_slot(slot)
     prereg = load_prereg(prereg_path)
+    prereg_commit, prereg_sha256 = bind_prereg(prereg_path)
     decl = prereg["slots"].get(sid)
     if decl is None:
         raise GateRefused("prereg")
     if top_k is not None or claim:
         check_cutoff(prereg["cutoff"], top_k)  # None with claim=True is refused too: the gate cannot vouch for it
-    mode, artifact_sha, artifact_path = _check_expansion(decl, expansion, rewrite_candidate)
+    mode, artifact_sha, artifact_path = _check_expansion(decl, expansion, rewrite_candidate, ledger)
 
     from src.spend import SpendMeter
 
@@ -730,6 +805,12 @@ def acquire_slot_token(
     freeze = ledger.freeze_record(SEALED_SPLIT)
     if freeze is None:
         raise GateRefused("freeze_record")
+    candidate_hash: Optional[str] = None
+    if is_confirmatory(sid):
+        batch = ledger.batch_declaration()
+        if batch is None or int(sid) > len(batch["candidates"]):
+            raise GateRefused("batch")
+        candidate_hash = batch["candidates"][int(sid) - 1]
     approvals_path = Path(records_dir) / "approvals.json"
     if _file_sha(set_path) != freeze["set_sha256"]:
         raise GateRefused("set_file")
@@ -778,6 +859,7 @@ def acquire_slot_token(
         token = _mint_token(
             sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor,
             prereg["cutoff"], ledger, approvals_path, approvals_sha, baseline, lock,
+            prereg_sha256, prereg_commit, candidate_hash,
         )
         if claim:
             token.claim()
@@ -810,6 +892,9 @@ def _mint_token(
     approvals_sha: Optional[str],
     baseline: Optional[Dict[str, Any]],
     lock: Any,
+    prereg_sha256: Optional[str] = None,
+    prereg_commit: Optional[str] = None,
+    candidate_config_hash: Optional[str] = None,
 ) -> SlotToken:
     """Build the (unclaimed) token: the gate's last step before the claim."""
     return SlotToken(
@@ -833,6 +918,9 @@ def _mint_token(
         baseline=baseline,
         mint=_MINT,
         lock=lock,
+        prereg_sha256=prereg_sha256,
+        prereg_commit=prereg_commit,
+        candidate_config_hash=candidate_config_hash,
     )
 
 
@@ -994,6 +1082,8 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
         },
         "run_cost": result.get("run_cost"),
         "floor": dict(slot_token.floor),
+        "prereg_sha256": slot_token.prereg_sha256, "prereg_commit": slot_token.prereg_commit,
+        "candidate_config_hash": slot_token.candidate_config_hash,
         "groups": dict(slot_token.groups),
         "baseline": baseline,
         "facts": dict(facts),

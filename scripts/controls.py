@@ -33,8 +33,16 @@ list is computed once on the frozen development sets (b7). If the file already
 exists the run only **verifies**: a differing computation exits 1 and writes
 nothing. To recompute (a new development version), a human deletes the file.
 
+The rule, rank ceiling and draw count come from the prereg's ``controls`` block
+(``--prereg``, default ``eval/prereg_16a2.json``), not from the command line: the
+ceiling must be the rule's (``RANK_CEILING``) and, for C1, the number of ``--draw``
+files must be ``draws_r``. Each ``--dev-set`` must be the frozen version of its
+split: its sha256 is the ``set_sha256`` of the ledger's ``freeze`` record for
+``tuning`` or ``realistic`` (a later development version never changes this
+epoch's controls).
+
 Usage:
-    python scripts/controls.py --rule c1 --draw d1.rows.json --draw d2.rows.json ... \\
+    python scripts/controls.py [--prereg eval/prereg_16a2.json] --draw d1.rows.json --draw d2.rows.json ... \\
         --dev-set eval/private/dev/<set>.jsonl [--dev-set ...] [--list eval/controls_v1.json]
 
 Prints counts only. Exit codes: 0 written or matching; 1 differs from the
@@ -67,6 +75,8 @@ RANK_CEILING = {"c1": 3, "c2": 6}
 MODES = (PRIMARY_MODE, DETAIL_MODE)
 PUBLIC_LINEAGE_SOURCE = "legacy"
 DEFAULT_LIST = os.path.join(REPO, "eval", "controls_v1.json")
+DEFAULT_PREREG = os.path.join(REPO, "eval", "prereg_16a2.json")
+FROZEN_DEV_SPLITS = ("tuning", "realistic")
 
 EXIT_DIFFERS = 1
 EXIT_UNUSABLE = 2
@@ -194,6 +204,50 @@ def load_lineage(
     return {sha: ids for sha, ids in out.items() if ids}
 
 
+def read_controls_prereg(path: str, n_draws: int) -> str:
+    """The prereg's controls rule, after checking its ceiling and (rule c1) that ``n_draws`` is ``draws_r``.
+
+    Raises:
+        ControlsError: the file or its ``controls`` block is unusable, the ceiling is not the rule's, or the
+            number of draw files is not ``draws_r``.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            block = json.load(fh).get("controls")
+    except (OSError, ValueError, AttributeError):
+        raise ControlsError("the prereg is unreadable or has no controls block") from None
+    if not isinstance(block, dict):
+        raise ControlsError("the prereg is unreadable or has no controls block")
+    rule, ceiling, draws_r = block.get("rule"), block.get("rank_ceiling"), block.get("draws_r")
+    if rule not in RANK_CEILING:
+        raise ControlsError(f"unknown rule {rule!r}; expected one of {sorted(RANK_CEILING)}")
+    if isinstance(ceiling, bool) or ceiling != RANK_CEILING[rule]:
+        raise ControlsError("the prereg's rank ceiling is not its rule's")
+    if rule == "c1" and (isinstance(draws_r, bool) or draws_r != n_draws):
+        raise ControlsError("the number of draw files is not the prereg's draws_r")
+    return rule
+
+
+def check_frozen_versions(paths: Sequence[str]) -> None:
+    """Each development set's sha256 must be a tuning or realistic ``freeze`` record's ``set_sha256``.
+
+    Raises:
+        ControlsError: ``a development set is not its frozen version``.
+    """
+    from src.eval_sets import sha256_file
+    from src.sealed_run import default_ledger
+
+    ledger = default_ledger()
+    frozen = set()
+    for split in FROZEN_DEV_SPLITS:
+        rec = ledger.freeze_record(split)
+        if rec is not None:
+            frozen.add(rec["set_sha256"])
+    for path in paths:
+        if sha256_file(path) not in frozen:
+            raise ControlsError("a development set is not its frozen version")
+
+
 def _dump(doc: Mapping[str, Any]) -> str:
     return json.dumps(doc, indent=1, sort_keys=True) + "\n"
 
@@ -209,7 +263,7 @@ def _write(path: str, content: str) -> None:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI: compute the list, then write it (absent) or verify it (present)."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--rule", required=True, choices=sorted(RANK_CEILING))
+    parser.add_argument("--prereg", default=DEFAULT_PREREG, metavar="PATH", help="the prereg (default eval/prereg_16a2.json)")
     parser.add_argument("--draw", action="append", default=[], metavar="ROWS_JSON", help="a draw's rows sidecar (repeat)")
     parser.add_argument("--dev-set", action="append", default=[], metavar="V2_JSONL", help="a frozen development set (repeat)")
     parser.add_argument("--list", dest="list_path", default=DEFAULT_LIST, help="the controls file (default eval/controls_v1.json)")
@@ -225,7 +279,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for path in args.draw:
             with open(path, encoding="utf-8") as fh:
                 draws.append(json.load(fh))
-        doc = compute_controls(draws, load_lineage(args.dev_set), args.rule)
+        rule = read_controls_prereg(args.prereg, len(args.draw))
+        lineage = load_lineage(args.dev_set)  # a sealed set is refused (exit 4) before the version check
+        check_frozen_versions(args.dev_set)
+        doc = compute_controls(draws, lineage, rule)
     except SealedInputError:
         print("[controls] a development set is sealed: refused", file=sys.stderr)
         return EXIT_SEALED

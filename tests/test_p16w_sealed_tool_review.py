@@ -258,41 +258,92 @@ def _calibration_world(world, hard: int = 8, easy: int = 12):
     return specs, skip
 
 
-def test_calibrate_draws_five_refuse_or_partial_and_ten_answer_approved_families_by_seed(world):
+def _freeze_records(world, *, only=("sealed", "tuning", "realistic")):
+    """Plant the frozen sealed file (a copy of the component's rows) and the freeze records the calibration needs."""
+    rows = read_rows(world.sealed / "sealed_r1.jsonl")
+    frozen = write_rows(world.sealed / "heldout-v2.jsonl", rows)
+    ledger = world.ledger()
+    for split in only:
+        extra = {"twins_sha256": "a" * 64} if split == "sealed" else {}
+        ledger.record_freeze(split=split, set_sha256=sha(frozen) if split == "sealed" else "b" * 64, totals={}, **extra)
+    return rows
+
+
+def test_calibrate_draws_five_refuse_or_partial_and_ten_answer_approved_frozen_families_by_the_prereg_seed(world):
     specs, unapproved = _calibration_world(world)
     scope = {s.fid: s.scope for s in specs}
-    draws = {}
-    for seed in (1, 2, 3, 4, 5):
-        code, out, err = world.run("calibrate", "--kind", "sealed", "--seed", str(seed))
-        assert code == 0, err
-        line = world.last(out, "calibrate")
-        assert (line["drawn"], line["refuse_or_partial"], line["answer"]) == ("15", "5", "10")
-        record = json.loads((world.sealed / "work" / "calibration_draw.json").read_text())
-        assert record["seed"] == seed and len(set(record["families"])) == 15
-        assert sorted(scope[f] == "answer" for f in record["families"]).count(True) == 10
-        assert unapproved not in record["families"]  # only approved families are drawn
-        assert line["sha256"] == sha(world.sealed / "work" / "calibration_draw.json")
-        draws[seed] = tuple(record["families"])
-    assert len(set(draws.values())) > 1  # the seed matters
-    world.run("calibrate", "--kind", "sealed", "--seed", "3")
-    assert tuple(json.loads((world.sealed / "work" / "calibration_draw.json").read_text())["families"]) == draws[3]  # and fixes the draw
-    assert world.run("calibrate", "--kind", "sealed")[0] == st.EXIT_USAGE  # no prereg, no default seed
     world.write_prereg()
-    assert world.run("calibrate", "--kind", "sealed")[0] == 0  # default: the prereg's calibration seed (14)
-    assert json.loads((world.sealed / "work" / "calibration_draw.json").read_text())["seed"] == 14
+    _freeze_records(world)
+    draw_path = world.sealed / "work" / "calibration_draw.json"
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0, err
+    line = world.last(out, "calibrate")
+    assert (line["drawn"], line["refuse_or_partial"], line["answer"]) == ("15", "5", "10")
+    record = json.loads(draw_path.read_text())
+    assert record["seed"] == 14 and len(set(record["families"])) == 15  # the prereg's calibration seed, nothing else
+    assert sorted(scope[f] == "answer" for f in record["families"]).count(True) == 10
+    assert unapproved not in record["families"]  # only approved families are drawn
+    assert line["sha256"] == sha(draw_path)
     form = (world.sealed / "work" / "escalations" / "calibration_form.txt").read_text()
     rows = read_rows(world.sealed / "sealed_r1.jsonl")
-    drawn = json.loads((world.sealed / "work" / "calibration_draw.json").read_text())["families"]
     first = {r["family_id"]: r["question"] for r in rows if r["id"].endswith("-0")}
     second = {r["family_id"]: r["question"] for r in rows if r["id"].endswith("-1")}
-    assert all(first[f] in form and second[f] not in form for f in drawn)  # labelled from one phrasing, no key
+    assert all(first[f] in form and second[f] not in form for f in record["families"])  # labelled from one phrasing, no key
     header, lines = read_csv(world.sheet_path("sealed", "calibration"))
     assert len(lines) == 15 and header == list(st.SHEET_COLUMNS)
+    assert world.run("calibrate", "--kind", "sealed", "--seed", "3")[0] == st.EXIT_USAGE  # the --seed override is gone
+
+
+def test_calibrate_is_drawn_once_and_a_second_run_only_reemits_or_refuses(world):
+    _calibration_world(world)
+    world.write_prereg()
+    _freeze_records(world)
+    draw_path = world.sealed / "work" / "calibration_draw.json"
+    form_path = world.sealed / "work" / "escalations" / "calibration_form.txt"
+    code, first, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0, err
+    before = (draw_path.read_bytes(), form_path.read_bytes(), world.sheet_path("sealed", "calibration").read_bytes())
+    stamp = draw_path.stat().st_mtime_ns
+    code, again, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0 and again == first  # an identical recomputation: re-emitted
+    assert (draw_path.read_bytes(), form_path.read_bytes(), world.sheet_path("sealed", "calibration").read_bytes()) == before
+    assert draw_path.stat().st_mtime_ns == stamp  # nothing written
+    draw = json.loads(draw_path.read_text())
+    draw["seed"] += 1  # a different draw is on disk (or the prereg seed changed)
+    draw_path.write_text(json.dumps(draw), encoding="utf-8")
+    stale = draw_path.read_bytes()
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=calibration_drawn" in err and out == ""
+    assert draw_path.read_bytes() == stale
+
+
+def test_calibrate_needs_every_split_frozen_and_draws_only_from_the_frozen_file(world):
+    specs, _ = _calibration_world(world)
+    world.write_prereg()
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # nothing frozen yet
+    rows = _freeze_records(world, only=("sealed", "tuning"))
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # realistic is still open
+    assert not (world.sealed / "work" / "calibration_draw.json").exists()
+    world.ledger().record_freeze(split="realistic", set_sha256="b" * 64, totals={})
+    # two approved answer families sit in a component but not in the frozen file: exactly 10 answer families remain,
+    # so a draw that ignored the frozen file would (with probability 65/66) include one of them
+    gone = [s.fid for s in specs if s.scope == "answer"][:2]
+    write_rows(world.sealed / "heldout-v2.jsonl", [r for r in rows if r["family_id"] not in gone])
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0, err
+    drawn = set(json.loads((world.sealed / "work" / "calibration_draw.json").read_text())["families"])
+    assert not drawn & set(gone) and sum(scope == "answer" for scope in (next(s.scope for s in specs if s.fid == f) for f in drawn)) == 10
+    code, out, err = world.run("calibrate", "--kind", "development")
+    assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # the frozen tuning / realistic files are absent
 
 
 def test_calibrate_is_refused_when_too_few_families_are_approved(world):
     _calibration_world(world, hard=4, easy=12)
-    code, out, err = world.run("calibrate", "--kind", "sealed", "--seed", "1")
+    world.write_prereg()
+    _freeze_records(world)
+    code, out, err = world.run("calibrate", "--kind", "sealed")
     assert code == st.EXIT_REFUSED and "reason=calibration_short" in err
     assert not (world.sealed / "work" / "calibration_draw.json").exists()
 

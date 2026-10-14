@@ -156,6 +156,7 @@ KINDS = (
     "slot_consumed",
     "exclusion",
     "dispatch",
+    "batch_declaration",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
@@ -163,10 +164,17 @@ KINDS = (
 MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "split_attempt": ("pool_digest", "payload_sha256"),
     "release": ("assignment_digest", "payload_sha256"),
-    "freeze": ("set_sha256", "twins_sha256", "exclusions_sha256"),
-    "slot_stored": ("results_digest",),
+    "freeze": ("set_sha256", "twins_sha256", "exclusions_sha256", "prereg_sha256"),
+    "slot_stored": ("results_digest", "expansion_artifact_sha256"),
+    "batch_declaration": ("candidates_sha256",),
     "publication_intent": ("results_digest",),
 }
+
+#: The confirmatory batch holds at most this many candidates (slots 1..K_MAX).
+K_MAX = 4
+
+#: The run-directory file a slot-0/0b run builds; its sha256 is recorded on ``slot_stored``.
+EXPANSION_ARTIFACT_NAME = "expansion_artifact.json"
 
 #: Non-digest values the mirror may carry: a freeze names its split (a value, not a key).
 MIRROR_VALUE_FIELDS: Dict[str, tuple] = {"freeze": ("split",)}
@@ -434,6 +442,16 @@ def _dumps(obj: Any) -> bytes:
     ).encode("ascii")
 
 
+def _canonical(obj: Any) -> bytes:
+    """Canonical JSON bytes of a value (what ``candidates_sha256`` digests)."""
+    return _dumps(obj)
+
+
+def _batch_of(records: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    """The batch declaration among ``records``, if any."""
+    return next((r for r in records if r["kind"] == "batch_declaration"), None)
+
+
 def _write_payload_file(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` atomically (temp file, fsync, rename, fsync dir).
 
@@ -553,6 +571,7 @@ def _replay(records: List[Dict[str, Any]]) -> Dict[str, _SlotState]:
     """
     slots: Dict[str, _SlotState] = {}
     frozen_splits = set()
+    batch_seen = False
     for rec in records:
         kind = rec["kind"]
         if kind == "freeze":
@@ -562,6 +581,12 @@ def _replay(records: List[Dict[str, Any]]) -> Dict[str, _SlotState]:
             if split in frozen_splits:
                 raise LedgerCorrupt(f"record {rec['seq']}: a second freeze of split {split!r}")
             frozen_splits.add(split)
+        if kind == "batch_declaration":
+            if batch_seen:
+                raise LedgerCorrupt(f"record {rec['seq']}: a second batch declaration")
+            if any(s in slots for s in ("1", "2", "3", "4")):
+                raise LedgerCorrupt(f"record {rec['seq']}: batch declared after a confirmatory slot was claimed")
+            batch_seen = True
         if not kind.startswith(("slot_", "publication_")):
             continue
         slot = rec.get("slot")
@@ -602,9 +627,11 @@ def _may_use_0b(slots: Mapping[str, _SlotState]) -> bool:
     return "0b" not in slots and _slot0_ended_non_canonical(slots)
 
 
-def _check_claimable(sid: str, slots: Mapping[str, _SlotState]) -> None:
+def _check_claimable(sid: str, slots: Mapping[str, _SlotState], batch: Optional[Mapping[str, Any]] = None) -> None:
     if sid in slots:
         raise SlotRefused(f"slot {sid} was claimed before")
+    if sid not in ("0", "0b") and (batch is None or int(sid) > len(batch["candidates"])):
+        raise SlotRefused(f"slot {sid} needs a batch declaration with a candidate for it")
     if sid == "0b" and not _may_use_0b(slots):
         raise SlotRefused("slot 0b is not available")
 
@@ -873,6 +900,7 @@ class SealedLedger:
         totals: Mapping[str, int],
         twins_sha256: Optional[str] = None,
         exclusions_sha256: Optional[str] = None,
+        prereg_sha256: Optional[str] = None,
     ) -> None:
         """Record one split's freeze: its file's sha256 and totals.
 
@@ -883,7 +911,8 @@ class SealedLedger:
         must equal that digest or ``ProtocolError`` is raised. The other splits
         may omit both. A split's frozen file is immutable for the epoch, so a
         second freeze of the SAME split is refused (other splits freeze
-        separately).
+        separately). ``prereg_sha256`` (optional) is the sha256 of the pre-registration
+        the freeze was made under.
         """
         name = _token(split, "split")
         fields: Dict[str, Any] = {
@@ -895,6 +924,8 @@ class SealedLedger:
             raise ValueError(f"the {SEALED_SPLIT} freeze binds the twins record")
         if twins_sha256 is not None:
             fields["twins_sha256"] = _hex64(twins_sha256, "twins_sha256")
+        if prereg_sha256 is not None:
+            fields["prereg_sha256"] = _hex64(prereg_sha256, "prereg_sha256")
         if exclusions_sha256 is not None:
             _hex64(exclusions_sha256, "exclusions_sha256")
         with self._txn() as txn:
@@ -912,6 +943,45 @@ class SealedLedger:
         name = _token(split, "split")
         found = [r for r in self.records("freeze") if r["split"] == name]
         return found[0] if found else None
+
+    # -- the confirmatory batch declaration (b1a) ---------------------------------------
+
+    def record_batch_declaration(self, candidates: Sequence[str]) -> str:
+        """Declare the confirmatory batch: 1..4 distinct candidate config hashes, in slot order.
+
+        Candidate i runs in slot i. Needs the sealed freeze; appendable once, and only before any of
+        slots 1-4 was claimed (``ProtocolError`` otherwise). Returns the sha256 of the canonical JSON
+        of the list (the mirror carries only that digest).
+        """
+        if isinstance(candidates, (str, bytes)) or not 1 <= len(candidates) <= K_MAX:
+            raise ValueError(f"a batch has 1 to {K_MAX} candidates")
+        cands = [_hex64(c, "candidate") for c in candidates]
+        if len(set(cands)) != len(cands):
+            raise ValueError("batch candidates must be distinct")
+        digest = hashlib.sha256(_canonical(cands)).hexdigest()
+        with self._txn() as txn:
+            if not any(r["kind"] == "freeze" and r["split"] == SEALED_SPLIT for r in txn.records):
+                raise ProtocolError("the sealed split is not frozen")
+            if any(r["kind"] == "batch_declaration" for r in txn.records):
+                raise ProtocolError("a batch was already declared")
+            if any(s in txn.slots for s in ("1", "2", "3", "4")):
+                raise ProtocolError("a confirmatory slot was already claimed")
+            txn.append("batch_declaration", candidates=cands, candidates_sha256=digest)
+        return digest
+
+    def batch_declaration(self) -> Optional[Dict[str, Any]]:
+        """The batch declaration record, or ``None`` before it."""
+        found = self.records("batch_declaration")
+        return found[0] if found else None
+
+    def canonical_artifact_sha256(self) -> Optional[str]:
+        """The expansion artifact's sha256 on the stored record of the slot (0 or 0b) that has a publication intent."""
+        with self._txn() as txn:
+            for sid in ("0", "0b"):
+                state = txn.slots.get(sid)
+                if state is not None and state.intent is not None and state.stored is not None:
+                    return state.stored.get("expansion_artifact_sha256")
+        return None
 
     # -- sealed-processor dispatches (a7) --------------------------------------------
 
@@ -1025,7 +1095,7 @@ class SealedLedger:
         sid = _slot_id(slot)
         with self._slot_zero_idle() if sid == "0b" else _nullcontext():
             with self._txn() as txn:
-                _check_claimable(sid, txn.slots)
+                _check_claimable(sid, txn.slots, _batch_of(txn.records))
                 txn.append("slot_claim", slot=sid)
         return sid
 
@@ -1037,7 +1107,7 @@ class SealedLedger:
         """
         sid = _slot_id(slot)
         with self._txn() as txn:
-            _check_claimable(sid, txn.slots)
+            _check_claimable(sid, txn.slots, _batch_of(txn.records))
 
     def store_results(self, slot: int | str, run_dir: os.PathLike[str] | str) -> str:
         """Step 3: record that durable results exist in ``run_dir``; returns their digest.
@@ -1059,7 +1129,11 @@ class SealedLedger:
                 raise ProtocolError("slot 0 was superseded by slot 0b; it can store nothing more")
             if state.stored is not None:
                 raise ProtocolError(f"slot {sid} already has stored results")
-            txn.append("slot_stored", slot=sid, run_id=run_id, results_digest=digest)
+            extra: Dict[str, Any] = {}
+            artifact = Path(run_dir) / EXPANSION_ARTIFACT_NAME
+            if sid in ("0", "0b") and artifact.is_file():
+                extra["expansion_artifact_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            txn.append("slot_stored", slot=sid, run_id=run_id, results_digest=digest, **extra)
         return digest
 
     def _common_ancestor(self, run_dir: Path) -> Optional[Path]:

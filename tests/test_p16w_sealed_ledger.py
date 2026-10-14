@@ -51,6 +51,13 @@ NO_EXCLUSIONS = exclusions_digest([])  # what a freeze binds when no group has b
 FORBIDDEN_WORDS = ("scope", "chapter", "stratum", "sealed")
 
 
+@pytest.fixture(autouse=True)
+def _batch_declared_for_the_state_machine(monkeypatch):
+    """These tests walk the slot state machine on bare ledgers; the batch rule for slots 1-4 (b1a) is tested in
+    ``tests/test_p16a2b_b1a.py``. Here a four-candidate batch is assumed declared (nothing is written)."""
+    monkeypatch.setattr(sealed_ledger, "_batch_of", lambda records: {"candidates": ["1" * 64] * 4})
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

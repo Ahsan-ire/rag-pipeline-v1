@@ -335,7 +335,8 @@ def test_prereg_check_validates_the_prereg_and_recomputes_quotas_and_the_power_t
     code, out, err = world.run("prereg-check")
     assert code == 0, err
     line = world.last(out, "prereg_check")
-    assert (line["status"], line["rounds"], line["quota_examples"], line["power_cells"], line["committed"]) == ("ok", "2", "1", "2", "0")
+    assert (line["status"], line["rounds"], line["quota_examples"], line["power_cells"], line["committed"]) == ("ok", "2", "1", "4", "0")
+    assert line["family_cells"] == "2"  # one per alpha (alphas = 0.05, 0.0125) at the single discordance
 
 
 @pytest.mark.parametrize(
@@ -372,7 +373,7 @@ def test_prereg_check_on_the_committed_prereg(world):
     world.commit_prereg(push=False)
     code, out, err = world.run("prereg-check", "--committed")
     assert code == 0 and world.last(out, "prereg_check")["committed"] == "1"
-    world.prereg_path.write_text(world.prereg_path.read_text().replace('"k_max": 4', '"k_max": 5'), encoding="utf-8")
+    world.prereg_path.write_text(world.prereg_path.read_text().replace('"split_r1": 11', '"split_r1": 12'), encoding="utf-8")
     code, out, err = world.run("prereg-check", "--committed")
     assert code == st.EXIT_REFUSED and "reason=prereg_modified" in err
     assert world.run("prereg-check")[0] == 0  # without --committed the working file is checked as it is
@@ -412,4 +413,4 @@ def test_power_prints_both_correlation_models_for_grouped_designs_and_needs_its_
         assert world.run(*bad)[0] == st.EXIT_USAGE, bad
     world.write_prereg()  # draws, seed, alpha, effect and discordance default from the prereg
     code, out, err = world.run("power", "--group-sizes", "1,1,1,1,1,1")
-    assert code == 0 and out.count("power ") == 2 and world.last(out, "power")["draws"] == "60"
+    assert code == 0 and out.count("power ") == 4 and world.last(out, "power")["draws"] == "60"  # 2 models x the prereg's 2 alphas

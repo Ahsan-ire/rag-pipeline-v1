@@ -34,6 +34,42 @@ SECTIONS = [f"{ch}.{n}" for ch in range(1, 10) for n in range(1, 21)] + ["CANARY
 INVENTORY = {"version": 1, "map_sha256": "a" * 64, "sections": SECTIONS, "aliases": []}
 
 
+def b1a_blocks(*, mwe: float, draws_r: int) -> Dict[str, Any]:
+    """The prereg blocks b1a requires (primary metric, collapse, adoption, controls, slots, drafting rule), as registered."""
+    return {
+        "primary_metric": {"cutoff": 6, "metric": "strict_hit", "mode": "hybrid+rewrite"},
+        "collapse": {"rule": "all"},
+        "adoption": {
+            "rule": "a", "development_family_effect_min": mwe,
+            "confirmatory_batch": {"slots": ["1", "2", "3", "4"], "k_max": 4, "holm_k": 4, "replays": "slot0_canonical"},
+            "development_evidence": {
+                "metric": "strict_hit", "cutoff": 6, "collapse": "all", "mode": "hybrid+rewrite",
+                "sets": ["tuning", "realistic"], "versions": "frozen_at_slot_0", "draws": draws_r,
+                "statistic": "mean_over_draws_of_family_difference",
+            },
+            "unsupported_claims": {"unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent", "max_excess_abs": 0.01},
+            "control_flip": {
+                "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite", "draws": "any",
+                "versions": "frozen_at_slot_0",
+            },
+        },
+        "controls": {
+            "rule": "c1", "rank_ceiling": 3, "modes": ["hybrid", "hybrid+rewrite"], "draws_r": draws_r, "collapse": "all",
+            "binds_to": "development_freeze_records",
+        },
+        "slots": {
+            "0": {"expansion": "live"}, "0b": {"expansion": "live"},
+            **{str(n): {"expansion": "replay", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
+               for n in (1, 2, 3, 4)},
+        },
+        "drafting_rule": {
+            "attempt_1": {"refusal_share_target": 0.275, "refusal_share_counts": "pool_including_preassigned", "realistic_lay_min_share": 0.5},
+            "next_attempt": {"max_round_1_attempts": 3, "after_cap": "split_infeasible_stop"},
+            "paraphrase": {"t1_t7_cap": 3},
+        },
+    }
+
+
 def q(tag: str) -> str:
     """A 9-token question whose tokens are unique to ``tag`` (no accidental shared 8-token window)."""
     return " ".join(f"{tag}w{i}" for i in range(9))
@@ -209,17 +245,20 @@ class World:
     def prereg_doc(self, **over: Any) -> Dict[str, Any]:
         quota = {"sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5, "realistic_min": 4, "tuning_min": 8}
         quota["examples"] = [{"pool_total": 24, "preassigned_realistic": 1, **st.compute_quotas(quota, 24, 1)}]
-        power = {"alpha": 0.05, "discordance": [0.5], "planned_groups": [1] * 30 + [2] * 5, "draws": 60, "seed": 5}
+        power = {"alphas": [0.05, 0.0125], "discordance": [0.5], "planned_groups": [1] * 30 + [2] * 5, "draws": 60, "seed": 5}
         doc = {
             "version": 1, "branch": "main", "rounds": [1, 2],
             "seeds": {"split_r1": 11, "split_r2": 12, "repair": 13, "calibration": 14},
             "quota": quota, "band": {"min_pct": 25, "max_pct": 30}, "mwe": 0.1, "alpha": 0.05, "k_max": 4, "draws_r": 5,
             "min_share": {"realistic": {"tutorial_or_colleague": 0.25}}, "power": power,
+            **b1a_blocks(mwe=0.1, draws_r=5),
         }
         doc.update(self.prereg_extra)
         doc.update(over)
         if "table" not in doc["power"]:
             doc["power"]["table"] = st.power_cells(doc["power"], doc["mwe"])
+        if "family_table" not in doc["power"]:
+            doc["power"]["family_table"] = st.family_cells(doc["power"], doc["mwe"])
         return doc
 
     def write_prereg(self, **over: Any) -> Dict[str, Any]:

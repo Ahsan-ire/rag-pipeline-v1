@@ -30,6 +30,7 @@ def cli(monkeypatch, capsys, world, *extra, key=True, base=None, slot="0"):
     """Run ``pipeline eval --sealed-slot ...``; return ``(exit code, stdout, stderr)``."""
     if key:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+    world.ensure_batch(slot)  # a confirmatory slot needs the batch declaration (b1a)
     argv = base if base is not None else [
         "--golden", str(world.golden_path), "--heldout", str(world.sealed_path),
         "--realistic", str(world.realistic_path), "--sealed-slot", slot, "--prereg", str(world.prereg_path),
