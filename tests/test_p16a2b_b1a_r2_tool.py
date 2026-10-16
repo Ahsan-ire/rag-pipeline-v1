@@ -143,7 +143,9 @@ def test_count_migrated_drafts_default_to_the_preregs_families_approx(world, eva
     world.write_prereg(drafting_rule=doc["drafting_rule"])
     run = _migrated(world, eval_registry, tmp_path, gold=["direct"] * 8, real=["direct"] * 4)
     code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12")
-    assert code == 0 and world.last(out, "count_migrated")["pool_total"] == "40", err
+    # r4 D1: the default is max(families_approx, pool floor) + the registered draft_margin (5): 13 migrated + (27 + 5)
+    line = world.last(out, "count_migrated")
+    assert code == 0 and line["pool_total"] == "45" and (line["drafts"], line["draft_margin"]) == ("32", "5"), err
     rule = world.prereg_doc()["drafting_rule"]
     del rule["attempt_1"]["families_approx"]
     world.write_prereg(drafting_rule=rule)  # no families_approx and no --drafts

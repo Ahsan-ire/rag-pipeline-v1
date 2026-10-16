@@ -93,6 +93,41 @@ CONTEXT:
 )
 
 
+#: How the judged sample is drawn, as the sealed protocol registers it: every eligible answer, never a sub-sample
+#: (``judge_answers`` takes ``sample_n=None``) and, were it ever sampled, the seed it draws with.
+JUDGE_SAMPLE = "all_eligible"
+JUDGE_SEED = 0
+
+
+def judge_identity() -> Dict[str, str]:
+    """The identity of the judging step, as the pre-registration and a sealed run's results record it (16A-2b).
+
+    Returns ``{"model", "prompt_sha256", "config_hash"}``:
+
+    * ``model``: :data:`JUDGE_MODEL`.
+    * ``prompt_sha256``: sha256 of the canonical JSON of ``[[role, template], ...]`` for ``JUDGE_PROMPT``.
+    * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "prompt_sha256", "prompt_version",
+      "verdicts", "sample", "seed"}``, where ``client`` is ``generation_llm_kwargs()`` (the client the judge calls
+      through) without ``default_request_timeout`` and ``max_retries`` (they change whether a call succeeds, not
+      what it returns), ``verdicts`` is the valid verdict list and ``sample``/``seed`` are how the judged answers
+      are chosen (all eligible ones). No call is made.
+    """
+    from src.generator import generation_llm_kwargs
+    from src.pipeline_config import CLIENT_RELIABILITY_KEYS, canonical_json, prompt_messages, sha256_hex
+
+    prompt_sha = sha256_hex(canonical_json(prompt_messages(JUDGE_PROMPT)))
+    config = {
+        "model": JUDGE_MODEL,
+        "client": {k: v for k, v in generation_llm_kwargs().items() if k not in CLIENT_RELIABILITY_KEYS},
+        "prompt_sha256": prompt_sha,
+        "prompt_version": JUDGE_PROMPT_VERSION,
+        "verdicts": list(_VALID_VERDICTS),
+        "sample": JUDGE_SAMPLE,
+        "seed": JUDGE_SEED,
+    }
+    return {"model": JUDGE_MODEL, "prompt_sha256": prompt_sha, "config_hash": sha256_hex(canonical_json(config))}
+
+
 def _default_llm_fn(prompt_vars: Dict[str, str]) -> str:
     """Default judge LLM adapter: build the chain lazily and invoke it.
 

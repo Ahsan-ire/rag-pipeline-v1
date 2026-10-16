@@ -24,7 +24,7 @@ Stored document (version 1), the parts this module reads::
      "floor": {"families", "eligible"},
      "groups": {family_id: group_id},          # the sealed set's group map
      "baseline": null | {"cutoff", "hits": {family_id: bool}},   # confirmatory slots
-     "sets": [{"label", "role": "sealed" | "development", "sha256",
+     "sets": [{"label", "role": "sealed" | "development" | "regression", "sha256",
                "cohort": {...},
                "rows": [{"id", "family_id", "scope", "register", "source",
                          "retrieval": {mode: {"strict_hit", "related_hit",

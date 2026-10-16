@@ -57,6 +57,18 @@ def _tmp_sealed_ledger(monkeypatch, tmp_path):
     monkeypatch.setenv("CC_SEALED_LEDGER", str(tmp_path / "state" / "sealed_ledger.jsonl"))
 
 
+@pytest.fixture(autouse=True)
+def _no_real_index_identity(monkeypatch):
+    """No test reads a real Chroma store through ``pipeline_config`` (16A-2b b1a r4).
+
+    ``pipeline_config.index_identity`` opens the store at ``persist_directory`` (the evaluator's sidecars call it for
+    every run, and the default directory is the real ``./chroma_db``), so the suite replaces it with "no index"
+    (``None``, hence no ``pipeline_config_hash``). A test that needs an index identity patches it itself;
+    ``tests/test_p16a2b_b1a_r4_config.py`` tests the real function against a temporary store.
+    """
+    monkeypatch.setattr("src.pipeline_config.index_identity", lambda persist_directory: None)
+
+
 @pytest.fixture
 def sample_document():
     """A sample legal document for testing."""

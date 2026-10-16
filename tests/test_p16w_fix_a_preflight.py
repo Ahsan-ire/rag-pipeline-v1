@@ -224,7 +224,7 @@ def preflight(world, state, modes):
 
 def test_the_preflight_with_a_healthy_index_loads_it_and_claims_nothing(world, fakes, backends):
     calls, state = fakes
-    assert preflight(world, state, list(ev.EVAL_MODES)) is None
+    assert isinstance(preflight(world, state, list(ev.EVAL_MODES)), sealed_run.PreflightReceipt)  # r4: it returns the receipt
     assert backends["loaded"] == ["manifest", "vector", "bm25"]  # the positive control: it really was probed
     assert kinds(world) == ["freeze"] and calls.events == []
 
@@ -233,13 +233,13 @@ def test_only_the_arms_in_play_are_probed(world, fakes, backends):
     """A vector-only matrix needs no BM25 sidecar; a bm25-only one needs no Chroma index. (Answer passes injected.)"""
     calls, state = fakes
     backends.update(bm25=None)
-    assert preflight(world, state, ["vector"]) is None
+    assert isinstance(preflight(world, state, ["vector"]), sealed_run.PreflightReceipt)
     assert backends["loaded"] == ["manifest", "vector"]
     with pytest.raises(sealed_run.GateRefused) as info:
         preflight(world, state, ["bm25"])
     assert (info.value.gate, info.value.detail) == ("retrieval_backend", "LookupError")
     backends.update(ids=[], bm25=object())
-    assert preflight(world, state, ["bm25"]) is None  # an empty Chroma index does not matter to a bm25-only run
+    assert isinstance(preflight(world, state, ["bm25"]), sealed_run.PreflightReceipt)  # an empty Chroma index does not matter to a bm25-only run
 
 
 # --- the absorbed map and the duplicate checks -------------------------------------------------------------------

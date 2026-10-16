@@ -57,7 +57,7 @@ def frozen(tmp_path: Path) -> SealedLedger:
 def declarable(tmp_path: Path) -> SealedLedger:
     """A ledger that is frozen and holds the controls record: what a batch declaration needs."""
     led = frozen(tmp_path)
-    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     return led
 
 
@@ -97,7 +97,7 @@ def test_batch_declaration_rules(tmp_path):
     led = frozen(tmp_path)
     with pytest.raises(ProtocolError, match="controls"):  # and the controls record
         led.record_batch_declaration(BATCH)
-    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     one = {"config_hash": CANDIDATES[0], "expansion": "replay"}
     bad_entries = [
         [], BATCH + [{"config_hash": "5" * 64, "expansion": "replay"}], [one, dict(one)],  # none, five, a duplicate hash

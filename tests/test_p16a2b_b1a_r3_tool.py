@@ -81,9 +81,13 @@ def test_the_default_drafts_make_the_first_split_feasible_with_57_migrated_famil
     assert code == 0, err
     line = world.last(out, "count_migrated")
     assert line["migrated_families"] == "57"
-    assert (line["drafts"], line["drafts_rule"], line["pool_total"]) == ("105", "pool_floor", "162")  # not 100 / 157
-    assert (line["tuning_quota"], line["realistic_quota"]) == ("60", "42") and "tuning_band=ok" in out
-    # what cmd_split does with that pool: its tuning quota reaches tuning_min (no quota_short), where 100 drafts would not
+    # r4 D1: and the registered draft_margin (5) on top, so a few rejected drafts at the owner's review do not leave it short
+    assert (line["drafts"], line["drafts_rule"], line["pool_total"]) == ("110", "pool_floor", "167")  # not 100 / 157
+    assert line["draft_margin"] == "5"
+    assert (line["tuning_quota"], line["realistic_quota"]) == ("65", "42") and "tuning_band=ok" in out
+    # what cmd_split does with that pool: its tuning quota reaches tuning_min (no quota_short), where 100 drafts would not,
+    # and keeps the margin as headroom (the 105 drafts of the bare pool floor made exactly tuning_min)
+    assert st.compute_quotas(REAL_QUOTA, 167, 17)["tuning"] == 65 >= REAL_QUOTA["tuning_min"]
     assert st.compute_quotas(REAL_QUOTA, 162, 17)["tuning"] >= REAL_QUOTA["tuning_min"]
     assert st.compute_quotas(REAL_QUOTA, 157, 17)["tuning"] < REAL_QUOTA["tuning_min"]
     # `spare` is already inside `sealed` (sealed = floor_sealed + spare), so the rule adds nothing for it
@@ -95,15 +99,15 @@ def test_the_default_drafts_are_the_larger_of_families_approx_and_the_pool_floor
     _real_quota_world(world)
     run = _migrated(world, eval_registry, tmp_path, gold=["direct"] * 30, real=["direct"] * 5, tutorial=1)  # 36 migrated
     code, out, err = run()
-    line = world.last(out, "count_migrated")  # 60 + 60 + 42 - 36 = 126 > 100: the pool floor binds here too
-    assert (line["drafts"], line["drafts_rule"]) == ("126", "pool_floor")
+    line = world.last(out, "count_migrated")  # 60 + 60 + 42 - 36 = 126 > 100: the pool floor binds here too; + margin 5
+    assert (line["drafts"], line["drafts_rule"]) == ("131", "pool_floor")
     code, out, err = run("--drafts", "400")
     assert world.last(out, "count_migrated")["drafts_rule"] == "explicit"
-    # a small quota (sealed 12, tuning_min 8, realistic_min 4): 12 + 8 + 5 - 36 < 0, so the registered 100 binds
+    # a small quota (sealed 12, tuning_min 8, realistic_min 4): 12 + 8 + 5 - 36 < 0, so the registered 100 binds (+ margin 5)
     world.write_prereg(quota={**REAL_QUOTA, "sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5,
                               "realistic_min": 4, "tuning_min": 8})
     code, out, err = run()
-    assert (world.last(out, "count_migrated")["drafts"], world.last(out, "count_migrated")["drafts_rule"]) == ("100", "families_approx")
+    assert (world.last(out, "count_migrated")["drafts"], world.last(out, "count_migrated")["drafts_rule"]) == ("105", "families_approx")
 
 
 # --- F4: prereg-check validates every registered value ---------------------------------------------------------------------
@@ -141,7 +145,7 @@ def test_the_real_prereg_passes_and_equals_the_registered_table():
     # nothing in the file is unregistered: every leaf outside the structural blocks is in the table
     unregistered = [
         path for key, node in doc.items() if key not in st.STRUCTURAL_ROOTS for path, _ in st.prereg_leaves(node, key)
-        if path not in st.REGISTERED
+        if path not in st.REGISTERED and path not in st.COMPUTED_PATHS  # r4: judge.config_hash is computed from the code
     ]
     assert unregistered == []
     assert {p.split(".")[0] for p in st.REGISTERED} == set(doc) - set(st.STRUCTURAL_ROOTS)
@@ -205,7 +209,7 @@ def test_the_control_flip_counts_a_flip_in_raw_hybrid_or_in_the_production_confi
 
 def test_the_two_identities_and_the_draw_attribution_are_registered():
     """F9 / F10 wording: a candidate entry has a pipeline config hash AND a rewrite identity; draws name the incumbent config."""
-    assert st.REGISTERED["adoption.confirmatory_batch.candidate_identity"].startswith("config_hash_is_sha256_canonical_pipeline_config")
+    assert st.REGISTERED["adoption.confirmatory_batch.candidate_identity"].startswith("config_hash_is_pipeline_config_v1")  # r4 A
     assert "rewrite_model_prompt_caps" in st.REGISTERED["adoption.confirmatory_batch.rewrite_identity"]
     assert st.REGISTERED["adoption.development_evidence.incumbent_draws"] == (
         "first_5_recorded_development_draws_under_the_incumbent_config_hash")
@@ -219,7 +223,7 @@ def test_the_two_identities_and_the_draw_attribution_are_registered():
 def test_the_test_worlds_prereg_is_the_whole_table_and_prereg_check_passes_it(world):
     blocks = b1a_blocks()
     flat = dict(st.prereg_leaves(blocks))
-    assert set(flat) == set(st.REGISTERED) and all(st._eq(flat[p], v) for p, v in st.REGISTERED.items())
+    assert set(flat) == set(st.REGISTERED) | st.COMPUTED_PATHS and all(st._eq(flat[p], v) for p, v in st.REGISTERED.items())
     world.write_prereg()
     code, out, err = world.run("prereg-check")
     assert code == 0 and "status=ok" in out, (out, err)
@@ -254,7 +258,8 @@ def test_epoch_reports_the_registered_prereg_the_record_count_and_whether_the_wo
     world.write_prereg()
     code, out, err = world.run("epoch")
     assert code == 0 and out == "epoch prereg_sha256=none records=0 matches=no\n" and err == ""
-    world.ledger().record_dispatch(dispatch_id="0a1b2c3d", dispatch_kind="data", argv_hash="d" * 64)  # carries no prereg
+    # a record that carries no prereg (r4 D7: a `data` dispatch must carry one, so this is a non-data dispatch)
+    world.ledger().record_dispatch(dispatch_id="0a1b2c3d", dispatch_kind="probe", argv_hash="d" * 64)
     code, out, err = world.run("epoch")
     assert out == "epoch prereg_sha256=none records=1 matches=no\n"
     sha = file_sha(world.prereg_path)

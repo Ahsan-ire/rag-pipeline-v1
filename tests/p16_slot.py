@@ -26,7 +26,8 @@ import pytest
 from langchain_core.documents import Document
 
 import src.evaluator as ev
-from src import eval_privacy, eval_schema, eval_sets, sealed_ledger, sealed_run
+from src import eval_privacy, eval_schema, eval_sets, pipeline_config, sealed_ledger, sealed_run
+from src.judge import judge_identity
 from src.eval_schema import row_hash
 from src.eval_sealed_read import load_sealed
 from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
@@ -38,6 +39,7 @@ SECTIONS = ["901.1", "901.2", "902.7.3"]
 HELD = "held-out"
 SHEET = "a" * 64
 BOUND_COMMIT, BOUND_PREREG_SHA = "c" * 40, "d" * 64  # what the tests' patched ``sealed_run.bind_prereg`` returns
+WORLD_INDEX = "1" * 64  # the world's index identity (``pipeline_config.index_identity`` is patched to it): no real store is read
 CANDIDATES = [c * 64 for c in "1234"]  # a four-candidate batch (slot i runs candidate i)
 BATCH = [{"config_hash": c, "expansion": "replay"} for c in CANDIDATES]  # ... all retrieval-only (replay slot 0's artifact)
 BATCH_SLOTS = {  # the prereg's declaration of slots 1-4: the mode comes from the ledger's batch entry
@@ -176,20 +178,29 @@ class World:
         self.prereg = {
             "version": 1,
             "quota": {"floor_sealed": floor[0], "floor_answerable": floor[1]},
+            "judge": {"config_hash": judge_identity()["config_hash"]},
             "slots": slots if slots is not None else {"0": {"expansion": "live"}, "0b": {"expansion": "live"}, **BATCH_SLOTS},
         }
         self.prereg_path.write_text(json.dumps(self.prereg), encoding="utf-8")
         return self.prereg_path
 
-    def record_controls(self) -> None:
-        """The ledger's ``controls`` record and the committed list it binds (a batch needs both), once."""
+    def config_hash(self, top_k: int = 6) -> str:
+        """The world's pipeline configuration hash (real code, the world's patched index identity, ``top_k``)."""
+        return pipeline_config.pipeline_config_hash("unused", top_k=top_k)
+
+    def record_controls(self, incumbent_config_hash: Optional[str] = None) -> None:
+        """The ledger's ``controls`` record (the world's pipeline is the incumbent unless told otherwise) and the
+        committed list it binds (a batch needs both), once."""
         ledger = self.ledger()
         if ledger.controls_record() is not None:
             return
         path = sealed_run.controls_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{"version": 1}\n', encoding="utf-8")
-        ledger.record_controls(controls_sha256=sha_of(path), draws_sha256="e" * 64, prereg_sha256=BOUND_PREREG_SHA)
+        ledger.record_controls(
+            controls_sha256=sha_of(path), draws_sha256="e" * 64, prereg_sha256=BOUND_PREREG_SHA,
+            incumbent_config_hash=incumbent_config_hash or self.config_hash(),
+        )
 
     def declare_batch(self, n: int = 4, entries: Optional[List[Dict[str, str]]] = None) -> str:
         """Declare the first ``n`` of :data:`BATCH` (or ``entries``) as the confirmatory batch (after the freeze and
@@ -303,41 +314,15 @@ class World:
     def specs(self) -> List[Tuple[str, str]]:
         return [("tuning", str(self.golden_path)), (HELD, str(self.sealed_path)), ("realistic", str(self.realistic_path))]
 
-    def token(self, slot: Any = 0, *, expansion: str = "live", rewrite_candidate: Optional[str] = None,
-              meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
-              claim: bool = True, top_k: Optional[int] = 6, declare: bool = True):
-        """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
-        after its preflight). The gate itself never claims (``claim=True`` is refused), so this helper, unless told
-        ``claim=False``, claims the minted token the way ``run_slot`` does after its preflight (``SlotToken.claim``),
-        releasing the slot's lock if the claim is refused: tests that need a claimed, not yet run slot use it. A
-        confirmatory slot gets the default four-candidate batch declared first unless ``declare=False``."""
-        if declare:
-            self.ensure_batch(slot)
-        token = sealed_run.acquire_slot_token(
-            slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
-            records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
-            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, top_k=top_k,
-        )
-        if claim:
-            try:
-                token.claim()
-            except BaseException:
-                token.release()
-                raise
-        return token
-
-    def run(self, slot: Any = 0, *, token: Any = None, modes: Optional[List[str]] = None, top_k: int = 6,
-            skip_refusals: bool = False, skip_completeness: bool = False, judge: bool = True,
-            judge_sample: Optional[int] = None, hit: Optional[Callable[[str, str], bool]] = None,
-            scan: Optional[Callable[[str], Any]] = None, generate: Optional[Callable] = None,
-            judge_fn: Optional[Callable] = None, out: Callable[[str], None] = print, expansion: str = "live",
-            rewrite_candidate: Optional[str] = None, baseline_run: Optional[str] = None,
-            specs: Optional[List[Tuple[str, str]]] = None, meter: Any = "default",
-            matrix_extra: Optional[Dict[str, Any]] = None) -> sealed_run.SlotOutcome:
-        """Gate + claim + run + store + finish for one slot, with every model faked."""
-        meter_obj = make_meter() if meter == "default" else meter
-        tok = token or self.token(slot, expansion=expansion, rewrite_candidate=rewrite_candidate,
-                                  meter=meter_obj, baseline_run=baseline_run, top_k=top_k)
+    def run_args(self, *, modes: Optional[List[str]] = None, top_k: int = 6, skip_refusals: bool = False,
+                 skip_completeness: bool = False, judge: bool = True, judge_sample: Optional[int] = None,
+                 hit: Optional[Callable[[str, str], bool]] = None, generate: Optional[Callable] = None,
+                 judge_fn: Optional[Callable] = None, expansion: str = "live",
+                 specs: Optional[List[Tuple[str, str]]] = None, meter: Any = None,
+                 matrix_extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """The arguments of one slot run (``run_slot``'s, minus the token, ledger, scan and out): the world's defaults
+        unless given. ``token(claim=True)`` preflights with exactly these, so a run with the same arguments matches the
+        claim's digest (a claimed token runs only the arguments it was preflighted with)."""
         retrieval = self.retrieval(hit)
         kwargs: Dict[str, Any] = {
             "retrieve_fn_factory": retrieval.factory(6),
@@ -346,13 +331,50 @@ class World:
             "provenance_fn": lambda: dict(PROVENANCE),
         }
         kwargs.update(matrix_extra or {})
-        return sealed_run.run_slot(
-            tok, ledger=self.ledger(), set_specs=specs or self.specs,
-            modes=modes or list(ev.EVAL_MODES), top_k=top_k, skip_refusals=skip_refusals,
-            skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
-            persist_directory="unused", meter=meter_obj, expansion=expansion, matrix_kwargs=kwargs,
-            scan=scan, out=out,
+        return {
+            "set_specs": specs or self.specs, "modes": modes or list(ev.EVAL_MODES), "top_k": top_k,
+            "skip_refusals": skip_refusals, "skip_completeness": skip_completeness, "judge": judge,
+            "judge_sample": judge_sample, "persist_directory": "unused",
+            "meter": meter if meter is not None else make_meter(), "expansion": expansion,
+            "matrix_kwargs": kwargs,
+        }
+
+    def token(self, slot: Any = 0, *, expansion: str = "live", rewrite_candidate: Optional[str] = None,
+              meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
+              claim: bool = True, top_k: Optional[int] = 6, declare: bool = True, **run_args: Any):
+        """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
+        after its preflight). The gate itself never claims (``claim=True`` is refused), so this helper, unless told
+        ``claim=False``, does what ``run_slot`` does: it preflights the token with the world's default run arguments
+        (``run_args`` overrides them: see :meth:`run_args`) and claims it with the receipt (``SlotToken.claim``),
+        releasing the slot's lock if either is refused: tests that need a claimed, not yet run slot use it. A
+        confirmatory slot gets the default four-candidate batch declared first unless ``declare=False``."""
+        if declare:
+            self.ensure_batch(slot)
+        meter_obj = make_meter() if meter == "default" else meter
+        token = sealed_run.acquire_slot_token(
+            slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
+            records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
+            meter=meter_obj, baseline_run=baseline_run, top_k=top_k,
         )
+        if claim:
+            try:
+                args = self.run_args(expansion=expansion, meter=meter_obj, **{"top_k": top_k or 6, **run_args})
+                token.claim(sealed_run.preflight_slot(token, **args))
+            except BaseException:
+                token.release()
+                raise
+        return token
+
+    def run(self, slot: Any = 0, *, token: Any = None, top_k: int = 6, judge_fn: Optional[Callable] = None,
+            scan: Optional[Callable[[str], Any]] = None, out: Callable[[str], None] = print, expansion: str = "live",
+            rewrite_candidate: Optional[str] = None, baseline_run: Optional[str] = None, meter: Any = "default",
+            **run_args: Any) -> sealed_run.SlotOutcome:
+        """Gate + claim + run + store + finish for one slot, with every model faked."""
+        meter_obj = make_meter() if meter == "default" else meter
+        tok = token or self.token(slot, expansion=expansion, rewrite_candidate=rewrite_candidate,
+                                  meter=meter_obj, baseline_run=baseline_run, top_k=top_k, claim=False)
+        args = self.run_args(top_k=top_k, judge_fn=judge_fn, expansion=expansion, meter=meter_obj, **run_args)
+        return sealed_run.run_slot(tok, ledger=self.ledger(), scan=scan, out=out, **args)
 
     # -- inspection -------------------------------------------------------------
 
@@ -400,6 +422,8 @@ def make_world(root: Path, monkeypatch: Any) -> World:
     # slots behind them (each is tested by putting it back: the embargo True, the identity check the real stub)
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
     monkeypatch.setattr(sealed_run, "check_candidate_identity", lambda *args, **kwargs: None)
+    # the world has an index with a fixed identity (no Chroma store is read): its pipeline_config_hash is real code + this
+    monkeypatch.setattr(pipeline_config, "index_identity", lambda persist_directory: WORLD_INDEX)
     isolate_env(monkeypatch, *TRACING_VARS)
     try:
         from langsmith import utils as ls_utils

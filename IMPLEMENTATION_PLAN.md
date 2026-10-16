@@ -1750,7 +1750,7 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
         canonical pipeline configuration equals the declared hash, checked at the gate before the claim. Until then the
         gate's `check_candidate_identity` always refuses (`identity`), so flipping the boolean alone opens nothing
         (r3 F11). The candidates are bound before any confirmatory slot can be spent, but after slot 0's descriptive
-        aggregates (the D74 residual, below).
+        aggregates (the D74 residual in docs/decisions.md, D74 r3 addendum).
       - A confirmatory slot needs the judge on.
     - **Adoption inputs (Au3, A6, A7, A8).**
       - **Development evidence** is the family-level strict-hit@6 difference (`all` collapse) in hybrid+rewrite on
@@ -1816,6 +1816,29 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       - **Deferred to 16B (Au M4).** Holm with K = 4 and the adoption inputs (development evidence, unsupported
         claims, control flips) are 16B's analysis code. It reads the epoch prereg, which nothing can amend
         (`prereg_amended`), so 16B can implement but not choose them.
+    - **Closure r4 (16 Oct; on d00a844: Codex REVISE 1 MAJOR; plan-auditor FAIL 0 BLOCKER / 3 MAJOR / 11 MINOR;
+      design by an Opus pass; dispositioned in D74's r4 addendum).**
+      - **Incumbent identity (Au M1).** `src/pipeline_config.pipeline_config_hash()` (v1, zero calls): the sha256 of
+        the canonical JSON of the retrieval and generation code digests (`ast.dump` without docstrings of retriever,
+        bm25_index, embedder, chunker, query_rewrite, generator and grounding), runtime package versions, embedding
+        model and collection, index identity (sorted chunk ids, count, model manifest; ids only), BM25 and fusion
+        parameters with `top_k`, the rewrite identity, and the generation model, client and prompt. Excluded:
+        timeouts and retries, git sha, paths, judge, scoring, eval sets, corpus text. Every eval sidecar carries it.
+        `controls.py` requires all draws to carry one hash H equal to the running pipeline's, and records H as the
+        `controls` record's `incumbent_config_hash`. Slots 0/0b refuse (`incumbent`) unless the running hash is H.
+        Consequence: code and environment are frozen from b7's draws to slot 0; changing the incumbent is a new epoch.
+      - **Judge registration (Au M2).** `judge.judge_identity()` (model, prompt, client, verdicts, sample
+        `all_eligible`). Every sealed slot refuses before the claim: judge off or None (`judge:off`), any
+        `--judge-sample` (`judge:sample`), and an identity other than the prereg's `judge.config_hash`
+        (`judge:identity`). Results record the judge hash; 16B compares only results with equal judge hashes; any
+        sealed judge error means "unsupported claims do not rise" is not shown.
+      - **Claim boundary (Codex r4).** Only `preflight_slot` mints a `PreflightReceipt` (bound to the run's argument
+        digest); `SlotToken.claim` needs one; `run_slot` always preflights, and an already-claimed token must match
+        the digest (`claim:preflight_mismatch`).
+      - **Smaller items.** The draft margin reaches b3 (Au M3); `controls.committed` says before slot 0; quota and
+        `min_share` values are pinned by `prereg-check`; the data launcher takes the branch from the prereg, validates
+        the prereg in-process before any dispatch record, and names its refusal `prereg_amended`; a data dispatch
+        record must carry the prereg sha256; public non-sealed sets are stored with role `regression`.
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
@@ -1833,8 +1856,10 @@ b2. **Migration and quotas [C].** First `sealed_tool epoch`: it must print `prer
 b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and the tutorial folder (the 15 unseen
     tutorials and 7 title-document sets; never T1 or T7): one seed phrasing per family; scope, evidence (inventory
     sections), gaps, `ambiguous`; refusals by b1a's 0.275 rule; lay, modelled and terse registers; written only
-    under `sealed/pool/`, every row marked. Attempt 1 ≈ 100 families: ≈ 50 tutorial-sourced (about 3 per unseen
-    tutorial, at most 1 per title-document set), ≈ 50 handbook-drafted. Families on a b0 conflict label are dev-only.
+    under `sealed/pool/`, every row marked. Attempt 1's family count is `count-migrated`'s `drafts` (b1a r3 F12 +
+    r4 D1: max(100, sealed + tuning_min + realistic quota − migrated) + 5; ≈ 110 at 57 migrated), written into
+    `task.json:count` with `refusals` and `lay_min`: about half tutorial-sourced (about 3 per unseen tutorial, at most 1
+    per title-document set), the rest handbook-drafted. Families on a b0 conflict label are dev-only.
 b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin verdict; the orchestrator covers the
     development-only pairs (golden, realistic, T1/T7, heldout-v1) from the pairing map and its own reading. `split`
     makes up to 3 attempts per round (b1a) and releases the first feasible one. The SP then paraphrases every family to 2–3 phrasings (migrated ones
@@ -1941,6 +1966,20 @@ hit in pushed history; the owner's `harness-init --refresh`. **Gates:** prereg p
 - **P7 Canonical v6** (sealed headline; replay guard; one writer; all-or-nothing vs one spare) [Cx r2 8 (v6); Au r2 3;
   Au r3 17, 30]
 - **P8 Cost, power, negative branch** [Cx r1 5, 15 (estimate), r3 11; Au r2 28; Au r3 25 (Tier-2 MDE, D57)]
+
+### 16B — obligations registered by 16A-2b (outline; 16B gets its own spec and plan gate)
+16B may implement these but not choose them: they are fixed by the epoch prereg, which nothing can amend
+(`prereg_amended`).
+- Replace `sealed_run.check_candidate_identity` (today it always refuses `identity`) with the registered check: the
+  running `pipeline_config_hash()` equals the batch entry's `config_hash`, before the claim; only then lift
+  `CONFIRMATORY_EMBARGO`, in the same reviewed change.
+- Declare the batch (`declare-batch`, ≤ 4 entries, `replay` or `candidate:<rewrite hash>`) before any of slots 1–4.
+- The adoption analysis reads the epoch prereg: development evidence over the first 5 draws recorded under each
+  config hash (b7 `dev_draw`), unsupported claims vs slot 0's judged rate (equal judge hashes only; any sealed judge
+  error means not shown), control flips in raw hybrid or hybrid+rewrite, the sealed guard's two checks, Holm with
+  K = 4.
+- Whether to separate the judge from the generation model (today `JUDGE_MODEL = GENERATION_MODEL`, so a candidate
+  that changes generation is refused `judge:identity`) is an owner question for 16B.
 
 ### 16A-2 dispositions (the 47 DEFERRED-16A-2 rows of the 16A-1 table below; severities there)
 a* = 16A-2a items, b* = 16A-2b items, 2a-(x) = 16A-2a criteria.

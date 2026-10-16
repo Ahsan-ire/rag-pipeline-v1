@@ -27,7 +27,10 @@ What a dispatch does, in order
    ``eval/prereg_16a2.json`` and equal the working file (the binding ``sealed_run.bind_prereg``
    applies), and the dispatch record carries that file's sha256: the first record of any kind
    that carries one registers the epoch's prereg, and a dispatch under any other prereg is
-   refused.
+   refused (``prereg_amended``). The branch it must be pushed to is the prereg's OWN ``branch`` field: a
+   ``--branch`` that differs from it is refused (``prereg_branch``). The prereg must also pass
+   ``sealed_tool``'s ``prereg-check`` (run in-process): an invalid one is refused (``prereg_invalid``) before
+   any dispatch record, because the first record registers it for the epoch.
 4. Creates ``<root>/<dispatch id>/``, copies in exactly the ``--inputs`` and
    creates ``out/``.
 5. Runs ``claude`` with that directory as cwd, under an environment holding only
@@ -806,6 +809,42 @@ def _check_prereg_is_last_commit(sha: str, repo: os.PathLike | str, file: Path) 
         raise LaunchError(EXIT_REFUSED, "the prereg file differs from its committed copy")
 
 
+def prereg_branch(file: os.PathLike | str) -> Optional[str]:
+    """The ``branch`` field of the prereg file, or ``None`` if the file is unreadable or has none (a string)."""
+    try:
+        branch = json.loads(Path(file).read_text(encoding="utf-8")).get("branch")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return branch if isinstance(branch, str) else None
+
+
+def check_prereg_valid(file: os.PathLike | str) -> None:
+    """The prereg file must pass ``sealed_tool``'s ``prereg-check`` (run in-process, the same function).
+
+    A data dispatch registers the epoch's prereg (the first ledger record that carries a prereg sha256), so a prereg
+    that ``prereg-check`` would refuse must never be registered: it is refused before any dispatch record.
+
+    Raises:
+        LaunchError: ``prereg_invalid`` (refused) for an unreadable file or any ``prereg-check`` error.
+    """
+    had_key = "ANTHROPIC_API_KEY" in os.environ
+    try:
+        from scripts import sealed_tool  # lazy: sealed_tool imports this module
+
+        try:
+            doc = json.loads(Path(file).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise LaunchError(EXIT_REFUSED, "prereg_invalid") from None
+        if sealed_tool.validate_prereg(doc):
+            raise LaunchError(EXIT_REFUSED, "prereg_invalid")
+    finally:
+        # the check imports ``src.judge`` (its identity is part of the prereg), whose import runs ``load_dotenv()``: a key
+        # from `.env` must not enter a launcher process that has just verified there is none (the SP's own environment is
+        # scrubbed to five variables anyway; this keeps the process itself as the refusal found it)
+        if not had_key:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
 def build_argv(brief_text: str) -> List[str]:
     """The exact ``claude`` argument vector, with the brief as the system-prompt text."""
     return [*CLAUDE_ARGV_PREFIX, brief_text]
@@ -892,13 +931,16 @@ def _record_dispatch(
 
     The record carries the sha256 of the prereg the dispatch runs under; the ledger refuses it (inside its own
     transaction) if the epoch has already registered another prereg, and the first record that carries one registers it.
+    A ``data`` dispatch with no prereg is refused (``prereg_invalid``): it would run under no registered prereg.
     """
+    if kind == "data" and prereg_sha256 is None:
+        raise LaunchError(EXIT_REFUSED, "prereg_invalid")
     try:
         ledger.record_dispatch(
             dispatch_id=dispatch_id, dispatch_kind=kind, argv_hash=argv_hash(argv), prereg_sha256=prereg_sha256,
         )
     except ProtocolError:
-        raise LaunchError(EXIT_REFUSED, "the prereg is not this epoch's registered prereg") from None
+        raise LaunchError(EXIT_REFUSED, "prereg_amended") from None
     except (SealedLedgerError, OSError, ValueError):
         raise LaunchError(EXIT_REFUSED, "the sealed ledger could not record the dispatch") from None
 
@@ -1024,7 +1066,11 @@ def launch(
             if kind == "data":
                 repo_dir = Path(repo) if repo is not None else Path(REPO)
                 prereg_path = Path(prereg_file) if prereg_file is not None else repo_dir / PREREG_RELATIVE
-                check_prereg(prereg, branch, repo=repo_dir, file=prereg_path)
+                own_branch = prereg_branch(prereg_path)  # the prereg's own `branch` is the one it must be pushed to
+                if own_branch is not None and own_branch != branch:
+                    raise LaunchError(EXIT_REFUSED, "prereg_branch")
+                check_prereg(prereg, own_branch if own_branch is not None else branch, repo=repo_dir, file=prereg_path)
+                check_prereg_valid(prereg_path)  # before any dispatch record: an invalid prereg is never registered
                 prereg_sha256 = _sha256_file(prereg_path)
             if shutil.which("claude", path=os.environ.get("PATH", "")) is None:
                 raise LaunchError(EXIT_USAGE, "claude was not found on PATH")

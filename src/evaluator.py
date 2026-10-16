@@ -1707,6 +1707,7 @@ def run_eval(
         cohorts=[cohort],
         rows=rank_rows(retrieval, mode="raw", set_sha256=set_sha, ids=ids),
         expansion={"kind": "none"},
+        pipeline_config_hash=_pipeline_config_hash(persist_directory, top_k),
     )
 
     if private:
@@ -1772,6 +1773,13 @@ def _atomic_write(path: str, content: str) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
     os.replace(tmp, path)
+
+
+def _pipeline_config_hash(persist_directory: str, top_k: int) -> Optional[str]:
+    """The running pipeline's ``pipeline_config_hash`` (``None`` with no index at ``persist_directory``): zero calls."""
+    from src import pipeline_config
+
+    return pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k)
 
 
 def run_eval_matrix(
@@ -1939,7 +1947,7 @@ def run_eval_matrix(
         # file is refused here. A slot run is private by construction.
         _sealed_run.check_token_for_run(
             slot_token, set_paths=set_paths, expansion_mode=expansion_mode,
-            artifact_path=artifact_path_arg, meter=meter, top_k=top_k, judge=judge,
+            artifact_path=artifact_path_arg, meter=meter, top_k=top_k, judge=judge, judge_sample=judge_sample,
         )
         if results_path is not None:
             raise ValueError("a slot-gated run publishes only through its slot protocol; --results is refused")
@@ -2695,6 +2703,7 @@ def run_eval_matrix(
         cohorts=[s["cohort"] for s in sets],
         rows=sidecar_rows,
         expansion=expansion_id,
+        pipeline_config_hash=_pipeline_config_hash(persist_directory, top_k),
     )
     dump_lines = [json.dumps(r, ensure_ascii=False) for r in judge_dump_records]
     if private:
@@ -2994,6 +3003,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     sidecar = build_sidecar(
         privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
         expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
+        pipeline_config_hash=_pipeline_config_hash(kw["persist_directory"], top_k),
     )
     if private:
         from pathlib import Path
@@ -3108,6 +3118,10 @@ def _write_slot_run(
         for s in sets
     )
     heldout_owned = heldout is not None and bool(heldout["owned"])
+    from src.judge import judge_identity
+
+    run_config_hash = _pipeline_config_hash(kw["persist_directory"], kw["top_k"])
+    judge_config_hash = judge_identity()["config_hash"]
     facts: Dict[str, Any] = {
         "slot": token.slot,
         "heldout_is_frozen_set": heldout_owned,
@@ -3127,6 +3141,8 @@ def _write_slot_run(
         "bm25_loaded": bool(kw["bm25_probe"]()),
         "judge": bool(kw["judge"]),
         "judge_clean": judge_clean,
+        "pipeline_config_hash": run_config_hash,
+        "judge_config_hash": judge_config_hash,
         "expansion_mode": token.expansion_mode,
         # Re-verified now, after the run: the sealed file, twins record and exclusion
         # list must still be the frozen ones, and tracing must still be off.
@@ -3139,6 +3155,7 @@ def _write_slot_run(
         "expansion_mode": token.expansion_mode, "expansion_identity": expansion_id,
         "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
+        "pipeline_config_hash": run_config_hash, "judge_config_hash": judge_config_hash,
     }
     doc = _sealed_run.build_results_doc(token, working, facts)
     run_dir = Path(_privacy.sealed_run_dir(token.run_id, create=True))
@@ -3156,7 +3173,7 @@ def _write_slot_run(
     write_inputs_json(run_dir, _run_inputs(sets, kw["replay_artifact"], built))
     sidecar = build_sidecar(
         privacy=_privacy.SEALED, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
-        expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
+        expansion=expansion_id, absorbed_map_sha256=absorbed_sha, pipeline_config_hash=run_config_hash,
     )
     write_private(run_dir / "rows.json", dump_sidecar(sidecar))
     if kw["judge"] and judge_records:

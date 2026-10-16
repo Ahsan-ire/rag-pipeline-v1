@@ -151,6 +151,9 @@ def env(tmp_path, monkeypatch, _private_root_in_tmp):
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # these tests commit tiny synthetic preregs (`{"branch": "main"}`), which prereg-check would refuse: a data dispatch's
+    # prereg validation (r4 D5) is tested with the real check in tests/test_p16a2b_b1a_r4_launch.py
+    monkeypatch.setattr(sp, "check_prereg_valid", lambda file: None)
     return sandbox
 
 

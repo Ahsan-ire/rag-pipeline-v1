@@ -129,12 +129,13 @@
         "candidate"
       ],
       "mode_declared_by": "batch_declaration",
-      "candidate_identity": "config_hash_is_sha256_canonical_pipeline_config_checked_by_16b_gate_before_claim",
+      "candidate_identity": "config_hash_is_pipeline_config_v1_checked_by_16b_gate_before_claim",
       "rewrite_identity": "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim",
       "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
       "requires": [
         "controls_record",
-        "judge_on"
+        "judge_on",
+        "registered_judge"
       ]
     },
     "development_evidence": {
@@ -186,7 +187,7 @@
     "draws_r": 5,
     "collapse": "all",
     "computed": "once_on_frozen_development_versions",
-    "committed": "ledger_controls_record_before_batch_declaration",
+    "committed": "ledger_controls_record_before_slot_0",
     "recomputed_mid_batch": false,
     "flip": "fail",
     "reverses": "d57_addendum",
@@ -237,9 +238,9 @@
   "drafting_rule": {
     "attempt_1": {
       "families_approx": 100,
-      "families_rule": "max(families_approx,sealed_quota+tuning_min+realistic_quota_minus_migrated_families)",
-      "tutorial_sourced_approx": 50,
-      "handbook_drafted_approx": 50,
+      "draft_margin": 5,
+      "families_rule": "max(families_approx,(sealed_quota+tuning_min+realistic_quota)-migrated_families)+draft_margin",
+      "source_mix": "tutorial_sourced_about_half_rest_handbook",
       "per_unseen_tutorial_approx": 3,
       "unseen_tutorials": 15,
       "per_title_document_set_max": 1,
@@ -470,5 +471,53 @@
         "mde_hundredths": 36
       }
     ]
+  },
+  "incumbent": {
+    "config_fn": "pipeline_config_v1",
+    "components": [
+      "version",
+      "code",
+      "runtime",
+      "embedding",
+      "index",
+      "bm25",
+      "fusion",
+      "rewrite",
+      "generation"
+    ],
+    "excluded": [
+      "timeouts_retries",
+      "git_sha",
+      "paths",
+      "judge",
+      "scoring",
+      "eval_sets",
+      "corpus_text"
+    ],
+    "fixed_by": "controls_record_incumbent_config_hash",
+    "draws": "each_counted_draw_sidecar_carries_the_incumbent_config_hash",
+    "slots": [
+      "0",
+      "0b"
+    ],
+    "candidates": "batch_entry_config_hash_is_pipeline_config_v1_of_the_candidate"
+  },
+  "judge": {
+    "required_on": [
+      "0",
+      "0b",
+      "1",
+      "2",
+      "3",
+      "4"
+    ],
+    "model": "claude-sonnet-5",
+    "prompt_version": "faithfulness-judge-v1",
+    "config_hash": "90963793f4fbcf08b208bb08cd0fba5e5fba3adebfa7e60c4a8af846aff57c20",
+    "sample": "all_eligible",
+    "eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
+    "rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
+    "compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash",
+    "errors": "any_sealed_judge_error_means_not_shown"
   }
 }

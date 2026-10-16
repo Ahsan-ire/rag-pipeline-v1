@@ -41,6 +41,18 @@ unchanged ``eval/controls_v1.json``: the list exists before the first sealed res
 identity check, a stub that always refuses until 16B's reviewed change replaces it: lifting the
 embargo flag alone opens nothing), ``batch``, ``judge``, ``prereg_binding`` and ``dev_binding``.
 
+16A-2b b1a r4 adds three checks, all before the claim (:func:`preflight_slot`, the only producer of the
+:class:`PreflightReceipt` that :meth:`SlotToken.claim` demands):
+
+* ``judge`` (every sealed slot, 0 and 0b included): the judge must be on (``off``), judge every eligible answer, no
+  ``--judge-sample`` (``sample``), and ``src.judge.judge_identity()["config_hash"]`` must equal the prereg's
+  ``judge.config_hash`` (``identity``);
+* ``incumbent`` (slots 0 and 0b): ``src.pipeline_config.pipeline_config_hash`` of the running pipeline must equal the
+  ``incumbent_config_hash`` that ``scripts/controls.py`` recorded in the ledger with the controls (the draws' own
+  pipeline); a confirmatory slot passes that running hash to :func:`check_candidate_identity`;
+* ``claim`` (``preflight`` / ``preflight_mismatch``): a claim needs the receipt of a preflight that passed for this
+  run, and a token claimed once runs only the arguments it was preflighted with (the receipt's ``args_digest``).
+
 Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
 ----------------------------------------------------------------------------------------------
 **Prereg** (``--prereg``, the same ``eval/prereg_16a2.json`` that ``sealed_tool`` checks; this
@@ -49,6 +61,7 @@ module reads only the keys below, anything else is ignored)::
     {"version": 1,
      "quota": {"floor_sealed": 50, "floor_answerable": 35, ...},
      "primary_metric": {"cutoff": 6},          # optional; the hit cut-off k, one of the evaluator's HIT_KS, default 6
+     "judge": {"config_hash": "<64 hex>"},     # the registered judge identity (src.judge.judge_identity), required
      "slots": {"0":  {"expansion": "live"},
                "0b": {"expansion": "live"},
                "1":  {"expansion": "replay",    "artifact_sha256": "<64 hex>"},
@@ -197,6 +210,7 @@ GATES = (
     "slot", "prereg", "cutoff", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
     "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding", "identity",
+    "incumbent",
 )
 
 #: The canonical-v6 guards, in report order. Each is a pure function of the stored facts.
@@ -419,8 +433,11 @@ def load_prereg(path: Union[str, os.PathLike]) -> Dict[str, Any]:
                 for k in ("floor_sealed", "floor_answerable"))
     ):
         raise GateRefused("prereg")
+    judge = doc.get("judge")
+    if not (isinstance(judge, dict) and _is_hex(judge.get("config_hash"))):  # every sealed slot runs the registered judge
+        raise GateRefused("prereg")
     doc = {**doc, "floor": {"families": quota["floor_sealed"], "eligible": quota["floor_answerable"]},
-           "cutoff": _declared_cutoff(doc.get("primary_metric"))}
+           "cutoff": _declared_cutoff(doc.get("primary_metric")), "judge_config_hash": judge["config_hash"]}
     slots = doc.get("slots")
     if not isinstance(slots, dict):
         raise GateRefused("prereg")
@@ -538,6 +555,26 @@ def _eligible_counts(rows: Sequence[Mapping[str, Any]], groups: Mapping[str, str
 # ---------------------------------------------------------------------------
 
 _MINT = object()
+_PREFLIGHT = object()
+
+
+@dataclass(frozen=True)
+class PreflightReceipt:
+    """Proof that :func:`preflight_slot` passed for one run's arguments (minted only by it).
+
+    ``run_id`` is the token's; ``args_digest`` is the sha256 of the canonical JSON of everything the run is told
+    (:func:`preflight_args_digest`). :meth:`SlotToken.claim` takes nothing else, so the durable claim can only
+    follow a preflight that checked this run, and :func:`run_slot` compares the digest with the one a claimed token
+    was claimed under. A forged receipt is refused at construction.
+    """
+
+    run_id: str
+    args_digest: str
+    mint: object = field(repr=False, compare=False, default=None)
+
+    def __post_init__(self) -> None:
+        if self.mint is not _PREFLIGHT:
+            raise TypeError("a PreflightReceipt is minted only by preflight_slot")
 
 
 @dataclass(frozen=True)
@@ -578,17 +615,27 @@ class SlotToken:
     candidate_config_hash: Optional[str] = field(repr=False, default=None)  # a confirmatory slot's declared candidate
     candidate_expansion: Optional[str] = field(repr=False, default=None)  # and its declared mode: replay or candidate
     candidate_rewrite_config_hash: Optional[str] = field(repr=False, default=None)  # a candidate entry's rewrite identity
+    judge_config_hash: Optional[str] = field(repr=False, default=None)  # the prereg's registered judge identity
+    claimed_args: List[Optional[str]] = field(repr=False, compare=False, default_factory=lambda: [None])  # digest claimed under
 
     def __post_init__(self) -> None:
         if self.mint is not _MINT:
             raise TypeError("a SlotToken is minted only by acquire_slot_token")
 
-    def claim(self) -> None:
+    def claim(self, receipt: Any = None) -> None:
         """Claim the slot in the ledger (a4 step 1) if this token has not claimed it yet.
 
+        Needs the :class:`PreflightReceipt` of a :func:`preflight_slot` that passed for this very token: the receipt
+        is checked before the ledger is touched, so a claim without a preflight leaves the ledger as it was. The
+        receipt's ``args_digest`` is kept (``claimed_args``): :func:`run_slot` runs a claimed token only with the
+        arguments it was preflighted with. Claiming an already claimed token keeps the digest it was claimed under.
+
         Raises:
-            GateRefused: ``claim`` when the ledger refuses (``busy`` when slot 0 still runs for 0b).
+            GateRefused: ``claim`` (``preflight``) for a missing, forged-type or foreign-run receipt; ``claim`` when
+                the ledger refuses (``busy`` when slot 0 still runs for 0b).
         """
+        if not isinstance(receipt, PreflightReceipt) or receipt.run_id != self.run_id:
+            raise GateRefused("claim", "preflight")
         if self.claimed[0]:
             return
         try:
@@ -598,6 +645,7 @@ class SlotToken:
         except SlotRefused:
             raise GateRefused("claim") from None
         self.claimed[0] = True
+        self.claimed_args[0] = receipt.args_digest
 
     def begin(self) -> None:
         """Mark the token used: one claim runs the matrix once (a sealed row is never run twice).
@@ -734,18 +782,42 @@ def _check_expansion(
 
 def check_candidate_identity(
     slot: str, ledger: SealedLedger, config_hash: Optional[str], expansion: Optional[str], rewrite_config_hash: Optional[str],
+    running_config_hash: Optional[str] = None,
 ) -> None:
     """A confirmatory slot's candidate must be the one it was declared to be (the 16B check; a stub until then).
 
-    The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration. The check
-    16B adds compares it with the run's own canonical pipeline configuration hash (the rewrite identity is checked
-    by :func:`_check_expansion`). Until 16B's reviewed code change lands there is no such computation, so this
-    refuses always: lifting ``CONFIRMATORY_EMBARGO`` alone cannot open a confirmatory slot. 16B replaces this body.
+    The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration
+    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v1``, of the candidate). The check 16B adds compares it with
+    ``running_config_hash``, the same hash computed for the pipeline that is about to run: :func:`preflight_slot`
+    passes it (the gate, which does not know the index, calls this with ``None`` as an early refusal). The rewrite
+    identity is checked by :func:`_check_expansion`. Until 16B's reviewed code change lands this refuses always, so
+    lifting ``CONFIRMATORY_EMBARGO`` alone cannot open a confirmatory slot. 16B replaces this body.
 
     Raises:
         GateRefused: ``identity``, always in this phase.
     """
     raise GateRefused("identity")
+
+
+def check_judge(judge_config_hash: Optional[str], judge: Any, judge_sample: Optional[int]) -> None:
+    """Every sealed slot runs the registered judge on every eligible answer (16A-2b b1a r4).
+
+    ``judge_config_hash`` is the prereg's ``judge.config_hash`` carried by the token. ``None`` for ``judge`` is
+    "off" too: a caller that did not say is not a caller that checked.
+
+    Raises:
+        GateRefused: ``judge`` with detail ``off`` (the judge is not on), ``sample`` (a ``--judge-sample`` would
+            judge a subset: the unsupported-claims rate is over all of the eligible claims) or ``identity`` (the
+            code's ``judge_identity()`` is not the registered one: another model, prompt, client or verdict list).
+    """
+    if judge is not True:
+        raise GateRefused("judge", "off")
+    if judge_sample is not None:
+        raise GateRefused("judge", "sample")
+    from src.judge import judge_identity
+
+    if judge_config_hash is None or judge_identity()["config_hash"] != judge_config_hash:
+        raise GateRefused("judge", "identity")
 
 
 def check_controls_bound(ledger: SealedLedger) -> None:
@@ -980,6 +1052,7 @@ def acquire_slot_token(
             sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor,
             prereg["cutoff"], ledger, approvals_path, approvals_sha, baseline, lock,
             prereg_sha256, prereg_commit, candidate_hash, candidate_expansion, candidate_rewrite,
+            prereg["judge_config_hash"],
         )
         try:
             ledger.check_claimable(sid)
@@ -1014,6 +1087,7 @@ def _mint_token(
     candidate_config_hash: Optional[str] = None,
     candidate_expansion: Optional[str] = None,
     candidate_rewrite: Optional[str] = None,
+    judge_config_hash: Optional[str] = None,
 ) -> SlotToken:
     """Build the (unclaimed) token: the gate's last step."""
     return SlotToken(
@@ -1042,6 +1116,7 @@ def _mint_token(
         candidate_config_hash=candidate_config_hash,
         candidate_expansion=candidate_expansion,
         candidate_rewrite_config_hash=candidate_rewrite,
+        judge_config_hash=judge_config_hash,
     )
 
 
@@ -1053,7 +1128,8 @@ def check_token_for_run(
     artifact_path: Optional[str],
     meter: Any,
     top_k: int,
-    judge: Optional[bool] = None,
+    judge: Any = None,
+    judge_sample: Optional[int] = None,
 ) -> None:
     """The evaluator's own re-check of a token before it does any work (defence in depth).
 
@@ -1062,17 +1138,16 @@ def check_token_for_run(
             exactly once or changed since the gate, no meter, the expansion
             the evaluator parsed is not the one the token was minted for, or ``top_k`` is not the
             prereg's hit cut-off (``cutoff``: this is also what makes :func:`preflight_slot` refuse it),
-            a confirmatory slot is run with the judge off (``judge`` is ``False``: the unsupported-claims input
-            needs judged claims; ``None`` means the caller did not say and is not checked), or a private
-            non-sealed input set is not a development freeze record's version (``dev_binding``).
+            the judge is not on, is sampled, or is not the registered one (:func:`check_judge`: every sealed slot,
+            0 and 0b included, and ``None`` is "off"), or a private non-sealed input set is not a development
+            freeze record's version (``dev_binding``).
     """
     from src.spend import SpendMeter
 
     if not is_slot_token(slot_token):
         raise GateRefused("slot")
     check_cutoff(slot_token.cutoff, top_k)
-    if judge is not None and not judge and is_confirmatory(slot_token.slot):
-        raise GateRefused("judge")
+    check_judge(slot_token.judge_config_hash, judge, judge_sample)
     owned = [p for p in set_paths if slot_token.approves(p)]
     if len(owned) != 1:
         raise GateRefused("set_binding")
@@ -1171,7 +1246,10 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
     """Assemble the stored results document from a finished matrix run.
 
     Ids, enums, numbers and hashes only: no question, rewrite, answer, claim,
-    gap or evidence text. ``result`` is the evaluator's v6 working result.
+    gap or evidence text. ``result`` is the evaluator's v6 working result. It records the running pipeline's
+    ``pipeline_config_hash`` and the judge's ``config_hash`` (the judge always runs on every eligible answer:
+    ``sample`` is ``null``), a set's ``role`` is ``sealed``, ``development`` (a frozen private tuning or realistic
+    version) or ``regression`` (a public set).
     """
     k, primary = result["k"], result["primary_mode"]
     if result["top_k"] != slot_token.cutoff or k != slot_token.cutoff:
@@ -1179,8 +1257,11 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
     sets = []
     for s in result["sets"]:
         owned = bool(s.get("owned"))
+        # the role names what the set is for: the sealed set; a frozen private development version (tuning or
+        # realistic: the sets a freeze record binds); or a public set (the regression set), which no freeze binds
+        role = "sealed" if owned else "development" if _is_private_input(s["path"]) else "regression"
         sets.append({
-            "label": s["label"], "role": "sealed" if owned else "development",
+            "label": s["label"], "role": role,
             "sha256": s["sha256"], "cohort": s["cohort"],
             "rows": [
                 _row_entry(r, s["retrieval"], s["answers"], s.get("judge_by_id") or {}, k) for r in s["rows"]
@@ -1210,6 +1291,8 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
         },
         "run_cost": result.get("run_cost"),
         "floor": dict(slot_token.floor),
+        "pipeline_config_hash": result.get("pipeline_config_hash"),
+        "judge": {"config_hash": result.get("judge_config_hash"), "sample": None},
         "prereg_sha256": slot_token.prereg_sha256, "prereg_commit": slot_token.prereg_commit,
         "candidate_config_hash": slot_token.candidate_config_hash,
         "candidate_expansion": slot_token.candidate_expansion,
@@ -1474,6 +1557,52 @@ def finish_slot(
     return SlotOutcome(sid, doc["run_id"], canonical, tuple(failed), canonical, newly, rec.action.value, confirmatory)
 
 
+def preflight_args_digest(
+    slot_token: SlotToken,
+    *,
+    set_specs: Sequence[Tuple[str, str]],
+    modes: Sequence[str],
+    top_k: int,
+    skip_refusals: bool,
+    skip_completeness: bool,
+    judge: bool,
+    judge_sample: Optional[int],
+    persist_directory: str,
+    expansion: str,
+    matrix_kwargs: Optional[Mapping[str, Any]],
+    config_hash: Optional[str],
+) -> str:
+    """sha256 of the canonical JSON of everything a run is told (what a :class:`PreflightReceipt` vouches for).
+
+    The slot and run id, each set's label, real path and file sha256 (in the order given), the sorted modes, the
+    cut-off, the skip flags, the judge flags and the registered judge identity, the persist directory, the
+    expansion argument (a replayed artifact by its file sha256 too), the running pipeline configuration hash and
+    the sorted key names of ``matrix_kwargs`` (the injected seams: names only, their values are code).
+    """
+    from src.expansion_artifact import _canonical_json
+    from src.judge import judge_identity
+
+    artifact_sha = _file_sha(expansion) if expansion != "live" and not expansion.startswith("build:") else None
+    doc = {
+        "slot": slot_token.slot,
+        "run_id": slot_token.run_id,
+        "sets": [{"label": label, "path": os.path.realpath(path), "sha256": _file_sha(path)} for label, path in set_specs],
+        "modes": sorted(modes),
+        "top_k": top_k,
+        "skip_refusals": skip_refusals,
+        "skip_completeness": skip_completeness,
+        "judge": judge,
+        "judge_sample": judge_sample,
+        "judge_config_hash": judge_identity()["config_hash"],
+        "persist_directory": persist_directory,
+        "expansion": expansion,
+        "expansion_artifact_sha256": artifact_sha,
+        "pipeline_config_hash": config_hash,
+        "matrix_kwargs": sorted(dict(matrix_kwargs or {})),
+    }
+    return hashlib.sha256(_canonical_json(doc)).hexdigest()
+
+
 def preflight_slot(
     slot_token: SlotToken,
     *,
@@ -1488,28 +1617,54 @@ def preflight_slot(
     meter: Any,
     expansion: str,
     matrix_kwargs: Optional[Mapping[str, Any]] = None,
-) -> None:
+) -> PreflightReceipt:
     """Everything the run could still refuse, checked with the not-yet-claimed ``slot_token``.
 
     Same arguments as :func:`run_slot` (which calls it before claiming an unclaimed token), so that
-    a refusal costs no slot. It runs the evaluator up to (not including)
+    a refusal costs no slot. In order: the numeric options (``ValueError``), the judge (:func:`check_judge`: on, every eligible answer, the registered
+    identity), the cut-off, the incumbent (slots 0 and 0b: ``pipeline_config_hash`` of the running pipeline must be
+    the ledger's ``incumbent_config_hash``, ``incumbent``; a confirmatory slot gives it to
+    :func:`check_candidate_identity`), then the evaluator up to (not including)
     the first retrieval, expansion or model call: the numeric options, the token and set bindings
     (and ``top_k`` against the prereg's hit cut-off: a different one is a ``cutoff`` refusal here, before the claim),
     the replay artifact (loaded and preflighted against every row), the metered clients, the absorbed
     map, the per-set cohort and duplicate-id checks, and, when a default retrieval or generation path
     is in play, the embedding model, Chroma index and BM25 sidecar it would load. Makes no call.
 
+    Returns:
+        The :class:`PreflightReceipt` for exactly these arguments: the only thing :meth:`SlotToken.claim` accepts.
+
     Raises:
         Whatever the evaluator refuses with (``ValueError``, ``GateRefused``...); never claims anything.
     """
-    from src import evaluator
+    from src import evaluator, pipeline_config
 
+    if top_k < 1:  # the evaluator's own numeric checks, first as they always were: a usage error, not a gate
+        raise ValueError(f"top_k must be >= 1, got {top_k}")
+    if judge_sample is not None and judge_sample < 0:
+        raise ValueError(f"judge_sample must be >= 0, got {judge_sample}")
+    check_judge(slot_token.judge_config_hash, judge, judge_sample)
+    check_cutoff(slot_token.cutoff, top_k)
+    config_hash = pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k)
+    if is_confirmatory(slot_token.slot):
+        check_candidate_identity(
+            slot_token.slot, slot_token.ledger, slot_token.candidate_config_hash, slot_token.candidate_expansion,
+            slot_token.candidate_rewrite_config_hash, running_config_hash=config_hash,
+        )
+    elif config_hash is None or config_hash != slot_token.ledger.incumbent_config_hash():
+        raise GateRefused("incumbent")
     evaluator.run_eval_matrix(
         list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
         skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
         persist_directory=persist_directory, privacy=PRIVATE, meter=meter, expansion=expansion,
         slot_token=slot_token, preflight_only=True, **dict(matrix_kwargs or {}),
     )
+    digest = preflight_args_digest(
+        slot_token, set_specs=set_specs, modes=modes, top_k=top_k, skip_refusals=skip_refusals,
+        skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
+        persist_directory=persist_directory, expansion=expansion, matrix_kwargs=matrix_kwargs, config_hash=config_hash,
+    )
+    return PreflightReceipt(run_id=slot_token.run_id, args_digest=digest, mint=_PREFLIGHT)
 
 
 def run_slot(
@@ -1530,12 +1685,14 @@ def run_slot(
     scan: Optional[Callable[[str], Sequence[Optional[str]]]] = None,
     out: Callable[[str], None] = print,
 ) -> SlotOutcome:
-    """Steps 2-6 for a freshly claimed slot (step 1 was the gate's claim).
+    """Steps 2-6 for a slot (step 1, the claim, happens here, after the preflight).
 
     ``matrix_kwargs`` passes the evaluator's injection seams (fakes) through.
-    A token minted unclaimed (``claim=False``) is preflighted first
-    (:func:`preflight_slot`: every refusal the run could still make) and claimed
-    only when nothing is left to refuse, right before the first model call.
+    The token is ALWAYS preflighted first (:func:`preflight_slot`: every refusal the run could still make, ending in
+    a :class:`PreflightReceipt`). An unclaimed token is claimed with that receipt only when nothing is left to
+    refuse, right before the first model call; a token that was claimed earlier (by a caller that preflighted it)
+    runs only if these arguments digest to the ones it was claimed under (``claim: preflight_mismatch`` otherwise),
+    so a preflight for one set of arguments can never stand in for a run with others.
     A crash anywhere before ``store_results`` leaves the slot claimed with no
     stored results, which a4 treats as spent. The token's execution lock is held
     for the whole run and released when it ends or dies (``finally``), so a live
@@ -1544,13 +1701,15 @@ def run_slot(
     from src import evaluator
 
     try:
+        receipt = preflight_slot(
+            slot_token, set_specs=set_specs, modes=modes, top_k=top_k, skip_refusals=skip_refusals,
+            skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
+            persist_directory=persist_directory, meter=meter, expansion=expansion, matrix_kwargs=matrix_kwargs,
+        )
         if not slot_token.claimed[0]:
-            preflight_slot(
-                slot_token, set_specs=set_specs, modes=modes, top_k=top_k, skip_refusals=skip_refusals,
-                skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
-                persist_directory=persist_directory, meter=meter, expansion=expansion, matrix_kwargs=matrix_kwargs,
-            )
-            slot_token.claim()
+            slot_token.claim(receipt)
+        elif slot_token.claimed_args[0] != receipt.args_digest:
+            raise GateRefused("claim", "preflight_mismatch")
         evaluator.run_eval_matrix(
             list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
             skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,

@@ -382,6 +382,27 @@ def test_regression_set_reaches_the_report_and_the_cohort_sidecar(monkeypatch, t
     assert sidecar["privacy"] == "public"
 
 
+def test_every_run_sidecar_carries_the_pipeline_config_hash_or_none_without_an_index(monkeypatch, tmp_path, eval_registry):
+    """16A-2b b1a r4 A: the sidecar names the pipeline that produced the draw (what ``controls.py`` reads)."""
+    from src import pipeline_config
+
+    paths = {flag: _write_set(tmp_path / f"{flag}.jsonl", [f"synthetic {flag} question {i}" for i in range(3)])
+             for flag in ("golden", "heldout")}
+    for p in paths.values():
+        eval_registry.add(p)
+
+    def sidecar_of(name):
+        report = tmp_path / f"{name}.md"
+        code, _c = _run_real(monkeypatch, ["--golden", paths["golden"], "--heldout", paths["heldout"], *BOTH_SKIPS, "-o", str(report)])
+        assert code == 0
+        return json.loads(Path(str(report) + ".rows.json").read_text())
+
+    assert sidecar_of("noindex")["pipeline_config_hash"] is None  # the suite's stand-in for "no index at the directory"
+    monkeypatch.setattr(pipeline_config, "index_identity", lambda persist_directory: "1" * 64)
+    with_index = sidecar_of("index")["pipeline_config_hash"]
+    assert with_index == pipeline_config.pipeline_config_hash("anywhere", top_k=6) and len(with_index) == 64
+
+
 def test_repeated_question_in_the_regression_set_is_refused_before_any_call(monkeypatch, tmp_path, eval_registry):
     from src.eval_cohort import CohortError
 

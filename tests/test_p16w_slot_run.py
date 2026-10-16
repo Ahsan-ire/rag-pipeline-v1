@@ -499,7 +499,9 @@ def test_tracing_that_comes_on_after_the_gate_stops_the_run_before_the_first_cal
         world.run(0, token=token)
     assert "env_enabled" in info.value.reasons
     assert world.ledger().recover(0).action is RecoveryAction.SPENT
-    assert no_calls == ["run"]  # the matrix was entered, and stopped before any expansion
+    # three evaluator entries (r4 C: the helper's preflight that claimed the token, run_slot's own preflight, and the matrix);
+    # the matrix was entered, and stopped before any expansion
+    assert no_calls == ["run", "run", "run"]
     assert not list((world.private / "sealed" / "runs").glob("*"))
 
 

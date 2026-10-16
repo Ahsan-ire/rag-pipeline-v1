@@ -249,9 +249,10 @@ def test_count_migrated_quotas_default_to_the_prereg_and_a_bad_pairing_is_refuse
     line = world.last(out, "count_migrated")
     # r3 F2: the realistic quota is the prereg's realistic_min; the tuning quota is cmd_split's (the pool less the sealed
     # quota 12 and the realistic one): the pool is the 3 migrated families plus the drafts, which default to the prereg's
-    # families_approx (100) because that already exceeds sealed + tuning_min + realistic - migrated (12 + 8 + 4 - 3)
-    assert code == 0 and (line["drafts"], line["drafts_rule"], line["pool_total"]) == ("100", "families_approx", "103")
-    assert (line["tuning_quota"], line["realistic_quota"]) == ("87", "4")
+    # families_approx (100) because that already exceeds sealed + tuning_min + realistic - migrated (12 + 8 + 4 - 3), plus the
+    # registered draft_margin (r4 D1: 5)
+    assert code == 0 and (line["drafts"], line["drafts_rule"], line["pool_total"]) == ("105", "families_approx", "108")
+    assert (line["tuning_quota"], line["realistic_quota"]) == ("92", "4")
 
 
 # --- inputs-check (wired to src/sealed_inputs.py) -----------------------------------------------------------------------------

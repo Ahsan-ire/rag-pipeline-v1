@@ -2512,3 +2512,36 @@ What is now registered:
 **Rejected:**
 - Keeping eager claims with a full preflight: no production caller uses them.
 - A `spare` term in the draft floor: spare is already inside `quota.sealed`.
+
+## D74 addendum — prereg plan gate r4 (16 Oct 2026)
+**Decision:** every r4 finding on d00a844 is accepted. Codex (sol, xhigh) was COMPLETE with outcome REVISE and 1 MAJOR. The plan-auditor returned FAIL with 0 BLOCKER, 3 MAJOR and 11 MINOR. An Opus design pass settled mechanisms A–C; IMPLEMENTATION_PLAN.md b1a "Closure r4" has the detail. All of it lands before the prereg is pushed, so none of it is an amendment.
+
+| Finding | Disposition |
+|---|---|
+| Codex MAJOR and auditor minor 8: a public `SlotToken.claim()` skips the preflight | FIXED: a preflight receipt bound to the run's arguments |
+| Auditor M1: the incumbent config hash is undefined and unrecorded | FIXED: `pipeline_config_hash()` v1, recorded in the `controls` record and enforced at slots 0/0b (`incumbent`) |
+| Auditor M2: the judge setup is unregistered (`--judge-sample`, judge None) | FIXED: a judge identity in the prereg; sealed slots refuse judge off, sampling, or another identity |
+| Auditor M3: the F12 draft floor never reaches the drafter | FIXED: a draft margin of 5; b3 takes `count-migrated`'s count |
+| Auditor minors 1–3, 5–7, 9, 10 | FIXED (plan b1a "Closure r4", smaller items) |
+| Auditor minor 4: no 16B section | FIXED: a 16B obligations outline in the plan |
+| Auditor minor 11: the r2 addendum says the first split attempt fixes the epoch | SUPERSEDED: by r3 F7, the first record carrying a prereg sha256, normally the first data dispatch, registers the epoch |
+
+**Interpretations recorded (stricter than or consistent with D74; the owner may overrule):**
+- **Judge errors.** Any judge error on a sealed slot means "unsupported claims do not rise" is not shown, so the candidate is not adopted.
+- **Frozen setup.** Code and environment are frozen from b7's development draws until slot 0, because slot 0 refuses unless the running pipeline hash equals the recorded incumbent. Changing the incumbent means a new epoch, which is a D64 stop.
+- **Judge model.** `JUDGE_MODEL = GENERATION_MODEL` (D38), so a 16B candidate that changes generation is refused `judge:identity`. Whether to separate them is an owner question for 16B.
+
+**Residuals:**
+- Hosted-model drift under the same model id.
+- Unpinned HF weight revisions (D47 cache).
+- A change to chunk metadata only (index identity covers ids, not metadata).
+- A BM25 pickle that is stale against Chroma (rebuilt on every write, D24).
+- `SealedLedger.claim` remains a raw primitive. It can burn a slot but reveals nothing.
+- Importing `src.judge` runs `load_dotenv()`; the data launcher removes any key that this import adds.
+
+**Why:** after r3, the incumbent configuration and the judge were the last inputs that could still be chosen after slot 0's results. A public method could also bypass the preflight.
+
+**Rejected:**
+- Hashing the git sha: unrelated commits would change the incumbent.
+- Allowing judge sampling on sealed slots: the cost forecast already assumes full judging.
+- Keeping `claim()` public without a receipt.

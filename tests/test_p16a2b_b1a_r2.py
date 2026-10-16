@@ -91,7 +91,7 @@ def test_the_embargo_is_on_by_default():
 def test_the_default_embargo_refuses_a_batch_and_a_claim_of_slots_1_to_4(tmp_path):
     led = make(tmp_path)
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
-    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     with pytest.raises(ProtocolError, match="embargo"):
         led.record_batch_declaration(BATCH)
     assert led.batch_declaration() is None
@@ -106,7 +106,7 @@ def test_the_default_embargo_refuses_a_batch_and_a_claim_of_slots_1_to_4(tmp_pat
 def test_the_embargo_is_read_at_call_time(tmp_path, monkeypatch):
     led = make(tmp_path)
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
-    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
     led.record_batch_declaration(BATCH[:1])
     assert led.claim(1) == "1"

@@ -86,7 +86,7 @@ def test_a_data_dispatch_registers_the_epochs_prereg_and_a_dispatch_under_anothe
     assert stale.exit_status == sp.EXIT_REFUSED and "last commit" in stale.message  # the old commit is no longer the prereg
     runs = len(env.records())
     changed = env.launch("data", prereg=second, branch="main", repo=repos.work, enums=["count"])
-    assert changed.exit_status == sp.EXIT_REFUSED and changed.message == "sp_launch: the prereg is not this epoch's registered prereg"
+    assert changed.exit_status == sp.EXIT_REFUSED and changed.message == "sp_launch: prereg_amended"  # r4 D6: the reason token
     assert len(env.records()) == runs and env.staging_dirs() == []  # the SP never ran, nothing is left in staging
     assert len(dispatches(env)) == 2  # no third dispatch record
 

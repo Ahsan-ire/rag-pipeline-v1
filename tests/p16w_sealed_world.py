@@ -35,6 +35,16 @@ SECTIONS = [f"{ch}.{n}" for ch in range(1, 10) for n in range(1, 21)] + ["CANARY
 INVENTORY = {"version": 1, "map_sha256": "a" * 64, "sections": SECTIONS, "aliases": []}
 
 
+#: The test worlds' (small) quota, and the pins ``prereg-check`` holds them to. ``eval/prereg_16a2.json`` has its own real
+#: quota, pinned by ``sealed_tool.PINNED_VALUES``; ``World`` swaps that table for this one so the worlds' preregs, which are
+#: valid but small, still pass ``prereg-check`` (``tests/test_p16a2b_b1a_r4_tool.py`` tests the real pins).
+WORLD_QUOTA = {"sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5, "realistic_min": 4, "tuning_min": 8}
+WORLD_PINS = (
+    *((f"quota.{key}", value) for key, value in WORLD_QUOTA.items()),
+    ("min_share.realistic.tutorial_or_colleague", 0.25),
+)
+
+
 def b1a_blocks() -> Dict[str, Any]:
     """The prereg's registered blocks (``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``primary_metric``, ``collapse``,
     ``adoption``, ``controls``, ``slots``, ``drafting_rule``), complete, built from ``sealed_tool.REGISTERED_VALUES``:
@@ -46,6 +56,14 @@ def b1a_blocks() -> Dict[str, Any]:
         for part in parents:
             node = node.setdefault(part, {})
         node[last] = copy.deepcopy(value)
+    from src.judge import judge_identity
+
+    for path, _name in st.COMPUTED_VALUES:  # the values the code computes (judge.config_hash), not typed in the table
+        node = out
+        *parents, last = path.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[last] = judge_identity()["config_hash"]
     return out
 
 
@@ -135,6 +153,7 @@ class World:
         self.prereg_extra: Dict[str, Any] = {}  # extra prereg keys every `write_prereg` includes
         self.history: List[Tuple[List[str], int, str, str]] = []  # every run: (argv, exit code, stdout, stderr)
         monkeypatch.setenv("CC_SEALED_LEDGER", str(tmp_path / "state" / "sealed_ledger.jsonl"))
+        monkeypatch.setattr(st, "PINNED_VALUES", WORLD_PINS)
         inv = tmp_path / "_registry" / "section_inventory.json"
         inv.parent.mkdir()
         inv.write_text(json.dumps(INVENTORY), encoding="utf-8")
@@ -222,7 +241,7 @@ class World:
 
     # -- prereg and git ---------------------------------------------------------
     def prereg_doc(self, **over: Any) -> Dict[str, Any]:
-        quota = {"sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5, "realistic_min": 4, "tuning_min": 8}
+        quota = dict(WORLD_QUOTA)
         quota["examples"] = [{"pool_total": 24, "preassigned_realistic": 1, **st.compute_quotas(quota, 24, 1)}]
         power = {"alphas": [0.05, 0.0125], "discordance": [0.5], "planned_groups": [1] * 30 + [2] * 5, "draws": 60, "seed": 5}
         doc = {

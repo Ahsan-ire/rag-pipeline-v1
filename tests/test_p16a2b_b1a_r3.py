@@ -62,7 +62,11 @@ def test_a_slot_0_run_with_a_public_regression_set_stores_its_results_and_binds_
     assert "slot_stored" in kinds(world) and outcome.action  # the slot was not spent without storing its results
     doc = world.stored_doc(0)
     assert doc["dev_sets"] == {"tuning": sha_of(world.golden_path), "realistic": sha_of(world.realistic_path)}
-    assert {s["label"] for s in doc["sets"] if s["role"] == "development"} >= {"regression"}  # it ran, and is not bound
+    # it ran, and is not bound: r4 D8, a public non-sealed set's stored role is "regression" (only the frozen tuning and
+    # realistic versions are "development")
+    assert {s["label"] for s in doc["sets"] if s["role"] == "regression"} == {"regression"}
+    assert {s["label"] for s in doc["sets"] if s["role"] == "development"} == {"tuning", "realistic"}
+    assert {s["label"] for s in doc["sets"] if s["role"] == "sealed"} == {"held-out"}
 
 
 def test_a_changed_private_development_set_is_still_refused_beside_a_public_one(world, tmp_path):
@@ -180,7 +184,7 @@ def test_a_candidate_entry_whose_rewrite_identity_is_not_this_codes_is_refused_a
 def test_the_ledger_digests_the_batch_with_its_rewrite_identities(tmp_path):
     led = SealedLedger(tmp_path / "copy", mirror=tmp_path / "mirror.jsonl")
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
-    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     entries = [candidate_entry(PIPELINE, D), BATCH[1]]
     with pytest.MonkeyPatch.context() as m:
         m.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)

@@ -702,10 +702,11 @@ def test_exclusions_digest_is_the_canonical_sorted_set_and_the_freeze_binds_the_
 
 def test_a_dispatch_record_holds_ids_an_enum_and_a_digest_and_the_mirror_only_its_kind(tmp_path):
     led = make(tmp_path)
-    led.record_dispatch(dispatch_id="0a1b2c3d", dispatch_kind="data", argv_hash=DIGEST_A)
+    # (a non-`data` dispatch: r4 D7 makes a `data` dispatch carry the prereg it runs under, see the end of this test)
+    led.record_dispatch(dispatch_id="0a1b2c3d", dispatch_kind="probe", argv_hash=DIGEST_A)
     [rec] = led.records("dispatch")
     assert set(rec) == {"v", "seq", "kind", "ts", "dispatch_id", "dispatch_kind", "argv_hash"}
-    assert (rec["dispatch_id"], rec["dispatch_kind"], rec["argv_hash"]) == ("0a1b2c3d", "data", DIGEST_A)
+    assert (rec["dispatch_id"], rec["dispatch_kind"], rec["argv_hash"]) == ("0a1b2c3d", "probe", DIGEST_A)
     assert make(tmp_path).records("dispatch") == [rec]
     [mirrored] = [json.loads(line) for line in lines_of(mirror_file(tmp_path))]
     assert set(mirrored) == {"seq", "kind", "digest"} and mirrored["kind"] == "dispatch"
@@ -721,6 +722,16 @@ def test_a_dispatch_record_holds_ids_an_enum_and_a_digest_and_the_mirror_only_it
         with pytest.raises(ValueError):
             led.record_dispatch(**bad)
     assert len(led.records("dispatch")) == 1  # a bad call writes nothing
+    # r4 D7: a `data` dispatch registers the epoch's prereg, so it must carry one
+    from src.sealed_ledger import ProtocolError
+
+    with pytest.raises(ProtocolError):
+        led.record_dispatch(dispatch_id="1a1b2c3d", dispatch_kind="data", argv_hash=DIGEST_A)
+    with pytest.raises(ProtocolError):
+        led.record_dispatch(dispatch_id="1a1b2c3d", dispatch_kind="data", argv_hash=DIGEST_A, prereg_sha256=None)
+    assert len(led.records("dispatch")) == 1 and led.epoch_prereg_sha256() is None
+    led.record_dispatch(dispatch_id="1a1b2c3d", dispatch_kind="data", argv_hash=DIGEST_A, prereg_sha256=DIGEST_A)
+    assert led.epoch_prereg_sha256() == DIGEST_A and len(led.records("dispatch")) == 2
 
 
 def test_below_floor_signals_the_epoch_end(tmp_path):

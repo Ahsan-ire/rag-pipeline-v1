@@ -648,7 +648,8 @@ Examples:
         metavar="SLOT",
         help="Run the frozen sealed set (passed as --heldout) in this slot: 0, 0b, 1, 2... "
         "Claims the slot only if every gate passes (freeze record, approvals, meter, "
-        "declared expansion mode, tracing off); re-running a slot that is already in the "
+        "declared expansion mode, tracing off, the registered judge: --judge required, "
+        "no --judge-sample); re-running a slot that is already in the "
         "ledger recovers it from storage and never makes a fresh call",
     )
     eval_parser.add_argument(
@@ -878,8 +879,8 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     from src.spend import SpendLimitReached, SpendMeter, SpendMeterError, load_prices
     from src.tracing_guard import TracingRefused
 
-    def refuse(gate: str, code: int = EXIT_SEALED) -> int:
-        print(f"[eval] sealed slot refused: gate={gate}", file=sys.stderr)
+    def refuse(gate: str, code: int = EXIT_SEALED, detail: Optional[str] = None) -> int:
+        print(f"[eval] sealed slot refused: gate={gate}" + (f" ({detail})" if detail else ""), file=sys.stderr)
         return code
 
     if args.results_path is not None or args.prereg is None:
@@ -890,6 +891,12 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
         # Checked before the ledger is touched: these would otherwise be refused only after the claim.
         print("[eval] --top-k must be >= 1 and --judge-sample >= 0; no slot was touched", file=sys.stderr)
         return EXIT_USAGE
+    # Every sealed slot (0 and 0b included) runs the registered judge on every eligible answer (16A-2b b1a r4): refused
+    # here, before the ledger is touched (recovery of a stored slot needs the same command line as the run had).
+    if args.judge is not True:
+        return refuse("judge", detail="off")
+    if args.judge_sample is not None:
+        return refuse("judge", detail="sample")
     meter = None
     run_totals = lambda: None  # noqa: E731 - replaced once a meter exists
 

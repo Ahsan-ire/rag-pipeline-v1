@@ -110,7 +110,7 @@ def test_the_gate_never_claims_whatever_top_k_it_is_given(world):
     assert kinds(world) == ["freeze"]
     token = world.token(0, claim=False, top_k=None)  # the CLI's route: minted unclaimed, the preflight checks top_k
     assert token.cutoff == 6 and token.claimed == [False] and "slot_claim" not in kinds(world)
-    token.claim()  # what run_slot does after its preflight
+    token.claim(sealed_run.preflight_slot(token, **world.run_args()))  # what run_slot does: preflight, then claim (r4 C)
     assert token.claimed == [True] and "slot_claim" in kinds(world)
     token.release()
 
@@ -138,11 +138,11 @@ def test_the_preflight_passes_the_cutoff_itself_and_still_claims_nothing(world, 
     calls, state = fakes
     token = world.token(0, claim=False, top_k=None)
     try:
-        assert sealed_run.preflight_slot(
+        assert isinstance(sealed_run.preflight_slot(  # r4 C: it returns the receipt a claim needs
             token, set_specs=world.specs, modes=list(ev.EVAL_MODES), top_k=6, skip_refusals=False,
             skip_completeness=False, judge=True, judge_sample=None, persist_directory="unused",
             meter=make_meter(), expansion="live", matrix_kwargs=state["kwargs"],
-        ) is None
+        ), sealed_run.PreflightReceipt)
     finally:
         token.release()
     assert_refused_unclaimed(world, calls)
@@ -228,8 +228,11 @@ def test_the_stored_results_record_the_cutoff_and_the_baseline_block_carries_it(
     assert doc1["cutoff"] == 6 and doc1["baseline"]["cutoff"] == 6 and doc1["baseline"]["run_id"] == r0
 
 
-def test_a_run_scored_at_a_prereg_cutoff_other_than_six_stores_it(world):
+def test_a_run_scored_at_a_prereg_cutoff_other_than_six_stores_it(world, monkeypatch):
     set_cutoff(world, 3)
+    # the pipeline hash includes the run's top_k (the fusion component): the world recorded its incumbent at the default 6,
+    # so for a prereg whose cut-off is 3 the incumbent is the same pipeline hashed at 3 (r4 A)
+    monkeypatch.setattr(sealed_run.SealedLedger, "incumbent_config_hash", lambda self: world.config_hash(3))
     outcome = world.run(0, top_k=3)
     doc = world.stored_doc(0)
     assert doc["cutoff"] == doc["k"] == doc["top_k"] == 3

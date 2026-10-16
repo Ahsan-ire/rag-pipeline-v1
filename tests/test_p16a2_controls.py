@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from scripts import bakeoff_report, controls
+from src import pipeline_config
 from src.eval_cohort import SCORER_VERSION, build_sidecar, cohort_block
 from src.eval_schema import load_inventory
 from src.eval_sets import sha256_file
@@ -19,13 +20,28 @@ CANARY = "P16-CANARY"
 SHA = "a" * 64
 RAW, REWRITE = "hybrid", "hybrid+rewrite"
 EXPANSION = {"kind": "live"}
+INCUMBENT = "5" * 64  # the pipeline_config_hash every synthetic draw carries (and the pipeline "running" in the CLI tests)
+
+
+@pytest.fixture(autouse=True)
+def _running_pipeline(monkeypatch):
+    """The pipeline running in these tests hashes to ``INCUMBENT`` (``state["hash"]``; its composition is tested in
+    ``test_p16a2b_b1a_r4_config.py``): the CLI compares it with the hash the draws carry."""
+    state = {"hash": INCUMBENT, "calls": []}
+
+    def fake(persist_directory, *, top_k):
+        state["calls"].append((persist_directory, top_k))
+        return state["hash"]
+
+    monkeypatch.setattr(pipeline_config, "pipeline_config_hash", fake)
+    return state
 
 
 def _rid(fam, n=0):
     return f"{fam}-{n}"
 
 
-def _sidecar(set_sha, table, *, scorer=SCORER_VERSION, refusal=(), drop_mode=None, drop_row=None):
+def _sidecar(set_sha, table, *, scorer=SCORER_VERSION, refusal=(), drop_mode=None, drop_row=None, config_hash=INCUMBENT):
     """A C4 sidecar. ``table``: ``{row_id: (raw rank, hybrid+rewrite rank)}`` (``None`` = miss).
 
     A third mode (bm25, every rank a miss) is always present: controls must ignore it.
@@ -43,7 +59,7 @@ def _sidecar(set_sha, table, *, scorer=SCORER_VERSION, refusal=(), drop_mode=Non
     for fam in refusal:  # refusal rows are in the cohort but never in the sidecar rows
         cohort_rows.append((_rid(fam), fam, [], "refuse"))
     block = cohort_block(path="synthetic", privacy="private", schema=2, sha256=set_sha, rows=cohort_rows)
-    doc = build_sidecar(privacy="private", cohorts=[block], rows=rows, expansion=EXPANSION)
+    doc = build_sidecar(privacy="private", cohorts=[block], rows=rows, expansion=EXPANSION, pipeline_config_hash=config_hash)
     doc["scorer_version"] = scorer
     return doc
 
@@ -294,6 +310,7 @@ def test_cli_writes_records_then_verifies_and_refuses_a_differing_list(tmp_path,
     shas = sorted(hashlib.sha256(open(d, "rb").read()).hexdigest() for d in draws)
     assert record["draws_sha256"] == hashlib.sha256(json.dumps(shas, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert record["prereg_sha256"] == hashlib.sha256(prereg.read_bytes()).hexdigest()
+    assert record["incumbent_config_hash"] == INCUMBENT == _ledger().incumbent_config_hash()  # r4: the draws' pipeline
     assert len(_ledger().records("controls")) == 1
 
     assert controls.main(_argv("c2", draws, dev, out)) == 0  # same inputs: verifies, no rewrite
@@ -362,12 +379,14 @@ def test_the_ledger_records_controls_once(tmp_path):
     from src.sealed_ledger import ProtocolError
 
     ledger = _ledger()
-    ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64)
+    ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64, incumbent_config_hash="e" * 64)
     with pytest.raises(ProtocolError):
-        ledger.record_controls(controls_sha256="d" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64)
+        ledger.record_controls(controls_sha256="d" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64, incumbent_config_hash="e" * 64)
     assert _ledger().controls_record()["controls_sha256"] == "a" * 64
     mirror = [json.loads(line) for line in (tmp_path / "eval" / "sealed_ledger.jsonl").read_text().splitlines()]
-    assert mirror[-1]["digests"] == {"controls_sha256": "a" * 64, "draws_sha256": "b" * 64, "prereg_sha256": "c" * 64}
+    assert mirror[-1]["digests"] == {
+        "controls_sha256": "a" * 64, "draws_sha256": "b" * 64, "prereg_sha256": "c" * 64, "incumbent_config_hash": "e" * 64,
+    }
 
 
 def test_cli_exit_codes_for_unusable_and_sealed_input(tmp_path, capsys):
@@ -505,3 +524,97 @@ def test_a_verify_run_needs_the_recorded_draws_in_any_order_and_the_record_is_un
     assert controls.main(argv) == controls.EXIT_DIFFERS
     assert "not the recorded draws" in capsys.readouterr().err
     assert out.read_text(encoding="utf-8") == written and _ledger().controls_record() == record
+
+
+# --- b1a r4 A: the incumbent's pipeline identity -----------------------------------------------------------------------
+def _draw_files(tmp_path, sha, hashes):
+    """Three draw files whose sidecars carry ``hashes`` (one per draw; ``None`` removes the key)."""
+    paths = _cli_draws(tmp_path, sha)
+    for path, value in zip(paths, hashes):
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+        if value is None:
+            doc.pop("pipeline_config_hash", None)
+        else:
+            doc["pipeline_config_hash"] = value
+        Path(path).write_text(json.dumps(doc), encoding="utf-8")
+    return paths
+
+
+@pytest.mark.parametrize("hashes", [
+    (None, INCUMBENT, INCUMBENT),                # one draw carries none
+    (INCUMBENT, INCUMBENT, "6" * 64),            # mixed
+    ("short", "short", "short"),                 # not a digest
+    ("A" * 64, "A" * 64, "A" * 64),              # upper-case hex is not a digest here
+    (5, 5, 5),
+    (None, None, None),                          # draws of a run with no index
+])
+def test_draws_that_do_not_all_carry_one_pipeline_hash_are_unusable(tmp_path, capsys, hashes):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _draw_files(tmp_path, sha256_file(dev), hashes)
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_UNUSABLE
+    assert "pipeline_config_hash" in capsys.readouterr().err
+    assert not out.exists() and _ledger().controls_record() is None
+
+
+def test_the_running_pipeline_must_be_the_draws_pipeline(tmp_path, capsys, _running_pipeline):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    _running_pipeline["hash"] = "6" * 64  # another pipeline runs here
+    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_UNUSABLE
+    assert "the running pipeline is not the draws' pipeline" in capsys.readouterr().err
+    assert not out.exists() and _ledger().controls_record() is None
+    _running_pipeline["hash"] = None  # no index here at all
+    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_UNUSABLE
+    assert not out.exists() and _ledger().controls_record() is None
+    _running_pipeline["hash"] = INCUMBENT
+    assert controls.main(_argv("c1", draws, dev, out)) == 0
+    assert _ledger().incumbent_config_hash() == INCUMBENT
+
+
+def test_the_persist_dir_and_the_preregs_cutoff_reach_the_pipeline_hash(tmp_path, _running_pipeline):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    argv = _argv("c1", draws, dev, tmp_path / "o.json")
+    assert controls.main(argv) == 0
+    assert _running_pipeline["calls"][-1] == (controls.DEFAULT_PERSIST_DIR, 6) and controls.DEFAULT_PERSIST_DIR == "./chroma_db"
+    assert controls.main([*argv, "--persist-dir", str(tmp_path / "elsewhere")]) == 0  # verifies (the same draws)
+    assert _running_pipeline["calls"][-1] == (str(tmp_path / "elsewhere"), 6)
+    prereg = Path(argv[argv.index("--prereg") + 1])
+    doc = json.loads(prereg.read_text(encoding="utf-8"))
+    assert controls.read_prereg_cutoff(str(prereg)) == 6  # a prereg without a primary_metric: the default cut-off
+    prereg.write_text(json.dumps({**doc, "primary_metric": {"cutoff": 3}}), encoding="utf-8")
+    assert controls.read_prereg_cutoff(str(prereg)) == 3
+    for bad in (0, True, "6", None):
+        prereg.write_text(json.dumps({**doc, "primary_metric": {"cutoff": bad}}), encoding="utf-8")
+        with pytest.raises(controls.ControlsError):
+            controls.read_prereg_cutoff(str(prereg))
+
+
+def test_a_verify_run_needs_the_recorded_incumbent(tmp_path, capsys, monkeypatch):
+    from src.sealed_ledger import SealedLedger
+
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out)) == 0
+    written, record = out.read_text(encoding="utf-8"), _ledger().controls_record()
+    assert controls.main(_argv("c1", draws, dev, out)) == 0 and "matches" in capsys.readouterr().out  # the recorded incumbent
+    monkeypatch.setattr(SealedLedger, "controls_record", lambda self: {**record, "incumbent_config_hash": "6" * 64})
+    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_DIFFERS
+    assert "not the recorded incumbent" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == written
+
+
+def test_record_controls_needs_a_digest_incumbent(tmp_path):
+    ledger = _ledger()
+    with pytest.raises(TypeError):  # the keyword is required
+        ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64)
+    for bad in ("short", None, "E" * 64, 5):
+        with pytest.raises(ValueError):
+            ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64,
+                                   incumbent_config_hash=bad)
+    assert ledger.controls_record() is None and ledger.incumbent_config_hash() is None
+    ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64, incumbent_config_hash="d" * 64)
+    assert _ledger().incumbent_config_hash() == "d" * 64

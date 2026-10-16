@@ -380,11 +380,17 @@ def _first_answer_question(world):
 
 #: ``top_k_6`` is not here: a sealed slot refuses any ``top_k`` other than the prereg's cut-off (6) before the claim
 #: (``cutoff``, tests/test_p16w_fix_r2_cutoff.py), so that guard can fail only through its stored fact (FACT_MUTATIONS).
+def _failing_judge(prompt_vars):
+    raise RuntimeError("the judge client failed")  # every judged answer is an API error
+
+
+#: ``judge_clean`` fails through a judge that errors (r4 B: the judge can no longer be switched off in a sealed slot, which is
+#: refused at the gate before the claim; ``judge`` False is tested in tests/test_p16a2b_b1a_r4_gate.py)
 E2E_GUARDS = {
     "refusals_scored": ({"skip_refusals": True}, "refusals_scored"),
     "completeness_scored": ({"skip_completeness": True}, "completeness_scored"),
     "all_modes": ({"modes": ["hybrid"]}, "all_modes"),
-    "judge_clean": ({"judge": False}, "judge_clean"),
+    "judge_clean": ({"judge_fn": _failing_judge}, "judge_clean"),
 }
 #: ``realistic_answerable`` is not here either: a slot-0/0b run must carry BOTH frozen development sets (``dev_binding``),
 #: so the realistic set cannot be left out of a run; the guard fails only through its stored fact (FACT_MUTATIONS).
@@ -476,13 +482,20 @@ def test_a_sealed_set_not_passed_as_the_held_out_set_fails_the_held_out_clause(w
     assert world.run(0, specs=specs).failed_guards == ("heldout_frozen_sealed_set", "heldout_answerable")
 
 
+class _HealthyStore:
+    """An invented Chroma store with one chunk (what the preflight's probe asks of the vector store)."""
+
+    def get(self, limit=None):
+        return {"ids": ["chunk-1"]}
+
+
 @pytest.fixture
 def default_retrieval_path(world, monkeypatch):
     """The evaluator's DEFAULT retrieval path (store and BM25 loaders, retrieve) over an invented index."""
     state = {"bm25": object()}
     retrieval = world.retrieval()
     monkeypatch.setattr(ev, "assert_embedding_model", lambda *a, **k: None)
-    monkeypatch.setattr(ev, "get_vector_store", lambda **k: object())
+    monkeypatch.setattr(ev, "get_vector_store", lambda **k: _HealthyStore())  # (run_slot's preflight probes the store: r4 C)
     monkeypatch.setattr(ev, "load_bm25_index", lambda *a, **k: state["bm25"])
     monkeypatch.setattr(ev, "retrieve", lambda question, top_k=6, mode="hybrid", **kw: retrieval.results(mode, question, top_k))
     return state
@@ -491,9 +504,17 @@ def default_retrieval_path(world, monkeypatch):
 @pytest.mark.parametrize("loaded", [True, False])
 def test_the_bm25_sidecar_must_actually_load_on_a_default_retrieval_path(world, default_retrieval_path, loaded):
     default_retrieval_path["bm25"] = object() if loaded else None
+    if not loaded:
+        # r4 C: run_slot preflights every token, a claimed one too, so a missing sidecar is refused (``retrieval_backend``)
+        # before anything runs; the ``bm25_loaded`` guard remains for a sidecar that goes missing mid-run (FACT_MUTATIONS)
+        with pytest.raises(sealed_run.GateRefused) as info:
+            world.run(0, matrix_extra={"retrieve_fn_factory": None})
+        assert (info.value.gate, info.value.detail) == ("retrieval_backend", "LookupError")
+        assert "slot_claim" not in kinds(world)
+        return
     outcome = world.run(0, matrix_extra={"retrieve_fn_factory": None})
-    assert outcome.canonical is loaded
-    assert outcome.failed_guards == (() if loaded else ("bm25_loaded",))
+    assert outcome.canonical is True
+    assert outcome.failed_guards == ()
 
 
 def test_only_a_canonical_run_writes_results_v6_and_no_v6_run_writes_results_md(world, tmp_path, monkeypatch):
@@ -547,11 +568,11 @@ def test_a_token_runs_the_matrix_once(world):
 def test_a_slot_run_refuses_a_results_path_a_build_target_and_a_token_for_another_mode(world):
     token = world.token(0)
     with pytest.raises(ValueError, match="slot protocol"):
-        ev.run_eval_matrix(world.specs, privacy="private", slot_token=token, meter=make_meter(),
+        ev.run_eval_matrix(world.specs, privacy="private", slot_token=token, meter=make_meter(), judge=True,
                            results_path=str(world.root / "r.md"))
     for expansion in ("build:artifact.json", str(world.root / "declared.json")):
         with pytest.raises(sealed_run.GateRefused) as info:
-            ev.run_eval_matrix(world.specs, privacy="private", slot_token=token, meter=make_meter(),
+            ev.run_eval_matrix(world.specs, privacy="private", slot_token=token, meter=make_meter(), judge=True,
                                expansion=expansion)
         assert info.value.gate == "expansion_mode"
     assert not list((world.private / "artifacts").glob("*")) if (world.private / "artifacts").exists() else True
@@ -690,19 +711,28 @@ def test_a_live_candidate_arm_is_a_confirmatory_run_whose_only_missed_guard_is_t
     assert not [i for i in world.ids() if i in text]
 
 
-def test_a_run_with_the_answer_passes_and_expansion_off_is_stored_and_renders(world):
-    outcome = world.run(0, skip_refusals=True, skip_completeness=True, judge=False)
-    assert set(outcome.failed_guards) == {"refusals_scored", "completeness_scored", "expansion_attempted", "judge_clean"}
+def test_a_run_with_the_answer_passes_skipped_and_expansion_off_is_stored_and_renders(world):
+    """Both answer passes skipped disables the query expansion. r4 B: the judge is mandatory in a sealed slot, and it
+    needs the generated answers, so the answers still ran (this used to be a run with no generation at all)."""
+    outcome = world.run(0, skip_refusals=True, skip_completeness=True)
+    assert set(outcome.failed_guards) == {"refusals_scored", "completeness_scored", "expansion_attempted"}
     doc = world.stored_doc(0)
-    assert doc["answers_ran"] is False and doc["expansion"]["identity"]["kind"] == "disabled"
+    assert doc["answers_ran"] is True and doc["expansion"]["identity"]["kind"] == "disabled"
+    assert doc["facts"]["judge"] is True and doc["facts"]["judge_clean"] is True
     assert not (world.run_dir(doc["run_id"]) / "expansion_artifact.json").exists()
     text = sealed_report.format_sealed_report(doc, excluded=frozenset(), canonical=False, failed_guards=outcome.failed_guards)
-    assert "scope correct" not in text and "## Judge" not in text and "Scope correct (rows)" not in text
+    assert "## Judge" in text
     assert "retrieval hybrid+rewrite strict@6: 6/6" in text
 
 
-def test_a_judge_sample_keeps_the_run_canonical_and_judges_a_subset(world):
-    outcome = world.run(0, judge_sample=2)
-    assert outcome.canonical
+def test_a_judge_sample_is_refused_in_a_sealed_slot_and_every_eligible_answer_is_judged(world):
+    """r4 B: a sealed slot judges every eligible answer; a ``--judge-sample`` is refused before the claim (it used to
+    judge a subset and stay canonical), so the unsupported-claims rate is over all of the eligible claims."""
+    with pytest.raises(sealed_run.GateRefused) as info:
+        world.run(0, judge_sample=2)
+    assert (info.value.gate, info.value.detail) == ("judge", "sample")
+    assert "slot_claim" not in kinds(world)
+    assert world.run(0).canonical
     rows = next(s for s in world.stored_doc(0)["sets"] if s["role"] == "sealed")["rows"]
-    assert sum(r["judge"] is not None for r in rows) == 2
+    eligible = [r for r in rows if r["scope"] != "refuse"]
+    assert eligible and all(r["judge"] is not None for r in eligible) and all(r["judge"] is None for r in rows if r["scope"] == "refuse")

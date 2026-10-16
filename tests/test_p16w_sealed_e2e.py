@@ -35,7 +35,7 @@ import pytest
 import src.evaluator as ev
 from scripts import sealed_tool as st
 from scripts import sp_launch as sp
-from src import eval_privacy, sealed_ledger, sealed_run
+from src import eval_privacy, pipeline_config, sealed_ledger, sealed_run
 from src.eval_sealed_read import load_sealed
 from src.sealed_ledger import RecoveryAction
 from tests import p16_slot as slot
@@ -269,12 +269,14 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
         assert w.last(out, "freeze")["status"] == "frozen"
 
     # --- 5c. the critical-controls list is recorded before slot 0 (r3 F6: every slot needs it; controls.py runs first) ---
+    monkeypatch.setattr(pipeline_config, "index_identity", lambda persist_directory: "1" * 64)  # an index of fixed identity
     controls_bytes = b'{"version": 1}\n'  # a batch needs the controls recorded in the ledger and the file unchanged
     for controls_file in (w.repo / "eval" / "controls_v1.json", tmp_path / "eval" / "controls_v1.json"):  # tool / gate
         controls_file.write_bytes(controls_bytes)
     w.ledger().record_controls(
         controls_sha256=hashlib.sha256(controls_bytes).hexdigest(), draws_sha256="e" * 64,
         prereg_sha256=hashlib.sha256(w.prereg_path.read_bytes()).hexdigest(),
+        incumbent_config_hash=pipeline_config.pipeline_config_hash("unused", top_k=6),  # this world's pipeline (index patched)
     )
 
     # --- 6. pipeline eval --sealed-slot 0, every model faked ---------------------------------------------------------
@@ -359,7 +361,12 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
         1, ledger=w.ledger(), set_path=frozen, prereg_path=w.prereg_path, records_dir=w.sealed / "work",
         expansion=str(artifact), meter=make_meter(), baseline_run=baseline_id, top_k=6,
     )
-    token.claim()  # the gate never claims (r3 F3): run_slot claims a minted token after its preflight; done by hand here
+    # the gate never claims (r3 F3): run_slot preflights a minted token and claims it with the receipt; done by hand here (r4 C)
+    token.claim(sealed_run.preflight_slot(
+        token, set_specs=[("golden", str(golden)), ("held-out", str(frozen)), ("realistic", str(realistic))],
+        modes=list(ev.EVAL_MODES), top_k=6, skip_refusals=False, skip_completeness=False, judge=True, judge_sample=None,
+        persist_directory="./chroma_db", meter=make_meter(), expansion=str(artifact), matrix_kwargs=matrix_kwargs,
+    ))
     assert token.slot == "1" and token.excluded == frozenset({target_group[0]})
     assert token.candidate_config_hash == cand and token.prereg_sha256 == hashlib.sha256(w.prereg_path.read_bytes()).hexdigest()  # the real prereg binding
     assert token.prereg_commit == prereg_sha

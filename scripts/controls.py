@@ -49,9 +49,16 @@ their sha256s are the ``set_sha256`` of the ledger's ``freeze`` records for
 ``tuning`` and ``realistic`` (a later development version never changes this
 epoch's controls).
 
+**The incumbent (16A-2b b1a r4).** Every ``--draw`` sidecar carries the ``pipeline_config_hash`` of the pipeline
+that produced it (``src.pipeline_config``); the draws must carry one and the same 64-hex value H (else exit 2), and
+the pipeline running here (``--persist-dir``, default ``./chroma_db``; the hit cut-off is the prereg's) must hash to
+H (exit 2, "the running pipeline is not the draws' pipeline"). The first run records H in the ledger with the
+controls (``incumbent_config_hash``); slots 0 and 0b then run only under exactly that pipeline. A verifying run
+needs H to be the recorded one (exit 1 otherwise).
+
 Usage:
     python scripts/controls.py [--prereg eval/prereg_16a2.json] --draw d1.rows.json --draw d2.rows.json ... \\
-        --dev-set eval/private/dev/<set>.jsonl [--dev-set ...] [--list eval/controls_v1.json]
+        --dev-set eval/private/dev/<set>.jsonl [--dev-set ...] [--list eval/controls_v1.json] [--persist-dir ./chroma_db]
 
 Prints counts only. Exit codes: 0 written or matching; 1 differs from the
 committed list; 2 unusable input; 4 a development set is sealed.
@@ -85,6 +92,8 @@ MODES = (PRIMARY_MODE, DETAIL_MODE)
 PUBLIC_LINEAGE_SOURCE = "legacy"
 DEFAULT_LIST = os.path.join(REPO, "eval", "controls_v1.json")
 DEFAULT_PREREG = os.path.join(REPO, "eval", "prereg_16a2.json")
+DEFAULT_PERSIST_DIR = "./chroma_db"
+DEFAULT_CUTOFF = 6  # the hit cut-off when the prereg declares none (sealed_run.DEFAULT_CUTOFF)
 FROZEN_DEV_SPLITS = ("tuning", "realistic")
 
 EXIT_DIFFERS = 1
@@ -237,6 +246,44 @@ def read_controls_prereg(path: str, n_draws: int) -> str:
     return rule
 
 
+def read_prereg_cutoff(path: str) -> int:
+    """The prereg's ``primary_metric.cutoff`` (the ``top_k`` every counted draw and sealed slot runs at), default 6."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            metric = json.load(fh).get("primary_metric")
+    except (OSError, ValueError, AttributeError):
+        raise ControlsError("the prereg is unreadable or has no controls block") from None
+    cutoff = metric.get("cutoff", DEFAULT_CUTOFF) if isinstance(metric, dict) else DEFAULT_CUTOFF
+    if isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff < 1:
+        raise ControlsError("the prereg's cut-off is not a positive integer")
+    return cutoff
+
+
+def draws_config_hash(draws: Sequence[Mapping[str, Any]]) -> str:
+    """The one ``pipeline_config_hash`` (64 hex) every draw sidecar carries: the incumbent's pipeline.
+
+    Raises:
+        ControlsError: a draw carries none or a malformed one (a run with no index), or the draws differ.
+    """
+    found = {doc.get("pipeline_config_hash") if isinstance(doc, dict) else None for doc in draws}
+    only = next(iter(found)) if len(found) == 1 else None
+    if only is None or not (isinstance(only, str) and len(only) == 64 and set(only) <= set("0123456789abcdef")):
+        raise ControlsError("the draws do not all carry one 64-hex pipeline_config_hash")
+    return only
+
+
+def check_running_pipeline(draws_hash: str, persist_dir: str, top_k: int) -> None:
+    """The pipeline running here must be the draws' pipeline (``pipeline_config_hash`` equal to theirs).
+
+    Raises:
+        ControlsError: it is not (or there is no index at ``persist_dir``).
+    """
+    from src import pipeline_config
+
+    if pipeline_config.pipeline_config_hash(persist_dir, top_k=top_k) != draws_hash:
+        raise ControlsError("the running pipeline is not the draws' pipeline")
+
+
 def check_distinct_draws(paths: Sequence[str]) -> List[str]:
     """The sha256 of each draw file; the draws must be distinct files by content (a repeat is not another draw).
 
@@ -322,6 +369,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--draw", action="append", default=[], metavar="ROWS_JSON", help="a draw's rows sidecar (repeat)")
     parser.add_argument("--dev-set", action="append", default=[], metavar="V2_JSONL", help="a frozen development set (repeat)")
     parser.add_argument("--list", dest="list_path", default=DEFAULT_LIST, help="the controls file (default eval/controls_v1.json)")
+    parser.add_argument("--persist-dir", default=DEFAULT_PERSIST_DIR, metavar="DIR",
+                        help="the index of the pipeline running here (default ./chroma_db); it must be the draws' pipeline")
     args = parser.parse_args(argv)
     if not args.draw or not args.dev_set:
         parser.error("give at least one --draw and one --dev-set")
@@ -339,6 +388,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 draws.append(json.load(fh))
         rule = read_controls_prereg(args.prereg, len(args.draw))
         draw_shas = check_distinct_draws(args.draw)
+        incumbent = draws_config_hash(draws)
+        check_running_pipeline(incumbent, args.persist_dir, read_prereg_cutoff(args.prereg))
         lineage = load_lineage(args.dev_set)  # a sealed set is refused (exit 4) before the version check
         check_frozen_versions(ledger, args.dev_set)
         prereg_sha = check_epoch_prereg(ledger, args.prereg)
@@ -380,6 +431,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _canonical_sha256(sorted(draw_shas)) != record["draws_sha256"]:
             print("[controls] the supplied draws are not the recorded draws; nothing written", file=sys.stderr)
             return EXIT_DIFFERS
+        if record.get("incumbent_config_hash") != incumbent:
+            print("[controls] the draws' pipeline is not the recorded incumbent; nothing written", file=sys.stderr)
+            return EXIT_DIFFERS
         print(f"[controls] matches the committed list ({summary})")
         return 0
     if record is not None:
@@ -391,6 +445,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             controls_sha256=_file_sha256(args.list_path),
             draws_sha256=_canonical_sha256(sorted(draw_shas)),
             prereg_sha256=prereg_sha,
+            incumbent_config_hash=incumbent,
         )
     except ProtocolError:
         print("[controls] controls already recorded", file=sys.stderr)

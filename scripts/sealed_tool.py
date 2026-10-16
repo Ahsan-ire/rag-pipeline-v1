@@ -105,15 +105,20 @@ pools those two sources) and the b1a blocks, all required and checked against th
 ``primary_metric`` (cut-off 6, hybrid+rewrite, strict_hit), ``collapse`` (``{"rule": "all"}``), ``adoption`` (rule a,
 the confirmatory batch, the development evidence, unsupported claims and control flip definitions), ``controls``
 (rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 are declared ``batch``: each one's mode, replay of
-``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's) and ``drafting_rule`` (refusal share 0.275
-over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts).
-**One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
+``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's), ``drafting_rule`` (refusal share 0.275
+over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts,
+and attempt 1's draft count: ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``),
+``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v1`` and its components) and
+``judge`` (the registered judge every sealed slot runs). **One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
 launcher records the prereg it ran under) registers it; every dispatch, ``split``, ``freeze``, ``calibrate``,
 ``declare-batch``, the slot gate and ``controls.py`` refuse any other (``prereg_amended``). ``epoch`` prints the
 registered sha256 and whether the working prereg is it. **Every registered value** is one entry of
 :data:`REGISTERED_VALUES` (a table of dotted path and exact value) that ``prereg-check`` walks; a leaf under a
 registered root that is not in the table is ``unknown_key``. ``prereg-check`` recomputes
-``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``. The same file is the
+``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``, pins the quota numbers and
+minimum shares (:data:`PINNED_VALUES`) and checks the values the code computes: ``incumbent.components`` is the code's
+``PIPELINE_CONFIG_KEYS`` and ``judge.model`` / ``judge.prompt_version`` / ``judge.config_hash`` are ``src.judge``'s
+(:data:`COMPUTED_VALUES`). The same file is the
 slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
 ``quota.floor_answerable`` and the expansion mode of each slot from ``slots`` (``{"0": {"expansion": "live"}, ...}``).
 """
@@ -908,11 +913,12 @@ PREREG_KEYS = frozenset(
     {
         "version", "branch", "rounds", "seeds", "quota", "band", "strata", "min_share", "mwe", "alpha",
         "k_max", "draws_r", "power", "primary_metric", "collapse", "adoption", "controls", "slots", "drafting_rule",
+        "incumbent", "judge",
     }
 )
 PREREG_REQUIRED = (
     "version", "branch", "rounds", "seeds", "quota", "band", "mwe", "alpha", "k_max", "draws_r", "power",
-    "primary_metric", "collapse", "adoption", "controls", "slots", "drafting_rule",
+    "primary_metric", "collapse", "adoption", "controls", "slots", "drafting_rule", "incumbent", "judge",
 )
 PREREG_ERRORS = ("missing", "wrong_type", "out_of_range", "unknown_key", "mismatch")
 
@@ -1058,10 +1064,10 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.confirmatory_batch.spent_slot_counts", True),
     ("adoption.confirmatory_batch.modes", ["replay", "candidate"]),
     ("adoption.confirmatory_batch.mode_declared_by", "batch_declaration"),
-    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_sha256_canonical_pipeline_config_checked_by_16b_gate_before_claim"),
+    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v1_checked_by_16b_gate_before_claim"),
     ("adoption.confirmatory_batch.rewrite_identity", "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim"),
     ("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check"),
-    ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on"]),
+    ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on", "registered_judge"]),
     ("adoption.development_evidence.metric", "strict_hit"),
     ("adoption.development_evidence.cutoff", 6),
     ("adoption.development_evidence.collapse", "all"),
@@ -1094,7 +1100,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("controls.draws_r", 5),
     ("controls.collapse", "all"),
     ("controls.computed", "once_on_frozen_development_versions"),
-    ("controls.committed", "ledger_controls_record_before_batch_declaration"),
+    ("controls.committed", "ledger_controls_record_before_slot_0"),
     ("controls.recomputed_mid_batch", False),
     ("controls.flip", "fail"),
     ("controls.reverses", "d57_addendum"),
@@ -1126,9 +1132,9 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("slots.4.role", "confirmatory"),
     ("slots.4.requires", "batch_declaration"),
     ("drafting_rule.attempt_1.families_approx", 100),
-    ("drafting_rule.attempt_1.families_rule", "max(families_approx,sealed_quota+tuning_min+realistic_quota_minus_migrated_families)"),
-    ("drafting_rule.attempt_1.tutorial_sourced_approx", 50),
-    ("drafting_rule.attempt_1.handbook_drafted_approx", 50),
+    ("drafting_rule.attempt_1.draft_margin", 5),
+    ("drafting_rule.attempt_1.families_rule", "max(families_approx,(sealed_quota+tuning_min+realistic_quota)-migrated_families)+draft_margin"),
+    ("drafting_rule.attempt_1.source_mix", "tutorial_sourced_about_half_rest_handbook"),
     ("drafting_rule.attempt_1.per_unseen_tutorial_approx", 3),
     ("drafting_rule.attempt_1.unseen_tutorials", 15),
     ("drafting_rule.attempt_1.per_title_document_set_max", 1),
@@ -1163,11 +1169,46 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("drafting_rule.paraphrase.migrated_top_up_to", 2),
     ("drafting_rule.paraphrase.t1_t7_cap", 3),
     ("drafting_rule.infeasible_after_round_2", "d64_owner_stop"),
+    ("incumbent.config_fn", "pipeline_config_v1"),
+    ("incumbent.components", ["version", "code", "runtime", "embedding", "index", "bm25", "fusion", "rewrite", "generation"]),
+    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "judge", "scoring", "eval_sets", "corpus_text"]),
+    ("incumbent.fixed_by", "controls_record_incumbent_config_hash"),
+    ("incumbent.draws", "each_counted_draw_sidecar_carries_the_incumbent_config_hash"),
+    ("incumbent.slots", ["0", "0b"]),
+    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v1_of_the_candidate"),
+    ("judge.required_on", ["0", "0b", "1", "2", "3", "4"]),
+    ("judge.model", "claude-sonnet-5"),
+    ("judge.prompt_version", "faithfulness-judge-v1"),
+    ("judge.sample", "all_eligible"),
+    ("judge.eligible", "retrieval_eligible_rows_with_complete_non_refusal_answer"),
+    ("judge.rate", "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows"),
+    ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash"),
+    ("judge.errors", "any_sealed_judge_error_means_not_shown"),
 )
 REGISTERED: Dict[str, Any] = dict(REGISTERED_VALUES)
 REGISTERED_ROOTS = tuple(dict.fromkeys(path.split(".")[0] for path, _ in REGISTERED_VALUES))
 #: Top-level prereg keys with their own structural checks and recomputations (``validate_prereg``): not in the table.
 STRUCTURAL_ROOTS = ("version", "branch", "rounds", "seeds", "quota", "band", "strata", "min_share", "power")
+
+#: Registered leaves whose value is computed from the code, never typed: ``(dotted path, name of the computation)``.
+#: The leaf must be present (and a sha256 hex digest) in every load; ``prereg-check`` (``recompute``) compares it with
+#: the code, so a prereg whose judge identity is not the running code's is refused where it is authored.
+COMPUTED_VALUES: Tuple[Tuple[str, str], ...] = (("judge.config_hash", "judge_identity"),)
+COMPUTED_PATHS = frozenset(path for path, _ in COMPUTED_VALUES)
+
+#: The structural blocks' exact values that ``prereg-check`` (``recompute``) pins to the real prereg: the quota
+#: numbers and the minimum shares (the quota *examples* and the power tables keep their recomputation). Not checked on
+#: every load: a test world's small quotas are valid preregs for the commands, but only the registered numbers are the
+#: pre-registration.
+PINNED_VALUES: Tuple[Tuple[str, Any], ...] = (
+    ("quota.sealed", 60),
+    ("quota.spare", 10),
+    ("quota.floor_sealed", 50),
+    ("quota.floor_answerable", 35),
+    ("quota.realistic_min", 42),
+    ("quota.tuning_min", 60),
+    ("min_share.realistic.tutorial_or_colleague", 0.25),
+)
 
 
 def prereg_leaves(node: Any, prefix: str = "") -> Iterator[Tuple[str, Any]]:
@@ -1192,14 +1233,49 @@ def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
         if root not in doc:
             continue
         for path, _ in prereg_leaves(doc[root], root):
-            if path not in REGISTERED:
+            if path not in REGISTERED and path not in COMPUTED_PATHS:
                 errors.append((path, "unknown_key"))
                 parent = path.rpartition(".")[0]
                 if parent and (parent, "mismatch") not in errors:
                     errors.append((parent, "mismatch"))
+    for path in sorted(COMPUTED_PATHS):  # present and shaped like a digest on every load; compared with the code by prereg-check
+        got = _at(doc, path)
+        if not (isinstance(got, str) and _SHA256.fullmatch(got)):
+            errors.append((path, "mismatch"))
     share = _at(doc, "drafting_rule.attempt_1.refusal_share_target")
     if _is_num(share) and not 0.25 <= share <= 0.30:
         errors.append(("drafting_rule.attempt_1.refusal_share_target", "out_of_range"))
+
+
+def pinned_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
+    """``(path, "mismatch")`` for each of :data:`PINNED_VALUES` that is absent or not exactly the registered number.
+
+    Run by ``prereg-check`` only (not by :func:`validate_prereg`, which every command applies to its prereg): a command
+    needs a *valid* prereg, but only ``prereg-check`` says whether it is *the* pre-registration.
+    """
+    return [(path, "mismatch") for path, value in PINNED_VALUES if _at(doc, path) is _ABSENT or not _eq(_at(doc, path), value)]
+
+
+def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
+    """``(path, "mismatch")`` for each value the code computes that the prereg does not carry (``prereg-check``'s recompute step).
+
+    ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS``; ``judge.model`` and ``judge.prompt_version``
+    must be the judge's own and ``judge.config_hash`` must be ``judge_identity()["config_hash"]`` (the imports are lazy:
+    only ``prereg-check`` needs them).
+    """
+    from src import judge, pipeline_config
+
+    errors: List[Tuple[str, str]] = []
+    if not _eq(_at(doc, "incumbent.components"), list(pipeline_config.PIPELINE_CONFIG_KEYS)):
+        errors.append(("incumbent.components", "mismatch"))
+    identity = judge.judge_identity()
+    for path, want in (
+        ("judge.model", judge.JUDGE_MODEL), ("judge.prompt_version", judge.JUDGE_PROMPT_VERSION),
+        ("judge.config_hash", identity["config_hash"]),
+    ):
+        if not _eq(_at(doc, path), want):
+            errors.append((path, "mismatch"))
+    return errors
 
 
 def _check_examples_labels(quota: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
@@ -1285,6 +1361,8 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
             )
             need("power.table", same, "mismatch")
     _check_b1a(doc, errors)  # whatever else is wrong: a registered value is exact on its own
+    if recompute:
+        errors.extend(computed_errors(doc))
     strata, min_share = doc.get("strata", {}), doc.get("min_share", {})
     need("strata", isinstance(strata, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in strata.items()))
     need("min_share", isinstance(min_share, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in min_share.items()))
@@ -1468,9 +1546,12 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     """b2's counting: families per development split, each split's refusal deficit (to 25 % of its quota), and the
     refusal drafts the pool needs.
 
-    ``drafts`` is the number of new drafts. Its default is the prereg's ``attempt_1.families_rule``: the registered
-    ``families_approx``, or more when the first split needs a bigger pool (sealed + ``tuning_min`` + the realistic
-    quota); the printed ``drafts_rule`` says which bound (``families_approx`` / ``pool_floor``), or ``explicit``. The
+    ``drafts`` is the number of new drafts. Its default is the prereg's ``attempt_1.families_rule``:
+    ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``: the registered
+    ``families_approx``, or more when the first split needs a bigger pool, plus the registered ``draft_margin`` (a
+    drafted family can be rejected at the owner's review, so the pool is drafted with room); the printed
+    ``drafts_rule`` says which bound binds (``families_approx`` / ``pool_floor``), or ``explicit`` (no margin is added
+    to an explicit count), and ``draft_margin`` the margin the default used. The
     tuning quota is ``cmd_split``'s (the pool less the sealed and realistic quotas) unless ``--quota-tuning`` is given.
     The pool is the migrated families plus the drafts; its refusal target is the registered share (11/40) of it,
     rounded half up,
@@ -1520,14 +1601,17 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     # the drafts rule (prereg drafting_rule.attempt_1.families_rule): the registered approximate count, raised to what the
     # first split needs (sealed + tuning_min + realistic quotas; `spare` is already inside `sealed`), else attempt 1 would
     # be quota_short and burn a capped attempt
-    approx = attempt.get("families_approx")
+    approx, margin = attempt.get("families_approx"), attempt.get("draft_margin")
     if drafts is not None:
-        new_drafts, drafts_rule = drafts, "explicit"
+        new_drafts, drafts_rule, margin_used = drafts, "explicit", 0
     else:
         if isinstance(approx, bool) or not isinstance(approx, int) or approx < 0:
             raise Stop(EXIT_USAGE, "usage")
+        if isinstance(margin, bool) or not isinstance(margin, int) or margin < 0:
+            raise Stop(EXIT_USAGE, "usage")
         floor_drafts = max(0, sealed_q + int(quota_doc.get("tuning_min", 0)) + realistic_q - migrated)
-        new_drafts = max(approx, floor_drafts)
+        new_drafts = max(approx, floor_drafts) + margin
+        margin_used = margin
         drafts_rule = "pool_floor" if floor_drafts > approx else "families_approx"
     if isinstance(new_drafts, bool) or not isinstance(new_drafts, int) or new_drafts < 0:
         raise Stop(EXIT_USAGE, "usage")
@@ -1554,6 +1638,7 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
         realistic_families=realistic_n, realistic_refuse=realistic_refuse, realistic_quota=quotas["realistic"],
         realistic_deficit=deficits["realistic"],
         migrated_families=migrated, preassigned_refusals=preassigned, drafts=new_drafts, drafts_rule=drafts_rule,
+        draft_margin=margin_used,
         pool_total=pool_total, refusal_target=target,
         refusal_drafts=needed, tuning_open=open_slots["tuning"], tuning_band=bands["tuning"],
         realistic_open=open_slots["realistic"], realistic_band=bands["realistic"],
@@ -3380,13 +3465,15 @@ def cmd_power(ctx: Ctx, group_sizes: Optional[str], from_freeze: bool, discordan
 
 
 def cmd_prereg_check(ctx: Ctx, committed: bool) -> int:
-    """Validate the prereg and recompute its quota formulas and power table; ``--committed`` also needs it committed unmodified."""
+    """Validate the prereg, recompute its quota formulas and power table, pin its quota numbers and minimum shares
+    (:data:`PINNED_VALUES`) and check its computed values (:func:`computed_errors`); ``--committed`` also needs it
+    committed unmodified."""
     if committed:
         prereg_commit(ctx)
     doc = read_json(ctx.prereg_file, "prereg_invalid") if ctx.prereg_file.is_file() else None
     if doc is None:
         raise Stop(EXIT_USAGE, "prereg_missing")
-    errors = validate_prereg(doc)
+    errors = [*validate_prereg(doc), *pinned_errors(doc)]
     for path, why in errors:
         ctx.printer.emit("prereg_error", field=path if _FIELD_PATH.fullmatch(path) else "other", why=why)
     if errors:

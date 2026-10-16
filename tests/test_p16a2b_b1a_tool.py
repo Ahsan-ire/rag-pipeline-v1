@@ -111,6 +111,7 @@ def record_controls(world, content: bytes = b'{"version": 1}\n'):
     path.write_bytes(content)
     world.ledger().record_controls(
         controls_sha256=file_sha(path), draws_sha256="e" * 64, prereg_sha256=file_sha(world.prereg_path),
+        incumbent_config_hash="f" * 64,
     )
     return path
 

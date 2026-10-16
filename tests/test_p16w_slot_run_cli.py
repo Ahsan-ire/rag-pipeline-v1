@@ -63,7 +63,8 @@ def spy_run_slot(monkeypatch):
 
 
 def test_the_flags_thread_through_to_the_gate_and_the_runner(world, monkeypatch, capsys, spy_run_slot):
-    code, out, err = cli(monkeypatch, capsys, world, "--top-k", "6", "--mode", "all", "--judge-sample", "5")
+    # (no --judge-sample: r4 B refuses a sealed slot with one, tested in tests/test_p16a2b_b1a_r4_gate.py)
+    code, out, err = cli(monkeypatch, capsys, world, "--top-k", "6", "--mode", "all")
     assert code == 0
     token, kw = spy_run_slot["token"], spy_run_slot["kwargs"]
     assert token.slot == "0" and token.expansion_mode == "live"
@@ -71,7 +72,7 @@ def test_the_flags_thread_through_to_the_gate_and_the_runner(world, monkeypatch,
     assert "slot_claim" not in kinds(world) and token.claimed == [False]
     assert [label for label, _ in kw["set_specs"]] == ["golden", "held-out", "realistic"]
     assert kw["set_specs"][1][1] == str(world.sealed_path) and kw["modes"] == list(ev.EVAL_MODES)
-    assert kw["top_k"] == 6 and kw["judge"] is True and kw["judge_sample"] == 5 and kw["expansion"] == "live"
+    assert kw["top_k"] == 6 and kw["judge"] is True and kw["judge_sample"] is None and kw["expansion"] == "live"
     assert isinstance(kw["meter"], SpendMeter) and "records_dir" not in kw  # approvals are read at the gate only
     assert kw["skip_refusals"] is False and kw["skip_completeness"] is False
 
@@ -79,7 +80,7 @@ def test_the_flags_thread_through_to_the_gate_and_the_runner(world, monkeypatch,
 def test_the_sealed_slot_flag_may_be_abbreviated_no_further_than_argparse_allows(world, monkeypatch, capsys, spy_run_slot):
     base = [
         "--golden", str(world.golden_path), "--heldout", str(world.sealed_path), "--sealed-s", "0",
-        "--prereg", str(world.prereg_path), "--slot-records", str(world.records_dir),
+        "--prereg", str(world.prereg_path), "--slot-records", str(world.records_dir), "--judge",  # r4 B: a sealed slot needs it
     ]
     code, _out, _err = cli(monkeypatch, capsys, world, base=base)
     assert code == 0 and spy_run_slot["token"].slot == "0"
@@ -106,7 +107,8 @@ def test_a_sealed_set_not_passed_as_heldout_or_a_bad_dev_set_is_refused_unclaime
         ["--golden", str(world.golden_path), "--heldout", str(world.sealed_path), "--realistic", str(world.golden_path)],  # same file twice
     ):
         code, out, err = cli(monkeypatch, capsys, world, base=[
-            *argv, "--sealed-slot", "0", "--prereg", str(world.prereg_path), "--slot-records", str(world.records_dir)])
+            *argv, "--sealed-slot", "0", "--prereg", str(world.prereg_path), "--slot-records", str(world.records_dir),
+            "--judge"])  # (r4 B: a sealed slot needs --judge, which would otherwise be the first refusal)
         assert code == 4 and "gate=set_binding" in err and spy_run_slot == {}
     assert "slot_claim" not in kinds(world)
 
@@ -179,7 +181,7 @@ def test_exit_codes_for_the_epoch_stops_the_publication_block_and_the_spend_limi
     # the spend limits after the claim: 3 (week) and 6 (run); each spends its slot (0b is the spare)
     for kind, slot, expected in (("week", "0", 3), ("run", "0b", 6)):
         def spend_out(token, _k=kind, **kw):  # what run_slot does: claim, then the meter stops the run
-            token.claim()
+            token.claim(sealed_run.preflight_slot(token, **world.run_args()))
             raise SpendLimitReached(_k)
 
         monkeypatch.setattr(sealed_run, "run_slot", spend_out)

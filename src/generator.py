@@ -147,6 +147,33 @@ def api_key_usable() -> bool:
     return bool(api_key) and api_key != "your-api-key-here"
 
 
+def generation_llm_kwargs() -> Dict[str, Any]:
+    """The ``ChatAnthropic`` kwargs the generation (and judge) client is built with (no key).
+
+    Single source for :func:`get_llm` and for the pipeline and judge identities
+    (``src.pipeline_config``, ``src.judge.judge_identity``, 16A-2b): a change here changes
+    their config hashes. ``default_request_timeout`` and ``max_retries`` change whether a
+    call succeeds, not what a successful call returns, so the identities leave them out.
+    """
+    return {
+        "model": GENERATION_MODEL,
+        "max_tokens": 2048,
+        # Sonnet 5 rejects a non-default temperature (400), so we omit it and
+        # steer determinism through the system prompt instead. Thinking is held
+        # off (it is on-by-default on Sonnet 5) to keep behaviour comparable to
+        # the claude-sonnet-4-6 baseline this change was isolated from (D29).
+        "thinking": {"type": "disabled"},
+        # A dead socket must fail loudly, not hang the caller forever: two
+        # canonical-eval runs on 17 Jul wedged for hours on a single blocked
+        # read because no client timeout was set (D52). 120s covers the
+        # slowest observed generation call with ample headroom; the SDK
+        # transparently retries timeouts/connection drops (max_retries)
+        # before raising, so a transient drop self-heals.
+        "default_request_timeout": 120.0,
+        "max_retries": 3,
+    }
+
+
 def get_llm() -> ChatAnthropic:
     """Create and return a ChatAnthropic LLM instance.
 
@@ -158,23 +185,7 @@ def get_llm() -> ChatAnthropic:
             "ANTHROPIC_API_KEY not set. Copy .env.example to .env and add your key."
         )
 
-    return ChatAnthropic(
-        model=GENERATION_MODEL,
-        max_tokens=2048,
-        # Sonnet 5 rejects a non-default temperature (400), so we omit it and
-        # steer determinism through the system prompt instead. Thinking is held
-        # off (it is on-by-default on Sonnet 5) to keep behaviour comparable to
-        # the claude-sonnet-4-6 baseline this change was isolated from (D29).
-        thinking={"type": "disabled"},
-        # A dead socket must fail loudly, not hang the caller forever: two
-        # canonical-eval runs on 17 Jul wedged for hours on a single blocked
-        # read because no client timeout was set (D52). 120s covers the
-        # slowest observed generation call with ample headroom; the SDK
-        # transparently retries timeouts/connection drops (max_retries)
-        # before raising, so a transient drop self-heals.
-        default_request_timeout=120.0,
-        max_retries=3,
-    )
+    return ChatAnthropic(**generation_llm_kwargs())
 
 
 def extract_citations(text: str) -> List[Dict[str, str]]:

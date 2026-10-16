@@ -172,7 +172,7 @@ MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "batch_declaration": ("candidates_sha256",),
     "dispatch": ("prereg_sha256",),
     "calibration_draw": ("draw_sha256",),
-    "controls": ("controls_sha256", "draws_sha256", "prereg_sha256"),
+    "controls": ("controls_sha256", "draws_sha256", "prereg_sha256", "incumbent_config_hash"),
     "publication_intent": ("results_digest",),
 }
 
@@ -1046,12 +1046,17 @@ class SealedLedger:
         found = [r for r in self.records("calibration_draw") if r["draw_kind"] == name]
         return found[0] if found else None
 
-    def record_controls(self, *, controls_sha256: str, draws_sha256: str, prereg_sha256: str) -> None:
-        """Record the critical-controls list once: the file's sha256, the draw files' digest and the prereg's sha256."""
+    def record_controls(
+        self, *, controls_sha256: str, draws_sha256: str, prereg_sha256: str, incumbent_config_hash: str,
+    ) -> None:
+        """Record the critical-controls list once: the file's sha256, the draw files' digest, the prereg's sha256 and
+        the incumbent's pipeline configuration hash (the ``pipeline_config_hash`` every counted draw carried: slots 0
+        and 0b must run under exactly this configuration). All four are 64-hex digests and the mirror carries them."""
         fields = {
             "controls_sha256": _hex64(controls_sha256, "controls_sha256"),
             "draws_sha256": _hex64(draws_sha256, "draws_sha256"),
             "prereg_sha256": _hex64(prereg_sha256, "prereg_sha256"),
+            "incumbent_config_hash": _hex64(incumbent_config_hash, "incumbent_config_hash"),
         }
         with self._txn() as txn:
             if any(r["kind"] == "controls" for r in txn.records):
@@ -1062,6 +1067,11 @@ class SealedLedger:
         """The controls record, or ``None`` before it."""
         found = self.records("controls")
         return found[0] if found else None
+
+    def incumbent_config_hash(self) -> Optional[str]:
+        """The incumbent's pipeline configuration hash from the ``controls`` record, or ``None`` before it."""
+        record = self.controls_record()
+        return None if record is None else record.get("incumbent_config_hash")
 
     def canonical_artifact_sha256(self) -> Optional[str]:
         """The expansion artifact's sha256 on the stored record of the slot (0 or 0b) that has a publication intent."""
@@ -1081,14 +1091,17 @@ class SealedLedger:
 
         ``prereg_sha256`` (the launcher always gives it) is the sha256 of the pre-registration the dispatch was
         made under; the first record of any kind that carries one registers the epoch's prereg
-        (``epoch_prereg_sha256``), so a data dispatch registers it. Raises ``ProtocolError`` when the epoch's prereg is
-        already registered and is another file's (checked inside the transaction).
+        (``epoch_prereg_sha256``), so a data dispatch registers it and therefore REQUIRES it (a ``data`` dispatch with
+        no prereg would be a dispatch under no registered prereg). Raises ``ProtocolError`` for that, and when the
+        epoch's prereg is already registered and is another file's (checked inside the transaction).
         """
         fields: Dict[str, Any] = {
             "dispatch_id": _token(dispatch_id, "dispatch_id", _DISPATCH_ID),
             "dispatch_kind": _token(dispatch_kind, "dispatch_kind"),
             "argv_hash": _hex64(argv_hash, "argv_hash"),
         }
+        if fields["dispatch_kind"] == "data" and prereg_sha256 is None:
+            raise ProtocolError("a data dispatch is recorded under a prereg")
         if prereg_sha256 is not None:
             fields["prereg_sha256"] = _hex64(prereg_sha256, "prereg_sha256")
         with self._txn() as txn:
