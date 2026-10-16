@@ -702,27 +702,13 @@ def _default_models() -> Dict[str, str]:
 def default_inner_factory(kind: str) -> Any:
     """Build today's client for ``kind`` with ``max_retries=0``.
 
-    Reuses the production builders (``get_llm`` for generation and judge,
-    ``get_rewrite_llm`` for rewrite) so model id, ``max_tokens``, timeout and
-    ``thinking`` cannot drift from what ``pipeline query`` uses, then copies
-    the instance with ``max_retries=0``. The copy drops any cached SDK client
-    so the new value is the one the SDK client is built with. Raises
-    ``ValueError`` without an API key, exactly as the builders do.
+    The shaping (which production builder serves ``kind``, the ``max_retries=0`` copy and the dropped SDK caches) is
+    ``src.llm_clients.build_metered_inner``: a hashed module that the judge's identity covers too (16A-2b b1a r6). This
+    module keeps the metering. Raises ``ValueError`` without an API key, exactly as the builders do.
     """
-    if kind in ("generation", "judge"):
-        from src.generator import get_llm
+    from src.llm_clients import build_metered_inner
 
-        base = get_llm()
-    elif kind == "rewrite":
-        from src.query_rewrite import get_rewrite_llm
-
-        base = get_rewrite_llm()
-    else:
-        raise ValueError(f"unknown client kind {kind!r}")
-    inner = base.model_copy(update={"max_retries": 0})
-    for cached in ("_client_params", "_client", "_async_client"):
-        inner.__dict__.pop(cached, None)
-    return inner
+    return build_metered_inner(kind)
 
 
 class _MeterCallback(BaseCallbackHandler):

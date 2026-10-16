@@ -33,6 +33,7 @@ from src.eval_sealed_read import load_sealed
 from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
 from src.sealed_ledger import SealedLedger, _dumps
 from tests.p16_capture import ANSWER, PARTIAL, PROVENANCE, REFUSE, FakeGeneration
+from tests.p16_draws import declare
 from tests.test_p16w_spend import make_meter
 
 SECTIONS = ["901.1", "901.2", "902.7.3"]
@@ -206,7 +207,7 @@ class World:
         """Declare the first ``n`` of :data:`BATCH` (or ``entries``) as the confirmatory batch (after the freeze and
         the controls record)."""
         self.record_controls()
-        return self.ledger().record_batch_declaration(entries if entries is not None else BATCH[:n])
+        return declare(self.ledger(), entries if entries is not None else BATCH[:n])  # r6: the draws are recorded first
 
     def ensure_batch(self, slot: Any) -> None:
         """Declare the default batch before a confirmatory slot (1-4) is first used, unless one exists."""

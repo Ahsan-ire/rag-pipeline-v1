@@ -29,6 +29,10 @@ def _no_live_api_key(monkeypatch):
     Tests that exercise either set them explicitly via monkeypatch.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # pipeline_config.endpoint_identity() calls load_dotenv() (16A-2b b1a r6, so a base URL set only in .env reaches the
+    # identity); inside a test that would put the developer's key back into the environment, so it does nothing here.
+    # Tests of that call patch it themselves.
+    monkeypatch.setattr("src.pipeline_config.load_dotenv", lambda *args, **kwargs: False)
     monkeypatch.delenv("AUDIT_LOG_RAW_QUERIES", raising=False)
     monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
     monkeypatch.delenv("ALLOW_CHUNK_TRUNCATION", raising=False)

@@ -177,6 +177,10 @@ def test_missing_mode_row_set_or_agreement_is_an_error_not_a_miss():
     draws[1]["scorer_version"] = "something-else"
     with pytest.raises(controls.ControlsError, match="scorer_version"):
         controls.compute_controls(draws, fam, "c1")
+    draws = _draws()
+    draws[1]["scorer_identity"] = "b" * 64  # r6: the computed scorer identity must agree as well as the label
+    with pytest.raises(controls.ControlsError, match="scorer_identity"):
+        controls.compute_controls(draws, fam, "c1")
 
 
 def test_a_malformed_sidecar_is_refused_by_the_c4_validator():
@@ -267,8 +271,8 @@ def _prereg(tmp_path, rule, draws_r, ceiling=None):
 
 
 def _record_draws(draws):
-    """Record each draw file in the ledger as ``sealed_tool record-draw`` does (r5): under the pipeline hash its sidecar
-    carries, once per file. A draw the ledger refuses (a second configuration before the controls) is left unrecorded:
+    """Record each draw file in the ledger as ``pipeline eval --record-draw`` does (r5, r6): under the pipeline hash its sidecar
+    carries, once per file, with a receipt of its own. A draw the ledger refuses (a second configuration before the controls) is left unrecorded:
     the test that built it expects a refusal."""
     from src.sealed_ledger import ProtocolError
 
@@ -283,7 +287,7 @@ def _record_draws(draws):
         if sha256_file(path) in {r["rows_sidecar_sha256"] for r in ledger.dev_draws(config)}:
             continue
         try:
-            ledger.record_dev_draw(config, "b" * 64, sha256_file(path))
+            ledger.record_dev_draw(config, "b" * 64, sha256_file(path), f"run-{sha256_file(path)[:16]}")
         except ProtocolError:
             pass
 
@@ -662,7 +666,7 @@ def test_the_first_run_needs_its_draws_recorded_in_the_ledger(tmp_path, capsys):
     assert "draws not recorded" in capsys.readouterr().err
     assert not out.exists() and _ledger().controls_record() is None
     # recorded under another configuration than the draws carry: still none under the incumbent
-    _ledger().record_dev_draw("6" * 64, "b" * 64, sha256_file(draws[0]))
+    _ledger().record_dev_draw("6" * 64, "b" * 64, sha256_file(draws[0]), "run-other-config")
     assert controls.main(_argv("c1", draws, dev, out, record=False)) == controls.EXIT_UNUSABLE
     assert "draws not recorded" in capsys.readouterr().err and not out.exists()
 

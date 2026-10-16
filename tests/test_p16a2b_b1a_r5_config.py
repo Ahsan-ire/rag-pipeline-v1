@@ -53,20 +53,14 @@ def test_every_src_module_is_hashed_or_registered_as_excluded():
     assert "llm_transport.py" in pc.CODE_EXCLUDED
     for name in MUST_BE_HASHED:
         assert name in pc.code_modules(), name  # code that retrieves, generates, judges or scores is never excluded
-    assert set(pc.code_identity()) == set(pc.code_modules())
+    assert set(pc.code_identity()) == {*pc.code_modules(), "scripts/scan_leaks.py"}  # r6: the hashed scripts are keyed scripts/<file>
 
 
-def test_the_registered_exclusions_are_modules_that_cannot_change_what_is_retrieved_generated_judged_or_scored():
-    """The exclusion list is the reviewed one: nothing in it computes a ranking, a prompt, a verdict or a metric."""
-    forbidden = ("def retrieve", "def score_", "def judge_answer", "def judge_summary", "def format_context", "def generate_with_sources", "def wilson",
-                 "def holm", "def mcnemar", "def family_rates", "def confirmatory_stats", "def collapse_family",
-                 "def canonical_guards", "def failed_guards", "def row_entry", "def _row_entry", "def resolve_excluded_groups",
-                 "def eligible_counts", "def _eligible_counts", "def baseline_hits_by_mode", "def is_private_input",
-                 "def group_ids", "def below_floor", "def excluded_member_families")
-    for name in pc.CODE_EXCLUDED:
-        text = (pc.CODE_DIR / name).read_text(encoding="utf-8")
-        for needle in forbidden:
-            assert needle not in text, (name, needle)
+def test_the_registered_exclusions_are_modules_nothing_hashed_depends_on_beyond_inert_names():
+    """r6 replaces the r5 name grep (which did not establish the property): for every excluded module, no hashed module
+    imports it, except the names registered as inert (``CODE_EXCLUDED_IMPORTS``). The full set of checks is in
+    ``tests/test_p16a2b_b1a_r6_config.py``."""
+    assert pc.excluded_import_violations() == []
 
 
 def test_a_new_module_is_hashed_by_default_and_an_excluded_one_is_not(with_index, code_copy):
@@ -314,16 +308,17 @@ def test_the_collection_metadata_that_configures_hnsw_is_part_of_the_index_ident
 
 
 # --- the version ---------------------------------------------------------------------------------------------------------------------
-def test_the_recipe_is_version_two(with_index):
-    assert pc.PIPELINE_CONFIG_VERSION == 2 and pc.pipeline_config("unused", top_k=6)["version"] == 2
+def test_the_recipe_is_version_three(with_index):
+    assert pc.PIPELINE_CONFIG_VERSION == 3 and pc.pipeline_config("unused", top_k=6)["version"] == 3  # r6: v3
 
 
 # --- R4: the judge's identity covers parsing, eligibility, scoring and the endpoint ---------------------------------------------------
 def test_the_judge_identity_names_what_it_covers_and_the_prereg_registers_the_same_list():
     prereg = json.loads((ROOT / "eval" / "prereg_16a2.json").read_text(encoding="utf-8"))
     assert list(judge.JUDGE_COVERS) == prereg["judge"]["covers"] == [
-        "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint"]
-    assert set(judge.JUDGE_CODE_MODULES) == {"judge.py", "eval_v6.py", "eval_stats.py"}
+        "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
+        "preparation", "client_construction"]  # r6: + the preparation path and the client construction
+    assert set(judge.JUDGE_CODE_MODULES) == {"judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py"}
     assert all((pc.CODE_DIR / name).is_file() and name in pc.code_modules() for name in judge.JUDGE_CODE_MODULES)
 
 
@@ -333,8 +328,8 @@ def test_the_judge_identity_names_what_it_covers_and_the_prereg_registers_the_sa
     ("judge.py", 'if not isinstance(claim, dict) or not isinstance(claim.get("verdict"), str):',
      'if not isinstance(claim, dict):'),  # the schema check (parse errors)
     ("judge.py", "FAILURE_SUPPRESSION_THRESHOLD = 0.20", "FAILURE_SUPPRESSION_THRESHOLD = 0.90"),
-    ("judge.py", 'if scope == "refuse":', 'if scope == "never":'),  # the eligibility predicate
-    ("judge.py", "if is_refusal(result[\"answer\"]):", "if False:"),
+    ("judge_prep.py", 'if scope == "refuse":', 'if scope == "never":'),  # the eligibility predicate (r6: in judge_prep)
+    ("judge_prep.py", "if is_refusal(result[\"answer\"]):", "if False:"),
     ("eval_v6.py", 'scored = [j for j in ok if j["n_claims"] > 0]', 'scored = [j for j in ok if j["n_claims"] >= 0]'),  # the rate
     ("eval_v6.py", 'unsupported = sum(j["unsupported"] for j in ok)', 'unsupported = sum(j["unclear"] for j in ok)'),
     ("eval_stats.py", "WILSON_Z = 1.96", "WILSON_Z = 1.95"),  # the interval that rate carries
@@ -393,7 +388,7 @@ def test_the_results_projection_lives_in_a_hashed_module_and_the_protocol_module
     from src import sealed_results, sealed_run
 
     assert "sealed_results.py" in pc.code_modules() and "sealed_results.py" not in pc.CODE_EXCLUDED
-    assert "sealed_run.py" in pc.CODE_EXCLUDED
+    assert "sealed_run.py" in pc.code_modules() and "sealed_run.py" not in pc.CODE_EXCLUDED  # r6: hashed
     tree = ast.parse(Path(sealed_run.__file__).read_text(encoding="utf-8"))
     defined = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     assigned = {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
@@ -447,7 +442,7 @@ def test_the_units_the_floor_and_the_exclusions_live_in_a_hashed_module_and_the_
     from src import sealed_groups, sealed_ledger
 
     assert "sealed_groups.py" in pc.code_modules() and "sealed_groups.py" not in pc.CODE_EXCLUDED
-    assert "sealed_ledger.py" in pc.CODE_EXCLUDED
+    assert "sealed_ledger.py" in pc.code_modules() and "sealed_ledger.py" not in pc.CODE_EXCLUDED  # r6: hashed
     tree = ast.parse(Path(sealed_ledger.__file__).read_text(encoding="utf-8"))
     defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     assert not defined & {"group_ids", "below_floor", "excluded_member_families"}

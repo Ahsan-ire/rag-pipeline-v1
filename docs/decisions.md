@@ -2584,3 +2584,33 @@ What is now registered:
 - An allow-list of packages: the gap was exactly the packages the list left out.
 - Function-level judge digests: a redesign.
 - Counting unrecorded runs.
+
+## D74 addendum — prereg plan gate r6, consolidating (16 Oct 2026)
+**Decision:** every r6 finding on 68182ee is accepted, through one consolidating round the owner chose. Codex (sol, xhigh) was COMPLETE with outcome REVISE: 5 MAJOR, 1 MINOR. The plan-auditor returned FAIL: 0 BLOCKER, 3 MAJOR, 10 MINOR. IMPLEMENTATION_PLAN.md b1a "Closure r6" has the detail; it supersedes r5's exclusion list and draw recording, and r5's *Why* claim that draws "cannot be re-rolled". The owner also decided the gate's end condition: if r7 has no blocker and only residual-class findings, the gate is closed by owner waiver with those residuals recorded.
+
+| Finding | Disposition |
+|---|---|
+| Codex 1, auditor M3: `spend.py` and the sealed loader were excluded but shape behaviour | FIXED: exclusions are inert modules only, enforced by an import test; client construction moved to the hashed `llm_clients.py` |
+| Codex 2, auditor M2: the absorbed map is unbound; `SCORER_VERSION` is a literal | FIXED: a computed `scorer_identity` (scoring modules, constants and data files) in results and sidecars; `scoring_inputs` in the pipeline hash |
+| Codex 3, auditor M2: the judge preparation path sits outside the judge hash | FIXED: `judge_prep.py` with its own context formatter, inside the judge hash |
+| Codex 4: batch coverage was optional | FIXED: `draws_required` is mandatory |
+| Codex 5, auditor M1, m5: after-the-fact `record-draw`; unvalidated sidecars | FIXED: draws are recorded inside the run before any output, with preconditions validated and a run id as the receipt. Other runs on frozen development versions are logged. The operator-level gap is a residual (below). |
+| Codex m6: `is_judgeable` accepted non-complete statuses | FIXED |
+| Auditor m4: a partly drawn config blocks the batch | FIXED: `abandoned` entries, which count toward K = 4 |
+| Auditor m6: the judge is frozen for the whole epoch; b7 tools are unplaced | RECORDED: the judge hash is in the prereg, so judge code is frozen from the push through 16B; b7's tools live in `scripts/` |
+| Auditor m7: `sealed_run` exclusions and `scan_leaks` | FIXED: both hashed |
+| Auditor m8: the candidate side of the control flip was unregistered | FIXED: registered |
+| Auditor m9: the 16B judge claim was inaccurate | CORRECTED in the 16B outline |
+| Auditor m10–m13: stale text, missing imports, an open-store test, `.env` order | FIXED |
+
+**Residuals:**
+- **The operator can run the pipeline out-of-band.** Someone with the code can run it outside `pipeline eval`, for example in a hand-written script, see development ranks, and choose what to do next. Such runs never count: only in-run `--record-draw` draws do. Runs through the CLI are logged (`dev_run_unrecorded`). Out-of-band runs can be found only by auditing the operator's activity. No code can close this.
+- `SealedLedger.record_dev_draw` and `.claim` remain library primitives that code can call directly.
+- Unhashed tools whose outputs are bound by digest: `scripts/controls.py` (by the `controls` record), and `scripts/sealed_tool.py` and `scripts/bakeoff_report.py` (by the freeze records).
+- Earlier residuals still apply: hosted-model drift, unpinned HF weight revisions, metadata-only index changes, a stale BM25 pickle, and the endpoint's dependence on the environment.
+
+**Why:** r5 narrowed the binding but still trusted the list of excluded modules and an after-the-fact recording step. r6 fails closed on code (only inert modules are excluded, and an import test checks that) and on draws (recorded before any output). It also states plainly the one gap that code cannot close.
+
+**Rejected:**
+- Keeping `record-draw` with stronger validation: recording after the fact is the selection problem itself.
+- Making the judge use `retriever.format_context`: a candidate could then change what the judge sees while keeping the judge hash.

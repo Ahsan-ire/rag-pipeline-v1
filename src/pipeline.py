@@ -674,6 +674,24 @@ Examples:
         default=None,
         help="With --sealed-slot 1..: the run id of the consumed slot 0/0b run to pair against",
     )
+    # 16A-2b b1a r6: a development draw is recorded inside the run that makes it.
+    eval_parser.add_argument(
+        "--record-draw",
+        action="store_true",
+        help="Make a recorded development draw: the frozen tuning and realistic versions (--golden, --realistic and "
+        "nothing else), retrieval only (--skip-refusals --skip-completeness, no --judge), at least hybrid and "
+        "hybrid+rewrite, --top-k the prereg's cut-off, --prereg the epoch's, and --expansion build:<name> (or, "
+        "for a replay candidate, the incumbent's draw artifact with --replay-incumbent-draw). The ledger record is "
+        "written in this process before the run prints or writes any result; there is no way to record a draw afterwards",
+    )
+    eval_parser.add_argument(
+        "--replay-incumbent-draw",
+        type=int,
+        default=None,
+        metavar="I",
+        help="With --record-draw and --expansion <artifact>: the number (1-based) of the incumbent's recorded draw "
+        "whose expansion artifact this candidate draw replays; it must be this configuration's next draw index",
+    )
 
     args = parser.parse_args()
 
@@ -729,6 +747,7 @@ def _eval_command(args: argparse.Namespace) -> int:
     from src.eval_privacy import PUBLIC, SealedInputError, safe_error
     from src.eval_sets import floor
     from src.evaluator import run_eval_matrix
+    from src.sealed_ledger import SealedLedgerError
     from src.spend import SpendLimitReached, SpendMeterError
 
     # Build the (label, path) set list. The default golden path is the
@@ -746,6 +765,15 @@ def _eval_command(args: argparse.Namespace) -> int:
     if args.regression:
         set_specs.append(("regression", args.regression))
     modes = list(EVAL_MODES) if args.mode == "all" else [args.mode]
+
+    if args.record_draw and args.sealed_slot is not None:
+        print("[eval] --record-draw and --sealed-slot are different runs; give one", file=sys.stderr)
+        return EXIT_USAGE
+    if args.replay_incumbent_draw is not None and not args.record_draw:
+        print("[eval] --replay-incumbent-draw needs --record-draw", file=sys.stderr)
+        return EXIT_USAGE
+    if args.record_draw:
+        return _record_draw_command(args, set_specs, modes)
 
     if args.sealed_slot is not None:
         # 16A-2a (a5): the only door a sealed set gets through. Everything the
@@ -836,6 +864,11 @@ def _eval_command(args: argparse.Namespace) -> int:
     except SealedInputError:
         print("[eval] sealed input refused (16A-1)", file=sys.stderr)
         return EXIT_SEALED
+    except SealedLedgerError as exc:
+        # the development-run record (r6) needs the epoch's ledger; a lost or corrupt one is a D64 owner stop
+        _totals()
+        print(f"[eval] sealed ledger stop: {type(exc).__name__} (D64 owner stop); no report written", file=sys.stderr)
+        return EXIT_EPOCH
     except SpendMeterError as exc:
         # a refused/corrupt ledger or a missing meter mid-run: a defined exit
         # (it is a BaseException, so the generic handler below never sees it)
@@ -849,6 +882,134 @@ def _eval_command(args: argparse.Namespace) -> int:
             return 1
         raise
     _totals()
+    return 0
+
+
+def _record_draw_command(args: argparse.Namespace, set_specs: list, modes: list) -> int:
+    """Run ``pipeline eval --record-draw``: a development draw whose ledger record is made inside the run (r6).
+
+    The draw's inputs, expansion, modes, cut-off, prereg and ledger are checked before any call
+    (``sealed_run.check_record_draw``; exit 4 with the gate name). The run is an ordinary private report-v6 run
+    (``run_eval_matrix``) with a recorder: after the expansion artifact and the rows sidecar are written, and before the
+    report is written or anything is printed, the recorder checks the sidecar against the plan
+    (``sealed_run.validate_draw_sidecar``) and appends the ``dev_draw`` record (pipeline configuration hash, artifact sha256,
+    sidecar sha256, the run id as the execution receipt). A run that stops before that point leaves no countable draw.
+    Everything printed is a count, a hash or a gate name; exit codes as for ``pipeline eval`` (3 and 6 the spend limits,
+    4 a refusal, 8 a ledger stop).
+    """
+    from src import sealed_run
+    from src.eval_privacy import SealedInputError, safe_error
+    from src.eval_sets import floor
+    from src.evaluator import run_eval_matrix
+    from src.generator import api_key_usable
+    from src.sealed_ledger import ProtocolError, SealedLedgerError
+    from src.spend import SpendLimitReached, SpendMeter, SpendMeterError, load_prices
+
+    def refuse(gate: str, detail: Optional[str] = None) -> int:
+        print(f"[eval] record-draw refused: gate={gate}" + (f" ({detail})" if detail else ""), file=sys.stderr)
+        return EXIT_SEALED
+
+    if args.prereg is None:
+        return refuse("prereg")
+    if args.results_path is not None or args.heldout is not None or args.regression is not None:
+        # the inputs are the frozen tuning and realistic versions and nothing else; the report goes to the run directory
+        return refuse("draw_inputs")
+    paths = [p for _l, p in set_specs]
+    if args.expansion != "live" and not args.expansion.startswith("build:"):
+        paths.append(args.expansion)
+    try:
+        privacy = floor(paths)
+    except SealedInputError:
+        print("[eval] sealed input refused (16A-1)", file=sys.stderr)
+        return EXIT_SEALED
+    if privacy == "sealed":
+        print("[eval] sealed input refused (16A-1)", file=sys.stderr)
+        return EXIT_SEALED
+
+    meter = None
+    run_totals = lambda: None  # noqa: E731 - replaced once a meter exists
+    try:
+        ledger = sealed_run.default_ledger()
+        plan = sealed_run.check_record_draw(
+            ledger=ledger, prereg_path=args.prereg, set_specs=set_specs, modes=modes, top_k=args.top_k,
+            expansion=args.expansion, replay_incumbent_draw=args.replay_incumbent_draw,
+            skip_refusals=args.skip_refusals, skip_completeness=args.skip_completeness, judge=args.judge,
+            judge_sample=args.judge_sample, persist_directory=args.persist_directory,
+        )
+        if plan.expansion_mode == "build":  # live Haiku rewrite calls: metered, like every live eval run (D70)
+            if not api_key_usable():
+                return refuse("meter")
+            try:
+                meter = SpendMeter(
+                    load_prices(os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "api_prices.toml")),
+                    None,
+                    args.approved_eur,
+                    owner_approved_eur=args.owner_approved_eur,
+                    approval_ref=args.approval_ref,
+                )
+            except (ValueError, SpendMeterError) as exc:
+                print(f"[eval] spend meter could not be built: {safe_error(exc)}", file=sys.stderr)
+                return EXIT_USAGE
+
+            def run_totals() -> None:  # noqa: F811
+                print(f"[eval] spend: run EUR {meter.run_total_eur:.4f}, week EUR {meter.week_total_eur:.4f} "
+                      f"(ceiling EUR {meter.ceiling_eur:.2f})", file=sys.stderr)
+
+        def recorder(*, run_id: str, artifact_path: str, artifact_sha256: str, sidecar_path: str,
+                     sidecar_sha256: str, sidecar: dict) -> None:
+            """Validate the finished draw and append its ledger record; the run prints nothing until this returns."""
+            sealed_run.validate_draw_sidecar(
+                sidecar, plan=plan, artifact_path=artifact_path, artifact_sha256=artifact_sha256, run_id=run_id,
+            )
+            try:
+                index = ledger.record_dev_draw(
+                    plan.config_hash, artifact_sha256, sidecar_sha256, run_id, replay_of=plan.replay_of,
+                )
+            except ProtocolError:
+                raise sealed_run.GateRefused("draw_ledger") from None
+            print(f"[eval] draw recorded: config={plan.config_hash} index={index} "
+                  f"draws={len(ledger.dev_draws(plan.config_hash))} receipt={run_id}")
+
+        run_eval_matrix(
+            set_specs,
+            modes=modes,
+            top_k=args.top_k,
+            skip_refusals=args.skip_refusals,
+            skip_completeness=args.skip_completeness,
+            judge=args.judge,
+            judge_sample=args.judge_sample,
+            results_path=None,
+            judge_dump_path=None,
+            persist_directory=args.persist_directory,
+            privacy=privacy,
+            meter=meter,
+            expansion=args.expansion,
+            record_draw=recorder,
+        )
+    except sealed_run.GateRefused as exc:
+        detail = f" ({exc.detail})" if exc.detail else ""
+        print(f"[eval] record-draw refused: gate={exc.gate}{detail}; nothing was recorded", file=sys.stderr)
+        return EXIT_SEALED
+    except SpendLimitReached as exc:
+        run_totals()
+        print(f"[eval] spend limit reached ({exc.kind}); the draw was not recorded", file=sys.stderr)
+        return EXIT_SPEND_WEEK if exc.kind == "week" else EXIT_SPEND_RUN
+    except SpendMeterError as exc:
+        run_totals()
+        print(f"[eval] spend meter failed: {safe_error(exc)}; the draw was not recorded", file=sys.stderr)
+        return EXIT_USAGE
+    except SealedLedgerError as exc:
+        print(f"[eval] sealed ledger stop: {type(exc).__name__} (D64 owner stop); the draw was not recorded", file=sys.stderr)
+        return EXIT_EPOCH
+    except SealedInputError:
+        print("[eval] sealed input refused", file=sys.stderr)
+        return EXIT_SEALED
+    except Exception as exc:  # noqa: BLE001 - a private run must not print str(exc)
+        run_totals()
+        print(f"[eval] error: {safe_error(exc)}; the draw was not recorded", file=sys.stderr)
+        return 1
+    run_totals()
     return 0
 
 

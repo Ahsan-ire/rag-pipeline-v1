@@ -224,6 +224,9 @@ GATES = (
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
     "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding", "identity",
     "incumbent",
+    # ``pipeline eval --record-draw`` (r6), all before any call
+    "draw_inputs", "draw_expansion", "draw_replay", "draw_modes", "draw_retrieval_only", "draw_index", "draw_ledger",
+    "draw_sidecar",
 )
 
 
@@ -708,7 +711,8 @@ def _check_expansion(
     A replay declaration naming ``slot0_canonical`` resolves to the ledger's canonical expansion
     artifact sha256 (``GateRefused("expansion_mode")`` when there is none or no ledger is given).
     A ``batch`` declaration (confirmatory slots) resolves the slot's entry from the ledger's batch
-    declaration (``GateRefused("batch")`` when there is no batch or no entry for the slot): a ``replay``
+    declaration (``GateRefused("batch")`` when there is no batch or no entry for the slot, and ``batch: abandoned`` for an
+    entry declared ``abandoned``, which counts toward Holm's K and is never run): a ``replay``
     entry must be run as a replay of the canonical artifact, a ``candidate`` entry as live expansion
     under ``--rewrite-candidate`` equal to the entry's ``rewrite_config_hash`` (the rewrite model, prompt and caps
     that :func:`expansion_artifact.rewrite_identity` computes; the entry's ``config_hash`` is the candidate's
@@ -728,6 +732,8 @@ def _check_expansion(
         if batch is None or slot is None or not slot.isdigit() or not 1 <= int(slot) <= len(batch["candidates"]):
             raise GateRefused("batch")
         entry = batch["candidates"][int(slot) - 1]
+        if entry["expansion"] == _sealed_ledger.ABANDONED:  # counted toward Holm's K, never run (r6)
+            raise GateRefused("batch", "abandoned")
         batch_mode, want_candidate, want_rewrite = entry["expansion"], entry["config_hash"], entry.get("rewrite_config_hash")
         decl = {"expansion": batch_mode, "artifact": SLOT0_CANONICAL, "rewrite_candidate": want_rewrite}
     if mode != decl["expansion"]:
@@ -757,7 +763,7 @@ def check_candidate_identity(
     """A confirmatory slot's candidate must be the one it was declared to be (the 16B check; a stub until then).
 
     The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration
-    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v2``, of the candidate). The check 16B adds compares it with
+    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v3``, of the candidate). The check 16B adds compares it with
     ``running_config_hash``, the same hash computed for the pipeline that is about to run: :func:`preflight_slot`
     passes it (the gate, which does not know the index, calls this with ``None`` as an early refusal). The rewrite
     identity is checked by :func:`_check_expansion`. Until 16B's reviewed code change lands this refuses always, so
@@ -1139,6 +1145,188 @@ def check_token_for_run(
     ):
         raise GateRefused("expansion_mode")
     check_dev_binding(slot_token.slot, slot_token.ledger, [p for p in set_paths if not slot_token.approves(p)])
+
+
+# ---------------------------------------------------------------------------
+# Development draws (``pipeline eval --record-draw``, r6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DrawPlan:
+    """What :func:`check_record_draw` established about a ``--record-draw`` command line (all of it before any call).
+
+    ``config_hash`` is the running pipeline's ``pipeline_config_hash`` (the configuration the draw will be recorded under),
+    ``expansion_mode`` is ``build`` (live expansion, frozen into a new artifact) or ``replay`` (the incumbent's draw
+    ``replay_of`` is replayed), ``dev_sets`` maps each development split to its frozen set's sha256 and ``set_shas`` is the
+    run's sets in command-line order.
+    """
+
+    config_hash: str
+    expansion_mode: str
+    replay_of: Optional[int]
+    dev_sets: Mapping[str, str]
+    modes: Tuple[str, ...]
+    prereg_sha256: str
+
+
+def check_record_draw(
+    *,
+    ledger: SealedLedger,
+    prereg_path: Union[str, os.PathLike],
+    set_specs: Sequence[Tuple[str, str]],
+    modes: Sequence[str],
+    top_k: int,
+    expansion: str,
+    replay_incumbent_draw: Optional[int],
+    skip_refusals: bool,
+    skip_completeness: bool,
+    judge: Any,
+    judge_sample: Optional[int],
+    persist_directory: str,
+) -> DrawPlan:
+    """Every precondition of a recorded development draw, checked before any retrieval, expansion or model call.
+
+    A draw is recorded inside the run (``pipeline eval --record-draw``): the run is refused unless
+
+    * the prereg is the epoch's registered one, committed, unmodified and pushed (``prereg`` / ``prereg_binding``);
+    * ``top_k`` is the prereg's hit cut-off (``cutoff``);
+    * the inputs are exactly the frozen ``tuning`` and ``realistic`` versions, each once, and nothing else
+      (``draw_inputs``; a changed or foreign file is ``dev_binding``);
+    * the expansion is a live ``build:`` (and no ``--replay-incumbent-draw``) or, for a replay candidate, the artifact of the
+      incumbent's draw ``--replay-incumbent-draw i`` (``draw_expansion`` / ``draw_replay``: the controls record exists, the
+      incumbent has that draw among the prereg's first ``draws_r``, the artifact file is that draw's artifact, and ``i`` is the
+      index this candidate's next draw would get: the candidate's i-th draw replays the incumbent's i-th);
+    * the modes include ``hybrid`` and ``hybrid+rewrite`` (``draw_modes``);
+    * the run is retrieval only: both skips, no judge, no sampling (``draw_retrieval_only``);
+    * the pipeline has an index identity (``draw_index``) and the ledger would take a draw under it (``draw_ledger``: the
+      five-configuration cap, and only the incumbent's before the controls);
+    * tracing is off (``tracing``).
+
+    Raises:
+        GateRefused: one of the gates above (a fixed token, never a path, hash or row detail).
+    """
+    from src import pipeline_config
+    from src.query_rewrite import REWRITE_MODE
+
+    prereg = load_prereg(prereg_path)
+    _commit, prereg_sha256 = bind_prereg(prereg_path)
+    if prereg_sha256 != ledger.epoch_prereg_sha256():
+        raise GateRefused("prereg_binding")  # the epoch has one registered prereg
+    draws_r = prereg.get("draws_r")
+    if isinstance(draws_r, bool) or not isinstance(draws_r, int) or draws_r < 1:
+        raise GateRefused("prereg")
+    check_cutoff(prereg["cutoff"], top_k)
+    try:
+        assert_tracing_off()
+    except TracingRefused:
+        raise GateRefused("tracing") from None
+
+    paths = [path for _label, path in set_specs]
+    if len(paths) != len(DEV_SPLITS):
+        raise GateRefused("draw_inputs")
+    shas = []
+    for path in paths:
+        sha = _file_sha(path)
+        if sha is None:
+            raise GateRefused("draw_inputs")
+        shas.append(sha)
+    dev_sets = dev_sets_of(ledger, shas)  # dev_binding: a foreign or changed file, or one split twice
+    if set(dev_sets) != set(DEV_SPLITS):
+        raise GateRefused("draw_inputs")
+
+    if not (isinstance(expansion, str) and expansion):
+        raise GateRefused("draw_expansion")
+    if REWRITE_MODE not in modes or "hybrid" not in modes:
+        raise GateRefused("draw_modes")
+    if not (skip_refusals and skip_completeness) or judge or judge_sample is not None:
+        raise GateRefused("draw_retrieval_only")
+
+    config = pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k)
+    if config is None:
+        raise GateRefused("draw_index")
+    try:
+        ledger.check_dev_draw_config(config)
+    except ProtocolError:
+        raise GateRefused("draw_ledger") from None
+
+    if expansion == "live":
+        raise GateRefused("draw_expansion")  # a draw freezes its expansions (build:) or replays the incumbent's
+    replay_of: Optional[int] = None
+    if expansion.startswith("build:"):
+        if replay_incumbent_draw is not None:
+            raise GateRefused("draw_replay")
+        mode = "build"
+    else:
+        mode = "replay"
+        if isinstance(replay_incumbent_draw, bool) or not isinstance(replay_incumbent_draw, int) or replay_incumbent_draw < 1:
+            raise GateRefused("draw_replay")
+        incumbent = ledger.incumbent_config_hash()
+        if incumbent is None or replay_incumbent_draw > draws_r:
+            raise GateRefused("draw_replay")
+        recorded = ledger.dev_draws(incumbent)
+        if replay_incumbent_draw > len(recorded) or _file_sha(expansion) != recorded[replay_incumbent_draw - 1]["artifact_sha256"]:
+            raise GateRefused("draw_replay")
+        if len(ledger.dev_draws(config)) + 1 != replay_incumbent_draw:
+            raise GateRefused("draw_replay")  # the candidate's i-th draw replays the incumbent's i-th
+        replay_of = replay_incumbent_draw
+    return DrawPlan(
+        config_hash=config, expansion_mode=mode, replay_of=replay_of, dev_sets=dict(dev_sets), modes=tuple(modes),
+        prereg_sha256=prereg_sha256,
+    )
+
+
+def validate_draw_sidecar(
+    sidecar: Mapping[str, Any], *, plan: DrawPlan, artifact_path: Union[str, os.PathLike], artifact_sha256: str, run_id: str,
+) -> None:
+    """The finished draw's rows sidecar and expansion artifact are the draw :class:`DrawPlan` described (before it is recorded).
+
+    The sidecar must carry the plan's pipeline configuration hash, exactly two cohorts whose set hashes are the frozen
+    tuning and realistic versions, and for every mode of the run one row per retrieval-eligible id of every cohort. It names
+    the run that produced it (``run_id``: the execution receipt, so two independent draws never share a sidecar even when
+    their expansions and ranks are identical). Its
+    expansion identity must be the artifact's: a live build's configuration hash is the artifact's, and a replay's digest
+    is the artifact's sha256 (which is the incumbent draw's artifact, checked at the gate). The artifact must load and
+    be the file whose digest is being recorded.
+
+    Raises:
+        GateRefused: ``draw_sidecar``.
+    """
+    from src.expansion_artifact import ExpansionArtifactError, load_artifact
+
+    def bad() -> GateRefused:
+        return GateRefused("draw_sidecar")
+
+    if sidecar.get("pipeline_config_hash") != plan.config_hash or sidecar.get("run_id") != run_id:
+        raise bad()
+    cohorts = sidecar.get("cohorts")
+    if not isinstance(cohorts, list) or sorted(c.get("sha256") for c in cohorts) != sorted(plan.dev_sets.values()):
+        raise bad()
+    counts: Dict[Tuple[str, str], int] = {}
+    ids: Dict[Tuple[str, str], set] = {}
+    for row in sidecar.get("rows", []):
+        key = (row["set_sha256"], row["mode"])
+        counts[key] = counts.get(key, 0) + 1
+        ids.setdefault(key, set()).add(row["id"])
+    for cohort in cohorts:
+        for mode in plan.modes:
+            key = (cohort["sha256"], mode)
+            if counts.get(key, 0) != cohort["eligible"] or len(ids.get(key, ())) != cohort["eligible"]:
+                raise bad()
+    if {mode for _sha, mode in counts} != set(plan.modes):
+        raise bad()
+    try:
+        artifact = load_artifact(artifact_path)
+    except (ExpansionArtifactError, OSError):
+        raise bad() from None
+    if artifact.digest != artifact_sha256:
+        raise bad()
+    expansion = sidecar.get("expansion") or {}
+    if plan.expansion_mode == "build":
+        if expansion.get("kind") != "live" or expansion.get("config_hash") != artifact.identity.get("config_hash"):
+            raise bad()
+    elif expansion.get("kind") != "replay" or expansion.get("digest") != artifact_sha256:
+        raise bad()
 
 
 # ---------------------------------------------------------------------------

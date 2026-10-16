@@ -1,4 +1,4 @@
-"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, r5; D74).
+"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, r5, r6; D74).
 
 A sealed slot compares a candidate with the **incumbent**, so "the incumbent" must be a value a machine can
 check, not a claim. This module computes that value with **zero calls** (no model is loaded, no network is
@@ -8,12 +8,14 @@ pipeline retrieves, generates, judges and scores.
 ``pipeline_config(persist_directory, *, top_k)`` is a dict with exactly the keys :data:`PIPELINE_CONFIG_KEYS`:
 
 ``version``
-    :data:`PIPELINE_CONFIG_VERSION` (2), bumped when this recipe changes.
+    :data:`PIPELINE_CONFIG_VERSION` (3), bumped when this recipe changes.
 ``code``
     ``{module file: sha256 of its ast.dump with docstrings stripped}`` for **every** ``src`` module that is not in
-    :data:`CODE_EXCLUDED`. New modules are hashed by default; a module is left out only by being added, reviewed, to
-    the registered exclusion list. ``ast.dump`` carries no line numbers, so a comment, a docstring or a whitespace
-    edit does not change it; any change to the code that runs does.
+    :data:`CODE_EXCLUDED`, plus the scripts in :data:`HASHED_SCRIPTS` (keyed ``scripts/<file>``). New modules are
+    hashed by default; a module is left out only by being added, reviewed, to the registered exclusion list, and only if
+    nothing hashed imports it except the registered inert names (:data:`CODE_EXCLUDED_IMPORTS`; a test holds this).
+    ``ast.dump`` carries no line numbers, so a comment, a docstring or a whitespace edit does not change it; any change
+    to the code that runs does.
 ``runtime``
     The Python ``major.minor`` and **every** installed distribution (``importlib.metadata.distributions()``) as a
     sorted, deduplicated list of ``"normalised-name==version"`` strings.
@@ -39,12 +41,17 @@ pipeline retrieves, generates, judges and scores.
     ``GENERATION_MODEL``, the client kwargs from ``generator.generation_llm_kwargs()`` without the timeout and
     retry count, the sha256 of the prompt template's ``[[role, template], ...]``, the refusal phrase and the caveat
     prefix.
+``scoring_inputs``
+    ``{data file: sha256 or None}`` for the committed data files the scoring path reads
+    (:func:`src.scoring_identity.scoring_inputs`: the absorbed-section map, whose aliases decide strict ranks, and the
+    section inventory the evidence labels are validated against); ``None`` for a file that is absent.
 
 **Excluded on purpose** (they change whether a call succeeds, or are about the run rather than the pipeline):
 timeouts and retries (their literals live in ``src.llm_transport``, itself in :data:`CODE_EXCLUDED`, and the client
 kwargs drop them), the git sha, paths (the persist directory is only read, never hashed), the API key, the modules in
 :data:`CODE_EXCLUDED`, the eval sets and any corpus text. The judge has its own identity
-(``src.judge.judge_identity``) but its code is part of ``code`` here too, and so is all scoring code. Chunk ids are
+(``src.judge.judge_identity``) but its code is part of ``code`` here too, and so is all scoring code (the scorer has its
+own, ``src.scoring_identity.scorer_identity``). Chunk ids are
 content hashes, so the index component moves when the indexed text does; chunk *metadata* (page and section numbers)
 is not read, because a hash must never need documents.
 
@@ -62,49 +69,64 @@ import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from dotenv import load_dotenv
 
 from src.expansion_artifact import _canonical_json
 
-PIPELINE_CONFIG_VERSION = 2
+PIPELINE_CONFIG_VERSION = 3
 PIPELINE_CONFIG_KEYS = (
     "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
+    "scoring_inputs",
 )
 
 #: The ``src`` modules whose code is NOT hashed (registered in the prereg as ``incumbent.code_excluded``; ``prereg-check``
 #: recomputes the list from this constant). Every other ``src`` module, a new one included, is hashed. A module may be
-#: listed only if it cannot change what is retrieved, generated, judged or scored: no value that reaches a prompt, a
-#: client, a ranking, a verdict or a metric, no row filter, no default of those. Each entry's reason:
+#: listed only if it cannot reach a client, a row set, a rank, a score, a judgement, an exclusion or an analysis unit: it
+#: builds no client and reads no value that reaches a prompt, a ranking, a verdict or a metric, and it filters or projects
+#: no row. Whether anything hashed depends on it is a test (:func:`excluded_import_violations`): a hashed module may import
+#: from an excluded one only the names registered in :data:`CODE_EXCLUDED_IMPORTS`. Each entry's reason:
 #:
 #: * ``__init__.py``: empty package marker.
-#: * ``audit.py``: the operational JSONL event log of ``pipeline query`` (what to record, never what to answer).
-#: * ``eval_privacy.py``: privacy classes, opaque row-id spelling and private-path containment (a changed id
-#:   spelling breaks a lookup; it moves no ranking, answer or verdict).
-#: * ``eval_roster.py``: the bake-off arm roster for ``scripts/`` (display ids; nothing in ``src`` imports it).
-#: * ``eval_sealed_read.py``: the read-only sealed-set loader (it validates and returns rows; refusing is its only effect).
-#: * ``eval_sets.py``: the set registry and the public / private / sealed classifier (which file is what, not what a
-#:   row scores).
-#: * ``eval_split.py``: the deterministic family splitter that builds the sets (data preparation; nothing in ``src``
-#:   imports it).
-#: * ``llm_transport.py``: the timeout and retry literals (they change whether a call succeeds, never its result).
-#: * ``render.py``: the display of a finished ``pipeline query`` result (display-only by its own contract).
-#: * ``sealed_inputs.py``: ``inputs-check`` of the hand-made pairing and conflict files (a check; nothing imports it).
-#: * ``sealed_ledger.py``: the append-only slot ledger and state machine (records, digests, locks and refusals). The
-#:   group ids, the floor test and the excluded-family aggregation live in ``sealed_groups.py``, which is hashed.
-#: * ``sealed_run.py``: the slot protocol: gates, preflight, token, claim and receipt, storage, publication. Nothing in it
-#:   computes or projects a value a stored result or the adoption analysis uses: those (the row hits, the baseline,
-#:   the results document, the canonical guards, the floor counts, the excluded groups) live in ``sealed_results.py``,
-#:   which is hashed.
-#: * ``spend.py``: the spend meter and its retry loop (it wraps the production clients; a retry changes whether a call
-#:   succeeds, not what it returns).
-#: * ``tracing_guard.py``: the tracing refusal (it can only stop a run).
+#: * ``audit.py``: the operational JSONL event log of ``pipeline query`` (what to record, never what to answer). Only
+#:   ``src.pipeline`` and ``src.render`` import it, and ``pipeline.query`` swallows an audit failure.
+#: * ``eval_roster.py``: the bake-off arm roster for ``scripts/bakeoff_report.py`` and ``scripts/w_sweep.py``; no ``src``
+#:   module imports it.
+#: * ``eval_split.py``: the family splitter that builds the sets (``scripts/sealed_tool.py``; data preparation); no ``src``
+#:   module imports it, and the sets it produced are bound by sha256 at their freeze records.
+#: * ``llm_transport.py``: the timeout and retry literals (they change whether a call succeeds, never its result); the client
+#:   kwargs drop them from every identity (:data:`CLIENT_RELIABILITY_KEYS`).
+#: * ``render.py``: the display of a finished ``pipeline query`` result (display-only by its own contract). Only
+#:   ``src.pipeline`` imports it, for ``query``; the evaluator, the judge and the scorers never call it.
+#: * ``sealed_inputs.py``: ``inputs-check`` of the hand-made pairing and conflict files (``scripts/sealed_tool.py``); no
+#:   ``src`` module imports it.
+#: * ``tracing_guard.py``: the tracing refusal and the tracing-variable scrub: it can only stop a run (``TracingRefused``)
+#:   or set the tracing variables to ``"false"`` in the environment.
 CODE_EXCLUDED = (
-    "__init__.py", "audit.py", "eval_privacy.py", "eval_roster.py", "eval_sealed_read.py", "eval_sets.py",
-    "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py", "sealed_ledger.py", "sealed_run.py",
-    "spend.py", "tracing_guard.py",
+    "__init__.py", "audit.py", "eval_roster.py", "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py",
+    "tracing_guard.py",
 )
+
+#: The only names a hashed module may import from an excluded one, as ``"<excluded file>:<name>"`` (registered in the
+#: prereg as ``incumbent.code_excluded_imports``). Each is inert: a transport literal that every identity drops, the audit
+#: writer and the display of ``pipeline query``, and the tracing refusal. :func:`excluded_import_violations` reports any other.
+CODE_EXCLUDED_IMPORTS = (
+    "audit.py:build_event", "audit.py:log_event",
+    "llm_transport.py:GENERATION_MAX_RETRIES", "llm_transport.py:GENERATION_REQUEST_TIMEOUT",
+    "llm_transport.py:REWRITE_MAX_RETRIES", "llm_transport.py:REWRITE_REQUEST_TIMEOUT",
+    "render.py:RenderFlags", "render.py:render",
+    "tracing_guard.py:TracingRefused", "tracing_guard.py:assert_tracing_off", "tracing_guard.py:scrub_tracing_env",
+    "tracing_guard.py:tracing_problems",
+)
+
+#: The scripts whose code is hashed with the ``src`` modules (keyed ``scripts/<file>``): ``scan_leaks.py`` decides which
+#: sealed groups the pre-publication scan excludes from analysis, so a change to it can change the analysed population.
+HASHED_SCRIPTS = ("scan_leaks.py",)
 #: Where the hashed modules live (tests point it at a copy to edit one).
 CODE_DIR = Path(__file__).resolve().parent
+#: Where the hashed scripts live (tests point it at a copy to edit one).
+SCRIPTS_DIR = CODE_DIR.parent / "scripts"
 
 #: Client kwargs that change whether a call succeeds, never what it returns: left out of every identity.
 CLIENT_RELIABILITY_KEYS = ("default_request_timeout", "max_retries")
@@ -172,9 +194,83 @@ def code_modules() -> List[str]:
     )
 
 
+def hashed_scripts() -> List[str]:
+    """The hashed scripts as ``scripts/<file>`` (the keys of their entries in the ``code`` component), sorted."""
+    return sorted(f"scripts/{name}" for name in HASHED_SCRIPTS)
+
+
 def code_identity() -> Dict[str, str]:
-    """``{module file: code digest}`` for :func:`code_modules` (an unreadable or unparseable file raises)."""
-    return {name: code_digest(CODE_DIR / name) for name in code_modules()}
+    """``{module file: code digest}`` for :func:`code_modules` and :func:`hashed_scripts` (an unreadable or unparseable file raises)."""
+    out = {name: code_digest(CODE_DIR / name) for name in code_modules()}
+    out.update({key: code_digest(SCRIPTS_DIR / key.split("/", 1)[1]) for key in hashed_scripts()})
+    return out
+
+
+def function_digest(path: Path, name: str) -> str:
+    """sha256 of ``ast.dump`` of the top-level or nested function ``name`` in ``path`` (docstrings stripped).
+
+    For a function that lives in a module the scorer shares with the pipeline (``src.scoring_identity`` binds
+    ``generator._sections_related`` this way instead of hashing the whole generator into the scorer's identity).
+
+    Raises:
+        ValueError: ``path`` defines no such function.
+    """
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return sha256_hex(ast.dump(_strip_docstrings(node)).encode("utf-8"))
+    raise ValueError(f"{Path(path).name} defines no function {name!r}")
+
+
+def _imports_of(tree: ast.AST) -> List[Tuple[str, str]]:
+    """``(src module stem, imported name)`` for every import of a ``src`` module in ``tree``, nested imports included.
+
+    ``from src.render import render`` gives ``("render", "render")``; ``from src import render`` and ``import src.render``
+    give ``("render", "<module>")``; ``importlib.import_module("src.render")`` (a string constant naming a module) gives
+    ``("render", "<dynamic>")``. A relative import (``from .render import render``) inside ``src`` counts like the absolute one.
+    """
+    found: List[Tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:  # inside src: from .x import y / from . import x
+                parts = module.split(".") if module else []
+                if parts:
+                    found.extend((parts[0], alias.name) for alias in node.names)
+                else:
+                    found.extend((alias.name, "<module>") for alias in node.names)
+            elif module == "src":
+                found.extend((alias.name, "<module>") for alias in node.names)
+            elif module.startswith("src."):
+                found.extend((module.split(".")[1], alias.name) for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("src."):
+                    found.append((alias.name.split(".")[1], "<module>"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and re.fullmatch(r"src\.[A-Za-z0-9_]+", node.value):
+            found.append((node.value.split(".")[1], "<dynamic>"))
+    return found
+
+
+def excluded_import_violations() -> List[str]:
+    """What the hashed code takes from an excluded module beyond :data:`CODE_EXCLUDED_IMPORTS`: ``"<hashed file> -> <excluded file>:<name>"``.
+
+    Walks every module of :func:`code_modules` and every script of :func:`hashed_scripts`. A hashed module that imports an
+    excluded module, a name of it that is not registered, the whole module, or names it in a string (a dynamic import),
+    depends on code the identity does not cover: the exclusion's justification ("it cannot reach a client, a row set, a rank,
+    a score, a judgement, an exclusion or an analysis unit") is then not what the hash assumes. Empty = the exclusions hold.
+    """
+    stems = {name[:-3]: name for name in CODE_EXCLUDED}
+    allowed = set(CODE_EXCLUDED_IMPORTS)
+    sources = [(name, CODE_DIR / name) for name in code_modules()]
+    sources += [(key, SCRIPTS_DIR / key.split("/", 1)[1]) for key in hashed_scripts()]
+    violations: List[str] = []
+    for label, path in sources:
+        tree = _strip_docstrings(ast.parse(path.read_text(encoding="utf-8")))
+        for stem, name in _imports_of(tree):
+            if stem in stems and f"{stems[stem]}:{name}" not in allowed:
+                violations.append(f"{label} -> {stems[stem]}:{name}")
+    return sorted(set(violations))
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +309,7 @@ def endpoint_identity() -> Dict[str, str]:
     """
     from langchain_anthropic import ChatAnthropic
 
+    load_dotenv()  # no override: what the process already has wins; a base URL set only in .env is read like the clients read it
     factory = ChatAnthropic.model_fields["anthropic_api_url"].default_factory
     if factory is None:  # the installed package changed shape: fail closed, never guess the endpoint
         raise RuntimeError("ChatAnthropic.anthropic_api_url has no default factory")
@@ -323,6 +420,13 @@ def generation_identity() -> Dict[str, Any]:
     }
 
 
+def scoring_inputs_component() -> Dict[str, Optional[str]]:
+    """``{data file: sha256 or None}`` for the committed data files the scoring path reads (``src.scoring_identity``)."""
+    from src import scoring_identity
+
+    return scoring_identity.scoring_inputs()
+
+
 # ---------------------------------------------------------------------------
 # the configuration and its hash
 # ---------------------------------------------------------------------------
@@ -341,6 +445,7 @@ def pipeline_config(persist_directory: str, *, top_k: int) -> Dict[str, Any]:
         "fusion": fusion_identity(top_k),
         "rewrite": rewrite_component(),
         "generation": generation_identity(),
+        "scoring_inputs": scoring_inputs_component(),
     }
 
 

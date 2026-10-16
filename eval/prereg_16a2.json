@@ -129,7 +129,7 @@
         "candidate"
       ],
       "mode_declared_by": "batch_declaration",
-      "candidate_identity": "config_hash_is_pipeline_config_v2_checked_by_16b_gate_before_claim",
+      "candidate_identity": "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim",
       "rewrite_identity": "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim",
       "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
       "requires": [
@@ -154,8 +154,9 @@
       "incumbent_draws": "first_5_recorded_development_draws_under_the_incumbent_config_hash",
       "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash",
       "recorded_configs_max": 4,
-      "draws_recorded_by": "sealed_tool_record_draw",
-      "unrecorded_runs": "never_count",
+      "draws_recorded_by": "pipeline_eval_record_draw_in_run",
+      "unrecorded_runs": "never_count_and_are_logged_per_config",
+      "abandoned": "counts_toward_k",
       "all_recorded_candidates_declared": true
     },
     "unsupported_claims": {
@@ -174,7 +175,33 @@
         "hybrid+rewrite"
       ],
       "draws": "any_of_first_5_recorded_under_the_incumbent_config_hash",
+      "candidate_draws": "any_of_its_first_5_recorded_paired_by_draw_index",
       "versions": "development_freeze_records"
+    },
+    "scoring": {
+      "identity": "scorer_identity_v1",
+      "compare": "candidate_and_slot0_equal",
+      "covers": [
+        "eval_cohort.py",
+        "eval_schema.py",
+        "eval_scoring.py",
+        "eval_sealed_read.py",
+        "eval_stats.py",
+        "eval_v6.py",
+        "judge_prep.py",
+        "sealed_groups.py",
+        "sealed_results.py",
+        "text_utils.py",
+        "generator.py:_sections_related",
+        "generator.CAVEAT_PREFIX",
+        "grounding.CITATIONS_UNVERIFIED",
+        "grounding.CITATIONS_VERIFIED",
+        "grounding.PARTIALLY_VERIFIED",
+        "grounding.STATUS_COMPLETE",
+        "grounding.TERMINAL_OUTCOMES",
+        "eval/absorbed_sections.json",
+        "eval/section_inventory.json"
+      ]
     }
   },
   "controls": {
@@ -477,7 +504,7 @@
     ]
   },
   "incumbent": {
-    "config_fn": "pipeline_config_v2",
+    "config_fn": "pipeline_config_v3",
     "components": [
       "version",
       "code",
@@ -488,30 +515,41 @@
       "bm25",
       "fusion",
       "rewrite",
-      "generation"
+      "generation",
+      "scoring_inputs"
     ],
-    "code": "all_src_modules_except_code_excluded",
+    "code": "all_src_modules_except_code_excluded_and_hashed_scripts",
     "code_excluded": [
       "__init__.py",
       "audit.py",
-      "eval_privacy.py",
       "eval_roster.py",
-      "eval_sealed_read.py",
-      "eval_sets.py",
       "eval_split.py",
       "llm_transport.py",
       "render.py",
       "sealed_inputs.py",
-      "sealed_ledger.py",
-      "sealed_run.py",
-      "spend.py",
       "tracing_guard.py"
+    ],
+    "code_excluded_imports": [
+      "audit.py:build_event",
+      "audit.py:log_event",
+      "llm_transport.py:GENERATION_MAX_RETRIES",
+      "llm_transport.py:GENERATION_REQUEST_TIMEOUT",
+      "llm_transport.py:REWRITE_MAX_RETRIES",
+      "llm_transport.py:REWRITE_REQUEST_TIMEOUT",
+      "render.py:RenderFlags",
+      "render.py:render",
+      "tracing_guard.py:TracingRefused",
+      "tracing_guard.py:assert_tracing_off",
+      "tracing_guard.py:scrub_tracing_env",
+      "tracing_guard.py:tracing_problems"
+    ],
+    "code_scripts": [
+      "scan_leaks.py"
     ],
     "excluded": [
       "timeouts_retries",
       "git_sha",
       "paths",
-      "judge",
       "eval_sets",
       "corpus_text"
     ],
@@ -521,7 +559,7 @@
       "0",
       "0b"
     ],
-    "candidates": "batch_entry_config_hash_is_pipeline_config_v2_of_the_candidate"
+    "candidates": "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate"
   },
   "judge": {
     "required_on": [
@@ -534,11 +572,11 @@
     ],
     "model": "claude-sonnet-5",
     "prompt_version": "faithfulness-judge-v1",
-    "config_hash": "9a44fcb60f95dfec9c408d982c884d7704434cf7a1ccd66645f0d89ed48a8de7",
+    "config_hash": "7129469ad7298be76755ddde15dfedadb1fbe72d42640f3fb72818a98ec47976",
     "sample": "all_eligible",
     "eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
     "rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
-    "compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_version",
+    "compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity",
     "covers": [
       "model",
       "client",
@@ -548,7 +586,9 @@
       "parsing",
       "eligibility",
       "scoring",
-      "endpoint"
+      "endpoint",
+      "preparation",
+      "client_construction"
     ],
     "errors": "any_sealed_judge_error_means_not_shown"
   }

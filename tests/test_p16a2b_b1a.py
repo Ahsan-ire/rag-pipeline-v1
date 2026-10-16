@@ -18,6 +18,7 @@ from scripts import sp_launch as sp
 from src import sealed_ledger, sealed_run
 from src.expansion_artifact import rewrite_identity
 from src.sealed_ledger import ProtocolError, SealedLedger, SlotRefused
+from tests.p16_draws import declare
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     BATCH,
     BOUND_COMMIT,
@@ -93,10 +94,10 @@ def test_check_prereg_accepts_the_branch_or_main_and_refuses_neither(repos):
 def test_batch_declaration_rules(tmp_path):
     led = make(tmp_path)
     with pytest.raises(ProtocolError):  # needs the sealed freeze
-        led.record_batch_declaration(BATCH)
+        led.record_batch_declaration(BATCH, draws_required=5)
     led = frozen(tmp_path)
     with pytest.raises(ProtocolError, match="controls"):  # and the controls record
-        led.record_batch_declaration(BATCH)
+        led.record_batch_declaration(BATCH, draws_required=5)
     led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     one = {"config_hash": CANDIDATES[0], "expansion": "replay"}
     bad_entries = [
@@ -115,20 +116,20 @@ def test_batch_declaration_rules(tmp_path):
     ]
     for bad in bad_entries:
         with pytest.raises(ValueError):
-            led.record_batch_declaration(bad)
+            led.record_batch_declaration(bad, draws_required=5)
     assert led.batch_declaration() is None
     entries = [BATCH[0], candidate_entry(CANDIDATES[1], D), BATCH[2]]
-    digest = led.record_batch_declaration(entries)
+    digest = declare(led, entries)  # r6: the coverage rules are tests/test_p16a2b_b1a_r6_draws.py
     assert digest == canonical_json_sha(entries)  # the digest of the canonical JSON of the list, modes included
     rec = make(tmp_path).batch_declaration()
     assert rec["candidates"] == entries and rec["candidates_sha256"] == digest
     with pytest.raises(ProtocolError):  # appendable once
-        led.record_batch_declaration(BATCH[:2])
+        led.record_batch_declaration(BATCH[:2], draws_required=5)
 
 
 def test_the_mirror_carries_the_batch_digest_only(tmp_path):
     led = declarable(tmp_path)
-    digest = led.record_batch_declaration(BATCH)
+    digest = declare(led, BATCH)
     line = json.loads((tmp_path / "mirror.jsonl").read_text().splitlines()[-1])
     assert line["kind"] == "batch_declaration" and line["digests"] == {"candidates_sha256": digest}
     assert "candidates" not in line and CANDIDATES[0] not in json.dumps(line)
@@ -140,7 +141,7 @@ def test_no_batch_after_a_confirmatory_claim_and_claims_follow_the_batch(tmp_pat
         with pytest.raises(SlotRefused):  # no declaration yet
             led.claim(slot)
     assert led.claim(0) == "0"  # slots 0 and 0b never need one
-    led.record_batch_declaration(BATCH[:2])
+    declare(led, BATCH[:2])
     assert led.claim(2) == "2"
     with pytest.raises(SlotRefused):
         led.claim(3)  # beyond the declared candidates
@@ -156,12 +157,12 @@ def test_no_batch_can_be_declared_once_a_confirmatory_slot_was_claimed(tmp_path,
     monkeypatch.undo()
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
     with pytest.raises(ProtocolError, match="confirmatory slot"):
-        led.record_batch_declaration(BATCH[:1])
+        led.record_batch_declaration(BATCH[:1], draws_required=5)
 
 
 def test_slot_stored_records_the_expansion_artifact_sha_for_slots_0_and_0b_only(tmp_path):
     led = declarable(tmp_path)
-    led.record_batch_declaration(BATCH)
+    declare(led, BATCH)
     art = b'{"expansions": []}'
     led.claim(0)
     led.store_results(0, run_dir(tmp_path, "r0", art))

@@ -103,16 +103,32 @@ hash, the sha256 of the pre-registration it ran under (the first record of any k
 that carries one registers the epoch's prereg) and the UTC time. Nothing else. The
 committed mirror carries the record's kind, line digest and that prereg digest.
 
-Development draws (b1a r5)
---------------------------
+Development draws (b1a r5, r6)
+------------------------------
 ``record_dev_draw`` appends a ``dev_draw`` record for each development draw (b7) that may count: the pipeline
 configuration hash it ran under, its expansion artifact's sha256 and its rows sidecar's sha256 (all digests, which the
-committed mirror carries), plus a per-configuration index (1, 2, ...) that the ledger assigns. A draw that is not
-recorded never counts: the cap is on what may ever be recorded, so a re-roll by a non-semantic edit (a new config
-hash, hence a new "first five") cannot hide among unrecorded runs. At most ``DEV_DRAW_CONFIGS_MAX`` (5: the incumbent
-and four candidates) distinct configuration hashes may have records; before the ``controls`` record exists only ONE
-(the incumbent's). ``dev_draws(config_hash)`` lists a configuration's records in order and ``dev_draw_configs()``
-lists the configurations in the order they were first recorded.
+committed mirror carries), the run id that produced it (its **execution receipt**: distinct per draw, so a copy of a
+sidecar or a second recording of one run is not another draw), plus a per-configuration index (1, 2, ...) that the ledger
+assigns. Since r6 the only caller is ``pipeline eval --record-draw``, **inside the run, before the run prints or writes
+any result**: a draw cannot be chosen after its numbers are seen, and a crash before the record leaves no countable draw.
+A replay candidate's draw carries ``replay_of`` (the incumbent's draw it replayed): the ledger checks, inside its
+transaction, that the artifact is that draw's artifact and that the candidate's draw index equals ``replay_of`` (paired by
+draw index). A draw that is not recorded never counts: the cap is on what may ever be recorded, so a re-roll by a
+non-semantic edit (a new config hash, hence a new "first five") cannot hide among unrecorded runs. At most
+``DEV_DRAW_CONFIGS_MAX`` (5: the incumbent and four candidates) distinct configuration hashes may have records; before the
+``controls`` record exists only ONE (the incumbent's). ``dev_draws(config_hash)`` lists a configuration's records in
+order and ``dev_draw_configs()`` lists the configurations in the order they were first recorded. ``check_dev_draw_config``
+is the same cap and controls rule as a pre-check (``pipeline eval --record-draw`` runs it before any call).
+
+``record_dev_run_unrecorded`` appends a ``dev_run_unrecorded`` record (the run's configuration hash or ``None``, and its
+run id) for every ``pipeline eval`` run over a frozen tuning or realistic version that was not a ``--record-draw`` run,
+before the run prints its results. Such a run never counts, but it is visible: ``dev_unrecorded_counts()`` counts them per
+configuration (``sealed_tool audit`` prints the counts).
+
+``record_batch_declaration(candidates, draws_required=...)`` enforces the draw coverage unconditionally (``draws_required`` is
+the prereg's ``draws_r`` and has no default): every runnable candidate has at least that many recorded draws, every recorded
+configuration other than the incumbent's is in the batch, and a recorded configuration with fewer draws than required may be
+declared ``abandoned`` (it counts toward Holm's K, and the slot gate refuses to run it).
 
 Groups and exclusions
 ---------------------
@@ -120,9 +136,8 @@ Groups and exclusions
 components of the twins record's edges over the frozen sealed families, named by
 the smallest member family): ``sealed_tool exclude`` and the slot gate both call
 it. It, ``below_floor`` and the aggregation behind ``excluded_families`` live in
-``src.sealed_groups`` (a hashed module: they decide what the analysis is made of,
-which a ledger module the incumbent's code identity leaves out must not do) and are
-re-exported here. A group's *name* can change when a later rejection removes its smallest
+``src.sealed_groups`` (covered by the scorer's identity, which the ledger is not: they decide what the analysis is made of)
+and are re-exported here. A group's *name* can change when a later rejection removes its smallest
 member, so an exclusion also records its ``members`` (the group's families when it
 was made) and the gate resolves ``excluded_families()`` against the freeze-bound
 groups at run time instead of trusting the recorded name.
@@ -177,6 +192,7 @@ KINDS = (
     "calibration_draw",
     "controls",
     "dev_draw",
+    "dev_run_unrecorded",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
@@ -191,6 +207,7 @@ MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "calibration_draw": ("draw_sha256",),
     "controls": ("controls_sha256", "draws_sha256", "prereg_sha256", "incumbent_config_hash"),
     "dev_draw": ("config_hash", "artifact_sha256", "rows_sidecar_sha256"),
+    "dev_run_unrecorded": ("config_hash",),
     "publication_intent": ("results_digest",),
 }
 
@@ -210,6 +227,11 @@ CONFIRMATORY_EMBARGO = True
 #: The expansion modes a batch entry may declare: retrieval-only (replay slot 0's canonical artifact) or a
 #: rewrite-changing candidate (live rewrite under its configuration hash).
 BATCH_EXPANSIONS = ("replay", "candidate")
+
+#: A batch entry may also be ``abandoned``: a recorded configuration with fewer than ``draws_r`` recorded draws. It counts toward
+#: Holm's K (the batch holds at most ``K_MAX`` entries, whatever their mode) and the slot gate refuses to run it.
+ABANDONED = "abandoned"
+BATCH_ENTRY_EXPANSIONS = (*BATCH_EXPANSIONS, ABANDONED)
 
 #: The run-directory file a slot-0/0b run builds; its sha256 is recorded on ``slot_stored``.
 EXPANSION_ARTIFACT_NAME = "expansion_artifact.json"
@@ -237,6 +259,7 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _TOKEN = re.compile(r"[a-z0-9_]{1,40}")
 _ID = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _DISPATCH_ID = re.compile(r"[0-9a-f]{8}")
+_RUN_ID = re.compile(r"[A-Za-z0-9_-]{3,64}")  # a private run id (eval_privacy.new_run_id): the execution receipt of a draw
 _PAYLOAD_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 
@@ -694,6 +717,16 @@ def _check_claimable(sid: str, slots: Mapping[str, _SlotState], batch: Optional[
         raise SlotRefused("slot 0b is not available")
 
 
+def _check_draw_config(records: Sequence[Mapping[str, Any]], config: str) -> None:
+    """The cap and the controls rule for a ``dev_draw`` under ``config`` (``ProtocolError``); shared by the pre-check and the record."""
+    configs = {r["config_hash"] for r in records if r["kind"] == "dev_draw"}
+    if config not in configs:
+        if configs and not any(r["kind"] == "controls" for r in records):
+            raise ProtocolError("before the controls are recorded only the incumbent's draws may be recorded")
+        if len(configs) >= DEV_DRAW_CONFIGS_MAX:
+            raise ProtocolError(f"at most {DEV_DRAW_CONFIGS_MAX} pipeline configurations may have recorded draws")
+
+
 def exclusions_digest(groups: Iterable[str]) -> str:
     """sha256 of the canonical JSON list of the sorted, distinct group ids (what the sealed freeze binds)."""
     return hashlib.sha256(_dumps(sorted(set(groups)))).hexdigest()
@@ -970,35 +1003,39 @@ class SealedLedger:
     # -- the confirmatory batch declaration (b1a) ---------------------------------------
 
     def record_batch_declaration(
-        self, candidates: Sequence[Mapping[str, str]], *, draws_required: Optional[int] = None,
+        self, candidates: Sequence[Mapping[str, str]], *, draws_required: int,
     ) -> str:
         """Declare the confirmatory batch: 1..4 candidates in slot order, each ``{"config_hash", "expansion"}``.
 
         ``config_hash`` is a distinct 64-hex candidate PIPELINE configuration hash (what 16B's identity check
         compares with the run's canonical pipeline configuration); ``expansion`` is ``"replay"``
-        (retrieval-only: the slot replays slot 0's canonical artifact) or ``"candidate"`` (a rewrite-changing
-        candidate: live rewrite). A ``candidate`` entry also carries ``rewrite_config_hash`` (64 hex): the hash of
+        (retrieval-only: the slot replays slot 0's canonical artifact), ``"candidate"`` (a rewrite-changing
+        candidate: live rewrite) or ``"abandoned"`` (a configuration whose recorded development draws are fewer than
+        ``draws_required``: it counts toward Holm's K, the slot gate refuses to run it, and it carries nothing else).
+        A ``candidate`` entry also carries ``rewrite_config_hash`` (64 hex): the hash of
         the rewrite model, prompt and caps (``expansion_artifact.rewrite_identity``) that the slot gate checks the
         run's ``--rewrite-candidate`` and code against; a ``replay`` entry carries none. Candidate i runs in slot i. Needs the sealed freeze and
         the ``controls`` record; appendable once, and only before any of slots 1-4 was claimed
         (``ProtocolError`` otherwise, and always while ``CONFIRMATORY_EMBARGO`` holds). Returns the sha256 of
         the canonical JSON of the list (the mirror carries only that digest).
 
-        ``draws_required`` (the prereg's ``draws_r``; ``sealed_tool declare-batch`` always gives it) turns on the
-        development-draw coverage rules, checked inside the transaction: every candidate's ``config_hash`` has at
-        least that many recorded draws, and every recorded configuration other than the incumbent's (the
-        ``controls`` record's ``incumbent_config_hash``) is declared, so every recorded candidate counts toward
-        Holm's K (a candidate cannot be tried, recorded and left out of the batch); either failure is a
-        ``DrawCoverageRefused``.
+        ``draws_required`` (the prereg's ``draws_r``; REQUIRED: the coverage rules cannot be skipped by omitting it)
+        drives the development-draw coverage rules, checked inside the transaction: every ``replay`` or ``candidate``
+        entry's ``config_hash`` has at least that many recorded draws, every ``abandoned`` entry's has at least one and
+        fewer than that many, and every recorded configuration other than the incumbent's (the ``controls`` record's
+        ``incumbent_config_hash``) is declared, so every recorded candidate counts toward Holm's K (a candidate cannot be
+        tried, recorded and left out of the batch); any failure is a ``DrawCoverageRefused``.
         """
+        if isinstance(draws_required, bool) or not isinstance(draws_required, int) or draws_required < 1:
+            raise ValueError("draws_required is the prereg's draws_r, an integer >= 1")
         if isinstance(candidates, (str, bytes)) or not 1 <= len(candidates) <= K_MAX:
             raise ValueError(f"a batch has 1 to {K_MAX} candidates")
         cands: List[Dict[str, str]] = []
         for entry in candidates:
             if not isinstance(entry, Mapping) or not {"config_hash", "expansion"} <= set(entry):
                 raise ValueError("a batch candidate is {config_hash, expansion[, rewrite_config_hash]}")
-            if entry["expansion"] not in BATCH_EXPANSIONS:
-                raise ValueError(f"a batch candidate's expansion is one of {BATCH_EXPANSIONS}")
+            if entry["expansion"] not in BATCH_ENTRY_EXPANSIONS:
+                raise ValueError(f"a batch candidate's expansion is one of {BATCH_ENTRY_EXPANSIONS}")
             want_keys = {"config_hash", "expansion"} | ({"rewrite_config_hash"} if entry["expansion"] == "candidate" else set())
             if set(entry) != want_keys:  # only a rewrite-changing candidate has a rewrite identity
                 raise ValueError("a batch candidate carries rewrite_config_hash exactly when its expansion is candidate")
@@ -1020,17 +1057,21 @@ class SealedLedger:
                 raise ProtocolError("a batch was already declared")
             if any(s in txn.slots for s in ("1", "2", "3", "4")):
                 raise ProtocolError("a confirmatory slot was already claimed")
-            if draws_required is not None:
-                drawn: Dict[str, int] = {}
-                for r in txn.records:
-                    if r["kind"] == "dev_draw":
-                        drawn[r["config_hash"]] = drawn.get(r["config_hash"], 0) + 1
-                controls = next(r for r in txn.records if r["kind"] == "controls")
-                if any(drawn.get(c["config_hash"], 0) < draws_required for c in cands):
+            drawn: Dict[str, int] = {}
+            for r in txn.records:
+                if r["kind"] == "dev_draw":
+                    drawn[r["config_hash"]] = drawn.get(r["config_hash"], 0) + 1
+            controls = next(r for r in txn.records if r["kind"] == "controls")
+            for c in cands:
+                have = drawn.get(c["config_hash"], 0)
+                if c["expansion"] == ABANDONED:
+                    if not 1 <= have < draws_required:
+                        raise DrawCoverageRefused("an abandoned candidate has no recorded draw, or all the draws required")
+                elif have < draws_required:
                     raise DrawCoverageRefused("a batch candidate has fewer recorded development draws than required")
-                undeclared = set(drawn) - {controls["incumbent_config_hash"]} - {c["config_hash"] for c in cands}
-                if undeclared:
-                    raise DrawCoverageRefused("a configuration with recorded development draws is not in the batch")
+            undeclared = set(drawn) - {controls["incumbent_config_hash"]} - {c["config_hash"] for c in cands}
+            if undeclared:
+                raise DrawCoverageRefused("a configuration with recorded development draws is not in the batch")
             txn.append("batch_declaration", candidates=cands, candidates_sha256=digest)
         return digest
 
@@ -1094,34 +1135,68 @@ class SealedLedger:
         record = self.controls_record()
         return None if record is None else record.get("incumbent_config_hash")
 
-    def record_dev_draw(self, config_hash: str, artifact_sha256: str, rows_sidecar_sha256: str) -> int:
-        """Record a development draw (b7) that may count: its pipeline configuration, expansion artifact and rows sidecar.
+    def check_dev_draw_config(self, config_hash: str) -> None:
+        """Whether a draw under ``config_hash`` may be recorded now (the cap and the controls rule), without recording it.
 
-        All three are 64-hex digests. The ledger assigns the draw's per-configuration index (1 for the first record
+        ``pipeline eval --record-draw`` runs this before any call, so a draw that the ledger would refuse is never run.
+
+        Raises:
+            ProtocolError: a sixth distinct configuration, or a second configuration before the ``controls`` record.
+        """
+        config = _hex64(config_hash, "config_hash")
+        with self._txn() as txn:
+            _check_draw_config(txn.records, config)
+
+    def record_dev_draw(
+        self, config_hash: str, artifact_sha256: str, rows_sidecar_sha256: str, execution_receipt: str,
+        *, replay_of: Optional[int] = None,
+    ) -> int:
+        """Record a development draw (b7) that may count: its pipeline configuration, expansion artifact, rows sidecar and run.
+
+        The three digests are 64-hex; ``execution_receipt`` is the run id of the run that produced the draw
+        (``[A-Za-z0-9_-]{3,64}``). The ledger assigns the draw's per-configuration index (1 for the first record
         under ``config_hash``, 2 for the next...) and returns it. Raises ``ProtocolError`` for:
 
         * a configuration beyond the cap: at most ``DEV_DRAW_CONFIGS_MAX`` (5) distinct configuration hashes may ever
           have records (the incumbent's and four candidates');
         * a second configuration before the ``controls`` record exists (until then only the incumbent's may be
           recorded: the controls are computed from the incumbent's draws);
-        * a rows sidecar that is already recorded (a draw is a distinct file; a copy is not another draw).
+        * a rows sidecar or an execution receipt that is already recorded (a draw is a distinct run and a distinct file; a
+          copy is not another draw);
+        * ``replay_of`` (a replay candidate's draw: the number of the incumbent's draw it replayed) unless the controls
+          record exists, the incumbent has that draw, the artifact digest is that draw's artifact digest, and this
+          draw's index is ``replay_of`` (the candidate's i-th draw replays the incumbent's i-th: paired by draw index).
         """
         config = _hex64(config_hash, "config_hash")
         artifact = _hex64(artifact_sha256, "artifact_sha256")
         sidecar = _hex64(rows_sidecar_sha256, "rows_sidecar_sha256")
+        receipt = _token(execution_receipt, "execution_receipt", _RUN_ID)
+        if replay_of is not None and (isinstance(replay_of, bool) or not isinstance(replay_of, int) or replay_of < 1):
+            raise ValueError("replay_of is the number (>= 1) of the incumbent's draw that was replayed")
         with self._txn() as txn:
             draws = [r for r in txn.records if r["kind"] == "dev_draw"]
-            configs = {r["config_hash"] for r in draws}
-            if config not in configs:
-                if configs and not any(r["kind"] == "controls" for r in txn.records):
-                    raise ProtocolError("before the controls are recorded only the incumbent's draws may be recorded")
-                if len(configs) >= DEV_DRAW_CONFIGS_MAX:
-                    raise ProtocolError(f"at most {DEV_DRAW_CONFIGS_MAX} pipeline configurations may have recorded draws")
+            _check_draw_config(txn.records, config)
             if any(r["rows_sidecar_sha256"] == sidecar for r in draws):
                 raise ProtocolError("this draw's rows sidecar is already recorded")
+            if any(r.get("execution_receipt") == receipt for r in draws):
+                raise ProtocolError("this draw's execution receipt is already recorded")
             index = 1 + sum(1 for r in draws if r["config_hash"] == config)
+            fields: Dict[str, Any] = {}
+            if replay_of is not None:
+                controls = next((r for r in txn.records if r["kind"] == "controls"), None)
+                if controls is None:
+                    raise ProtocolError("a replay draw needs the controls record (the incumbent is not known before it)")
+                incumbent_draws = [r for r in draws if r["config_hash"] == controls["incumbent_config_hash"]]
+                if replay_of > len(incumbent_draws):
+                    raise ProtocolError("the incumbent has no such draw to replay")
+                if incumbent_draws[replay_of - 1]["artifact_sha256"] != artifact:
+                    raise ProtocolError("a replay draw's artifact is not the incumbent draw's artifact")
+                if index != replay_of:
+                    raise ProtocolError("a replay draw's index must equal the incumbent draw it replays")
+                fields["replay_of"] = replay_of
             txn.append(
                 "dev_draw", config_hash=config, draw_index=index, artifact_sha256=artifact, rows_sidecar_sha256=sidecar,
+                execution_receipt=receipt, **fields,
             )
         return index
 
@@ -1137,6 +1212,25 @@ class SealedLedger:
             if r["config_hash"] not in seen:
                 seen.append(r["config_hash"])
         return seen
+
+    def record_dev_run_unrecorded(self, config_hash: Optional[str], run_id: str) -> None:
+        """Log a ``pipeline eval`` run over a frozen development version that was not a ``--record-draw`` run.
+
+        ``config_hash`` is the run's pipeline configuration hash (``None`` when the run had no index to identify) and
+        ``run_id`` its private run id. The run never counts; the record makes it visible (``dev_unrecorded_counts``).
+        """
+        config = None if config_hash is None else _hex64(config_hash, "config_hash")
+        rid = _token(run_id, "run_id", _RUN_ID)
+        with self._txn() as txn:
+            txn.append("dev_run_unrecorded", config_hash=config, run_id=rid)
+
+    def dev_unrecorded_counts(self) -> Dict[str, int]:
+        """``{configuration hash (or "none"): number of unrecorded development runs}`` in the order first logged."""
+        counts: Dict[str, int] = {}
+        for r in self.records("dev_run_unrecorded"):
+            key = r["config_hash"] if r["config_hash"] is not None else "none"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def canonical_artifact_sha256(self) -> Optional[str]:
         """The expansion artifact's sha256 on the stored record of the slot (0 or 0b) that has a publication intent."""
@@ -1217,6 +1311,11 @@ class SealedLedger:
             if hashlib.sha256(data).hexdigest() == expected:
                 return json.loads(data)
         raise EpochStop(f"payload {pname!r} verifies against its digest in neither copy")
+
+    def exists(self) -> bool:
+        """True once a store of this ledger exists (the out-of-tree ledger or its private copy): before the epoch's first
+        record there is nothing to read, and a read would create the files."""
+        return self._ledger.exists() or self._copy.exists()
 
     def records(self, kind: Optional[str] = None) -> List[Dict[str, Any]]:
         """Every record (or those of one kind), oldest first."""

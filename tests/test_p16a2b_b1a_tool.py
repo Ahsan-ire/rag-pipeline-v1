@@ -10,6 +10,7 @@ import json
 
 from scripts import sealed_tool as st
 from src import sealed_ledger
+from tests.p16_draws import record_draws as _record_draws
 from tests.p16w_sealed_world import (  # noqa: F401  (fixtures)
     read_rows, repos, standard_released, world,
 )
@@ -116,13 +117,7 @@ def record_controls(world, content: bytes = b'{"version": 1}\n'):
     return path
 
 
-def record_draws(ledger, *config_hashes, n: int = 5, start: int = 0):
-    """``n`` development draws recorded in the ledger under each configuration hash (r5: ``declare-batch`` needs the
-    recorded draws to cover the batch). Each draw has its own rows-sidecar digest, as a real draw has."""
-    for config in config_hashes:
-        for i in range(start, start + n):
-            sidecar = hashlib.sha256(f"{config}:{i}".encode()).hexdigest()
-            ledger.record_dev_draw(config, hashlib.sha256(f"artifact:{config}:{i}".encode()).hexdigest(), sidecar)
+record_draws = _record_draws  # r6: the shared helper records each draw with its own execution receipt
 
 
 def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(world, monkeypatch):

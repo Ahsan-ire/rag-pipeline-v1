@@ -18,7 +18,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
 
 Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
 ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
-``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``record-draw``, ``epoch``, ``return``.
+``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``draws``, ``epoch``, ``return``.
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
@@ -108,7 +108,7 @@ the confirmatory batch, the development evidence, unsupported claims and control
 ``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's), ``drafting_rule`` (refusal share 0.275
 over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts,
 and attempt 1's draft count: ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``),
-``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v2``, its components and the registered
+``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v3``, its components and the registered
 list of ``src`` modules left out of the code hash) and
 ``judge`` (the registered judge every sealed slot runs). **One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
 launcher records the prereg it ran under) registers it; every dispatch, ``split``, ``freeze``, ``calibrate``,
@@ -483,10 +483,9 @@ def default_ctx(printer: Printer, **overrides: Any) -> Ctx:
 # ---------------------------------------------------------------------------
 LOCK_NAME = ".lock"
 #: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
-#: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``return``, ``audit``) take no lock.
+#: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``draws``, ``return``, ``audit``) take no lock.
 STATE_COMMANDS = frozenset(
-    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch",
-     "record-draw"}
+    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
 )
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -1067,7 +1066,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.confirmatory_batch.spent_slot_counts", True),
     ("adoption.confirmatory_batch.modes", ["replay", "candidate"]),
     ("adoption.confirmatory_batch.mode_declared_by", "batch_declaration"),
-    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v2_checked_by_16b_gate_before_claim"),
+    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim"),
     ("adoption.confirmatory_batch.rewrite_identity", "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim"),
     ("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check"),
     ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on", "registered_judge"]),
@@ -1083,9 +1082,20 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.development_evidence.incumbent_draws", "first_5_recorded_development_draws_under_the_incumbent_config_hash"),
     ("adoption.development_evidence.candidate_draws", "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash"),
     ("adoption.development_evidence.recorded_configs_max", 4),
-    ("adoption.development_evidence.draws_recorded_by", "sealed_tool_record_draw"),
-    ("adoption.development_evidence.unrecorded_runs", "never_count"),
+    ("adoption.development_evidence.draws_recorded_by", "pipeline_eval_record_draw_in_run"),
+    ("adoption.development_evidence.unrecorded_runs", "never_count_and_are_logged_per_config"),
+    ("adoption.development_evidence.abandoned", "counts_toward_k"),
     ("adoption.development_evidence.all_recorded_candidates_declared", True),
+    ("adoption.scoring.identity", "scorer_identity_v1"),
+    ("adoption.scoring.compare", "candidate_and_slot0_equal"),
+    ("adoption.scoring.covers", [
+        "eval_cohort.py", "eval_schema.py", "eval_scoring.py", "eval_sealed_read.py", "eval_stats.py", "eval_v6.py",
+        "judge_prep.py", "sealed_groups.py", "sealed_results.py", "text_utils.py",
+        "generator.py:_sections_related",
+        "generator.CAVEAT_PREFIX", "grounding.CITATIONS_UNVERIFIED", "grounding.CITATIONS_VERIFIED",
+        "grounding.PARTIALLY_VERIFIED", "grounding.STATUS_COMPLETE", "grounding.TERMINAL_OUTCOMES",
+        "eval/absorbed_sections.json", "eval/section_inventory.json",
+    ]),
     ("adoption.unsupported_claims.unit", "claim"),
     ("adoption.unsupported_claims.where", "candidate_sealed_slot"),
     ("adoption.unsupported_claims.against", "incumbent"),
@@ -1096,6 +1106,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.control_flip.cutoff", 6),
     ("adoption.control_flip.modes", ["hybrid", "hybrid+rewrite"]),
     ("adoption.control_flip.draws", "any_of_first_5_recorded_under_the_incumbent_config_hash"),
+    ("adoption.control_flip.candidate_draws", "any_of_its_first_5_recorded_paired_by_draw_index"),
     ("adoption.control_flip.versions", "development_freeze_records"),
     ("controls.rule", "c1"),
     ("controls.decision", "d74"),
@@ -1176,27 +1187,41 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("drafting_rule.paraphrase.migrated_top_up_to", 2),
     ("drafting_rule.paraphrase.t1_t7_cap", 3),
     ("drafting_rule.infeasible_after_round_2", "d64_owner_stop"),
-    ("incumbent.config_fn", "pipeline_config_v2"),
-    ("incumbent.components", ["version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation"]),
-    ("incumbent.code", "all_src_modules_except_code_excluded"),
-    ("incumbent.code_excluded", [
-        "__init__.py", "audit.py", "eval_privacy.py", "eval_roster.py", "eval_sealed_read.py", "eval_sets.py",
-        "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py", "sealed_ledger.py", "sealed_run.py",
-        "spend.py", "tracing_guard.py",
+    ("incumbent.config_fn", "pipeline_config_v3"),
+    ("incumbent.components", [
+        "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
+        "scoring_inputs",
     ]),
-    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "judge", "eval_sets", "corpus_text"]),
+    ("incumbent.code", "all_src_modules_except_code_excluded_and_hashed_scripts"),
+    ("incumbent.code_excluded", [
+        "__init__.py", "audit.py", "eval_roster.py", "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py",
+        "tracing_guard.py",
+    ]),
+    ("incumbent.code_excluded_imports", [
+        "audit.py:build_event", "audit.py:log_event",
+        "llm_transport.py:GENERATION_MAX_RETRIES", "llm_transport.py:GENERATION_REQUEST_TIMEOUT",
+        "llm_transport.py:REWRITE_MAX_RETRIES", "llm_transport.py:REWRITE_REQUEST_TIMEOUT",
+        "render.py:RenderFlags", "render.py:render",
+        "tracing_guard.py:TracingRefused", "tracing_guard.py:assert_tracing_off", "tracing_guard.py:scrub_tracing_env",
+        "tracing_guard.py:tracing_problems",
+    ]),
+    ("incumbent.code_scripts", ["scan_leaks.py"]),
+    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"]),
     ("incumbent.fixed_by", "controls_record_incumbent_config_hash"),
     ("incumbent.draws", "each_counted_draw_sidecar_carries_the_incumbent_config_hash"),
     ("incumbent.slots", ["0", "0b"]),
-    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v2_of_the_candidate"),
+    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate"),
     ("judge.required_on", ["0", "0b", "1", "2", "3", "4"]),
     ("judge.model", "claude-sonnet-5"),
     ("judge.prompt_version", "faithfulness-judge-v1"),
     ("judge.sample", "all_eligible"),
     ("judge.eligible", "retrieval_eligible_rows_with_complete_non_refusal_answer"),
     ("judge.rate", "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows"),
-    ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_version"),
-    ("judge.covers", ["model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint"]),
+    ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity"),
+    ("judge.covers", [
+        "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
+        "preparation", "client_construction",
+    ]),
     ("judge.errors", "any_sealed_judge_error_means_not_shown"),
 )
 REGISTERED: Dict[str, Any] = dict(REGISTERED_VALUES)
@@ -1273,18 +1298,26 @@ def pinned_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
 def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
     """``(path, "mismatch")`` for each value the code computes that the prereg does not carry (``prereg-check``'s recompute step).
 
-    ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS`` and ``incumbent.code_excluded`` its
-    ``CODE_EXCLUDED``; ``judge.model`` and ``judge.prompt_version``
+    ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS``, ``incumbent.code_excluded`` its ``CODE_EXCLUDED``,
+    ``incumbent.code_excluded_imports`` its ``CODE_EXCLUDED_IMPORTS`` and ``incumbent.code_scripts`` its ``HASHED_SCRIPTS``;
+    ``adoption.scoring.covers`` must be ``scoring_identity.covered()`` and ``judge.covers`` the judge's ``JUDGE_COVERS``;
+    ``judge.model`` and ``judge.prompt_version``
     must be the judge's own and ``judge.config_hash`` must be ``judge_identity()["config_hash"]`` (the imports are lazy:
     only ``prereg-check`` needs them).
     """
-    from src import judge, pipeline_config
+    from src import judge, pipeline_config, scoring_identity
 
     errors: List[Tuple[str, str]] = []
-    if not _eq(_at(doc, "incumbent.components"), list(pipeline_config.PIPELINE_CONFIG_KEYS)):
-        errors.append(("incumbent.components", "mismatch"))
-    if not _eq(_at(doc, "incumbent.code_excluded"), list(pipeline_config.CODE_EXCLUDED)):
-        errors.append(("incumbent.code_excluded", "mismatch"))
+    for path, want in (
+        ("incumbent.components", list(pipeline_config.PIPELINE_CONFIG_KEYS)),
+        ("incumbent.code_excluded", list(pipeline_config.CODE_EXCLUDED)),
+        ("incumbent.code_excluded_imports", list(pipeline_config.CODE_EXCLUDED_IMPORTS)),
+        ("incumbent.code_scripts", list(pipeline_config.HASHED_SCRIPTS)),
+        ("adoption.scoring.covers", scoring_identity.covered()),
+        ("judge.covers", list(judge.JUDGE_COVERS)),
+    ):
+        if not _eq(_at(doc, path), want):
+            errors.append((path, "mismatch"))
     identity = judge.judge_identity()
     for path, want in (
         ("judge.model", judge.JUDGE_MODEL), ("judge.prompt_version", judge.JUDGE_PROMPT_VERSION),
@@ -3509,19 +3542,22 @@ def controls_file(ctx: Ctx) -> Path:
 
 
 def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
-    """Declare the confirmatory batch once: 1-4 candidates in slot order, each ``<config hash>:replay`` or
-    ``<config hash>:candidate:<rewrite config hash>``.
+    """Declare the confirmatory batch once: 1-4 candidates in slot order, each ``<config hash>:replay``,
+    ``<config hash>:candidate:<rewrite config hash>`` or ``<config hash>:abandoned``.
 
     ``config hash`` is the candidate's PIPELINE configuration hash (16B's identity check); a ``candidate`` entry also
     names its ``rewrite config hash`` (the rewrite model, prompt and caps: what the slot gate compares with the code's
-    ``rewrite_identity()`` and the run's ``--rewrite-candidate``).
+    ``rewrite_identity()`` and the run's ``--rewrite-candidate``). An ``abandoned`` entry names a configuration with
+    recorded development draws but fewer than the prereg's ``draws_r``: it counts toward Holm's K = 4 and the slot gate
+    refuses to run it (a recorded candidate cannot be left out of the batch, nor can its draws be abandoned without
+    counting).
 
     Refused while the confirmatory embargo holds (``embargoed``), before the sealed freeze, under any prereg but the
     epoch's registered one (committed, unmodified, pushed), and before the controls are recorded in the ledger and
     match ``eval/controls_v1.json`` (``controls_missing``). It also needs the recorded development draws to cover the
-    batch (``draws_uncovered``): every candidate's ``config hash`` has at least the prereg's ``draws_r`` draws
-    recorded (``record-draw``), and every recorded configuration other than the incumbent's is in the batch (all of
-    them count toward Holm's K).
+    batch (``draws_uncovered``): every ``replay`` or ``candidate`` entry's ``config hash`` has at least the prereg's
+    ``draws_r`` draws recorded (``pipeline eval --record-draw``), every ``abandoned`` entry's has at least one and fewer, and
+    every recorded configuration other than the incumbent's is in the batch (all of them count toward Holm's K).
     """
     from src import sealed_ledger
 
@@ -3531,7 +3567,7 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     for text in candidates:
         parts = text.split(":")
         config_hash, mode = parts[0], parts[1] if len(parts) > 1 else ""
-        if not _SHA256.fullmatch(config_hash) or mode not in sealed_ledger.BATCH_EXPANSIONS:
+        if not _SHA256.fullmatch(config_hash) or mode not in sealed_ledger.BATCH_ENTRY_EXPANSIONS:
             raise Stop(EXIT_REFUSED, "batch_invalid")
         entry = {"config_hash": config_hash, "expansion": mode}
         if mode == "candidate":
@@ -3564,32 +3600,22 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     return EXIT_OK
 
 
-def cmd_record_draw(ctx: Ctx, sidecar: str, artifact: str) -> int:
-    """Record a development draw in the ledger: its rows sidecar's pipeline configuration, artifact and sidecar digests.
+def cmd_draws(ctx: Ctx) -> int:
+    """Read-only: the recorded development draws and the logged unrecorded runs, per pipeline configuration.
 
-    Only draws recorded here ever count (the plan's cap: an unrecorded run is invisible, so it cannot be used to
-    re-roll). Only under the epoch's registered prereg (committed, unmodified, pushed). ``sidecar`` is the draw's
-    ``<report>.rows.json`` (it must carry a 64-hex ``pipeline_config_hash``: a run with no index has none and is
-    refused) and ``artifact`` is the expansion artifact of the same draw. The ledger assigns the draw's
-    per-configuration index; it refuses (``ledger_protocol``) a sixth distinct configuration, a second configuration
-    before the controls are recorded, and a sidecar recorded before. Prints counts and digests only.
+    Prints one ``draw_config config=<hash|none> recorded=<n> unrecorded=<n>`` line per configuration (a configuration
+    only ever run unrecorded counts ``recorded=0``) and a ``draws configs=<n> recorded=<n> unrecorded=<n>`` summary. Draws are
+    recorded only by ``pipeline eval --record-draw``, inside the run (there is no command that records one afterwards), and a
+    ``pipeline eval`` run over a frozen tuning or realistic version that was not a ``--record-draw`` run is logged as
+    unrecorded before it prints; neither the unrecorded runs nor any draw outside the first ``draws_r`` count.
     """
-    prereg = load_prereg(ctx)
     ledger = ctx.ledger()
-    bind_epoch_prereg(ctx, prereg, ledger)
-    sidecar_path, artifact_path = Path(sidecar), Path(artifact)
-    doc = read_json(sidecar_path)
-    config = doc.get("pipeline_config_hash") if isinstance(doc, dict) else None
-    if not (isinstance(config, str) and _SHA256.fullmatch(config)):
-        raise Stop(EXIT_USAGE, "input_invalid")  # no index at the draw: it has no pipeline identity to record
-    try:
-        artifact_sha, sidecar_sha = sha_file(artifact_path), sha_file(sidecar_path)
-    except OSError:
-        raise Stop(EXIT_USAGE, "input_missing") from None
-    index = ledger.record_dev_draw(config, artifact_sha, sidecar_sha)
+    recorded = {config: len(ledger.dev_draws(config)) for config in ledger.dev_draw_configs()}
+    unrecorded = ledger.dev_unrecorded_counts()
+    for config in [*recorded, *(c for c in unrecorded if c not in recorded)]:
+        ctx.printer.emit("draw_config", config=config, recorded=recorded.get(config, 0), unrecorded=unrecorded.get(config, 0))
     ctx.printer.emit(
-        "draw_recorded", config=config, index=index, artifact=artifact_sha, sidecar=sidecar_sha,
-        draws=len(ledger.dev_draws(config)), configs=len(ledger.dev_draw_configs()),
+        "draws", configs=len(set(recorded) | set(unrecorded)), recorded=sum(recorded.values()), unrecorded=sum(unrecorded.values()),
     )
     return EXIT_OK
 
@@ -3670,7 +3696,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--alpha", {"type": float, "default": None}), ("--draws", {"type": int, "default": None}), ("--seed", {"type": int, "default": None}))
     add("prereg-check", ("--committed", {"action": "store_true"}))
     add("declare-batch", ("--candidate", {"action": "append", "default": [], "dest": "candidates"}))
-    add("record-draw", ("--sidecar", {"required": True}), ("--artifact", {"required": True}))
+    add("draws")
     add("epoch")
     add("return", ("path", {}), ("--enum", {"action": "append", "default": [], "dest": "enums"}))
     return ap
@@ -3722,8 +3748,8 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_prereg_check(ctx, a.committed)
     if c == "declare-batch":
         return cmd_declare_batch(ctx, a.candidates)
-    if c == "record-draw":
-        return cmd_record_draw(ctx, a.sidecar, a.artifact)
+    if c == "draws":
+        return cmd_draws(ctx)
     if c == "epoch":
         return cmd_epoch(ctx)
     return cmd_return(ctx, a.path, a.enums)

@@ -4,10 +4,13 @@ Every 16A-1 eval run writes ``<report>.rows.json`` next to its report
 (gitignored via ``*.rows.json``, so ``collect_provenance``'s ``git status``
 never sees it). Machines read the sidecar, not the Markdown:
 
-``{"version": 1, "scorer_version", "absorbed_map_sha256", "pipeline_config_hash", "expansion",
+``{"version": 1, "scorer_version", "scorer_identity", "absorbed_map_sha256", "pipeline_config_hash", ["run_id",] "expansion",
 "privacy", "cohorts": [cohort block, ...], "inputs": [{"path", "sha256",
 "kind": "questions"}, ...], "rows": [{"set_sha256", "id", "mode",
 "strict_rank", "related_rank", "completion_rank"}, ...]}``
+
+``scorer_version`` is a label; ``scorer_identity`` (``src.scoring_identity.scorer_identity``, 16A-2b b1a r6) is the
+computed identity of the code and data that scored the run, and the value two results are compared on.
 
 A **cohort block** identifies one input set: ``path``, ``privacy``,
 ``schema``, ``sha256``, ``rows``, ``families`` and ``cohort_fp`` = sha256 of
@@ -37,7 +40,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from src.eval_privacy import PUBLIC, private_v1_id, public_v1_id
 
 SIDECAR_VERSION = 1
-# Bump when ranks/completion are computed differently (C4 refuses a mismatch).
+# A label for the scorer (C4 refuses a mismatch). Since 16A-2b b1a r6 it is no longer the comparison key for the sealed
+# protocol: that is ``src.scoring_identity.scorer_identity()``, computed from the scoring code and data.
 SCORER_VERSION = "p16a1-v1"
 SIDECAR_SUFFIX = ".rows.json"
 
@@ -182,15 +186,25 @@ def build_sidecar(
     expansion: Mapping[str, Any],
     absorbed_map_sha256: Optional[str] = None,
     pipeline_config_hash: Optional[str] = None,
+    scorer_identity: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the sidecar document (deterministic key order on dump).
 
     ``pipeline_config_hash`` (``src.pipeline_config``, 16A-2b) names the pipeline that produced the draw; ``None``
-    when the run had no index to identify.
+    when the run had no index to identify. ``scorer_identity`` names the scorer (``src.scoring_identity``, r6); omitted, it is
+    computed from the code and data now. ``run_id`` (a private run's id; omitted for a public run) makes the sidecar of every
+    run distinct, even when two independent draws return identical expansions and ranks: it is the execution receipt that
+    ``pipeline eval --record-draw`` records and checks.
     """
-    return {
+    if scorer_identity is None:
+        from src.scoring_identity import scorer_identity as _scorer_identity
+
+        scorer_identity = _scorer_identity()
+    doc = {
         "version": SIDECAR_VERSION,
         "scorer_version": SCORER_VERSION,
+        "scorer_identity": scorer_identity,
         "absorbed_map_sha256": absorbed_map_sha256,
         "pipeline_config_hash": pipeline_config_hash,
         "expansion": dict(expansion),
@@ -199,6 +213,9 @@ def build_sidecar(
         "inputs": [{"path": c["path"], "sha256": c["sha256"], "kind": "questions"} for c in cohorts],
         "rows": sorted((dict(r) for r in rows), key=lambda r: (r["set_sha256"], r["mode"], r["id"])),
     }
+    if run_id is not None:
+        doc["run_id"] = run_id
+    return doc
 
 
 def dump_sidecar(doc: Mapping[str, Any]) -> str:

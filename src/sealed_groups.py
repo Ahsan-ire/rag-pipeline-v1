@@ -6,12 +6,11 @@ Three small pure computations that decide what the sealed analysis is made of:
 * :func:`below_floor`: whether the families left after exclusion are fewer than the floor (the epoch's D64 stop);
 * :func:`excluded_member_families`: which families the ledger's exclusion records take out of the analysis.
 
-They were in ``src.sealed_ledger``, which the incumbent's code identity leaves out (it holds records, digests, locks and
-the slot state machine). Something that can change which families or groups the stored results are analysed over must
-not sit in an excluded module, so they live here, in a module that ``src.pipeline_config.CODE_EXCLUDED`` does **not**
-list: editing any of them changes ``pipeline_config_hash``. ``src.sealed_ledger`` imports them and re-exports their old
-names (``group_ids``, ``below_floor``, ``SealedLedger.below_floor``, ``SealedLedger.excluded_families``), so no caller
-changes and the behaviour is the one they had.
+They were in ``src.sealed_ledger`` (records, digests, locks and the slot state machine), which the r5 incumbent identity left
+out; since r6 the ledger is hashed too, and they stay here so that the scorer's identity (``src.scoring_identity``) can cover
+the analysis units without covering the ledger. Editing any of them changes ``pipeline_config_hash`` and
+``scorer_identity``. ``src.sealed_ledger`` imports them and re-exports their old names (``group_ids``, ``below_floor``,
+``SealedLedger.below_floor``, ``SealedLedger.excluded_families``), so no caller changes and the behaviour is the one they had.
 
 This module is deliberately a sibling of ``src.sealed_results`` and imports nothing but the standard library:
 ``src.sealed_ledger`` is imported by the launcher, which must not load the model clients (importing them runs

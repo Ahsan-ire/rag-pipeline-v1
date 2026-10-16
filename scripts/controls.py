@@ -24,7 +24,7 @@ Definitions the plan leaves to the implementation (flagged in the 16A-2a report)
   are read from ``completion_rank`` in the modes ``hybrid`` and
   ``hybrid+rewrite``; other modes are ignored. Sidecars are validated by
   ``scripts/bakeoff_report.index_rows`` (a missing row is an error, never a
-  MISS) and must agree on scorer version and absorbed-map hash.
+  MISS) and must agree on scorer version, scorer identity (r6) and absorbed-map hash.
 
 Output ``eval/controls_v1.json`` is ``bakeoff_report --controls`` format plus
 provenance: ``{"version": 1, "rule", "rank_ceiling", "draws", "families",
@@ -57,7 +57,7 @@ controls (``incumbent_config_hash``); slots 0 and 0b then run only under exactly
 needs H to be the recorded one (exit 1 otherwise).
 
 **The draws are the recorded draws (16A-2b b1a r5).** On the first run (no ``controls`` record yet) the ``--draw``
-files must be exactly the first ``draws_r`` development draws that ``sealed_tool record-draw`` recorded in the ledger
+files must be exactly the first ``draws_r`` development draws that ``pipeline eval --record-draw`` recorded in the ledger (inside the run)
 under H (for rule C1 there are ``draws_r`` files; for C2, which counts no draws, as many as are given): the set of their
 sha256s equals the set of those ``dev_draw`` records' ``rows_sidecar_sha256``. No recorded draw under H is "draws not
 recorded"; a draw that is not among the first ones is refused; both are exit 2. So an unrecorded run, or a favourable
@@ -149,7 +149,7 @@ def compute_controls(
     ceiling = RANK_CEILING[rule]
 
     indexes = [index_rows(doc, f"draw {i}") for i, doc in enumerate(draws, 1)]
-    for key in ("scorer_version", "absorbed_map_sha256"):
+    for key in ("scorer_version", "scorer_identity", "absorbed_map_sha256"):
         if len({doc.get(key) for doc in draws}) != 1:
             raise ControlsError(f"draws disagree on {key}")
 

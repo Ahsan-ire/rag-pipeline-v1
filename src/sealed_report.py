@@ -15,6 +15,11 @@ dropped from every aggregate of the sealed set: their rows still ran, so the
 stored document is whole and a run's pairing survives, but analysis never sees
 them.
 
+Since 16A-2b b1a r6 this module only renders. The metric computations over the stored document (the views, the family-level
+hits, the paired baseline, the confirmatory statistics, the strata counts) live in ``src.sealed_results``, which the scorer's
+identity (``src.scoring_identity``) covers and this module is not part of; the names are imported here, so they are still
+available as ``src.sealed_report.<name>``.
+
 Stored document (version 1), the parts this module reads::
 
     {"version": 1, "kind": "sealed_slot_results", "slot", "run_id", "created",
@@ -54,20 +59,26 @@ from __future__ import annotations
 
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
-from src.eval_stats import (
-    UNAVAILABLE,
-    cluster_signflip_p,
-    collapse_family,
-    durkalski_chi2,
-    family_cluster,
-    mcnemar_exact,
-)
 from src.eval_v6 import _fmt_rate, _rate, family_rates, judge_lines, judge_summary
+from src.sealed_results import (  # the metric computations over the stored document live in a hashed module (r6)
+    DESCRIPTIVE_SLOTS,
+    FAMILY_RULE,
+    RESULTS_KIND,
+    RESULTS_VERSION,
+    baseline_hits_kept,
+    check_cutoff,
+    confirmatory_stats,
+    dropped_families,
+    eligible_families,
+    family_hits,
+    is_confirmatory,
+    kept_rows,
+    row_scope_correct,
+    sealed_set,
+    stored_shapes,
+    stratum_numbers,
+)
 
-RESULTS_KIND = "sealed_slot_results"
-RESULTS_VERSION = 1
-FAMILY_RULE = "all"
-DESCRIPTIVE_SLOTS = ("0", "0b")
 
 #: Source value -> printed label. ``handbook`` rows are the ones Claude drafted from
 #: the handbook itself; they carry the D46 caveat. Tutorial rows are kept apart.
@@ -95,108 +106,12 @@ SOURCES_ORDER = ("tutorial", "handbook", "colleague", "legacy", None)
 # ---------------------------------------------------------------------------
 
 
-def is_confirmatory(slot: str) -> bool:
-    """Slots other than ``0`` and ``0b`` are confirmatory (1-4 in the prereg)."""
-    return slot not in DESCRIPTIVE_SLOTS
-
-
-def check_cutoff(doc: Mapping[str, Any]) -> None:
-    """Refuse a stored document whose hit cut-off is unrecorded, is not its ``k``, or differs from its baseline's.
-
-    A baseline scored at another cut-off has other hits (a section at rank 4 is a hit at 6 and a miss at
-    3), so pairing it with this run would manufacture gains or losses from the cut-off alone.
-
-    Raises:
-        ValueError: any of the three.
-    """
-    cutoff = doc.get("cutoff")
-    if isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff != doc["k"]:
-        raise ValueError("the stored run does not record the hit cut-off it was scored at")
-    base = doc.get("baseline")
-    if base and base.get("cutoff") != cutoff:
-        raise ValueError("the baseline and the candidate were scored at different hit cut-offs")
-
-
-def sealed_set(doc: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The one set of the stored document with role ``sealed``."""
-    found = [s for s in doc["sets"] if s["role"] == "sealed"]
-    if len(found) != 1:
-        raise ValueError("a slot results document holds exactly one sealed set")
-    return found[0]
-
-
-def dropped_families(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> FrozenSet[str]:
-    """The families of the sealed set that analysis drops (those in an excluded group)."""
-    return frozenset(f for f, g in doc["groups"].items() if g in excluded)
-
-
-def kept_rows(set_doc: Mapping[str, Any], drop: FrozenSet[str]) -> List[Mapping[str, Any]]:
-    """The set's rows whose family is not dropped."""
-    return [r for r in set_doc["rows"] if r["family_id"] not in drop]
-
-
-def eligible_families(rows: Sequence[Mapping[str, Any]]) -> List[str]:
-    """Families whose rows are all answer or partial (retrieval-eligible), sorted."""
-    fams: Dict[str, bool] = {}
-    for r in rows:
-        fams[r["family_id"]] = fams.get(r["family_id"], True) and r["scope"] != "refuse"
-    return sorted(f for f, ok in fams.items() if ok)
-
-
-def family_hits(rows: Sequence[Mapping[str, Any]], mode: str) -> Dict[str, bool]:
-    """Family-level strict hit@k of ``mode`` over eligible families (``all`` collapse; a tie is a miss)."""
-    by_family: Dict[str, List[bool]] = {}
-    for r in rows:
-        if r["scope"] != "refuse":
-            by_family.setdefault(r["family_id"], []).append(bool(r["retrieval"][mode]["strict_hit"]))
-    return {f: collapse_family(outcomes, FAMILY_RULE) for f, outcomes in by_family.items()}
-
-
-def _shapes(rows: Sequence[Mapping[str, Any]], modes: Sequence[str], k: int, answers_ran: bool):
-    """Rebuild the ``eval_v6.family_rates`` input shapes from stored rows."""
-    plain = [{"id": r["id"], "family_id": r["family_id"], "scope": r["scope"]} for r in rows]
-    retrieval: Dict[str, Dict[str, Dict[str, Any]]] = {m: {} for m in modes}
-    for r in rows:
-        if r["scope"] == "refuse":
-            continue
-        for m in modes:
-            cell = r["retrieval"][m]
-            retrieval[m][r["id"]] = {
-                "strict_hit": {k: bool(cell["strict_hit"])},
-                "related_hit": {k: bool(cell["related_hit"])},
-            }
-    answers: Optional[Dict[str, Dict[str, Any]]] = None
-    if answers_ran:
-        answers = {}
-        for r in rows:
-            a = r["answer"]
-            if a is None:
-                continue
-            entry: Dict[str, Any] = {"observed": a["observed"]}
-            if r["scope"] == "partial":
-                entry["partial"] = {"status": a["partial"]}
-            answers[r["id"]] = entry
-    return plain, retrieval, answers
-
-
-def _row_scope_correct(r: Mapping[str, Any]) -> Optional[bool]:
-    a = r["answer"]
-    if a is None:
-        return None
-    if r["scope"] == "partial":
-        return a["partial"] == "correct"
-    return a["observed"] == r["scope"]
-
-
 def stratum_line(label: str, rows: Sequence[Mapping[str, Any]], primary: str, answers_ran: bool) -> str:
-    """One aggregate table row for a stratum (row = phrasing level)."""
-    families = len({r["family_id"] for r in rows})
-    eligible = [r for r in rows if r["scope"] != "refuse"]
-    hits = sum(1 for r in eligible if r["retrieval"][primary]["strict_hit"])
-    cells = [label, str(len(rows)), str(families), _fmt_rate(_rate(hits, len(eligible)), "rows")]
+    """One aggregate table row for a stratum (row = phrasing level); the counts are ``sealed_results.stratum_numbers``."""
+    n = stratum_numbers(rows, primary, answers_ran)
+    cells = [label, str(n["rows"]), str(n["families"]), _fmt_rate(_rate(n["hits"], n["eligible"]), "rows")]
     if answers_ran:
-        verdicts = [v for v in (_row_scope_correct(r) for r in rows) if v is not None]
-        cells.append(_fmt_rate(_rate(sum(verdicts), len(verdicts)), "rows"))
+        cells.append(_fmt_rate(_rate(n["scope_hits"], n["scope_n"]), "rows"))
     return "| " + " | ".join(cells) + " |"
 
 
@@ -227,51 +142,6 @@ def _strata_table(
 # ---------------------------------------------------------------------------
 
 
-def confirmatory_stats(
-    candidate: Mapping[str, bool], baseline: Mapping[str, bool], groups: Mapping[str, str]
-) -> Dict[str, Any]:
-    """The primary test and the two labelled sensitivities, from paired family outcomes.
-
-    Args:
-        candidate, baseline: family -> strict hit of the primary mode, over the
-            same eligible, non-dropped families (a different roster is refused).
-        groups: family -> group id.
-
-    Returns:
-        ``{"families", "groups", "groups_discordant", "gains", "losses",
-        "net", "p_signflip", "durkalski", "p_mcnemar"}``: ``gains`` (``b``) are
-        families the candidate hits and the baseline misses, ``losses`` (``c``)
-        the reverse; ``p_signflip`` is ``cluster_signflip_p`` of the per-group
-        net discordance; ``durkalski`` is ``{"chi2", "p"}`` or ``None``
-        (unavailable); ``p_mcnemar`` is the exact two-sided family-level test.
-
-    Raises:
-        ValueError: the two arms cover different families, or a family has no group.
-    """
-    if set(candidate) != set(baseline):
-        raise ValueError("the baseline and the candidate cover different families")
-    per_group: Dict[str, List[Tuple[bool, bool]]] = {}
-    for fam in sorted(candidate):
-        if fam not in groups:
-            raise ValueError("a family has no group")
-        per_group.setdefault(groups[fam], []).append((bool(baseline[fam]), bool(candidate[fam])))
-    d = [sum(int(c) - int(b) for b, c in pairs) for _g, pairs in sorted(per_group.items())]
-    gains = sum(1 for pairs in per_group.values() for b, c in pairs if c and not b)
-    losses = sum(1 for pairs in per_group.values() for b, c in pairs if b and not c)
-    dur = durkalski_chi2([family_cluster(pairs) for _g, pairs in sorted(per_group.items())])
-    return {
-        "families": len(candidate),
-        "groups": len(per_group),
-        "groups_discordant": sum(1 for x in d if x != 0),
-        "gains": gains,
-        "losses": losses,
-        "net": gains - losses,
-        "p_signflip": cluster_signflip_p(d),
-        "durkalski": None if dur == UNAVAILABLE else {"chi2": dur.chi2, "p": dur.p_value},
-        "p_mcnemar": mcnemar_exact(gains, losses),
-    }
-
-
 def confirmatory_summary(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> List[str]:
     """The aggregates-only lines printed for a confirmatory slot: numbers only, no ids, no text.
 
@@ -288,7 +158,7 @@ def confirmatory_summary(doc: Mapping[str, Any], excluded: FrozenSet[str]) -> Li
         return ["no baseline in the stored run; no comparison"]
     primary, k = doc["primary_mode"], doc["k"]
     mine = family_hits(rows, primary)
-    paired_base = {f: bool(v) for f, v in base["hits"].items() if f not in drop}
+    paired_base = baseline_hits_kept(base, drop)
     stats = confirmatory_stats(mine, paired_base, doc["groups"])
     n = stats["families"]
     dur = stats["durkalski"]
@@ -323,7 +193,7 @@ def _inference_lines(doc: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], 
         lines.append(f"- Slot {doc['slot']} is confirmatory but the stored run carries no baseline.")
         lines.append("")
         return lines
-    paired_base = {f: bool(v) for f, v in base["hits"].items() if f not in drop}
+    paired_base = baseline_hits_kept(base, drop)
     stats = confirmatory_stats(mine, paired_base, doc["groups"])
     lines.append(
         f"- Slot {doc['slot']} is **confirmatory**. Primary metric: {primary}, family strict hit@{k} "
@@ -435,7 +305,7 @@ def format_sealed_report(
     )
     lines.append("")
 
-    plain, retrieval, answers = _shapes(rows, modes, k, answers_ran)
+    plain, retrieval, answers = stored_shapes(rows, modes, k, answers_ran)
     fr = family_rates(plain, retrieval, answers, k=k)
     lines.append("## Family rates (sealed)")
     lines.append("")
@@ -480,7 +350,7 @@ def format_sealed_report(
             lines.append("")
             lines.append(f"- sha256: {s['sha256']}; rows {len(srows)}; families {len(sfams)}; "
                          f"retrieval-eligible families {len(selig)}")
-            splain, sretr, sans = _shapes(srows, modes, k, answers_ran)
+            splain, sretr, sans = stored_shapes(srows, modes, k, answers_ran)
             sfr = family_rates(splain, sretr, sans, k=k)
             lines.append(f"- retrieval {primary} strict@{k}: {_fmt_rate(sfr['retrieval'][primary]['strict'])}")
             if "scope" in sfr:

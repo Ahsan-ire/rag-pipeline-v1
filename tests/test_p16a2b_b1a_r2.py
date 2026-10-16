@@ -15,6 +15,7 @@ import pytest
 from src import sealed_ledger, sealed_run
 from src.expansion_artifact import rewrite_identity
 from src.sealed_ledger import ProtocolError, SealedLedger, SlotRefused
+from tests.p16_draws import declare
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     BATCH,
     BATCH_SLOTS,
@@ -93,7 +94,7 @@ def test_the_default_embargo_refuses_a_batch_and_a_claim_of_slots_1_to_4(tmp_pat
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
     led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     with pytest.raises(ProtocolError, match="embargo"):
-        led.record_batch_declaration(BATCH)
+        led.record_batch_declaration(BATCH, draws_required=5)
     assert led.batch_declaration() is None
     for slot in (1, 2, 3, 4, "1"):
         with pytest.raises(SlotRefused, match="embargo"):
@@ -108,7 +109,7 @@ def test_the_embargo_is_read_at_call_time(tmp_path, monkeypatch):
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
     led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D, incumbent_config_hash=D)
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
-    led.record_batch_declaration(BATCH[:1])
+    declare(led, BATCH[:1])
     assert led.claim(1) == "1"
 
 

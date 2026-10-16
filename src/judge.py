@@ -34,8 +34,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.generator import GENERATION_MODEL, get_llm, is_refusal
-from src.grounding import INCOMPLETE_STATUSES
+from src.generator import GENERATION_MODEL, get_llm
+from src.judge_prep import is_judgeable  # noqa: F401  (the eligibility rule lives with the rest of the preparation)
 
 # The judge runs on the same model as generation (D38): stated in the report so
 # a reader weights the estimate accordingly (shared-family blind spots).
@@ -100,34 +100,25 @@ JUDGE_SAMPLE = "all_eligible"
 JUDGE_SEED = 0
 
 
-#: The ``src`` modules whose code is part of the judge's identity: this module (the prompt, the strict parse, the
-#: verdict normalisation, the eligibility predicate :func:`is_judgeable`, the failure suppression), ``eval_v6`` (the
-#: rate that turns judgements into the unsupported-claims rate, :func:`src.eval_v6.judge_summary`) and ``eval_stats``
+#: The ``src`` modules whose code is part of the judge's identity (16A-2b b1a r6): this module (the prompt, the strict parse,
+#: the verdict normalisation, the failure suppression, the chain the prompt and the client are assembled into), ``judge_prep``
+#: (everything between a generated answer and the prompt: the refusal test, the status normalisation, the eligibility rule
+#: :func:`is_judgeable`, the judge's own copy of the context formatter, the assembly of the judged items),
+#: ``llm_clients`` (how the metered client is shaped from the production one), ``eval_v6`` (:func:`src.eval_v6.judge_summary`,
+#: the rate that turns judgements into the unsupported-claims rate, and the scope rates the report prints) and ``eval_stats``
 #: (the Wilson interval that rate carries). The transport literals live in ``src.llm_transport`` and are not here.
-JUDGE_CODE_MODULES = ("judge.py", "eval_v6.py", "eval_stats.py")
+JUDGE_CODE_MODULES = ("judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py")
 
 #: What a sealed results document says the judge covers (the prereg's ``judge.covers``).
 JUDGE_COVERS = (
     "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
+    "preparation", "client_construction",
 )
 
 
-def is_judgeable(scope: str, result: Optional[Mapping[str, Any]], status: str) -> bool:
-    """Whether one row's generated answer is judged: the judge's eligibility rule (one definition, hashed with the judge).
-
-    ``scope`` is the row's scope, ``result`` its generation result (``None`` when generation raised) and ``status`` the
-    normalised generation status (``src.evaluator._normalise_answer``). A row is judged when it is retrieval-eligible
-    (not ``refuse``), its generation produced a result with a complete status, and the answer is not a refusal.
-    """
-    if scope == "refuse":
-        return False
-    if result is None:
-        return False  # generation error: nothing to judge
-    if status in INCOMPLETE_STATUSES:
-        return False  # cut-off or declined draft is not a judgeable answer
-    if is_refusal(result["answer"]):
-        return False  # the judge is conditional on a non-refused answer
-    return True
+def llm_fn_over(client: Any) -> Callable[[Dict[str, str]], str]:
+    """The judge's ``llm_fn`` over ``client``: ``JUDGE_PROMPT | client | StrOutputParser()`` (the one place the chain is built)."""
+    return (JUDGE_PROMPT | client | StrOutputParser()).invoke
 
 
 def judge_identity() -> Dict[str, str]:
@@ -137,18 +128,20 @@ def judge_identity() -> Dict[str, str]:
 
     * ``model``: :data:`JUDGE_MODEL`.
     * ``prompt_sha256``: sha256 of the canonical JSON of ``[[role, template], ...]`` for ``JUDGE_PROMPT``.
-    * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "endpoint", "prompt_sha256",
+    * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "endpoint", "refusal_phrase", "prompt_sha256",
       "prompt_version", "verdicts", "sample", "seed", "code"}``, where ``client`` is ``generation_llm_kwargs()`` (the
       client the judge calls through) without ``default_request_timeout`` and ``max_retries`` (they change whether a
       call succeeds, not what it returns), ``endpoint`` is the effective Anthropic base URL
-      (``pipeline_config.endpoint_identity``), ``verdicts`` is the valid verdict list, ``sample``/``seed`` are how the
+      (``pipeline_config.endpoint_identity``), ``refusal_phrase`` is the sentence ``judge_prep.is_refusal`` compares an
+      answer with, ``verdicts`` is the valid verdict list, ``sample``/``seed`` are how the
       judged answers are chosen (all eligible ones) and ``code`` is the ``ast.dump`` digest (docstrings stripped, as
       in ``pipeline_config``) of each module in :data:`JUDGE_CODE_MODULES`: the parsing and normalisation, the
-      eligibility predicate and the rate that scores the judgements (:data:`JUDGE_COVERS` names what is covered).
-      No call is made.
+      preparation (the eligibility rule, the refusal test, the status normalisation, the judge's own context
+      formatter, the assembly of the judged items), the client construction and the rate that scores the judgements
+      (:data:`JUDGE_COVERS` names what is covered). No call is made.
     """
     from src import pipeline_config
-    from src.generator import generation_llm_kwargs
+    from src.generator import REFUSAL_PHRASE, generation_llm_kwargs
     from src.pipeline_config import CLIENT_RELIABILITY_KEYS, canonical_json, prompt_messages, sha256_hex
 
     prompt_sha = sha256_hex(canonical_json(prompt_messages(JUDGE_PROMPT)))
@@ -156,6 +149,7 @@ def judge_identity() -> Dict[str, str]:
         "model": JUDGE_MODEL,
         "client": {k: v for k, v in generation_llm_kwargs().items() if k not in CLIENT_RELIABILITY_KEYS},
         "endpoint": pipeline_config.endpoint_identity(),
+        "refusal_phrase": REFUSAL_PHRASE,
         "prompt_sha256": prompt_sha,
         "prompt_version": JUDGE_PROMPT_VERSION,
         "verdicts": list(_VALID_VERDICTS),
@@ -173,8 +167,7 @@ def _default_llm_fn(prompt_vars: Dict[str, str]) -> str:
     tests — never constructs a real client or needs an API key. ``get_llm``
     raises without ``ANTHROPIC_API_KEY``, so this only works on a live run.
     """
-    chain = JUDGE_PROMPT | get_llm() | StrOutputParser()
-    return chain.invoke(prompt_vars)
+    return llm_fn_over(get_llm())(prompt_vars)
 
 
 def _extract_json_object(text: str) -> str:

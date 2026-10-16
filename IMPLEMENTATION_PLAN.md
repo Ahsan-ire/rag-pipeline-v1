@@ -1769,7 +1769,7 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
         (`dev_binding`). `controls.py` needs both splits, each once.
       - `controls.py` writes a `controls` ledger record once (list sha256, draw-sidecar digest, prereg sha256). A
         later run only verifies, and deleting the file does not reopen the list.
-      - The b7 draw records (mechanism lands in b7, before its first draw) name which draws count; each carries the
+      - The b7 draw records (mechanism landed in b1a r5–r6: `pipeline eval --record-draw`) name which draws count; each carries the
         config hash it ran under (r3 F10). `controls.py` refuses repeated draw files (distinct sha256s) and, on a
         verify run, draws other than the recorded ones (r3 F5).
       - Slots 0 and 0b also need the `controls` record and the unchanged file, so the control list exists before
@@ -1807,7 +1807,7 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       - **No eager claim (F3).** `acquire_slot_token(claim=True)` is refused (`claim`); every claim goes through
         `run_slot`'s preflight. `SlotToken.claim()` stays public for `run_slot`; only tests call it directly.
       - **Attempt-1 size (F12).** Drafts = max(`families_approx`, sealed + tuning_min + realistic quota − migrated),
-        so attempt 1 is not predictably `quota_short` (≈ 57 migrated → 105 drafts).
+        so attempt 1 is not predictably `quota_short` (≈ 57 migrated → 105 drafts; r4's margin makes it 110).
       - **Epoch check (F13).** `sealed_tool epoch` prints the registered epoch prereg (or none) and whether the
         working file matches; b2 runs it first.
       - **Deferred to b3/b4 (Au m2).** b3's dispatch writes `task.json:refusals` from `count-migrated`'s
@@ -1863,6 +1863,33 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
         change.
       - **Drafts:** at 57 migrated families the rule gives 110 (r4 margin included; the r3 "105" is superseded).
         `task.json:count` is written by b3's dispatch code (not yet built), from `count-migrated`.
+    - **Closure r6 (16 Oct; on 68182ee: Codex REVISE 5 MAJOR / 1 MINOR; plan-auditor FAIL 0 BLOCKER / 3 MAJOR /
+      10 MINOR; the owner chose a consolidating round; dispositioned in D74's r6 addendum).** This supersedes r5's
+      exclusion list and draw recording.
+      - **Exclusions are inert only.** `CODE_EXCLUDED` keeps only modules that cannot reach a client, row set, rank,
+        score, judgement, exclusion or analysis unit (`__init__`, `audit`, `eval_roster`, `eval_split`,
+        `llm_transport`, `render`, `sealed_inputs`, `tracing_guard`); `spend`, `sealed_run`, `sealed_ledger`,
+        `eval_privacy`, `eval_sets`, `eval_sealed_read` are hashed, and so is `scripts/scan_leaks.py`. A test fails if
+        a hashed module imports an excluded one beyond a registered allow-list of inert names. `pipeline_config_v3`.
+      - **Clients.** Client construction moved from `spend.py` into the hashed, judge-bound `llm_clients.py`.
+      - **Scorer identity.** `scorer_identity()` is computed from the scoring modules, the grounding/caveat constants
+        scoring compares with, and the scoring data files (`eval/absorbed_sections.json`,
+        `eval/section_inventory.json`); the pipeline hash gains `scoring_inputs`. Results and sidecars carry it;
+        16B compares only results with equal judge hash and scorer identity. `SCORER_VERSION` is a label only.
+      - **Judge preparation.** `judge_prep.py` owns the refusal check, answer normalisation, `is_judgeable` (complete
+        answers only), the judge's own context formatter and item assembly; the judge hash covers it and
+        `llm_clients.py`.
+      - **Draws are recorded inside the run.** `pipeline eval --record-draw` refuses before any call unless the inputs
+        are exactly the frozen tuning and realistic versions, live `build:` expansion, the registered cutoff, both
+        hybrid modes, retrieval-only, tracing off; a replay candidate's draw i must replay the incumbent's draw i.
+        On completion it writes the artifact and sidecar, appends the `dev_draw` record (run id as receipt), and
+        only then writes any report or prints anything. The after-the-fact `record-draw` command is removed. Any
+        other private run over a frozen development version appends `dev_run_unrecorded`; `sealed_tool draws`
+        reports both per config. `draws_required` is mandatory; a recorded config with too few draws is declared
+        `abandoned` and still counts toward K = 4.
+      - **Operator residual.** Someone with the code can always run the pipeline outside these entry points (e.g. a
+        hand-written script). Such runs are not recorded, never count, and are a process violation that only an
+        audit of the operator's activity can find.
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
@@ -1918,8 +1945,7 @@ b7. **Development baseline, controls, cost probe (D76) [C].** On the frozen deve
     recorded in the ledger as it completes (a `dev_draw` record: index, config hash, artifact and rows-sidecar
     sha256s; code lands
     here, before the first draw); only the first 5 recorded count** for the controls and the development evidence
-    (b1a). Draw 1 is the **development artifact**; a later change to a development file voids it (keys carry the set
-    sha256) and means a re-draw. The control list (b1's rule) is computed once from those draws on the frozen
+    (b1a). Draw 1 is the **development artifact** (development files are frozen once, so it is never voided; a pipeline change is a new incumbent, i.e. a new epoch, b1a r5). The control list (b1's rule) is computed once from those draws on the frozen
     development versions and committed as the ledger's `controls` record (digest in the mirror) before the batch
     declaration and before slot 0 (the gate refuses slot 0 without it); it is never recomputed. **Cost probe** (cost confirmed first, 16A.8):
     one metered public run (golden-, realistic-, heldout-v1, judge on, `--results eval/results_partial.md`,
@@ -2002,8 +2028,15 @@ hit in pushed history; the owner's `harness-init --refresh`. **Gates:** prereg p
   config hash (b7 `dev_draw`), unsupported claims vs slot 0's judged rate (equal judge hashes only; any sealed judge
   error means not shown), control flips in raw hybrid or hybrid+rewrite, the sealed guard's two checks, Holm with
   K = 4.
-- Whether to separate the judge from the generation model (today `JUDGE_MODEL = GENERATION_MODEL`, so a candidate
-  that changes generation is refused `judge:identity`) is an owner question for 16B.
+- Order: the embargo lift and the identity check land in one reviewed change BEFORE any candidate draw is recorded,
+  because `sealed_run.py` and `sealed_ledger.py` are hashed and a later change would make recorded candidates
+  unreproducible (they would have to be declared `abandoned`).
+- Comparisons need an equal judge hash AND an equal `scorer_identity` between the candidate's slot and slot 0.
+- b7's flip-frequency report and worst-case pricing tool live in `scripts/` (unhashed tools), never in `src/`, so
+  building them after the draws does not change the incumbent; they must not edit `eval_stats.py`/`eval_v6.py`
+  (judge-bound, registered in the prereg).
+- Whether to separate the judge from the generation model (today `JUDGE_MODEL = GENERATION_MODEL`, so a candidate that changes the generation model or
+  client kwargs is refused `judge:identity`; a generation-prompt change is not, because the judge has its own prompt) is an owner question for 16B.
 
 ### 16A-2 dispositions (the 47 DEFERRED-16A-2 rows of the 16A-1 table below; severities there)
 a* = 16A-2a items, b* = 16A-2b items, 2a-(x) = 16A-2a criteria.

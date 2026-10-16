@@ -16,6 +16,7 @@ import pytest
 from src import eval_sets, sealed_ledger, sealed_run
 from src.expansion_artifact import rewrite_identity
 from src.sealed_ledger import SealedLedger
+from tests.p16_draws import declare
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     BATCH,
     _langsmith_env_cache,
@@ -188,7 +189,7 @@ def test_the_ledger_digests_the_batch_with_its_rewrite_identities(tmp_path):
     entries = [candidate_entry(PIPELINE, D), BATCH[1]]
     with pytest.MonkeyPatch.context() as m:
         m.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
-        digest = led.record_batch_declaration(entries)
+        digest = declare(led, entries)
     import hashlib
 
     want = hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

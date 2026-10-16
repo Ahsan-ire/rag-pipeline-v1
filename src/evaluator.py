@@ -77,6 +77,8 @@ from src.grounding import (
     STATUS_ERROR,
     STATUS_UNKNOWN,
 )
+# one definition of the answer-status normalisation, hashed with the judge's identity (16A-2b b1a r6)
+from src.judge_prep import normalise_answer as _normalise_answer
 from src.query_rewrite import (
     REWRITE_MODE,
     REWRITE_MODEL,
@@ -518,14 +520,6 @@ def evaluate_retrieval(
     }
 
 
-_KNOWN_STATUSES = (
-    STATUS_COMPLETE,
-    *INCOMPLETE_STATUSES,
-    STATUS_UNKNOWN,
-    STATUS_ERROR,
-)
-
-
 def _refusal_disclosure_lines(ref: Optional[Dict[str, Any]]) -> List[str]:
     """Report lines disclosing excluded (incomplete) and unknown-status refusal rows."""
     lines: List[str] = []
@@ -542,32 +536,6 @@ def _refusal_disclosure_lines(ref: Optional[Dict[str, Any]]) -> List[str]:
             f"{ref['unknown']}"
         )
     return lines
-
-
-def _normalise_answer(res: Any) -> Tuple[str, str]:
-    """Map one answer result to ``(text, generation_status)`` for every scorer.
-
-    A str (a legacy ``answer_fn``) is text with status ``unknown``; a dict
-    carries ``answer`` and an optional ``generation_status`` (absent means
-    ``unknown`` — missing metadata is never treated as complete); None (a
-    generation that raised) is empty text with status ``error``.
-
-    Fails closed, consistent with ``grounding.generation_outcome``: a present
-    but None status is ``unknown``; a string outside the known vocabulary is
-    ``incomplete`` (so the row is excluded and counted, and blocks a canonical
-    run). A dict with no ``answer`` key raises ``KeyError`` (fail loud, as before
-    H): a malformed result must never be scored as an empty answer.
-    """
-    if res is None:
-        return "", STATUS_ERROR
-    if isinstance(res, str):
-        return res, STATUS_UNKNOWN
-    status = res.get("generation_status", STATUS_UNKNOWN)
-    if status is None:
-        status = STATUS_UNKNOWN
-    elif status not in _KNOWN_STATUSES:
-        status = STATUS_INCOMPLETE
-    return res["answer"], status
 
 
 def _status_answer(res: Any) -> Dict[str, Any]:
@@ -1803,6 +1771,7 @@ def run_eval_matrix(
     expansion: str = "live",
     slot_token: Any = None,
     preflight_only: bool = False,
+    record_draw: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
     """Run the Phase 10 eval matrix (sets × retrieval modes) and write the v2 report.
 
@@ -1900,6 +1869,14 @@ def run_eval_matrix(
             return ``{}`` before the token is begun and before any retrieval, expansion
             or model call. ``src.sealed_run.preflight_slot`` uses it so that a refusal
             never spends a slot.
+        record_draw: a development draw's recorder (16A-2b b1a r6; ``pipeline eval --record-draw`` builds it). The run must
+            be a private report-v6 run over schema-2 sets with a live ``build:`` or a replayed expansion, retrieval only
+            (no generation pass, no judge), at least the ``hybrid`` and ``hybrid+rewrite`` modes, and a pipeline that has an
+            index identity: refused before any call otherwise. After the expansion artifact and the rows sidecar are
+            written, and BEFORE the report is written or anything is printed, the run calls
+            ``record_draw(run_id=, artifact_path=, artifact_sha256=, sidecar_path=, sidecar_sha256=, sidecar=)``; whatever it
+            raises ends the run with nothing printed. A private v6 run without a recorder, over a frozen tuning or
+            realistic version, appends a ``dev_run_unrecorded`` ledger record at the same point.
 
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
@@ -2140,15 +2117,10 @@ def run_eval_matrix(
         else {}
     )
     if judge and judge_fn is None and meter is not None:
-        from langchain_core.output_parsers import StrOutputParser
+        from src.judge import llm_fn_over
 
-        from src.judge import JUDGE_PROMPT
-
-        _judge_chain = JUDGE_PROMPT | meter.judge_llm() | StrOutputParser()
-
-        def judge_fn(prompt_vars: Dict[str, str]) -> str:
-            """Judge through the meter's metered client."""
-            return _judge_chain.invoke(prompt_vars)
+        # the judge through the meter's metered client; the chain is built in src.judge (hashed with its identity)
+        judge_fn = llm_fn_over(meter.judge_llm())
 
     def _expand(question: str) -> Expansion:
         """Expand ``question`` once, reusing the shared cache (Phase 13, D46).
@@ -2299,6 +2271,18 @@ def run_eval_matrix(
     schemas = [
         2 if (slot_token is not None and slot_token.approves(p)) else detect_schema(p) for p in set_paths
     ]
+    if record_draw is not None:
+        # A draw is a private, retrieval-only, report-v6 run that expands live (build:) or replays; checked here, before
+        # any retrieval, expansion or model call, so a draw that could never be recorded is never run.
+        if (
+            slot_token is not None or not private or not all(v == 2 for v in schemas)
+            or expansion_mode not in ("build", "replay") or generation_ran or judge or preflight_only
+            or REWRITE_MODE not in modes or "hybrid" not in modes
+        ):
+            raise ValueError("a recorded draw is a private retrieval-only v6 run over hybrid and hybrid+rewrite "
+                             "with build: or a replayed expansion")
+        if _pipeline_config_hash(persist_directory, top_k) is None:
+            raise ValueError("a recorded draw needs an index: the pipeline has no identity to record")
     if any(v == 2 for v in schemas):
         return _run_matrix_v6(
             set_specs=set_specs, schemas=schemas, modes=modes, top_k=top_k,
@@ -2316,6 +2300,7 @@ def run_eval_matrix(
             persist_directory=persist_directory, meter=meter,
             judge=judge, judge_fn=judge_fn, judge_sample=judge_sample, judge_dump_path=judge_dump_path,
             slot_token=slot_token, preflight_only=preflight_only, probe_backends=_probe_backends,
+            record_draw=record_draw,
             bm25_in_play=using_default_retrieve_factory or using_default_generate_fn,
             bm25_probe=lambda: bool(bm25_cache) and bm25_cache[0] is not None,
         )
@@ -3005,6 +2990,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         privacy=privacy, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
         expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
         pipeline_config_hash=_pipeline_config_hash(kw["persist_directory"], top_k),
+        run_id=kw["run_id"] if private else None,
     )
     if private:
         from pathlib import Path
@@ -3012,11 +2998,14 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         write_inputs_json(
             kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], result.get("expansion_artifact"))
         )
-        write_private(Path(resolved_path), report)
-        _write_sidecar(resolved_path, sidecar, private=True)
+        # The rows sidecar (and the expansion artifact, written above) come first: a development draw is recorded from
+        # them, before the report is written or anything is printed (r6).
+        sidecar_file = _write_sidecar(resolved_path, sidecar, private=True)
         # The judge dump (claim text) stays inside the run directory.
         if kw["judge"] and judge_records:
             write_private(Path(kw["run_dir_path"]) / "judge_review.jsonl", _dump_lines(judge_records))
+        _note_development_run(kw, result, sets, sidecar, sidecar_file)
+        write_private(Path(resolved_path), report)
         print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
               f"({len(sets)} set(s); not canonical)")
     else:
@@ -3027,6 +3016,42 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         if kw["judge"] and kw["judge_dump_path"] and judge_records:
             _atomic_write(kw["judge_dump_path"], _dump_lines(judge_records))
     return result
+
+
+def _note_development_run(
+    kw: Mapping[str, Any], result: Mapping[str, Any], sets: Sequence[Mapping[str, Any]], sidecar: Mapping[str, Any],
+    sidecar_file: str,
+) -> None:
+    """A private v6 run's development-run record, made before the run writes its report or prints anything (r6).
+
+    With a recorder (``record_draw``, ``pipeline eval --record-draw``) the run is a development draw: the recorder gets the
+    run id, the expansion artifact (the one this run built, or the one it replayed) and the rows sidecar with their digests, and
+    appends the ``dev_draw`` ledger record; whatever it raises ends the run here, so a draw that was not recorded never has
+    a result in sight. Without one, a run over a frozen tuning or realistic version is an unrecorded run: it can never count
+    (only recorded draws do) and is made visible with a ``dev_run_unrecorded`` record (configuration hash and run id). A sealed
+    slot run has its own ledger records and is not logged here; a run before the epoch's ledger exists, or over any other set,
+    touches no ledger.
+    """
+    if kw["slot_token"] is not None or kw["preflight_only"]:
+        return
+    recorder = kw.get("record_draw")
+    if recorder is not None:
+        replayed = kw["replay_artifact"]
+        built = result.get("expansion_artifact")
+        artifact_path, artifact_sha = (
+            (str(replayed.path), replayed.digest) if replayed is not None else (built["path"], built["sha256"])
+        )
+        recorder(
+            run_id=kw["run_id"], artifact_path=artifact_path, artifact_sha256=artifact_sha,
+            sidecar_path=sidecar_file, sidecar_sha256=_sha256_file(sidecar_file), sidecar=sidecar,
+        )
+        return
+    ledger = _sealed_run.default_ledger()
+    if not ledger.exists():
+        return
+    frozen = {rec["set_sha256"] for split in _sealed_run.DEV_SPLITS if (rec := ledger.freeze_record(split)) is not None}
+    if frozen & {s["sha256"] for s in sets}:
+        ledger.record_dev_run_unrecorded(sidecar["pipeline_config_hash"], kw["run_id"])
 
 
 def _dump_lines(records: Sequence[Mapping[str, Any]]) -> str:
@@ -3045,25 +3070,19 @@ def _judge_v6(
 ) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
     """Judge one set's ``answer`` and ``partial`` rows (report v6, 16A-2a a5).
 
-    Which answers are judged is v5's rule: the row is retrieval-eligible, its
-    generation produced a result, the status is complete, and the answer is not
-    a refusal. Returns ``(summary block, {row id: judgment})``; ``records_out``
+    Which answers are judged is v5's rule (``src.judge_prep.is_judgeable``): the row is
+    retrieval-eligible, its generation produced a result, the status is complete (and nothing
+    else), and the answer is not a refusal. Returns ``(summary block, {row id: judgment})``; ``records_out``
     gains one dump record per judged answer, keyed by row id (the dump never
     holds the question text; claim text is the point of the dump and lives only
     in the run directory or the gitignored review file).
     """
-    from src.judge import is_judgeable, judge_answers  # lazy: only imported when judging
+    from src import judge_prep
+    from src.judge import judge_answers  # lazy: only imported when judging
 
-    items: List[Dict[str, str]] = []
-    for row in rows:
-        result = (cache.get(row["question"]) or {}).get("result")
-        # the eligibility rule is src.judge.is_judgeable (hashed with the judge's identity, 16A-2b b1a r5)
-        if not is_judgeable(row["scope"], result, _normalise_answer(result)[1]):
-            continue
-        context = format_context(
-            [{"document": d, "score": 0.0, "metadata": d.metadata} for d in result.get("source_documents", [])]
-        )
-        items.append({"question": row["question"], "answer": result["answer"], "context": context})
+    # which answers are judged and the context the judge reads are src.judge_prep's (hashed with the judge's identity,
+    # 16A-2b b1a r6): the eligibility rule, the status normalisation, the refusal test and the judge's own context formatter
+    items = judge_prep.assemble_judge_items(rows, cache)
     judged = judge_answers(items, llm_fn=judge_fn, sample_n=judge_sample)
     by_question = {row["question"]: row["id"] for row in rows}
     by_id: Dict[str, Dict[str, Any]] = {}
@@ -3116,8 +3135,11 @@ def _write_slot_run(
     heldout_owned = heldout is not None and bool(heldout["owned"])
     from src.judge import judge_identity
 
+    from src.scoring_identity import scorer_identity
+
     run_config_hash = _pipeline_config_hash(kw["persist_directory"], kw["top_k"])
     judge_config_hash = judge_identity()["config_hash"]
+    run_scorer_identity = scorer_identity()
     facts: Dict[str, Any] = {
         "slot": token.slot,
         "heldout_is_frozen_set": heldout_owned,
@@ -3152,6 +3174,7 @@ def _write_slot_run(
         "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
         "pipeline_config_hash": run_config_hash, "judge_config_hash": judge_config_hash,
+        "scorer_identity": run_scorer_identity,
     }
     doc = _sealed_run.build_results_doc(token, working, facts)
     run_dir = Path(_privacy.sealed_run_dir(token.run_id, create=True))
@@ -3170,6 +3193,7 @@ def _write_slot_run(
     sidecar = build_sidecar(
         privacy=_privacy.SEALED, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
         expansion=expansion_id, absorbed_map_sha256=absorbed_sha, pipeline_config_hash=run_config_hash,
+        scorer_identity=run_scorer_identity,
     )
     write_private(run_dir / "rows.json", dump_sidecar(sidecar))
     if kw["judge"] and judge_records:
