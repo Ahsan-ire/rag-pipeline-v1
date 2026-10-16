@@ -116,6 +116,15 @@ def record_controls(world, content: bytes = b'{"version": 1}\n'):
     return path
 
 
+def record_draws(ledger, *config_hashes, n: int = 5, start: int = 0):
+    """``n`` development draws recorded in the ledger under each configuration hash (r5: ``declare-batch`` needs the
+    recorded draws to cover the batch). Each draw has its own rows-sidecar digest, as a real draw has."""
+    for config in config_hashes:
+        for i in range(start, start + n):
+            sidecar = hashlib.sha256(f"{config}:{i}".encode()).hexdigest()
+            ledger.record_dev_draw(config, hashlib.sha256(f"artifact:{config}:{i}".encode()).hexdigest(), sidecar)
+
+
 def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(world, monkeypatch):
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the embargo itself: tests/test_p16a2b_b1a_r2.py
     a, b = "1" * 64, "2" * 64
@@ -135,6 +144,7 @@ def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(
         code, out, err = world.run("declare-batch", *bad)
         assert code == st.EXIT_REFUSED and "reason=batch_invalid" in err and out == "", bad
     assert world.ledger().batch_declaration() is None
+    record_draws(world.ledger(), a, b)  # r5: the batch's candidates have their draws recorded (the coverage rules: r5 tests)
     code, out, err = world.run("declare-batch", *cand(a), *cand(b, "candidate"))
     assert code == 0, err
     line = world.last(out, "batch_declared")

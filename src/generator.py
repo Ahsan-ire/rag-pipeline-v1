@@ -14,6 +14,7 @@ from src.grounding import (
     generation_outcome,
     status_from_stop_reason,
 )
+from src.llm_transport import GENERATION_MAX_RETRIES, GENERATION_REQUEST_TIMEOUT
 from src.retriever import format_context
 
 load_dotenv()
@@ -163,14 +164,11 @@ def generation_llm_kwargs() -> Dict[str, Any]:
         # off (it is on-by-default on Sonnet 5) to keep behaviour comparable to
         # the claude-sonnet-4-6 baseline this change was isolated from (D29).
         "thinking": {"type": "disabled"},
-        # A dead socket must fail loudly, not hang the caller forever: two
-        # canonical-eval runs on 17 Jul wedged for hours on a single blocked
-        # read because no client timeout was set (D52). 120s covers the
-        # slowest observed generation call with ample headroom; the SDK
-        # transparently retries timeouts/connection drops (max_retries)
-        # before raising, so a transient drop self-heals.
-        "default_request_timeout": 120.0,
-        "max_retries": 3,
+        # A dead socket must fail loudly, not hang the caller forever (D52);
+        # the timeout and retry literals live in src.llm_transport, which the
+        # pipeline and judge identities leave out.
+        "default_request_timeout": GENERATION_REQUEST_TIMEOUT,
+        "max_retries": GENERATION_MAX_RETRIES,
     }
 
 

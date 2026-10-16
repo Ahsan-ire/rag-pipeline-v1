@@ -1947,7 +1947,8 @@ def run_eval_matrix(
         # file is refused here. A slot run is private by construction.
         _sealed_run.check_token_for_run(
             slot_token, set_paths=set_paths, expansion_mode=expansion_mode,
-            artifact_path=artifact_path_arg, meter=meter, top_k=top_k, judge=judge, judge_sample=judge_sample,
+            artifact_path=artifact_path_arg, meter=meter, top_k=top_k, persist_directory=persist_directory,
+            judge=judge, judge_sample=judge_sample,
         )
         if results_path is not None:
             raise ValueError("a slot-gated run publishes only through its slot protocol; --results is refused")
@@ -3051,19 +3052,14 @@ def _judge_v6(
     holds the question text; claim text is the point of the dump and lives only
     in the run directory or the gitignored review file).
     """
-    from src.judge import judge_answers  # lazy: only imported when judging
+    from src.judge import is_judgeable, judge_answers  # lazy: only imported when judging
 
     items: List[Dict[str, str]] = []
     for row in rows:
-        if row["scope"] == "refuse":
-            continue
         result = (cache.get(row["question"]) or {}).get("result")
-        if result is None:
-            continue  # generation error: nothing to judge
-        if _normalise_answer(result)[1] in INCOMPLETE_STATUSES:
-            continue  # cut-off or declined draft is not a judgeable answer
-        if is_refusal(result["answer"]):
-            continue  # the judge is conditional on a non-refused answer
+        # the eligibility rule is src.judge.is_judgeable (hashed with the judge's identity, 16A-2b b1a r5)
+        if not is_judgeable(row["scope"], result, _normalise_answer(result)[1]):
+            continue
         context = format_context(
             [{"document": d, "score": 0.0, "metadata": d.metadata} for d in result.get("source_documents", [])]
         )

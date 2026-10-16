@@ -29,13 +29,15 @@ def real_prereg() -> dict:
 
 # --- A: the incumbent root -----------------------------------------------------------------------------------------------------
 INCUMBENT = {
-    "incumbent.config_fn": "pipeline_config_v1",
-    "incumbent.components": ["version", "code", "runtime", "embedding", "index", "bm25", "fusion", "rewrite", "generation"],
-    "incumbent.excluded": ["timeouts_retries", "git_sha", "paths", "judge", "scoring", "eval_sets", "corpus_text"],
+    "incumbent.config_fn": "pipeline_config_v2",
+    "incumbent.components": ["version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation"],
+    "incumbent.code": "all_src_modules_except_code_excluded",
+    "incumbent.code_excluded": list(pipeline_config.CODE_EXCLUDED),
+    "incumbent.excluded": ["timeouts_retries", "git_sha", "paths", "judge", "eval_sets", "corpus_text"],
     "incumbent.fixed_by": "controls_record_incumbent_config_hash",
     "incumbent.draws": "each_counted_draw_sidecar_carries_the_incumbent_config_hash",
     "incumbent.slots": ["0", "0b"],
-    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v1_of_the_candidate",
+    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v2_of_the_candidate",
 }
 
 
@@ -46,7 +48,7 @@ def test_the_incumbent_root_is_registered_exactly_and_the_real_prereg_carries_it
     assert set(doc["incumbent"]) == {p.split(".")[1] for p in INCUMBENT}
     assert doc["incumbent"]["components"] == list(pipeline_config.PIPELINE_CONFIG_KEYS)
     assert doc["adoption"]["confirmatory_batch"]["candidate_identity"] == (
-        "config_hash_is_pipeline_config_v1_checked_by_16b_gate_before_claim")
+        "config_hash_is_pipeline_config_v2_checked_by_16b_gate_before_claim")
     assert st.validate_prereg(doc, recompute=False) == [] and st.computed_errors(doc) == [] and st.pinned_errors(doc) == []
 
 
@@ -88,7 +90,8 @@ JUDGE = {
     "judge.sample": "all_eligible",
     "judge.eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
     "judge.rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
-    "judge.compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash",
+    "judge.compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_version",
+    "judge.covers": ["model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint"],
     "judge.errors": "any_sealed_judge_error_means_not_shown",
 }
 
@@ -105,14 +108,17 @@ def test_the_judge_root_is_registered_exactly_and_its_hash_is_the_codes():
 
 def test_the_eligibility_wording_is_the_judges_own_rule():
     """The words ``retrieval eligible rows with a complete non-refusal answer`` are the rule ``_judge_v6`` applies: rows
-    whose scope is not ``refuse``, whose generation produced a result with a complete status and that is not a refusal."""
+    whose scope is not ``refuse``, whose generation produced a result with a complete status and that is not a refusal.
+    Since r5 the rule is the named function ``judge.is_judgeable`` (hashed with the judge's identity) and ``_judge_v6``
+    calls it."""
     import inspect
 
     from src import evaluator
 
-    source = inspect.getsource(evaluator._judge_v6)
-    assert 'row["scope"] == "refuse"' in source and "continue  # generation error" in source
+    source = inspect.getsource(judge.is_judgeable)
+    assert 'scope == "refuse"' in source and "generation error" in source
     assert "INCOMPLETE_STATUSES" in source and "is_refusal(result[\"answer\"])" in source
+    assert "is_judgeable(" in inspect.getsource(evaluator._judge_v6)
 
 
 def test_a_prereg_whose_judge_identity_is_not_the_codes_is_refused_by_prereg_check_and_not_by_the_other_commands(monkeypatch):

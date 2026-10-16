@@ -353,6 +353,9 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     cand = "7" * 64
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the 16B embargo is code-level; this chain goes behind it
     monkeypatch.setattr(sealed_run, "check_candidate_identity", lambda *a, **k: None)  # ... and behind 16B's identity check (a stub)
+    from tests.test_p16a2b_b1a_tool import record_draws
+
+    record_draws(w.ledger(), cand)  # r5: the batch's candidate has its development draws recorded
     code, out, err = w.run("declare-batch", "--candidate", f"{cand}:replay")  # slot 1 needs the batch declaration (b1a)
     assert code == 0 and w.last(out, "batch_declared")["candidates"] == "1", err
     baseline_id = w.ledger().recover(0).run_id
@@ -379,8 +382,9 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     records = w.ledger().records()
     assert [r["kind"] for r in records] == [
         "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze", "freeze", "freeze", "controls",
-        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "batch_declaration",
-        "slot_claim",
+        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion",
+        *["dev_draw"] * 5,  # r5: the batch candidate's five recorded development draws
+        "batch_declaration", "slot_claim",
     ]
     dispatches = [r for r in records if r["kind"] == "dispatch"]
     assert [d["dispatch_id"] for d in dispatches] == [d["dispatch_id"] for d in env.log("sp_dispatch.jsonl")] == [draft, twins, recheck]

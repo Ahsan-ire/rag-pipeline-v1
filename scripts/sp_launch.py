@@ -819,7 +819,7 @@ def prereg_branch(file: os.PathLike | str) -> Optional[str]:
 
 
 def check_prereg_valid(file: os.PathLike | str) -> None:
-    """The prereg file must pass ``sealed_tool``'s ``prereg-check`` (run in-process, the same function).
+    """The prereg file must pass ``sealed_tool``'s ``prereg-check`` (run in-process, the same two functions).
 
     A data dispatch registers the epoch's prereg (the first ledger record that carries a prereg sha256), so a prereg
     that ``prereg-check`` would refuse must never be registered: it is refused before any dispatch record.
@@ -835,7 +835,9 @@ def check_prereg_valid(file: os.PathLike | str) -> None:
             doc = json.loads(Path(file).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise LaunchError(EXIT_REFUSED, "prereg_invalid") from None
-        if sealed_tool.validate_prereg(doc):
+        # exactly what `prereg-check` computes: the structure, registered values and recomputed tables (validate_prereg) and
+        # the pinned quota numbers and minimum shares (pinned_errors): a prereg `prereg-check` refuses is never registered
+        if sealed_tool.validate_prereg(doc) or sealed_tool.pinned_errors(doc):
             raise LaunchError(EXIT_REFUSED, "prereg_invalid")
     finally:
         # the check imports ``src.judge`` (its identity is part of the prereg), whose import runs ``load_dotenv()``: a key

@@ -103,12 +103,26 @@ hash, the sha256 of the pre-registration it ran under (the first record of any k
 that carries one registers the epoch's prereg) and the UTC time. Nothing else. The
 committed mirror carries the record's kind, line digest and that prereg digest.
 
+Development draws (b1a r5)
+--------------------------
+``record_dev_draw`` appends a ``dev_draw`` record for each development draw (b7) that may count: the pipeline
+configuration hash it ran under, its expansion artifact's sha256 and its rows sidecar's sha256 (all digests, which the
+committed mirror carries), plus a per-configuration index (1, 2, ...) that the ledger assigns. A draw that is not
+recorded never counts: the cap is on what may ever be recorded, so a re-roll by a non-semantic edit (a new config
+hash, hence a new "first five") cannot hide among unrecorded runs. At most ``DEV_DRAW_CONFIGS_MAX`` (5: the incumbent
+and four candidates) distinct configuration hashes may have records; before the ``controls`` record exists only ONE
+(the incumbent's). ``dev_draws(config_hash)`` lists a configuration's records in order and ``dev_draw_configs()``
+lists the configurations in the order they were first recorded.
+
 Groups and exclusions
 ---------------------
 ``group_ids`` is the **one definition of a sealed group id** (the connected
 components of the twins record's edges over the frozen sealed families, named by
 the smallest member family): ``sealed_tool exclude`` and the slot gate both call
-it. A group's *name* can change when a later rejection removes its smallest
+it. It, ``below_floor`` and the aggregation behind ``excluded_families`` live in
+``src.sealed_groups`` (a hashed module: they decide what the analysis is made of,
+which a ledger module the incumbent's code identity leaves out must not do) and are
+re-exported here. A group's *name* can change when a later rejection removes its smallest
 member, so an exclusion also records its ``members`` (the group's families when it
 was made) and the gate resolves ``excluded_families()`` against the freeze-bound
 groups at run time instead of trusting the recorded name.
@@ -136,6 +150,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+from src.sealed_groups import below_floor, excluded_member_families, group_ids  # hashed: the units, the floor, the exclusions
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -160,6 +176,7 @@ KINDS = (
     "batch_declaration",
     "calibration_draw",
     "controls",
+    "dev_draw",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
@@ -173,11 +190,16 @@ MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "dispatch": ("prereg_sha256",),
     "calibration_draw": ("draw_sha256",),
     "controls": ("controls_sha256", "draws_sha256", "prereg_sha256", "incumbent_config_hash"),
+    "dev_draw": ("config_hash", "artifact_sha256", "rows_sidecar_sha256"),
     "publication_intent": ("results_digest",),
 }
 
 #: The confirmatory batch holds at most this many candidates (slots 1..K_MAX).
 K_MAX = 4
+
+#: At most this many distinct pipeline configurations may ever have ``dev_draw`` records in an epoch: the incumbent's
+#: and up to ``K_MAX`` candidates' (prereg ``adoption.development_evidence.recorded_configs_max`` counts the candidates).
+DEV_DRAW_CONFIGS_MAX = 1 + K_MAX
 
 #: The 16A-2b confirmatory embargo: while True no batch can be declared and slots 1-4 cannot be claimed.
 #: Lifted only by 16B's reviewed code change, which must also add the candidate-identity check (the run's
@@ -249,6 +271,10 @@ class EpochStop(SealedLedgerError):
 
 class ProtocolError(SealedLedgerError):
     """A call that the slot protocol (or the freeze rule) does not allow now."""
+
+
+class DrawCoverageRefused(ProtocolError):
+    """``record_batch_declaration`` refused: the recorded development draws do not cover the batch (b1a r5)."""
 
 
 class SlotRefused(ProtocolError):
@@ -588,8 +614,22 @@ def _replay(records: List[Dict[str, Any]]) -> Dict[str, _SlotState]:
     slots: Dict[str, _SlotState] = {}
     frozen_splits = set()
     batch_seen = False
+    controls_seen = False
+    draw_configs: List[str] = []
     for rec in records:
         kind = rec["kind"]
+        if kind == "controls":
+            controls_seen = True
+        if kind == "dev_draw":
+            config = rec.get("config_hash")
+            if not isinstance(config, str) or not _HEX64.fullmatch(config):
+                raise LedgerCorrupt(f"record {rec['seq']}: bad dev_draw config hash")
+            if config not in draw_configs:
+                if draw_configs and not controls_seen:
+                    raise LedgerCorrupt(f"record {rec['seq']}: a second draw configuration before the controls record")
+                if len(draw_configs) >= DEV_DRAW_CONFIGS_MAX:
+                    raise LedgerCorrupt(f"record {rec['seq']}: more than {DEV_DRAW_CONFIGS_MAX} draw configurations")
+                draw_configs.append(config)
         if kind == "freeze":
             split = rec.get("split")
             if not isinstance(split, str) or not _TOKEN.fullmatch(split):
@@ -652,45 +692,6 @@ def _check_claimable(sid: str, slots: Mapping[str, _SlotState], batch: Optional[
         raise SlotRefused(f"slot {sid} needs a batch declaration with a candidate for it")
     if sid == "0b" and not _may_use_0b(slots):
         raise SlotRefused("slot 0b is not available")
-
-
-def below_floor(eligible_after_exclusion: int, floor: int) -> bool:
-    """True when the eligible answerable families fell below the floor.
-
-    That is the epoch end (D64 stop): no top-up after freeze. Exactly at the
-    floor is still enough.
-    """
-    return _count(eligible_after_exclusion, "eligible_after_exclusion") < _count(floor, "floor")
-
-
-def group_ids(families: Iterable[str], edges: Iterable[Tuple[str, str]]) -> Dict[str, str]:
-    """Family -> group id: the connected components of ``edges``, each named by its smallest member family.
-
-    This is the one definition of a sealed group id (see the module docstring):
-    ``sealed_tool`` (``exclude``, ``freeze``, ``power``) and the slot gate both
-    call it with the frozen sealed families and the twins record's edges. An
-    edge endpoint outside ``families`` (a draft that was rejected or dropped)
-    keeps its connectivity but is never a member, and a family with no edge is
-    a group of its own.
-    """
-    members = set(families)
-    parent: Dict[str, str] = {f: f for f in members}
-
-    def find(x: str) -> str:
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a, b in sorted(edges):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-    smallest: Dict[str, str] = {}
-    for f in sorted(members):
-        smallest.setdefault(find(f), f)
-    return {f: smallest[find(f)] for f in members}
 
 
 def exclusions_digest(groups: Iterable[str]) -> str:
@@ -968,7 +969,9 @@ class SealedLedger:
 
     # -- the confirmatory batch declaration (b1a) ---------------------------------------
 
-    def record_batch_declaration(self, candidates: Sequence[Mapping[str, str]]) -> str:
+    def record_batch_declaration(
+        self, candidates: Sequence[Mapping[str, str]], *, draws_required: Optional[int] = None,
+    ) -> str:
         """Declare the confirmatory batch: 1..4 candidates in slot order, each ``{"config_hash", "expansion"}``.
 
         ``config_hash`` is a distinct 64-hex candidate PIPELINE configuration hash (what 16B's identity check
@@ -980,6 +983,13 @@ class SealedLedger:
         the ``controls`` record; appendable once, and only before any of slots 1-4 was claimed
         (``ProtocolError`` otherwise, and always while ``CONFIRMATORY_EMBARGO`` holds). Returns the sha256 of
         the canonical JSON of the list (the mirror carries only that digest).
+
+        ``draws_required`` (the prereg's ``draws_r``; ``sealed_tool declare-batch`` always gives it) turns on the
+        development-draw coverage rules, checked inside the transaction: every candidate's ``config_hash`` has at
+        least that many recorded draws, and every recorded configuration other than the incumbent's (the
+        ``controls`` record's ``incumbent_config_hash``) is declared, so every recorded candidate counts toward
+        Holm's K (a candidate cannot be tried, recorded and left out of the batch); either failure is a
+        ``DrawCoverageRefused``.
         """
         if isinstance(candidates, (str, bytes)) or not 1 <= len(candidates) <= K_MAX:
             raise ValueError(f"a batch has 1 to {K_MAX} candidates")
@@ -1010,6 +1020,17 @@ class SealedLedger:
                 raise ProtocolError("a batch was already declared")
             if any(s in txn.slots for s in ("1", "2", "3", "4")):
                 raise ProtocolError("a confirmatory slot was already claimed")
+            if draws_required is not None:
+                drawn: Dict[str, int] = {}
+                for r in txn.records:
+                    if r["kind"] == "dev_draw":
+                        drawn[r["config_hash"]] = drawn.get(r["config_hash"], 0) + 1
+                controls = next(r for r in txn.records if r["kind"] == "controls")
+                if any(drawn.get(c["config_hash"], 0) < draws_required for c in cands):
+                    raise DrawCoverageRefused("a batch candidate has fewer recorded development draws than required")
+                undeclared = set(drawn) - {controls["incumbent_config_hash"]} - {c["config_hash"] for c in cands}
+                if undeclared:
+                    raise DrawCoverageRefused("a configuration with recorded development draws is not in the batch")
             txn.append("batch_declaration", candidates=cands, candidates_sha256=digest)
         return digest
 
@@ -1072,6 +1093,50 @@ class SealedLedger:
         """The incumbent's pipeline configuration hash from the ``controls`` record, or ``None`` before it."""
         record = self.controls_record()
         return None if record is None else record.get("incumbent_config_hash")
+
+    def record_dev_draw(self, config_hash: str, artifact_sha256: str, rows_sidecar_sha256: str) -> int:
+        """Record a development draw (b7) that may count: its pipeline configuration, expansion artifact and rows sidecar.
+
+        All three are 64-hex digests. The ledger assigns the draw's per-configuration index (1 for the first record
+        under ``config_hash``, 2 for the next...) and returns it. Raises ``ProtocolError`` for:
+
+        * a configuration beyond the cap: at most ``DEV_DRAW_CONFIGS_MAX`` (5) distinct configuration hashes may ever
+          have records (the incumbent's and four candidates');
+        * a second configuration before the ``controls`` record exists (until then only the incumbent's may be
+          recorded: the controls are computed from the incumbent's draws);
+        * a rows sidecar that is already recorded (a draw is a distinct file; a copy is not another draw).
+        """
+        config = _hex64(config_hash, "config_hash")
+        artifact = _hex64(artifact_sha256, "artifact_sha256")
+        sidecar = _hex64(rows_sidecar_sha256, "rows_sidecar_sha256")
+        with self._txn() as txn:
+            draws = [r for r in txn.records if r["kind"] == "dev_draw"]
+            configs = {r["config_hash"] for r in draws}
+            if config not in configs:
+                if configs and not any(r["kind"] == "controls" for r in txn.records):
+                    raise ProtocolError("before the controls are recorded only the incumbent's draws may be recorded")
+                if len(configs) >= DEV_DRAW_CONFIGS_MAX:
+                    raise ProtocolError(f"at most {DEV_DRAW_CONFIGS_MAX} pipeline configurations may have recorded draws")
+            if any(r["rows_sidecar_sha256"] == sidecar for r in draws):
+                raise ProtocolError("this draw's rows sidecar is already recorded")
+            index = 1 + sum(1 for r in draws if r["config_hash"] == config)
+            txn.append(
+                "dev_draw", config_hash=config, draw_index=index, artifact_sha256=artifact, rows_sidecar_sha256=sidecar,
+            )
+        return index
+
+    def dev_draws(self, config_hash: str) -> List[Dict[str, Any]]:
+        """The ``dev_draw`` records of one pipeline configuration, in the order they were recorded (index 1, 2, ...)."""
+        config = _hex64(config_hash, "config_hash")
+        return [r for r in self.records("dev_draw") if r["config_hash"] == config]
+
+    def dev_draw_configs(self) -> List[str]:
+        """The distinct configuration hashes with recorded draws, in the order they were first recorded."""
+        seen: List[str] = []
+        for r in self.records("dev_draw"):
+            if r["config_hash"] not in seen:
+                seen.append(r["config_hash"])
+        return seen
 
     def canonical_artifact_sha256(self) -> Optional[str]:
         """The expansion artifact's sha256 on the stored record of the slot (0 or 0b) that has a publication intent."""
@@ -1350,16 +1415,10 @@ class SealedLedger:
         Raises:
             LedgerCorrupt: a record's ``members`` is not a list of family ids.
         """
-        out = set()
-        for rec in self.records("exclusion"):
-            members = rec.get("members", [rec["group_id"]])
-            if not (
-                isinstance(members, list) and members
-                and all(isinstance(m, str) and _ID.fullmatch(m) for m in members)
-            ):
-                raise LedgerCorrupt(f"record {rec['seq']}: bad exclusion members")
-            out.update(members)
-        return frozenset(out)
+        try:
+            return excluded_member_families(self.records("exclusion"))
+        except ValueError as exc:
+            raise LedgerCorrupt(str(exc)) from None
 
     def exclusions_at_freeze(self, split: str = SEALED_SPLIT) -> Optional[FrozenSet[str]]:
         """The groups excluded BEFORE the named split's freeze record (``None`` if it is not frozen yet).

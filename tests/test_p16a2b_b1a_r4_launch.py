@@ -92,6 +92,7 @@ def test_an_invalid_prereg_is_refused_before_any_dispatch_record_and_registers_n
 def test_check_prereg_valid_is_the_prereg_check_function_called_in_process(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(st, "validate_prereg", lambda doc, **kw: seen.append((doc, kw)) or [])
+    monkeypatch.setattr(st, "pinned_errors", lambda doc: [])  # (the pinned numbers: tests/test_p16a2b_b1a_r5_launch.py)
     path = tmp_path / "prereg.json"
     path.write_text('{"branch": "main"}', encoding="utf-8")
     REAL_CHECK_PREREG_VALID(path)  # no error: nothing raised
@@ -114,6 +115,7 @@ def test_the_check_leaves_no_api_key_behind_in_the_launcher_process(tmp_path, mo
     path.write_text('{"branch": "main"}', encoding="utf-8")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(st, "validate_prereg", lambda doc, **kw: os.environ.update(ANTHROPIC_API_KEY="from-dotenv") or [])
+    monkeypatch.setattr(st, "pinned_errors", lambda doc: [])
     REAL_CHECK_PREREG_VALID(path)
     assert "ANTHROPIC_API_KEY" not in os.environ
     # ... also when the check refuses
@@ -128,6 +130,7 @@ def test_a_valid_prereg_is_dispatched_and_registered(env, repos, monkeypatch):
     sha = commit_and_push(repos, '{"branch": "main", "note": "a"}\n')
     monkeypatch.setattr(sp, "check_prereg_valid", REAL_CHECK_PREREG_VALID)
     monkeypatch.setattr(st, "validate_prereg", lambda doc, **kw: [])  # (the real check's cost is tested in test_p16a2b_b1a.py)
+    monkeypatch.setattr(st, "pinned_errors", lambda doc: [])
     outcome = env.launch("data", prereg=sha, branch="main", repo=repos.work, enums=["count"])
     assert outcome.exit_status == sp.EXIT_OK and len(dispatches(env)) == 1
     assert ledger_of(env).epoch_prereg_sha256() is not None

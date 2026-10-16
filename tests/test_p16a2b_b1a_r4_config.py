@@ -53,9 +53,9 @@ def h(top_k: int = 6):
 def test_the_config_has_exactly_the_registered_components_and_the_hash_is_a_deterministic_digest(with_index):
     config = pc.pipeline_config("unused", top_k=6)
     assert tuple(config) == pc.PIPELINE_CONFIG_KEYS == (
-        "version", "code", "runtime", "embedding", "index", "bm25", "fusion", "rewrite", "generation")
-    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 1
-    assert set(config["code"]) == set(pc.CODE_MODULES)
+        "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation")
+    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 2  # r5: whole-src code, every distribution, the endpoint
+    assert set(config["code"]) == set(pc.code_modules())
     value = h()
     assert value == h() == pc.pipeline_config_hash("elsewhere", top_k=6)  # the directory is read, never hashed
     assert len(value) == 64 and set(value) <= set("0123456789abcdef")
@@ -74,9 +74,9 @@ def test_no_index_means_no_hash(monkeypatch):
     assert h() is None  # a missing index can never equal a recorded incumbent
 
 
-def test_the_hashed_modules_are_real_files_that_shape_retrieval_and_generation():
+def test_the_hashed_modules_include_those_that_shape_retrieval_and_generation():
     names = {"retriever.py", "bm25_index.py", "embedder.py", "chunker.py", "query_rewrite.py", "generator.py", "grounding.py"}
-    assert set(pc.CODE_MODULES) == names and all((pc.CODE_DIR / n).is_file() for n in names)
+    assert names <= set(pc.code_modules()) and all((pc.CODE_DIR / n).is_file() for n in names)
 
 
 # --- every component moves the hash --------------------------------------------------------------------------------------------
@@ -106,7 +106,8 @@ def _prompt(text):
     ("bm25 tokenizer", lambda m: m.setattr(bm25_index, "_TOKEN_PATTERN", __import__("re").compile(r"\w+"))),
     ("python", lambda m: m.setattr(pc, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=99)))),
     ("package version", lambda m: m.setattr(
-        pc.importlib.metadata, "version", lambda name: "9.9.9" if name == "rank-bm25" else REAL_VERSION(name))),
+        pc.importlib.metadata, "distributions",
+        lambda: [_dist(n, "9.9.9" if n == "rank-bm25" else v) for n, v in _real_versions()])),
 ])
 def test_each_component_changes_the_hash(with_index, monkeypatch, name, change):
     before = h()
@@ -115,7 +116,17 @@ def test_each_component_changes_the_hash(with_index, monkeypatch, name, change):
 
 
 ORIGINAL_KWARGS = generator.generation_llm_kwargs
-REAL_VERSION = pc.importlib.metadata.version
+REAL_DISTRIBUTIONS = pc.importlib.metadata.distributions
+
+
+def _dist(name, version):
+    """A stand-in for an ``importlib.metadata.Distribution`` (``metadata["Name"]`` and ``version``)."""
+    return SimpleNamespace(metadata={"Name": name}, version=version)
+
+
+def _real_versions():
+    """``(name, version)`` of every installed distribution, as the real ``importlib.metadata`` reports them."""
+    return [(d.metadata["Name"], d.version) for d in REAL_DISTRIBUTIONS()]
 
 
 def test_top_k_is_part_of_the_fusion_component(with_index):
@@ -155,9 +166,10 @@ def test_the_embedding_environment_override_reaches_the_resolved_model():
 # --- the code component ----------------------------------------------------------------------------------------------------------
 @pytest.fixture
 def code_copy(tmp_path, monkeypatch):
-    """A private copy of the hashed modules that ``pipeline_config`` reads instead of ``src``."""
-    for name in pc.CODE_MODULES:
-        shutil.copyfile(pc.CODE_DIR / name, tmp_path / name)
+    """A private copy of every ``src`` module that ``pipeline_config`` reads instead of ``src`` (r5: the whole package)."""
+    real_dir = pc.CODE_DIR
+    for path in real_dir.glob("*.py"):
+        shutil.copyfile(path, tmp_path / path.name)
     monkeypatch.setattr(pc, "CODE_DIR", tmp_path)
     return tmp_path
 
@@ -183,7 +195,7 @@ def test_a_code_edit_changes_the_hash_and_a_comment_or_docstring_edit_does_not(w
 
 def test_every_hashed_module_counts(with_index, code_copy):
     before = h()
-    for name in pc.CODE_MODULES:
+    for name in pc.code_modules():
         path = code_copy / name
         original = path.read_text(encoding="utf-8")
         path.write_text(original + "\n_R4_MARK = 1\n", encoding="utf-8")

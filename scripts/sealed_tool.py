@@ -18,7 +18,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
 
 Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
 ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
-``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``epoch``, ``return``.
+``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``record-draw``, ``epoch``, ``return``.
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
@@ -108,7 +108,8 @@ the confirmatory batch, the development evidence, unsupported claims and control
 ``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's), ``drafting_rule`` (refusal share 0.275
 over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts,
 and attempt 1's draft count: ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``),
-``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v1`` and its components) and
+``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v2``, its components and the registered
+list of ``src`` modules left out of the code hash) and
 ``judge`` (the registered judge every sealed slot runs). **One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
 launcher records the prereg it ran under) registers it; every dispatch, ``split``, ``freeze``, ``calibrate``,
 ``declare-batch``, the slot gate and ``controls.py`` refuse any other (``prereg_amended``). ``epoch`` prints the
@@ -158,6 +159,7 @@ from src import sealed_inputs  # noqa: E402
 from src.eval_sealed_read import NotSealedInput, load_sealed  # noqa: E402  (the only sealed reader)
 from src.eval_split import SplitInfeasible, SplitInputError, families_digest, split_families  # noqa: E402
 from src.sealed_ledger import (  # noqa: E402
+    DrawCoverageRefused,
     EpochStop,
     LedgerCorrupt,
     LedgerRefused,
@@ -227,7 +229,7 @@ REASONS = (
     "round_order", "unknown_family", "nothing_to_do", "already_intaken", "tag_conflict",
     "path_outside", "locked", "freeze_recovery_failed", "dump_missing", "staging_live",
     "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
-    "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable",
+    "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable", "draws_uncovered",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -483,7 +485,8 @@ LOCK_NAME = ".lock"
 #: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
 #: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``return``, ``audit``) take no lock.
 STATE_COMMANDS = frozenset(
-    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
+    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch",
+     "record-draw"}
 )
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -1064,7 +1067,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.confirmatory_batch.spent_slot_counts", True),
     ("adoption.confirmatory_batch.modes", ["replay", "candidate"]),
     ("adoption.confirmatory_batch.mode_declared_by", "batch_declaration"),
-    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v1_checked_by_16b_gate_before_claim"),
+    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v2_checked_by_16b_gate_before_claim"),
     ("adoption.confirmatory_batch.rewrite_identity", "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim"),
     ("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check"),
     ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on", "registered_judge"]),
@@ -1079,6 +1082,10 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.development_evidence.pairing", "by_draw_index"),
     ("adoption.development_evidence.incumbent_draws", "first_5_recorded_development_draws_under_the_incumbent_config_hash"),
     ("adoption.development_evidence.candidate_draws", "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash"),
+    ("adoption.development_evidence.recorded_configs_max", 4),
+    ("adoption.development_evidence.draws_recorded_by", "sealed_tool_record_draw"),
+    ("adoption.development_evidence.unrecorded_runs", "never_count"),
+    ("adoption.development_evidence.all_recorded_candidates_declared", True),
     ("adoption.unsupported_claims.unit", "claim"),
     ("adoption.unsupported_claims.where", "candidate_sealed_slot"),
     ("adoption.unsupported_claims.against", "incumbent"),
@@ -1169,20 +1176,27 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("drafting_rule.paraphrase.migrated_top_up_to", 2),
     ("drafting_rule.paraphrase.t1_t7_cap", 3),
     ("drafting_rule.infeasible_after_round_2", "d64_owner_stop"),
-    ("incumbent.config_fn", "pipeline_config_v1"),
-    ("incumbent.components", ["version", "code", "runtime", "embedding", "index", "bm25", "fusion", "rewrite", "generation"]),
-    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "judge", "scoring", "eval_sets", "corpus_text"]),
+    ("incumbent.config_fn", "pipeline_config_v2"),
+    ("incumbent.components", ["version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation"]),
+    ("incumbent.code", "all_src_modules_except_code_excluded"),
+    ("incumbent.code_excluded", [
+        "__init__.py", "audit.py", "eval_privacy.py", "eval_roster.py", "eval_sealed_read.py", "eval_sets.py",
+        "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py", "sealed_ledger.py", "sealed_run.py",
+        "spend.py", "tracing_guard.py",
+    ]),
+    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "judge", "eval_sets", "corpus_text"]),
     ("incumbent.fixed_by", "controls_record_incumbent_config_hash"),
     ("incumbent.draws", "each_counted_draw_sidecar_carries_the_incumbent_config_hash"),
     ("incumbent.slots", ["0", "0b"]),
-    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v1_of_the_candidate"),
+    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v2_of_the_candidate"),
     ("judge.required_on", ["0", "0b", "1", "2", "3", "4"]),
     ("judge.model", "claude-sonnet-5"),
     ("judge.prompt_version", "faithfulness-judge-v1"),
     ("judge.sample", "all_eligible"),
     ("judge.eligible", "retrieval_eligible_rows_with_complete_non_refusal_answer"),
     ("judge.rate", "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows"),
-    ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash"),
+    ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_version"),
+    ("judge.covers", ["model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint"]),
     ("judge.errors", "any_sealed_judge_error_means_not_shown"),
 )
 REGISTERED: Dict[str, Any] = dict(REGISTERED_VALUES)
@@ -1259,7 +1273,8 @@ def pinned_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
 def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
     """``(path, "mismatch")`` for each value the code computes that the prereg does not carry (``prereg-check``'s recompute step).
 
-    ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS``; ``judge.model`` and ``judge.prompt_version``
+    ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS`` and ``incumbent.code_excluded`` its
+    ``CODE_EXCLUDED``; ``judge.model`` and ``judge.prompt_version``
     must be the judge's own and ``judge.config_hash`` must be ``judge_identity()["config_hash"]`` (the imports are lazy:
     only ``prereg-check`` needs them).
     """
@@ -1268,6 +1283,8 @@ def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
     errors: List[Tuple[str, str]] = []
     if not _eq(_at(doc, "incumbent.components"), list(pipeline_config.PIPELINE_CONFIG_KEYS)):
         errors.append(("incumbent.components", "mismatch"))
+    if not _eq(_at(doc, "incumbent.code_excluded"), list(pipeline_config.CODE_EXCLUDED)):
+        errors.append(("incumbent.code_excluded", "mismatch"))
     identity = judge.judge_identity()
     for path, want in (
         ("judge.model", judge.JUDGE_MODEL), ("judge.prompt_version", judge.JUDGE_PROMPT_VERSION),
@@ -3501,7 +3518,10 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
 
     Refused while the confirmatory embargo holds (``embargoed``), before the sealed freeze, under any prereg but the
     epoch's registered one (committed, unmodified, pushed), and before the controls are recorded in the ledger and
-    match ``eval/controls_v1.json`` (``controls_missing``).
+    match ``eval/controls_v1.json`` (``controls_missing``). It also needs the recorded development draws to cover the
+    batch (``draws_uncovered``): every candidate's ``config hash`` has at least the prereg's ``draws_r`` draws
+    recorded (``record-draw``), and every recorded configuration other than the incumbent's is in the batch (all of
+    them count toward Holm's K).
     """
     from src import sealed_ledger
 
@@ -3524,7 +3544,8 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     ledger = ctx.ledger()
     if ledger.freeze_record("sealed") is None:
         raise Stop(EXIT_REFUSED, "freeze_missing")
-    bind_epoch_prereg(ctx, load_prereg(ctx), ledger)
+    prereg = load_prereg(ctx)
+    bind_epoch_prereg(ctx, prereg, ledger)
     controls = ledger.controls_record()
     path = controls_file(ctx)
     if controls is None or not path.is_file() or sha_file(path) != controls["controls_sha256"]:
@@ -3532,12 +3553,44 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     if ledger.batch_declaration() is not None:
         raise Stop(EXIT_REFUSED, "batch_declared")
     try:
-        digest = ledger.record_batch_declaration(entries)
+        digest = ledger.record_batch_declaration(entries, draws_required=prereg["draws_r"])
     except ValueError:
         raise Stop(EXIT_REFUSED, "batch_invalid") from None
+    except DrawCoverageRefused:
+        raise Stop(EXIT_REFUSED, "draws_uncovered") from None
     except ProtocolError:
         raise Stop(EXIT_REFUSED, "batch_declared") from None
     ctx.printer.emit("batch_declared", candidates=len(entries), sha256=digest)
+    return EXIT_OK
+
+
+def cmd_record_draw(ctx: Ctx, sidecar: str, artifact: str) -> int:
+    """Record a development draw in the ledger: its rows sidecar's pipeline configuration, artifact and sidecar digests.
+
+    Only draws recorded here ever count (the plan's cap: an unrecorded run is invisible, so it cannot be used to
+    re-roll). Only under the epoch's registered prereg (committed, unmodified, pushed). ``sidecar`` is the draw's
+    ``<report>.rows.json`` (it must carry a 64-hex ``pipeline_config_hash``: a run with no index has none and is
+    refused) and ``artifact`` is the expansion artifact of the same draw. The ledger assigns the draw's
+    per-configuration index; it refuses (``ledger_protocol``) a sixth distinct configuration, a second configuration
+    before the controls are recorded, and a sidecar recorded before. Prints counts and digests only.
+    """
+    prereg = load_prereg(ctx)
+    ledger = ctx.ledger()
+    bind_epoch_prereg(ctx, prereg, ledger)
+    sidecar_path, artifact_path = Path(sidecar), Path(artifact)
+    doc = read_json(sidecar_path)
+    config = doc.get("pipeline_config_hash") if isinstance(doc, dict) else None
+    if not (isinstance(config, str) and _SHA256.fullmatch(config)):
+        raise Stop(EXIT_USAGE, "input_invalid")  # no index at the draw: it has no pipeline identity to record
+    try:
+        artifact_sha, sidecar_sha = sha_file(artifact_path), sha_file(sidecar_path)
+    except OSError:
+        raise Stop(EXIT_USAGE, "input_missing") from None
+    index = ledger.record_dev_draw(config, artifact_sha, sidecar_sha)
+    ctx.printer.emit(
+        "draw_recorded", config=config, index=index, artifact=artifact_sha, sidecar=sidecar_sha,
+        draws=len(ledger.dev_draws(config)), configs=len(ledger.dev_draw_configs()),
+    )
     return EXIT_OK
 
 
@@ -3617,6 +3670,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--alpha", {"type": float, "default": None}), ("--draws", {"type": int, "default": None}), ("--seed", {"type": int, "default": None}))
     add("prereg-check", ("--committed", {"action": "store_true"}))
     add("declare-batch", ("--candidate", {"action": "append", "default": [], "dest": "candidates"}))
+    add("record-draw", ("--sidecar", {"required": True}), ("--artifact", {"required": True}))
     add("epoch")
     add("return", ("path", {}), ("--enum", {"action": "append", "default": [], "dest": "enums"}))
     return ap
@@ -3668,6 +3722,8 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_prereg_check(ctx, a.committed)
     if c == "declare-batch":
         return cmd_declare_batch(ctx, a.candidates)
+    if c == "record-draw":
+        return cmd_record_draw(ctx, a.sidecar, a.artifact)
     if c == "epoch":
         return cmd_epoch(ctx)
     return cmd_return(ctx, a.path, a.enums)

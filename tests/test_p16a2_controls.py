@@ -266,13 +266,38 @@ def _prereg(tmp_path, rule, draws_r, ceiling=None):
     return path
 
 
-def _argv(rule, draws, dev, out, *, freeze=True, prereg=None, dev_sets=None):
+def _record_draws(draws):
+    """Record each draw file in the ledger as ``sealed_tool record-draw`` does (r5): under the pipeline hash its sidecar
+    carries, once per file. A draw the ledger refuses (a second configuration before the controls) is left unrecorded:
+    the test that built it expects a refusal."""
+    from src.sealed_ledger import ProtocolError
+
+    ledger = _ledger()
+    for path in draws:
+        try:
+            config = json.loads(Path(path).read_text(encoding="utf-8")).get("pipeline_config_hash")
+        except (OSError, ValueError, AttributeError):
+            continue  # not a sidecar: the CLI refuses it itself
+        if not (isinstance(config, str) and len(config) == 64 and set(config) <= set("0123456789abcdef")):
+            continue  # a sidecar with no usable pipeline hash cannot be recorded (the CLI refuses it itself)
+        if sha256_file(path) in {r["rows_sidecar_sha256"] for r in ledger.dev_draws(config)}:
+            continue
+        try:
+            ledger.record_dev_draw(config, "b" * 64, sha256_file(path))
+        except ProtocolError:
+            pass
+
+
+def _argv(rule, draws, dev, out, *, freeze=True, prereg=None, dev_sets=None, record=True):
     """The CLI arguments: the rule comes from a prereg file written next to ``out``; both development sets are frozen
-    first (``dev`` is the tuning set, the realistic one is a second file) and ``dev_sets`` overrides which are passed."""
+    first (``dev`` is the tuning set, the realistic one is a second file) and ``dev_sets`` overrides which are passed.
+    ``record`` (r5) records the draw files in the ledger first: the controls come from recorded draws only."""
     prereg = prereg or _prereg(out.parent, rule, len(draws))
     realistic = _realistic_set(out.parent)
     if freeze:
         _freeze(dev, realistic, prereg)
+    if record:
+        _record_draws(draws)
     argv = ["--prereg", str(prereg), "--list", str(out)]
     for d in dev_sets if dev_sets is not None else [dev, realistic]:
         argv += ["--dev-set", str(d)]
@@ -618,3 +643,52 @@ def test_record_controls_needs_a_digest_incumbent(tmp_path):
     assert ledger.controls_record() is None and ledger.incumbent_config_hash() is None
     ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64, incumbent_config_hash="d" * 64)
     assert _ledger().incumbent_config_hash() == "d" * 64
+
+
+# --- r5: the controls are computed from the recorded draws only ------------------------------------------------------------------
+def _second_set(tmp_path, sha, name="later"):
+    """Three more draw files (another directory, other bytes: a harmless extra rank on a non-lineage row)."""
+    sub = tmp_path / name
+    sub.mkdir()
+    return _cli_draws(sub, sha, tweak=lambda d, t: t.update({_rid(TUTORIAL): (2 + d, 2)}))
+
+
+def test_the_first_run_needs_its_draws_recorded_in_the_ledger(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "controls_v1.json"
+    # nothing recorded: exit 2, "draws not recorded", nothing written and no controls record
+    assert controls.main(_argv("c1", draws, dev, out, record=False)) == controls.EXIT_UNUSABLE
+    assert "draws not recorded" in capsys.readouterr().err
+    assert not out.exists() and _ledger().controls_record() is None
+    # recorded under another configuration than the draws carry: still none under the incumbent
+    _ledger().record_dev_draw("6" * 64, "b" * 64, sha256_file(draws[0]))
+    assert controls.main(_argv("c1", draws, dev, out, record=False)) == controls.EXIT_UNUSABLE
+    assert "draws not recorded" in capsys.readouterr().err and not out.exists()
+
+
+def test_the_controls_come_from_the_first_recorded_draws_not_from_any_subset_of_the_recorded_ones(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    sha = sha256_file(dev)
+    first = _cli_draws(tmp_path, sha)
+    later = _second_set(tmp_path, sha)
+    out = tmp_path / "controls_v1.json"
+    _record_draws(first)  # the first three draws, then three more: a favourable re-roll cannot replace them
+    _record_draws(later)
+    assert [r["draw_index"] for r in _ledger().dev_draws(INCUMBENT)] == [1, 2, 3, 4, 5, 6]
+    for supplied in (later, [first[0], first[1], later[2]], [first[1], first[2], later[0]]):
+        assert controls.main(_argv("c1", supplied, dev, out, record=False)) == controls.EXIT_UNUSABLE
+        assert "not the first recorded draws" in capsys.readouterr().err
+        assert not out.exists() and _ledger().controls_record() is None
+    assert controls.main(_argv("c1", [first[2], first[0], first[1]], dev, out, record=False)) == 0  # any order of the first three
+    assert _ledger().controls_record() is not None
+
+
+def test_a_verify_run_does_not_need_the_draws_recorded_again(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "controls_v1.json"
+    assert controls.main(_argv("c1", draws, dev, out)) == 0  # records the draws, then the controls
+    capsys.readouterr()
+    assert controls.main(_argv("c1", draws, dev, out, record=False)) == 0
+    assert "matches the committed list" in capsys.readouterr().out

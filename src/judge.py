@@ -29,12 +29,13 @@ claims themselves.
 import json
 import random
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.generator import GENERATION_MODEL, get_llm
+from src.generator import GENERATION_MODEL, get_llm, is_refusal
+from src.grounding import INCOMPLETE_STATUSES
 
 # The judge runs on the same model as generation (D38): stated in the report so
 # a reader weights the estimate accordingly (shared-family blind spots).
@@ -99,6 +100,36 @@ JUDGE_SAMPLE = "all_eligible"
 JUDGE_SEED = 0
 
 
+#: The ``src`` modules whose code is part of the judge's identity: this module (the prompt, the strict parse, the
+#: verdict normalisation, the eligibility predicate :func:`is_judgeable`, the failure suppression), ``eval_v6`` (the
+#: rate that turns judgements into the unsupported-claims rate, :func:`src.eval_v6.judge_summary`) and ``eval_stats``
+#: (the Wilson interval that rate carries). The transport literals live in ``src.llm_transport`` and are not here.
+JUDGE_CODE_MODULES = ("judge.py", "eval_v6.py", "eval_stats.py")
+
+#: What a sealed results document says the judge covers (the prereg's ``judge.covers``).
+JUDGE_COVERS = (
+    "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
+)
+
+
+def is_judgeable(scope: str, result: Optional[Mapping[str, Any]], status: str) -> bool:
+    """Whether one row's generated answer is judged: the judge's eligibility rule (one definition, hashed with the judge).
+
+    ``scope`` is the row's scope, ``result`` its generation result (``None`` when generation raised) and ``status`` the
+    normalised generation status (``src.evaluator._normalise_answer``). A row is judged when it is retrieval-eligible
+    (not ``refuse``), its generation produced a result with a complete status, and the answer is not a refusal.
+    """
+    if scope == "refuse":
+        return False
+    if result is None:
+        return False  # generation error: nothing to judge
+    if status in INCOMPLETE_STATUSES:
+        return False  # cut-off or declined draft is not a judgeable answer
+    if is_refusal(result["answer"]):
+        return False  # the judge is conditional on a non-refused answer
+    return True
+
+
 def judge_identity() -> Dict[str, str]:
     """The identity of the judging step, as the pre-registration and a sealed run's results record it (16A-2b).
 
@@ -106,12 +137,17 @@ def judge_identity() -> Dict[str, str]:
 
     * ``model``: :data:`JUDGE_MODEL`.
     * ``prompt_sha256``: sha256 of the canonical JSON of ``[[role, template], ...]`` for ``JUDGE_PROMPT``.
-    * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "prompt_sha256", "prompt_version",
-      "verdicts", "sample", "seed"}``, where ``client`` is ``generation_llm_kwargs()`` (the client the judge calls
-      through) without ``default_request_timeout`` and ``max_retries`` (they change whether a call succeeds, not
-      what it returns), ``verdicts`` is the valid verdict list and ``sample``/``seed`` are how the judged answers
-      are chosen (all eligible ones). No call is made.
+    * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "endpoint", "prompt_sha256",
+      "prompt_version", "verdicts", "sample", "seed", "code"}``, where ``client`` is ``generation_llm_kwargs()`` (the
+      client the judge calls through) without ``default_request_timeout`` and ``max_retries`` (they change whether a
+      call succeeds, not what it returns), ``endpoint`` is the effective Anthropic base URL
+      (``pipeline_config.endpoint_identity``), ``verdicts`` is the valid verdict list, ``sample``/``seed`` are how the
+      judged answers are chosen (all eligible ones) and ``code`` is the ``ast.dump`` digest (docstrings stripped, as
+      in ``pipeline_config``) of each module in :data:`JUDGE_CODE_MODULES`: the parsing and normalisation, the
+      eligibility predicate and the rate that scores the judgements (:data:`JUDGE_COVERS` names what is covered).
+      No call is made.
     """
+    from src import pipeline_config
     from src.generator import generation_llm_kwargs
     from src.pipeline_config import CLIENT_RELIABILITY_KEYS, canonical_json, prompt_messages, sha256_hex
 
@@ -119,11 +155,13 @@ def judge_identity() -> Dict[str, str]:
     config = {
         "model": JUDGE_MODEL,
         "client": {k: v for k, v in generation_llm_kwargs().items() if k not in CLIENT_RELIABILITY_KEYS},
+        "endpoint": pipeline_config.endpoint_identity(),
         "prompt_sha256": prompt_sha,
         "prompt_version": JUDGE_PROMPT_VERSION,
         "verdicts": list(_VALID_VERDICTS),
         "sample": JUDGE_SAMPLE,
         "seed": JUDGE_SEED,
+        "code": {name: pipeline_config.code_digest(pipeline_config.CODE_DIR / name) for name in JUDGE_CODE_MODULES},
     }
     return {"model": JUDGE_MODEL, "prompt_sha256": prompt_sha, "config_hash": sha256_hex(canonical_json(config))}
 

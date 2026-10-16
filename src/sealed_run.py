@@ -53,6 +53,11 @@ embargo flag alone opens nothing), ``batch``, ``judge``, ``prereg_binding`` and 
 * ``claim`` (``preflight`` / ``preflight_mismatch``): a claim needs the receipt of a preflight that passed for this
   run, and a token claimed once runs only the arguments it was preflighted with (the receipt's ``args_digest``).
 
+16A-2b b1a r5 re-checks the incumbent where it matters most: :func:`check_token_for_run` (the evaluator's own
+re-check, before any call) recomputes ``pipeline_config_hash`` for slots 0 and 0b and refuses ``incumbent`` on a
+mismatch, and :func:`run_slot` refuses to store a slot-0/0b results document whose ``pipeline_config_hash`` is not the
+ledger's incumbent (``incumbent``; the slot stays claimed, so it is spent, and nothing is stored).
+
 Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
 ----------------------------------------------------------------------------------------------
 **Prereg** (``--prereg``, the same ``eval/prereg_16a2.json`` that ``sealed_tool`` checks; this
@@ -159,7 +164,6 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -186,13 +190,22 @@ from src.sealed_report import (
     RESULTS_KIND,
     RESULTS_VERSION,
     confirmatory_summary,
-    family_hits,
     format_sealed_report,
     sealed_set,
     is_confirmatory,
     DESCRIPTIVE_SLOTS,
 )
 from src import sealed_ledger as _sealed_ledger
+from src import sealed_results as _sealed_results
+from src.sealed_results import (  # the values a stored result is made of live in a hashed module (16A-2b b1a r5)
+    GUARDS,
+    baseline_hits_by_mode,
+    canonical_guards,
+    failed_guards,
+    resolve_excluded_groups,
+)
+from src.sealed_results import eligible_counts as _eligible_counts
+from src.sealed_results import is_private_input as _is_private_input
 from src.tracing_guard import TracingRefused, assert_tracing_off
 
 SEALED_SPLIT = "sealed"
@@ -211,29 +224,6 @@ GATES = (
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
     "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding", "identity",
     "incumbent",
-)
-
-#: The canonical-v6 guards, in report order. Each is a pure function of the stored facts.
-GUARDS = (
-    "heldout_frozen_sealed_set",
-    "heldout_answerable",
-    "realistic_answerable",
-    "all_modes",
-    "distinct_sets",
-    "refusals_scored",
-    "completeness_scored",
-    "top_k_6",
-    "no_generation_errors",
-    "no_incomplete_generations",
-    "no_unknown_status",
-    "expansion_attempted",
-    "no_expansion_fallbacks",
-    "bm25_loaded",
-    "judge_clean",
-    "slot_0_or_0b",
-    "bound_records",
-    "live_expansion",
-    "tracing_off",
 )
 
 
@@ -526,28 +516,8 @@ def check_exclusions_bound(ledger: SealedLedger, freeze: Mapping[str, Any]) -> F
         raise GateRefused("exclusion_list") from None
 
 
-def resolve_excluded_groups(families: Iterable[str], groups: Mapping[str, str]) -> FrozenSet[str]:
-    """The groups (under ``groups``, family -> group id) that the excluded ``families`` belong to.
-
-    A family that is not in the frozen set (a member rejected after the exclusion was made) names
-    no group and is skipped, so a stale exclusion excludes nothing instead of wedging the gate; a
-    group renamed by a later rejection resolves through its remaining members.
-    """
-    return frozenset(groups[f] for f in families if f in groups)
-
-
 #: The one definition of a group id (``sealed_tool exclude`` calls the same function).
 compute_groups = group_ids
-
-
-def _eligible_counts(rows: Sequence[Mapping[str, Any]], groups: Mapping[str, str], excluded: FrozenSet[str]) -> Tuple[int, int]:
-    """``(sealed families, eligible answerable families)`` after exclusion."""
-    scopes: Dict[str, bool] = {}
-    for r in rows:
-        if groups[r["family_id"]] in excluded:
-            continue
-        scopes[r["family_id"]] = scopes.get(r["family_id"], True) and r["scope"] != "refuse"
-    return len(scopes), sum(1 for ok in scopes.values() if ok)
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +757,7 @@ def check_candidate_identity(
     """A confirmatory slot's candidate must be the one it was declared to be (the 16B check; a stub until then).
 
     The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration
-    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v1``, of the candidate). The check 16B adds compares it with
+    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v2``, of the candidate). The check 16B adds compares it with
     ``running_config_hash``, the same hash computed for the pipeline that is about to run: :func:`preflight_slot`
     passes it (the gate, which does not know the index, calls this with ``None`` as an early refusal). The rewrite
     identity is checked by :func:`_check_expansion`. Until 16B's reviewed code change lands this refuses always, so
@@ -851,13 +821,6 @@ def dev_sets_of(ledger: SealedLedger, shas: Iterable[str]) -> Dict[str, str]:
             raise GateRefused("dev_binding")
         found[split] = sha
     return found
-
-
-def _is_private_input(path: Union[str, os.PathLike]) -> bool:
-    """True iff ``path`` classifies as a private (not public, not sealed) eval input: the sets a freeze record binds."""
-    from src import eval_sets
-
-    return eval_sets.classify(path) == eval_sets.PRIVATE
 
 
 def check_dev_binding(slot: str, ledger: SealedLedger, other_paths: Iterable[Union[str, os.PathLike]]) -> None:
@@ -931,7 +894,7 @@ def load_baseline(run_id: str, *, ledger: SealedLedger, set_sha256: str, cutoff:
         "run_id": run_id,
         "cutoff": cutoff,
         "results_digest": stored[0]["results_digest"],
-        "hits_by_mode": {m: family_hits(sealed["rows"], m) for m in doc["modes"]},
+        "hits_by_mode": baseline_hits_by_mode(sealed["rows"], doc["modes"]),
     }
 
 
@@ -1128,6 +1091,7 @@ def check_token_for_run(
     artifact_path: Optional[str],
     meter: Any,
     top_k: int,
+    persist_directory: str,
     judge: Any = None,
     judge_sample: Optional[int] = None,
 ) -> None:
@@ -1139,8 +1103,10 @@ def check_token_for_run(
             the evaluator parsed is not the one the token was minted for, or ``top_k`` is not the
             prereg's hit cut-off (``cutoff``: this is also what makes :func:`preflight_slot` refuse it),
             the judge is not on, is sampled, or is not the registered one (:func:`check_judge`: every sealed slot,
-            0 and 0b included, and ``None`` is "off"), or a private non-sealed input set is not a development
-            freeze record's version (``dev_binding``).
+            0 and 0b included, and ``None`` is "off"), a private non-sealed input set is not a development
+            freeze record's version (``dev_binding``), or (slots 0 and 0b) the pipeline running at
+            ``persist_directory`` does not hash to the ledger's incumbent (``incumbent``: recomputed here, so a
+            token that was preflighted earlier is checked against the pipeline as it is now).
     """
     from src.spend import SpendMeter
 
@@ -1148,6 +1114,12 @@ def check_token_for_run(
         raise GateRefused("slot")
     check_cutoff(slot_token.cutoff, top_k)
     check_judge(slot_token.judge_config_hash, judge, judge_sample)
+    if not is_confirmatory(slot_token.slot):
+        from src import pipeline_config
+
+        running = pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k)
+        if running is None or running != slot_token.ledger.incumbent_config_hash():
+            raise GateRefused("incumbent")
     owned = [p for p in set_paths if slot_token.approves(p)]
     if len(owned) != 1:
         raise GateRefused("set_binding")
@@ -1174,139 +1146,40 @@ def check_token_for_run(
 # ---------------------------------------------------------------------------
 
 
-def canonical_guards(facts: Mapping[str, Any]) -> Dict[str, bool]:
-    """Every canonical-v6 guard as ``{name: met}``, from the stored facts alone.
-
-    Canonical v6 = v5's guards (D46, D51, H1c) with the held-out clause met by
-    the frozen sealed set, plus slot 0 or 0b, the bound records, live expansion
-    (a live candidate arm counts as live: it is not replayed) and the tracing
-    guard. The pre-publication scan is a step, not a guard. A missing fact
-    fails its guard (closed).
-    """
-    f = facts
-    return {
-        "heldout_frozen_sealed_set": bool(f.get("heldout_is_frozen_set", False)),
-        "heldout_answerable": bool(f.get("heldout_answerable", False)),
-        "realistic_answerable": bool(f.get("realistic_answerable", False)),
-        "all_modes": bool(f.get("all_modes", False)),
-        "distinct_sets": bool(f.get("distinct_sets", False)),
-        "refusals_scored": bool(f.get("refusals_scored", False)),
-        "completeness_scored": bool(f.get("completeness_scored", False)),
-        "top_k_6": f.get("top_k") == 6,
-        "no_generation_errors": f.get("generation_errors", 1) == 0,
-        "no_incomplete_generations": f.get("generation_incomplete", 1) == 0,
-        "no_unknown_status": f.get("generation_unknown", 1) == 0,
-        "expansion_attempted": f.get("rewrite_attempts", 0) > 0,
-        "no_expansion_fallbacks": f.get("rewrite_fallbacks", 1) == 0,
-        "bm25_loaded": bool(f.get("bm25_loaded", False)) or not bool(f.get("bm25_default_path_in_play", True)),
-        "judge_clean": bool(f.get("judge_clean", False)),
-        "slot_0_or_0b": f.get("slot") in DESCRIPTIVE_SLOTS,
-        "bound_records": bool(f.get("bound_records", False)),
-        # Expansions generated live (slot 0/0b, or a live candidate arm), not replayed from an artifact.
-        "live_expansion": f.get("expansion_mode") in ("live", "candidate"),
-        "tracing_off": bool(f.get("tracing_off", False)),
-    }
-
-
-def failed_guards(facts: Mapping[str, Any]) -> List[str]:
-    """Names of the guards the stored facts do not meet (empty = canonical)."""
-    return [name for name, met in canonical_guards(facts).items() if not met]
-
-
 # ---------------------------------------------------------------------------
 # The stored results document
 # ---------------------------------------------------------------------------
 
 
-def _row_entry(row: Mapping[str, Any], retrieval: Mapping[str, Mapping[str, Any]],
-               answers: Optional[Mapping[str, Mapping[str, Any]]], judged: Mapping[str, Mapping[str, Any]],
-               k: int) -> Dict[str, Any]:
-    entry: Dict[str, Any] = {
-        "id": row["id"], "family_id": row["family_id"], "scope": row["scope"],
-        "register": row.get("register"), "source": row.get("source"),
-        "retrieval": {}, "answer": None, "judge": None,
-    }
-    for mode, per_row in retrieval.items():
-        cell = per_row.get(row["id"])
-        if cell is not None:
-            entry["retrieval"][mode] = {
-                "strict_rank": cell["strict_rank"], "related_rank": cell["related_rank"],
-                "strict_hit": bool(cell["strict_hit"].get(k)), "related_hit": bool(cell["related_hit"].get(k)),
-            }
-    a = (answers or {}).get(row["id"])
-    if a is not None:
-        entry["answer"] = {"observed": a["observed"], "partial": a["partial"]["status"] if "partial" in a else None}
-    j = judged.get(row["id"])
-    if j is not None:
-        entry["judge"] = {key: j[key] for key in ("ok", "error_type", "n_claims", "supported", "unsupported", "unclear")}
-    return entry
-
-
 def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: Mapping[str, Any]) -> Dict[str, Any]:
-    """Assemble the stored results document from a finished matrix run.
+    """Assemble the stored results document from a finished matrix run (the evaluator's entry point).
 
-    Ids, enums, numbers and hashes only: no question, rewrite, answer, claim,
-    gap or evidence text. ``result`` is the evaluator's v6 working result. It records the running pipeline's
-    ``pipeline_config_hash`` and the judge's ``config_hash`` (the judge always runs on every eligible answer:
-    ``sample`` is ``null``), a set's ``role`` is ``sealed``, ``development`` (a frozen private tuning or realistic
-    version) or ``regression`` (a public set).
+    The document is built by :func:`src.sealed_results.build_results_doc`, a hashed module (it decides what the stored
+    results say); this protocol module supplies the one gate it needs, :func:`dev_sets_of`. Ids, enums, numbers and
+    hashes only: no question, rewrite, answer, claim, gap or evidence text.
     """
-    k, primary = result["k"], result["primary_mode"]
-    if result["top_k"] != slot_token.cutoff or k != slot_token.cutoff:
-        raise ValueError("the run was not scored at the prereg's hit cut-off")
-    sets = []
-    for s in result["sets"]:
-        owned = bool(s.get("owned"))
-        # the role names what the set is for: the sealed set; a frozen private development version (tuning or
-        # realistic: the sets a freeze record binds); or a public set (the regression set), which no freeze binds
-        role = "sealed" if owned else "development" if _is_private_input(s["path"]) else "regression"
-        sets.append({
-            "label": s["label"], "role": role,
-            "sha256": s["sha256"], "cohort": s["cohort"],
-            "rows": [
-                _row_entry(r, s["retrieval"], s["answers"], s.get("judge_by_id") or {}, k) for r in s["rows"]
-            ],
-        })
-    baseline = None
-    if slot_token.baseline is not None:
-        by_mode = slot_token.baseline["hits_by_mode"]
-        if primary not in by_mode:
-            raise ValueError("the baseline run lacks the primary mode")
-        baseline = {
-            "run_id": slot_token.baseline["run_id"],
-            "results_digest": slot_token.baseline["results_digest"],
-            "cutoff": slot_token.baseline["cutoff"],
-            "hits": by_mode[primary],
-        }
-    return {
-        "version": RESULTS_VERSION, "kind": RESULTS_KIND, "slot": slot_token.slot, "run_id": slot_token.run_id,
-        "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "top_k": result["top_k"], "k": k, "cutoff": slot_token.cutoff,
-        "modes": list(result["modes"]), "primary_mode": primary,
-        "answers_ran": bool(result["answers_ran"]),
-        "provenance": dict(result["provenance"]),
-        "expansion": {
-            "mode": result["expansion_mode"], "identity": result.get("expansion_identity"),
-            "rewrite_live": result["rewrite_live"], "rewrite_replayed": result["rewrite_replayed"],
-        },
-        "run_cost": result.get("run_cost"),
-        "floor": dict(slot_token.floor),
-        "pipeline_config_hash": result.get("pipeline_config_hash"),
-        "judge": {"config_hash": result.get("judge_config_hash"), "sample": None},
-        "prereg_sha256": slot_token.prereg_sha256, "prereg_commit": slot_token.prereg_commit,
-        "candidate_config_hash": slot_token.candidate_config_hash,
-        "candidate_expansion": slot_token.candidate_expansion,
-        "candidate_rewrite_config_hash": slot_token.candidate_rewrite_config_hash,
-        # only private development inputs are bound to a freeze record: a registered public set (the regression
-        # set slot 0 may run with) is not a development version, so it names no split (the gate's own rule)
-        "dev_sets": dev_sets_of(slot_token.ledger, [
-            s["sha256"] for s in result["sets"] if not s.get("owned") and _is_private_input(s["path"])
-        ]),
-        "groups": dict(slot_token.groups),
-        "baseline": baseline,
-        "facts": dict(facts),
-        "sets": sets,
-    }
+    return _sealed_results.build_results_doc(slot_token, result, facts, dev_sets_of=dev_sets_of)
+
+
+def check_stored_incumbent(slot: str, ledger: SealedLedger, run_dir: Union[str, os.PathLike]) -> None:
+    """Slots 0 and 0b store only results produced by the incumbent pipeline (16A-2b b1a r5).
+
+    The stored results document's ``pipeline_config_hash`` must be the ledger's ``incumbent_config_hash``: the
+    pipeline that produced the numbers is the one the controls were computed under. A confirmatory slot (1-4) stores
+    a candidate's results and is not checked here (16B's candidate-identity check owns it).
+
+    Raises:
+        GateRefused: ``incumbent``: the document records another hash (or none, or cannot be read), so nothing is
+            stored and the claimed slot stays spent.
+    """
+    if is_confirmatory(slot):
+        return
+    try:
+        recorded = load_results_doc(run_dir).get("pipeline_config_hash")
+    except GateRefused:
+        raise GateRefused("incumbent") from None
+    if recorded is None or recorded != ledger.incumbent_config_hash():
+        raise GateRefused("incumbent")
 
 
 def write_results_doc(run_dir: Union[str, os.PathLike], doc: Mapping[str, Any]) -> Path:
@@ -1716,7 +1589,9 @@ def run_slot(
             persist_directory=persist_directory, privacy=PRIVATE, meter=meter, expansion=expansion,
             slot_token=slot_token, **dict(matrix_kwargs or {}),
         )
-        ledger.store_results(slot_token.slot, sealed_run_dir(slot_token.run_id, create=False))  # step 3
+        run_dir = sealed_run_dir(slot_token.run_id, create=False)
+        check_stored_incumbent(slot_token.slot, ledger, run_dir)  # slots 0 and 0b: the incumbent produced these results
+        ledger.store_results(slot_token.slot, run_dir)  # step 3
         return finish_slot(slot_token.slot, ledger=ledger, scan=scan, out=out)
     finally:
         slot_token.release()

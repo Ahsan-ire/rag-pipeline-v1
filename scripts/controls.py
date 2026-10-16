@@ -56,6 +56,13 @@ H (exit 2, "the running pipeline is not the draws' pipeline"). The first run rec
 controls (``incumbent_config_hash``); slots 0 and 0b then run only under exactly that pipeline. A verifying run
 needs H to be the recorded one (exit 1 otherwise).
 
+**The draws are the recorded draws (16A-2b b1a r5).** On the first run (no ``controls`` record yet) the ``--draw``
+files must be exactly the first ``draws_r`` development draws that ``sealed_tool record-draw`` recorded in the ledger
+under H (for rule C1 there are ``draws_r`` files; for C2, which counts no draws, as many as are given): the set of their
+sha256s equals the set of those ``dev_draw`` records' ``rows_sidecar_sha256``. No recorded draw under H is "draws not
+recorded"; a draw that is not among the first ones is refused; both are exit 2. So an unrecorded run, or a favourable
+subset of more than ``draws_r`` runs, cannot supply the controls.
+
 Usage:
     python scripts/controls.py [--prereg eval/prereg_16a2.json] --draw d1.rows.json --draw d2.rows.json ... \\
         --dev-set eval/private/dev/<set>.jsonl [--dev-set ...] [--list eval/controls_v1.json] [--persist-dir ./chroma_db]
@@ -272,6 +279,24 @@ def draws_config_hash(draws: Sequence[Mapping[str, Any]]) -> str:
     return only
 
 
+def check_recorded_draws(ledger: Any, incumbent: str, draw_shas: Sequence[str]) -> None:
+    """The ``--draw`` files must be the first draws recorded in the ledger under the incumbent's hash.
+
+    There are as many ``--draw`` files as the rule counts: ``draws_r`` for C1 (``read_controls_prereg`` refuses any
+    other number), so "the first ``draws_r`` recorded" is "the first ``len(draw_shas)`` recorded".
+
+    Raises:
+        ControlsError: no draw is recorded under ``incumbent`` ("draws not recorded"), or the sha256s of the files are
+            not the rows-sidecar sha256s of the first ``len(draw_shas)`` records.
+    """
+    recorded = ledger.dev_draws(incumbent)
+    if not recorded:
+        raise ControlsError("draws not recorded")
+    first = [record["rows_sidecar_sha256"] for record in recorded[: len(draw_shas)]]
+    if len(first) < len(draw_shas) or set(first) != set(draw_shas):
+        raise ControlsError("the draws are not the first recorded draws")
+
+
 def check_running_pipeline(draws_hash: str, persist_dir: str, top_k: int) -> None:
     """The pipeline running here must be the draws' pipeline (``pipeline_config_hash`` equal to theirs).
 
@@ -390,6 +415,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         draw_shas = check_distinct_draws(args.draw)
         incumbent = draws_config_hash(draws)
         check_running_pipeline(incumbent, args.persist_dir, read_prereg_cutoff(args.prereg))
+        if ledger.controls_record() is None:  # the first run: the controls come from the recorded draws only
+            check_recorded_draws(ledger, incumbent, draw_shas)
         lineage = load_lineage(args.dev_set)  # a sealed set is refused (exit 4) before the version check
         check_frozen_versions(ledger, args.dev_set)
         prereg_sha = check_epoch_prereg(ledger, args.prereg)

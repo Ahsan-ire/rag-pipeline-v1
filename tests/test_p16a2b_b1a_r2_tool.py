@@ -19,7 +19,7 @@ from src import sealed_ledger
 from tests.p16w_sealed_world import (  # noqa: F401  (fixtures)
     read_rows, repos, standard_released, world, write_rows, build_standard,
 )
-from tests.test_p16a2b_b1a_tool import file_sha, record_controls, sealed_frozen
+from tests.test_p16a2b_b1a_tool import file_sha, record_controls, record_draws, sealed_frozen
 
 ROOT = Path(__file__).resolve().parent.parent
 SEEDS = {"split_r1": 99, "split_r2": 12, "repair": 13, "calibration": 14}
@@ -83,6 +83,7 @@ def test_a_pushed_replacement_prereg_is_refused_at_declare_batch(world, monkeypa
     assert code == st.EXIT_REFUSED and "reason=prereg_amended" in err and out == ""
     assert world.ledger().batch_declaration() is None
     restore_prereg(world)
+    record_draws(world.ledger(), "1" * 64)  # r5: the candidate's draws are recorded
     code, out, err = world.run("declare-batch", "--candidate", f"{'1' * 64}:replay")
     assert code == 0, err
 

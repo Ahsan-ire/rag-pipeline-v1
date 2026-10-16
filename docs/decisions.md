@@ -2545,3 +2545,42 @@ What is now registered:
 - Hashing the git sha: unrelated commits would change the incumbent.
 - Allowing judge sampling on sealed slots: the cost forecast already assumes full judging.
 - Keeping `claim()` public without a receipt.
+
+## D74 addendum — prereg plan gate r5 (16 Oct 2026)
+**Decision:** every r5 finding on 5e2572a is accepted. Codex (sol, xhigh) was COMPLETE with outcome REVISE: 4 MAJOR, 2 MINOR. The plan-auditor returned FAIL: 0 BLOCKER, 3 MAJOR, 7 MINOR. The owner chose the approach: hash all of `src` minus a registered exclusion list, cover the full runtime, the endpoint and the Chroma search config, extend the judge hash to parsing and scorer version, and cap candidate configs with recorded draws. IMPLEMENTATION_PLAN.md b1a "Closure r5" has the detail. This addendum supersedes r4's module list and r4's "frozen from b7's draws to slot 0" wording.
+
+| Finding | Disposition |
+|---|---|
+| Codex 1, auditor M1: eval-path adapters and `expansion_artifact.py` are unhashed | FIXED: `pipeline_config_v2` hashes every `src` module except `CODE_EXCLUDED`; the metric projection moved into the hashed `sealed_results.py`, and group ids, the floor test and exclusion aggregation into the hashed `sealed_groups.py` |
+| Codex 2: Chroma search configuration | FIXED: the `hnsw`/`spann` configuration and `hnsw:*` metadata are hashed |
+| Codex 3: the API endpoint | FIXED: the resolved base URL is in both the pipeline and judge identities |
+| Codex 4, auditor m8: numerical and tokenizer packages | FIXED: every installed distribution is hashed |
+| Codex m5, auditor m4: the launcher skipped the pinned values | FIXED |
+| Codex m6: timeout literals were inside hashed code | FIXED: they moved to the excluded `llm_transport.py` |
+| Auditor M2: judge parsing, eligibility and scoring were unbound; no scorer version | FIXED: the judge hash covers `judge.py`, `eval_v6.py` and `eval_stats.py` plus the endpoint; results carry `scorer_version` |
+| Auditor M3: candidate draws can be re-rolled by re-hashing | FIXED: only `record-draw` draws count; at most the incumbent plus 4 candidate configs per epoch; all recorded candidates must be declared |
+| Auditor m5: the `.env` residual was overstated | CORRECTED: the launcher removes only `ANTHROPIC_API_KEY`. Any other `.env` variable stays in the launcher process. The SP's environment is scrubbed separately. |
+| Auditor m6: the incumbent was checked only at preflight | FIXED: it is re-checked at the evaluator's token check and before storage |
+| Auditor m7: 0b is bound by the incumbent | RECORDED: a slot-0 failure whose fix touches hashed code is a new epoch (D64 stop); 0b is only for failures that need no code change |
+| Auditor m9: 105 vs 110 drafts | CORRECTED: 110 |
+| Auditor m10: "M3 FIXED" was overstated | CORRECTED: the count rule is registered; b3's dispatch code writes `task.json:count` (not yet built) |
+
+**Interpretations recorded (stricter than D74; the owner may overrule):**
+- **The frozen period** runs from b7's first recorded draw to slot 0b. It covers every hashed module, every installed package and the endpoint.
+- **The 4-config cap limits 16B.** Exploration may run freely, but only recorded draws count. Each recorded candidate config is spent toward K = 4, whether or not it is later adopted.
+
+**Residuals:**
+- Hosted-model drift under one model id.
+- Unpinned HF weight revisions.
+- Chunk-metadata-only index changes.
+- A stale BM25 pickle.
+- `SealedLedger.claim` as a raw primitive.
+- Excluded modules (records, gates, privacy, display, transport): each is justified in `pipeline_config.CODE_EXCLUDED`, and an error in that judgement is not caught by the hash.
+- The pipeline and judge hashes depend on the environment's resolved endpoint: a shell with a different `ANTHROPIC_BASE_URL` sees a `prereg-check` mismatch.
+
+**Why:** r4's identity listed modules and packages one by one, and each round found another that mattered. Hashing everything except a justified list fails closed. Recording draws turns "first 5 per config" from a convention into a rule that cannot be re-rolled.
+
+**Rejected:**
+- An allow-list of packages: the gap was exactly the packages the list left out.
+- Function-level judge digests: a redesign.
+- Counting unrecorded runs.

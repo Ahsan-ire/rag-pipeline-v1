@@ -1,27 +1,34 @@
-"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, D74).
+"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, r5; D74).
 
 A sealed slot compares a candidate with the **incumbent**, so "the incumbent" must be a value a machine can
 check, not a claim. This module computes that value with **zero calls** (no model is loaded, no network is
 touched, no corpus text is read): the sha256 of the canonical JSON of the configuration that shapes what the
-pipeline retrieves and generates.
+pipeline retrieves, generates, judges and scores.
 
 ``pipeline_config(persist_directory, *, top_k)`` is a dict with exactly the keys :data:`PIPELINE_CONFIG_KEYS`:
 
 ``version``
-    :data:`PIPELINE_CONFIG_VERSION`, bumped when this recipe changes.
+    :data:`PIPELINE_CONFIG_VERSION` (2), bumped when this recipe changes.
 ``code``
-    ``{module file: sha256 of its ast.dump with docstrings stripped}`` for :data:`CODE_MODULES`, the modules that
-    shape retrieval, query rewriting and generation. ``ast.dump`` carries no line numbers, so a comment, a
-    docstring or a whitespace edit does not change it; any change to the code that runs does.
+    ``{module file: sha256 of its ast.dump with docstrings stripped}`` for **every** ``src`` module that is not in
+    :data:`CODE_EXCLUDED`. New modules are hashed by default; a module is left out only by being added, reviewed, to
+    the registered exclusion list. ``ast.dump`` carries no line numbers, so a comment, a docstring or a whitespace
+    edit does not change it; any change to the code that runs does.
 ``runtime``
-    The Python ``major.minor`` and the installed versions (``importlib.metadata``) of the retrieval and
-    generation packages the modules above import.
+    The Python ``major.minor`` and **every** installed distribution (``importlib.metadata.distributions()``) as a
+    sorted, deduplicated list of ``"normalised-name==version"`` strings.
+``endpoint``
+    The effective Anthropic base URL, resolved by the installed ``langchain_anthropic.ChatAnthropic`` itself (its
+    ``anthropic_api_url`` field's default factory: ``ANTHROPIC_API_URL``, then ``ANTHROPIC_BASE_URL``, then the
+    SDK default). Generation, the rewrite and the judge all build that client, so one value serves all three.
 ``embedding``
     The resolved ``embedder.EMBEDDING_MODEL`` (the environment override counts: it is read once at import), its
     :class:`~src.embedder.EmbeddingModelSpec` and the Chroma collection name.
 ``index``
-    :func:`index_identity`: the sha256 of the sorted chunk ids, their count and the embedding-model manifest
-    beside the store; ``None`` when there is no index (and then :func:`pipeline_config_hash` is ``None``).
+    :func:`index_identity`: the sha256 of the sorted chunk ids, their count, the embedding-model manifest beside the
+    store and the collection's effective search configuration (Chroma's ``hnsw`` / ``spann`` configuration blocks and
+    any ``hnsw:*`` collection metadata); ``None`` when there is no index (and then :func:`pipeline_config_hash` is
+    ``None``).
 ``bm25``
     The tokenizer pattern and ``BM25Okapi``'s ``k1``, ``b`` and ``epsilon`` defaults (the index is built with them).
 ``fusion``
@@ -34,10 +41,12 @@ pipeline retrieves and generates.
     prefix.
 
 **Excluded on purpose** (they change whether a call succeeds, or are about the run rather than the pipeline):
-timeouts and retries, the git sha, paths (the persist directory is only read, never hashed), the API key, the
-spend meter, the judge (it has its own identity: ``src.judge.judge_identity``), scoring, the eval sets and any
-corpus text. Chunk ids are content hashes, so the index component moves when the indexed text does; chunk
-*metadata* (page and section numbers) is not read, because a hash must never need documents.
+timeouts and retries (their literals live in ``src.llm_transport``, itself in :data:`CODE_EXCLUDED`, and the client
+kwargs drop them), the git sha, paths (the persist directory is only read, never hashed), the API key, the modules in
+:data:`CODE_EXCLUDED`, the eval sets and any corpus text. The judge has its own identity
+(``src.judge.judge_identity``) but its code is part of ``code`` here too, and so is all scoring code. Chunk ids are
+content hashes, so the index component moves when the indexed text does; chunk *metadata* (page and section numbers)
+is not read, because a hash must never need documents.
 
 Nothing here creates a file, a directory or a Chroma collection.
 """
@@ -49,6 +58,7 @@ import functools
 import hashlib
 import importlib.metadata
 import inspect
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -56,24 +66,45 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from src.expansion_artifact import _canonical_json
 
-PIPELINE_CONFIG_VERSION = 1
+PIPELINE_CONFIG_VERSION = 2
 PIPELINE_CONFIG_KEYS = (
-    "version", "code", "runtime", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
+    "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
 )
 
-#: The ``src`` modules whose code is hashed: the ones that shape what is retrieved, how a question is rewritten
-#: and how an answer is generated and graded for grounding. The files must all exist.
-CODE_MODULES = (
-    "retriever.py", "bm25_index.py", "embedder.py", "chunker.py", "query_rewrite.py", "generator.py", "grounding.py",
+#: The ``src`` modules whose code is NOT hashed (registered in the prereg as ``incumbent.code_excluded``; ``prereg-check``
+#: recomputes the list from this constant). Every other ``src`` module, a new one included, is hashed. A module may be
+#: listed only if it cannot change what is retrieved, generated, judged or scored: no value that reaches a prompt, a
+#: client, a ranking, a verdict or a metric, no row filter, no default of those. Each entry's reason:
+#:
+#: * ``__init__.py``: empty package marker.
+#: * ``audit.py``: the operational JSONL event log of ``pipeline query`` (what to record, never what to answer).
+#: * ``eval_privacy.py``: privacy classes, opaque row-id spelling and private-path containment (a changed id
+#:   spelling breaks a lookup; it moves no ranking, answer or verdict).
+#: * ``eval_roster.py``: the bake-off arm roster for ``scripts/`` (display ids; nothing in ``src`` imports it).
+#: * ``eval_sealed_read.py``: the read-only sealed-set loader (it validates and returns rows; refusing is its only effect).
+#: * ``eval_sets.py``: the set registry and the public / private / sealed classifier (which file is what, not what a
+#:   row scores).
+#: * ``eval_split.py``: the deterministic family splitter that builds the sets (data preparation; nothing in ``src``
+#:   imports it).
+#: * ``llm_transport.py``: the timeout and retry literals (they change whether a call succeeds, never its result).
+#: * ``render.py``: the display of a finished ``pipeline query`` result (display-only by its own contract).
+#: * ``sealed_inputs.py``: ``inputs-check`` of the hand-made pairing and conflict files (a check; nothing imports it).
+#: * ``sealed_ledger.py``: the append-only slot ledger and state machine (records, digests, locks and refusals). The
+#:   group ids, the floor test and the excluded-family aggregation live in ``sealed_groups.py``, which is hashed.
+#: * ``sealed_run.py``: the slot protocol: gates, preflight, token, claim and receipt, storage, publication. Nothing in it
+#:   computes or projects a value a stored result or the adoption analysis uses: those (the row hits, the baseline,
+#:   the results document, the canonical guards, the floor counts, the excluded groups) live in ``sealed_results.py``,
+#:   which is hashed.
+#: * ``spend.py``: the spend meter and its retry loop (it wraps the production clients; a retry changes whether a call
+#:   succeeds, not what it returns).
+#: * ``tracing_guard.py``: the tracing refusal (it can only stop a run).
+CODE_EXCLUDED = (
+    "__init__.py", "audit.py", "eval_privacy.py", "eval_roster.py", "eval_sealed_read.py", "eval_sets.py",
+    "eval_split.py", "llm_transport.py", "render.py", "sealed_inputs.py", "sealed_ledger.py", "sealed_run.py",
+    "spend.py", "tracing_guard.py",
 )
-#: Where :data:`CODE_MODULES` live (tests point it at a copy to edit one).
+#: Where the hashed modules live (tests point it at a copy to edit one).
 CODE_DIR = Path(__file__).resolve().parent
-
-#: The distributions the modules above import at retrieval or generation time (``importlib.metadata`` names).
-RUNTIME_PACKAGES = (
-    "rank-bm25", "chromadb", "sentence-transformers", "transformers", "langchain-core", "langchain-anthropic",
-    "langchain-chroma", "langchain-huggingface", "langchain-text-splitters", "anthropic",
-)
 
 #: Client kwargs that change whether a call succeeds, never what it returns: left out of every identity.
 CLIENT_RELIABILITY_KEYS = ("default_request_timeout", "max_retries")
@@ -118,7 +149,7 @@ def _strip_docstrings(tree: ast.AST) -> ast.AST:
     return tree
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=512)
 def _code_digest(path: str, mtime_ns: int, size: int) -> str:
     tree = _strip_docstrings(ast.parse(Path(path).read_text(encoding="utf-8")))
     return sha256_hex(ast.dump(tree).encode("utf-8"))
@@ -130,25 +161,62 @@ def code_digest(path: Path) -> str:
     return _code_digest(str(path), stat.st_mtime_ns, stat.st_size)
 
 
+def code_modules() -> List[str]:
+    """The hashed modules: every ``*.py`` under :data:`CODE_DIR` (relative posix path) not in :data:`CODE_EXCLUDED`, sorted.
+
+    Hashed by default: a module added to ``src`` joins the identity until it is registered as excluded.
+    """
+    return sorted(
+        path.relative_to(CODE_DIR).as_posix() for path in CODE_DIR.rglob("*.py")
+        if path.relative_to(CODE_DIR).as_posix() not in CODE_EXCLUDED and "__pycache__" not in path.parts
+    )
+
+
 def code_identity() -> Dict[str, str]:
-    """``{module file: code digest}`` for :data:`CODE_MODULES` (a missing file raises ``OSError``)."""
-    return {name: code_digest(CODE_DIR / name) for name in CODE_MODULES}
+    """``{module file: code digest}`` for :func:`code_modules` (an unreadable or unparseable file raises)."""
+    return {name: code_digest(CODE_DIR / name) for name in code_modules()}
 
 
 # ---------------------------------------------------------------------------
-# runtime, embedding, index
+# runtime, endpoint, embedding, index
 # ---------------------------------------------------------------------------
+
+
+def normalise_distribution_name(name: str) -> str:
+    """The PEP 503 normalised name: lower case, runs of ``-``, ``_`` and ``.`` become one ``-``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def runtime_identity() -> Dict[str, Any]:
-    """The Python ``major.minor`` and the installed version of each package in :data:`RUNTIME_PACKAGES`."""
-    packages: Dict[str, Optional[str]] = {}
-    for name in RUNTIME_PACKAGES:
-        try:
-            packages[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            packages[name] = None
-    return {"python": f"{sys.version_info.major}.{sys.version_info.minor}", "packages": packages}
+    """The Python ``major.minor`` and EVERY installed distribution as a sorted, deduplicated ``name==version`` list.
+
+    ``importlib.metadata.distributions()`` is read as it stands (no allow-list: a numerical or tokenizer dependency
+    is as much a part of the retrieval as the packages named in a requirements file). A distribution with no name
+    or no version has nothing to pin and is skipped.
+    """
+    found = set()
+    for dist in importlib.metadata.distributions():
+        name, version = dist.metadata["Name"], dist.version
+        if name and version:
+            found.add(f"{normalise_distribution_name(name)}=={version}")
+    return {"python": f"{sys.version_info.major}.{sys.version_info.minor}", "packages": sorted(found)}
+
+
+def endpoint_identity() -> Dict[str, str]:
+    """The effective Anthropic base URL, exactly as the installed ``ChatAnthropic`` resolves it.
+
+    ``langchain_anthropic.ChatAnthropic`` passes its ``anthropic_api_url`` field to the SDK client as ``base_url``
+    (so the SDK's own ``ANTHROPIC_BASE_URL`` lookup never runs); the field's default factory reads
+    ``ANTHROPIC_API_URL``, then ``ANTHROPIC_BASE_URL``, then falls back to the SDK default. This calls that factory,
+    so the recipe follows the installed package instead of copying its rules. Generation, the rewrite and the
+    judge all build that class, so one value serves all three. No client is built and nothing is sent.
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    factory = ChatAnthropic.model_fields["anthropic_api_url"].default_factory
+    if factory is None:  # the installed package changed shape: fail closed, never guess the endpoint
+        raise RuntimeError("ChatAnthropic.anthropic_api_url has no default factory")
+    return {"anthropic_base_url": str(factory())}
 
 
 def embedding_identity() -> Dict[str, Any]:
@@ -163,11 +231,14 @@ def embedding_identity() -> Dict[str, Any]:
 
 
 def index_identity(persist_directory: str) -> Optional[str]:
-    """sha256 of the index: sorted chunk ids, their count and the embedding-model manifest, or ``None``.
+    """sha256 of the index: sorted chunk ids, their count, the embedding-model manifest and the search configuration.
 
     Reads the ids only (Chroma ``get(include=[])``: never documents, metadata or embeddings) and never builds an
-    embedding function. ``None`` when the directory, the Chroma store or the collection is missing; nothing is
-    created in any of those cases (a missing directory is not even opened).
+    embedding function. The collection's effective search configuration (``configuration_json``'s ``hnsw`` and
+    ``spann`` blocks, which carry ``ef_search`` and the other approximate-search settings, and any ``hnsw:*``
+    collection metadata) is part of the hash: it can change the ranking while the ids stay the same. ``None`` when
+    the directory, the Chroma store or the collection is missing; nothing is created in any of those cases (a
+    missing directory is not even opened).
     """
     from src import embedder
 
@@ -184,7 +255,18 @@ def index_identity(persist_directory: str) -> Optional[str]:
     ids = sorted(collection.get(include=[])["ids"])
     manifest = root / embedder.EMBEDDING_MODEL_MANIFEST
     recorded = manifest.read_text(encoding="utf-8").strip() if manifest.is_file() else None
-    return sha256_hex(canonical_json({"ids": ids, "count": len(ids), "embedding_model_manifest": recorded}))
+    configuration = collection.configuration_json
+    metadata = collection.metadata or {}
+    return sha256_hex(canonical_json({
+        "ids": ids,
+        "count": len(ids),
+        "embedding_model_manifest": recorded,
+        "search_configuration": {
+            "hnsw": configuration.get("hnsw"),
+            "spann": configuration.get("spann"),
+            "metadata": {key: metadata[key] for key in sorted(metadata) if str(key).startswith("hnsw:")},
+        },
+    }))
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +334,7 @@ def pipeline_config(persist_directory: str, *, top_k: int) -> Dict[str, Any]:
         "version": PIPELINE_CONFIG_VERSION,
         "code": code_identity(),
         "runtime": runtime_identity(),
+        "endpoint": endpoint_identity(),
         "embedding": embedding_identity(),
         "index": index_identity(persist_directory),
         "bm25": bm25_identity(),

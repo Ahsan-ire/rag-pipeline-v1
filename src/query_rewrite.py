@@ -35,6 +35,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from src.llm_transport import REWRITE_MAX_RETRIES, REWRITE_REQUEST_TIMEOUT
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -160,12 +162,11 @@ def rewrite_llm_kwargs() -> Dict[str, Any]:
         # Haiku 4.5 runs with thinking OFF by default — unlike get_llm()'s
         # Sonnet 5, which runs adaptive thinking on by default — so no
         # `thinking` kwarg is needed here to keep it off.
-        # Same no-hang contract as get_llm (D52): expansion calls run ~2s,
-        # so 60s is generous; a blocked read times out and retries instead
-        # of wedging the caller. expand_query's never-raise contract turns
-        # an exhausted retry into STATUS_API_ERROR as before.
-        "default_request_timeout": 60.0,
-        "max_retries": 3,
+        # Same no-hang contract as get_llm (D52); the literals live in
+        # src.llm_transport. expand_query's never-raise contract turns an
+        # exhausted retry into STATUS_API_ERROR as before.
+        "default_request_timeout": REWRITE_REQUEST_TIMEOUT,
+        "max_retries": REWRITE_MAX_RETRIES,
     }
 
 

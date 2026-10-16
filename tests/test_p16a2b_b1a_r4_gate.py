@@ -165,7 +165,7 @@ def test_only_exactly_true_counts_as_the_judge_on(world, judge_flag):
         # the evaluator's own re-check says the same (defence in depth: a caller that did not say is not a caller that checked)
         assert refusal(lambda: sealed_run.check_token_for_run(
             token, set_paths=[str(world.sealed_path)], expansion_mode="live", artifact_path=None, meter=None, top_k=6,
-            judge=judge_flag)) == ("judge", "off")
+            persist_directory="unused", judge=judge_flag)) == ("judge", "off")
     finally:
         token.release()
 

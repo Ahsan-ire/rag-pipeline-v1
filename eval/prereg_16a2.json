@@ -129,7 +129,7 @@
         "candidate"
       ],
       "mode_declared_by": "batch_declaration",
-      "candidate_identity": "config_hash_is_pipeline_config_v1_checked_by_16b_gate_before_claim",
+      "candidate_identity": "config_hash_is_pipeline_config_v2_checked_by_16b_gate_before_claim",
       "rewrite_identity": "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim",
       "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
       "requires": [
@@ -152,7 +152,11 @@
       "statistic": "mean_over_draws_of_family_difference",
       "pairing": "by_draw_index",
       "incumbent_draws": "first_5_recorded_development_draws_under_the_incumbent_config_hash",
-      "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash"
+      "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash",
+      "recorded_configs_max": 4,
+      "draws_recorded_by": "sealed_tool_record_draw",
+      "unrecorded_runs": "never_count",
+      "all_recorded_candidates_declared": true
     },
     "unsupported_claims": {
       "unit": "claim",
@@ -473,11 +477,12 @@
     ]
   },
   "incumbent": {
-    "config_fn": "pipeline_config_v1",
+    "config_fn": "pipeline_config_v2",
     "components": [
       "version",
       "code",
       "runtime",
+      "endpoint",
       "embedding",
       "index",
       "bm25",
@@ -485,12 +490,28 @@
       "rewrite",
       "generation"
     ],
+    "code": "all_src_modules_except_code_excluded",
+    "code_excluded": [
+      "__init__.py",
+      "audit.py",
+      "eval_privacy.py",
+      "eval_roster.py",
+      "eval_sealed_read.py",
+      "eval_sets.py",
+      "eval_split.py",
+      "llm_transport.py",
+      "render.py",
+      "sealed_inputs.py",
+      "sealed_ledger.py",
+      "sealed_run.py",
+      "spend.py",
+      "tracing_guard.py"
+    ],
     "excluded": [
       "timeouts_retries",
       "git_sha",
       "paths",
       "judge",
-      "scoring",
       "eval_sets",
       "corpus_text"
     ],
@@ -500,7 +521,7 @@
       "0",
       "0b"
     ],
-    "candidates": "batch_entry_config_hash_is_pipeline_config_v1_of_the_candidate"
+    "candidates": "batch_entry_config_hash_is_pipeline_config_v2_of_the_candidate"
   },
   "judge": {
     "required_on": [
@@ -513,11 +534,22 @@
     ],
     "model": "claude-sonnet-5",
     "prompt_version": "faithfulness-judge-v1",
-    "config_hash": "90963793f4fbcf08b208bb08cd0fba5e5fba3adebfa7e60c4a8af846aff57c20",
+    "config_hash": "9a44fcb60f95dfec9c408d982c884d7704434cf7a1ccd66645f0d89ed48a8de7",
     "sample": "all_eligible",
     "eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
     "rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
-    "compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash",
+    "compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_version",
+    "covers": [
+      "model",
+      "client",
+      "prompt",
+      "verdicts",
+      "sample",
+      "parsing",
+      "eligibility",
+      "scoring",
+      "endpoint"
+    ],
     "errors": "any_sealed_judge_error_means_not_shown"
   }
 }

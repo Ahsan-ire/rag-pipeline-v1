@@ -1839,6 +1839,30 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
         `min_share` values are pinned by `prereg-check`; the data launcher takes the branch from the prereg, validates
         the prereg in-process before any dispatch record, and names its refusal `prereg_amended`; a data dispatch
         record must carry the prereg sha256; public non-sealed sets are stored with role `regression`.
+    - **Closure r5 (16 Oct; on 5e2572a: Codex REVISE 4 MAJOR / 2 MINOR; plan-auditor FAIL 0 BLOCKER / 3 MAJOR /
+      7 MINOR; the owner chose the approach; dispositioned in D74's r5 addendum).** This supersedes r4's module list.
+      - **Whole-src identity.** `pipeline_config_v2` hashes every `src/**/*.py` except the registered `CODE_EXCLUDED`
+        list (records, gates, privacy, display, transport literals; each justified in the module), so a new module is
+        hashed by default. Metric-bearing code moved out of `sealed_run.py` into the hashed `sealed_results.py`, and the analysis units, floor test and exclusion aggregation out of `sealed_ledger.py` into the hashed `sealed_groups.py`.
+        Runtime = every installed distribution; `endpoint` = the resolved Anthropic base URL; the index adds Chroma's
+        search configuration. Timeout and retry literals live in the excluded `llm_transport.py`.
+      - **Judge identity** also covers `judge.py`, `eval_v6.py` and `eval_stats.py` (parsing, the named eligibility
+        predicate `judge.is_judgeable`, scoring) and the endpoint; results record `scorer_version`; 16B compares
+        only results with equal judge hash and scorer version.
+      - **Recorded draws (owner-chosen cap).** A development draw counts only if `sealed_tool record-draw` recorded it
+        as a `dev_draw` ledger record (per-config index). An epoch may record draws under at most the incumbent plus 4
+        candidate config hashes, and only the incumbent's before the `controls` record. `controls.py` takes exactly
+        the first recorded draws under the incumbent hash. `declare-batch` needs ≥ `draws_r` recorded draws per
+        candidate, and every recorded candidate config must be in the batch (all count toward Holm's K = 4).
+        Unrecorded runs never count. This lands the b7 `dev_draw` mechanism now.
+      - **Incumbent re-checked** by the evaluator's token check and before storing results (slots 0/0b).
+      - **The launcher** runs `validate_prereg` and the pinned values.
+      - **Frozen period.** From b7's first recorded draw to slot 0b, any change to a hashed module, an installed
+        package or the endpoint makes slots 0 and 0b refuse (`incumbent`). A guard failure on slot 0 whose fix
+        touches hashed code therefore means a new epoch (a D64 stop), not 0b; 0b is for failures that need no code
+        change.
+      - **Drafts:** at 57 migrated families the rule gives 110 (r4 margin included; the r3 "105" is superseded).
+        `task.json:count` is written by b3's dispatch code (not yet built), from `count-migrated`.
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
@@ -1904,7 +1928,7 @@ b8. **Slot 0 [C].** With the week's remaining cap ≥ 2 × the forecast: `pipeli
     realistic-v2, tuning-v2 and `--regression` heldout-v1 (four modes, refusals, completeness, judge), live expansion
     (the gate refuses `build:`; the run directory's `expansion_artifact.json` is the artifact, and its sha256 in the
     `slot_stored` record is what slots 1–4 replay as `slot0_canonical`, b1a), `--approved-eur` 2 × the forecast. Canonical → `results_v6.md` and a ledger outcome; otherwise guard names,
-    then 0b once; a second failure goes to the owner.
+    then 0b once (only for a failure that needs no change to hashed code, b1a r5); a second failure goes to the owner.
 b9. **Docs [C]:** D74 (prereg, the owner's choice, under C1 the D57-addendum reversal), D75 (data and validation, owner
     hours, the D71 Q5 narrowing), D76 (re-baseline: cost, results, MDE at the final N); README headline with the source
     split and the D46 caveat; b1's three adoption texts; `Current phase`, `Next:`.
