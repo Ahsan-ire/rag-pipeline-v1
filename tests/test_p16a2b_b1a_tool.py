@@ -9,6 +9,7 @@ import hashlib
 import json
 
 from scripts import sealed_tool as st
+from src import sealed_ledger
 from tests.p16w_sealed_world import (  # noqa: F401  (fixtures)
     read_rows, repos, standard_released, world,
 )
@@ -39,7 +40,8 @@ def test_the_fourth_round_one_split_attempt_is_the_stop_split_infeasible(world):
     code, out, err = world.run("split", "--round", "1")
     assert code == st.EXIT_REFUSED and "reason=split_infeasible" in err and out == ""
     assert len(attempts()) == 3 and world.ledger().records() == before  # nothing recorded
-    # round 2 is not capped by this key (it fails for its own reason: there is no released round 1)
+    # round 2 has its own cap (drafting_rule.round_2.max_attempts, tests/test_p16a2b_b1a_r2_tool.py); here it fails
+    # for its own reason: there is no released round 1
     code, out, err = world.run("split", "--round", "2")
     assert code == st.EXIT_REFUSED and "reason=round1_missing" in err
 
@@ -85,14 +87,16 @@ def test_a_freeze_needs_the_prereg_committed_unmodified_and_pushed(world):
 
 
 def test_a_development_freeze_below_its_quota_minimum_is_refused_before_anything_is_written(world):
-    standard_released(world)
-    world.approve_all("development")
-    quota = {"sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5, "realistic_min": 5, "tuning_min": 8}
-    quota["examples"] = [{"pool_total": 24, "preassigned_realistic": 1, **st.compute_quotas(quota, 24, 1), "label": "quota_short"}]
-    world.write_prereg(quota=quota)  # realistic_min is now 5; the split gave realistic 4 families
-    world.commit_prereg(push=True)
+    std = standard_released(world)
+    # the registered prereg cannot change once the epoch has one (prereg_amended), so the realistic split is brought
+    # below its registered minimum (4) by the owner rejecting one of its three drafted families
+    victim = next(r["family_id"] for r in read_rows(world.dev / "realistic_r1.jsonl") if r["family_id"] not in std.pinned_realistic)
+    world.run("sheet", "--kind", "development", "--name", "r1", "--all")
+    sheet = world.mark_sheet(world.sheet_path("development", "r1"), {victim: "R"}, default="A")
+    code, out, err = world.run("apply", "--kind", "development", "--sheet", sheet)
+    assert code == 0 and world.last(out, "apply")["rejected_families"] == "1", err
     code, out, err = world.recheck("realistic-v2")
-    assert code == st.EXIT_FREEZE_INFEASIBLE and "reason=freeze_infeasible split=realistic families=4 minimum=5" in err and out == ""
+    assert code == st.EXIT_FREEZE_INFEASIBLE and "reason=freeze_infeasible split=realistic families=3 minimum=4" in err and out == ""
     assert world.ledger().freeze_record("realistic") is None and not (world.dev / "realistic-v2.jsonl").exists()
     assert not list((world.sealed / "work").glob("freeze_*")) and not list(world.dev.glob("*.journal"))
     # tuning meets its minimum (8) and the sealed split has no such minimum
@@ -101,22 +105,39 @@ def test_a_development_freeze_below_its_quota_minimum_is_refused_before_anything
 
 
 # --- declare-batch ------------------------------------------------------------------------------------------------
-def test_declare_batch_needs_the_freeze_validates_and_appends_once(world):
+def record_controls(world, content: bytes = b'{"version": 1}\n'):
+    """The committed controls list and the ledger's record of it (what ``declare-batch`` requires)."""
+    path = world.repo / "eval" / "controls_v1.json"
+    path.write_bytes(content)
+    world.ledger().record_controls(
+        controls_sha256=file_sha(path), draws_sha256="e" * 64, prereg_sha256=file_sha(world.prereg_path),
+    )
+    return path
+
+
+def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(world, monkeypatch):
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the embargo itself: tests/test_p16a2b_b1a_r2.py
     a, b = "1" * 64, "2" * 64
-    code, out, err = world.run("declare-batch", "--candidate", a)
+    cand = lambda h, mode="replay": ["--candidate", f"{h}:{mode}"]  # noqa: E731
+    code, out, err = world.run("declare-batch", *cand(a))
     assert code == st.EXIT_REFUSED and "reason=freeze_missing" in err
     sealed_frozen(world)
-    for bad in (["--candidate", a, "--candidate", a], [], ["--candidate", "short"], ["--candidate", "A" * 64],
-                sum((["--candidate", str(n) * 64] for n in range(1, 6)), [])):
+    code, out, err = world.run("declare-batch", *cand(a))
+    assert code == st.EXIT_REFUSED and "reason=controls_missing" in err and out == ""  # no controls record yet
+    record_controls(world)
+    for bad in (cand(a) + cand(a), [], ["--candidate", f"short:replay"], ["--candidate", f"{'A' * 64}:replay"],
+                ["--candidate", a], ["--candidate", f"{a}:live"], ["--candidate", f"{a}:"], ["--candidate", f"{a}:replay:candidate"],
+                sum((cand(str(n) * 64) for n in range(1, 6)), [])):
         code, out, err = world.run("declare-batch", *bad)
         assert code == st.EXIT_REFUSED and "reason=batch_invalid" in err and out == "", bad
     assert world.ledger().batch_declaration() is None
-    code, out, err = world.run("declare-batch", "--candidate", a, "--candidate", b)
+    code, out, err = world.run("declare-batch", *cand(a), *cand(b, "candidate"))
     assert code == 0, err
     line = world.last(out, "batch_declared")
     rec = world.ledger().batch_declaration()
-    assert line["candidates"] == "2" and line["sha256"] == rec["candidates_sha256"] and rec["candidates"] == [a, b]
-    code, out, err = world.run("declare-batch", "--candidate", b)
+    assert line["candidates"] == "2" and line["sha256"] == rec["candidates_sha256"]
+    assert rec["candidates"] == [{"config_hash": a, "expansion": "replay"}, {"config_hash": b, "expansion": "candidate"}]
+    code, out, err = world.run("declare-batch", *cand(b))
     assert code == st.EXIT_REFUSED and "reason=batch_declared" in err
     assert a not in out + err and world.ledger().batch_declaration() == rec
 

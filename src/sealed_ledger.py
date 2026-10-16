@@ -157,21 +157,35 @@ KINDS = (
     "exclusion",
     "dispatch",
     "batch_declaration",
+    "calibration_draw",
+    "controls",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
 #: record's kind, sequence number and line digest (all sha256 hex digests).
 MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
-    "split_attempt": ("pool_digest", "payload_sha256"),
+    "split_attempt": ("pool_digest", "payload_sha256", "prereg_sha256"),
     "release": ("assignment_digest", "payload_sha256"),
     "freeze": ("set_sha256", "twins_sha256", "exclusions_sha256", "prereg_sha256"),
     "slot_stored": ("results_digest", "expansion_artifact_sha256"),
     "batch_declaration": ("candidates_sha256",),
+    "calibration_draw": ("draw_sha256",),
+    "controls": ("controls_sha256", "draws_sha256", "prereg_sha256"),
     "publication_intent": ("results_digest",),
 }
 
 #: The confirmatory batch holds at most this many candidates (slots 1..K_MAX).
 K_MAX = 4
+
+#: The 16A-2b confirmatory embargo: while True no batch can be declared and slots 1-4 cannot be claimed.
+#: Lifted only by 16B's reviewed code change, which must also add the candidate-identity check (the run's
+#: computed configuration hash equals the declared one): prereg ``adoption.confirmatory_batch.state``.
+#: Always read as ``sealed_ledger.CONFIRMATORY_EMBARGO`` at call time, so a test can monkeypatch it.
+CONFIRMATORY_EMBARGO = True
+
+#: The expansion modes a batch entry may declare: retrieval-only (replay slot 0's canonical artifact) or a
+#: rewrite-changing candidate (live rewrite under its configuration hash).
+BATCH_EXPANSIONS = ("replay", "candidate")
 
 #: The run-directory file a slot-0/0b run builds; its sha256 is recorded on ``slot_stored``.
 EXPANSION_ARTIFACT_NAME = "expansion_artifact.json"
@@ -630,6 +644,8 @@ def _may_use_0b(slots: Mapping[str, _SlotState]) -> bool:
 def _check_claimable(sid: str, slots: Mapping[str, _SlotState], batch: Optional[Mapping[str, Any]] = None) -> None:
     if sid in slots:
         raise SlotRefused(f"slot {sid} was claimed before")
+    if sid not in ("0", "0b") and CONFIRMATORY_EMBARGO:
+        raise SlotRefused(f"slot {sid} is embargoed until 16B's sealed comparison gate")
     if sid not in ("0", "0b") and (batch is None or int(sid) > len(batch["candidates"])):
         raise SlotRefused(f"slot {sid} needs a batch declaration with a candidate for it")
     if sid == "0b" and not _may_use_0b(slots):
@@ -850,12 +866,14 @@ class SealedLedger:
     # -- split, release, freeze ----------------------------------------------
 
     def record_split_attempt(
-        self, *, round_no: int, pool_digest: str, outcome: str, payload_sha256: Optional[str] = None
+        self, *, round_no: int, pool_digest: str, outcome: str, payload_sha256: Optional[str] = None,
+        prereg_sha256: Optional[str] = None,
     ) -> None:
         """Record a split attempt: the pool digest and its outcome (an enum token).
 
         ``payload_sha256`` optionally names the stored payload (``store_payload``)
-        the attempt refers to.
+        the attempt refers to; ``prereg_sha256`` the pre-registration the attempt was made under
+        (the first record that carries one registers the epoch's prereg: ``epoch_prereg_sha256``).
         """
         fields: Dict[str, Any] = {
             "round": _count(round_no, "round_no", minimum=1),
@@ -864,6 +882,8 @@ class SealedLedger:
         }
         if payload_sha256 is not None:
             fields["payload_sha256"] = _hex64(payload_sha256, "payload_sha256")
+        if prereg_sha256 is not None:
+            fields["prereg_sha256"] = _hex64(prereg_sha256, "prereg_sha256")
         with self._txn() as txn:
             txn.append("split_attempt", **fields)
 
@@ -946,22 +966,35 @@ class SealedLedger:
 
     # -- the confirmatory batch declaration (b1a) ---------------------------------------
 
-    def record_batch_declaration(self, candidates: Sequence[str]) -> str:
-        """Declare the confirmatory batch: 1..4 distinct candidate config hashes, in slot order.
+    def record_batch_declaration(self, candidates: Sequence[Mapping[str, str]]) -> str:
+        """Declare the confirmatory batch: 1..4 candidates in slot order, each ``{"config_hash", "expansion"}``.
 
-        Candidate i runs in slot i. Needs the sealed freeze; appendable once, and only before any of
-        slots 1-4 was claimed (``ProtocolError`` otherwise). Returns the sha256 of the canonical JSON
-        of the list (the mirror carries only that digest).
+        ``config_hash`` is a distinct 64-hex candidate configuration hash; ``expansion`` is ``"replay"``
+        (retrieval-only: the slot replays slot 0's canonical artifact) or ``"candidate"`` (a rewrite-changing
+        candidate: live rewrite under its config hash). Candidate i runs in slot i. Needs the sealed freeze and
+        the ``controls`` record; appendable once, and only before any of slots 1-4 was claimed
+        (``ProtocolError`` otherwise, and always while ``CONFIRMATORY_EMBARGO`` holds). Returns the sha256 of
+        the canonical JSON of the list (the mirror carries only that digest).
         """
         if isinstance(candidates, (str, bytes)) or not 1 <= len(candidates) <= K_MAX:
             raise ValueError(f"a batch has 1 to {K_MAX} candidates")
-        cands = [_hex64(c, "candidate") for c in candidates]
-        if len(set(cands)) != len(cands):
+        cands: List[Dict[str, str]] = []
+        for entry in candidates:
+            if not isinstance(entry, Mapping) or set(entry) != {"config_hash", "expansion"}:
+                raise ValueError("a batch candidate is {config_hash, expansion}")
+            if entry["expansion"] not in BATCH_EXPANSIONS:
+                raise ValueError(f"a batch candidate's expansion is one of {BATCH_EXPANSIONS}")
+            cands.append({"config_hash": _hex64(entry["config_hash"], "candidate"), "expansion": entry["expansion"]})
+        if len({c["config_hash"] for c in cands}) != len(cands):
             raise ValueError("batch candidates must be distinct")
         digest = hashlib.sha256(_canonical(cands)).hexdigest()
         with self._txn() as txn:
+            if CONFIRMATORY_EMBARGO:
+                raise ProtocolError("the confirmatory batch is embargoed until 16B's sealed comparison gate")
             if not any(r["kind"] == "freeze" and r["split"] == SEALED_SPLIT for r in txn.records):
                 raise ProtocolError("the sealed split is not frozen")
+            if not any(r["kind"] == "controls" for r in txn.records):
+                raise ProtocolError("the controls are not recorded")
             if any(r["kind"] == "batch_declaration" for r in txn.records):
                 raise ProtocolError("a batch was already declared")
             if any(s in txn.slots for s in ("1", "2", "3", "4")):
@@ -972,6 +1005,51 @@ class SealedLedger:
     def batch_declaration(self) -> Optional[Dict[str, Any]]:
         """The batch declaration record, or ``None`` before it."""
         found = self.records("batch_declaration")
+        return found[0] if found else None
+
+    # -- the epoch's registered prereg, the calibration draw, the controls (b1a r2) ------------
+
+    def epoch_prereg_sha256(self) -> Optional[str]:
+        """The ``prereg_sha256`` of the first record (of any kind) that carries one: the epoch's registered prereg."""
+        for rec in self.records():
+            if rec.get("prereg_sha256") is not None:
+                return rec["prereg_sha256"]
+        return None
+
+    def record_calibration_draw(self, kind: str, draw_sha256: str) -> None:
+        """Record that the calibration draw of ``kind`` (``sealed`` or ``development``) was made: once per kind.
+
+        Stored as ``draw_kind`` (the record's own ``kind`` is its type). Raises ``ProtocolError`` for a second
+        record of the same kind; ``draw_sha256`` is the sha256 of the canonical draw JSON.
+        """
+        name = _token(kind, "kind")
+        digest = _hex64(draw_sha256, "draw_sha256")
+        with self._txn() as txn:
+            if any(r["kind"] == "calibration_draw" and r["draw_kind"] == name for r in txn.records):
+                raise ProtocolError(f"the {name} calibration draw was already recorded")
+            txn.append("calibration_draw", draw_kind=name, draw_sha256=digest)
+
+    def calibration_draw(self, kind: str) -> Optional[Dict[str, Any]]:
+        """The calibration-draw record of ``kind``, or ``None`` before it."""
+        name = _token(kind, "kind")
+        found = [r for r in self.records("calibration_draw") if r["draw_kind"] == name]
+        return found[0] if found else None
+
+    def record_controls(self, *, controls_sha256: str, draws_sha256: str, prereg_sha256: str) -> None:
+        """Record the critical-controls list once: the file's sha256, the draw files' digest and the prereg's sha256."""
+        fields = {
+            "controls_sha256": _hex64(controls_sha256, "controls_sha256"),
+            "draws_sha256": _hex64(draws_sha256, "draws_sha256"),
+            "prereg_sha256": _hex64(prereg_sha256, "prereg_sha256"),
+        }
+        with self._txn() as txn:
+            if any(r["kind"] == "controls" for r in txn.records):
+                raise ProtocolError("the controls were already recorded")
+            txn.append("controls", **fields)
+
+    def controls_record(self) -> Optional[Dict[str, Any]]:
+        """The controls record, or ``None`` before it."""
+        found = self.records("controls")
         return found[0] if found else None
 
     def canonical_artifact_sha256(self) -> Optional[str]:

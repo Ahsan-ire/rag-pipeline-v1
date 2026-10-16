@@ -29,16 +29,22 @@ Definitions the plan leaves to the implementation (flagged in the 16A-2a report)
 Output ``eval/controls_v1.json`` is ``bakeoff_report --controls`` format plus
 provenance: ``{"version": 1, "rule", "rank_ceiling", "draws", "families",
 "controls": [{"set_sha256", "ids"}]}`` -- ids and set hashes only, no text. The
-list is computed once on the frozen development sets (b7). If the file already
-exists the run only **verifies**: a differing computation exits 1 and writes
-nothing. To recompute (a new development version), a human deletes the file.
+list is computed once on the frozen development sets (b7) and committed to the
+ledger: on the first run the file is written and a ``controls`` record is added
+(the file's sha256, the digest of the draw files' sha256s and the prereg's sha256).
+Once recorded the run only **verifies**: the computation must equal the file and
+the file must still be the recorded one, else exit 1 and nothing is written. A file
+with no record ("controls file not recorded") or a record with no file ("controls
+already recorded") exits 1: deleting the file never allows a recompute.
 
 The rule, rank ceiling and draw count come from the prereg's ``controls`` block
 (``--prereg``, default ``eval/prereg_16a2.json``), not from the command line: the
 ceiling must be the rule's (``RANK_CEILING``) and, for C1, the number of ``--draw``
-files must be ``draws_r``. Each ``--dev-set`` must be the frozen version of its
-split: its sha256 is the ``set_sha256`` of the ledger's ``freeze`` record for
-``tuning`` or ``realistic`` (a later development version never changes this
+files must be ``draws_r``. The prereg file's sha256 must be the ledger's
+``epoch_prereg_sha256()`` (the epoch's one registered prereg). The ``--dev-set``
+files must be the frozen versions of BOTH development splits, each exactly once:
+their sha256s are the ``set_sha256`` of the ledger's ``freeze`` records for
+``tuning`` and ``realistic`` (a later development version never changes this
 epoch's controls).
 
 Usage:
@@ -52,6 +58,7 @@ committed list; 2 unusable input; 4 a development set is sealed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -228,24 +235,58 @@ def read_controls_prereg(path: str, n_draws: int) -> str:
     return rule
 
 
-def check_frozen_versions(paths: Sequence[str]) -> None:
-    """Each development set's sha256 must be a tuning or realistic ``freeze`` record's ``set_sha256``.
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_sha256(path: str) -> str:
+    with open(path, "rb") as fh:
+        return _sha256_bytes(fh.read())
+
+
+def _canonical_sha256(obj: Any) -> str:
+    """sha256 of the canonical JSON (sorted keys, no spaces, ASCII) of a value."""
+    return _sha256_bytes(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii"))
+
+
+def check_epoch_prereg(ledger: Any, prereg_path: str) -> str:
+    """The prereg file's sha256, which must be the ledger's registered epoch prereg.
 
     Raises:
-        ControlsError: ``a development set is not its frozen version``.
+        ControlsError: the ledger has no registered prereg yet, or it is another file's.
+    """
+    try:
+        sha = _file_sha256(prereg_path)
+    except OSError:
+        raise ControlsError("the prereg is unreadable or has no controls block") from None
+    if ledger.epoch_prereg_sha256() != sha:  # None (nothing registered) refuses too
+        raise ControlsError("the prereg is not this epoch's registered prereg")
+    return sha
+
+
+def check_frozen_versions(ledger: Any, paths: Sequence[str]) -> None:
+    """The development sets must be the ``tuning`` and the ``realistic`` freeze records' versions, each once.
+
+    Raises:
+        ControlsError: a development set is not a frozen version, a split is given twice, or one is omitted.
     """
     from src.eval_sets import sha256_file
-    from src.sealed_run import default_ledger
 
-    ledger = default_ledger()
-    frozen = set()
+    frozen = {}
     for split in FROZEN_DEV_SPLITS:
         rec = ledger.freeze_record(split)
         if rec is not None:
-            frozen.add(rec["set_sha256"])
+            frozen[rec["set_sha256"]] = split
+    seen = set()
     for path in paths:
-        if sha256_file(path) not in frozen:
+        split = frozen.get(sha256_file(path))
+        if split is None:
             raise ControlsError("a development set is not its frozen version")
+        if split in seen:
+            raise ControlsError("a development split is given twice")
+        seen.add(split)
+    if seen != set(FROZEN_DEV_SPLITS):
+        raise ControlsError("the controls cover both development splits: a split is missing")
 
 
 def _dump(doc: Mapping[str, Any]) -> str:
@@ -273,15 +314,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     from src.eval_privacy import SealedInputError
     from src.eval_schema import SchemaError
+    from src.sealed_ledger import ProtocolError
+    from src.sealed_run import default_ledger
 
     try:
+        ledger = default_ledger()
         draws = []
         for path in args.draw:
             with open(path, encoding="utf-8") as fh:
                 draws.append(json.load(fh))
         rule = read_controls_prereg(args.prereg, len(args.draw))
         lineage = load_lineage(args.dev_set)  # a sealed set is refused (exit 4) before the version check
-        check_frozen_versions(args.dev_set)
+        check_frozen_versions(ledger, args.dev_set)
+        prereg_sha = check_epoch_prereg(ledger, args.prereg)
         doc = compute_controls(draws, lineage, rule)
     except SealedInputError:
         print("[controls] a development set is sealed: refused", file=sys.stderr)
@@ -295,7 +340,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     rows = sum(len(c["ids"]) for c in doc["controls"])
     summary = f"rule {doc['rule']}, draws {doc['draws']}, families {doc['families']}, rows {rows}"
+    record = ledger.controls_record()
     if os.path.exists(args.list_path):
+        if record is None:
+            print("[controls] controls file not recorded: nothing written", file=sys.stderr)
+            return EXIT_DIFFERS
         try:
             with open(args.list_path, encoding="utf-8") as fh:
                 committed = json.load(fh)
@@ -310,10 +359,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 file=sys.stderr,
             )
             return EXIT_DIFFERS
+        if _file_sha256(args.list_path) != record["controls_sha256"]:
+            print("[controls] the controls file is not the recorded one; nothing written", file=sys.stderr)
+            return EXIT_DIFFERS
         print(f"[controls] matches the committed list ({summary})")
         return 0
+    if record is not None:
+        print("[controls] controls already recorded; a deleted file is never recomputed", file=sys.stderr)
+        return EXIT_DIFFERS
     _write(args.list_path, _dump(doc))
-    print(f"[controls] wrote {args.list_path} ({summary})")
+    try:
+        ledger.record_controls(
+            controls_sha256=_file_sha256(args.list_path),
+            draws_sha256=_canonical_sha256(sorted(_file_sha256(p) for p in args.draw)),
+            prereg_sha256=prereg_sha,
+        )
+    except ProtocolError:
+        print("[controls] controls already recorded", file=sys.stderr)
+        return EXIT_DIFFERS
+    print(f"[controls] wrote {args.list_path} ({summary}) and recorded it in the ledger")
     return 0
 
 

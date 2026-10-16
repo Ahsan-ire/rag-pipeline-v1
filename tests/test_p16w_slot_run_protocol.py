@@ -264,10 +264,8 @@ def test_a_post_freeze_exclusion_keeps_the_next_slots_replay_and_pairing(world, 
     world.run(0)
     r0 = run_id_of(world, 0)
     artifact = world.run_dir(r0) / "expansion_artifact.json"
-    world.write_prereg({
-        "0": {"expansion": "live"},
-        "1": {"expansion": "replay", "artifact_sha256": sealed_run._file_sha(artifact)},
-    })
+    # slot 1 replays slot 0's canonical artifact: the batch entry (declared by `world.token`) says so
+    assert sealed_run._file_sha(artifact) == world.ledger().canonical_artifact_sha256()
     group = world.families[2]  # the {2, 3} group: two eligible families
     world.ledger().exclude(group, "owner")
     miss = {r["question"] for r in world.sealed_rows if r["family_id"] in (world.families[0], world.families[4])}
@@ -386,16 +384,14 @@ E2E_GUARDS = {
     "completeness_scored": ({"skip_completeness": True}, "completeness_scored"),
     "all_modes": ({"modes": ["hybrid"]}, "all_modes"),
     "judge_clean": ({"judge": False}, "judge_clean"),
-    "realistic_answerable": ({"specs": "no_realistic"}, "realistic_answerable"),
 }
+#: ``realistic_answerable`` is not here either: a slot-0/0b run must carry BOTH frozen development sets (``dev_binding``),
+#: so the realistic set cannot be left out of a run; the guard fails only through its stored fact (FACT_MUTATIONS).
 
 
 @pytest.mark.parametrize("name", sorted(E2E_GUARDS))
 def test_each_guard_removed_alone_makes_the_run_non_canonical_and_prints_guard_names_only(world, capsys, name):
     kwargs, expected = E2E_GUARDS[name]
-    kwargs = dict(kwargs)
-    if kwargs.get("specs") == "no_realistic":
-        kwargs["specs"] = [s for s in world.specs if s[0] != "realistic"]
     outcome = world.run(0, **kwargs)
     out = capsys.readouterr()
     assert not outcome.canonical and outcome.failed_guards == (expected,)
@@ -404,6 +400,13 @@ def test_each_guard_removed_alone_makes_the_run_non_canonical_and_prints_guard_n
     assert "publication_intent" not in kinds(world) and world.ledger().recover(0).action is RecoveryAction.CONSUMED
     assert_no_leak(world.canaries.secrets(), out.out, out.err)
     assert not [i for i in world.ids() if i in out.out + out.err]
+
+
+def test_a_slot_zero_run_without_the_realistic_set_is_refused_before_the_claim(world):
+    specs = [spec for spec in world.specs if spec[0] != "realistic"]
+    token = world.token(0, claim=False)  # unclaimed, as the CLI mints it: run_slot's preflight refuses before the claim
+    assert gate_of(lambda: world.run(0, token=token, specs=specs)) == "dev_binding"
+    assert "slot_claim" not in kinds(world)
 
 
 def test_a_generation_error_removes_only_the_no_generation_errors_guard(world, monkeypatch, capsys):
@@ -635,9 +638,10 @@ def test_the_scan_is_a_step_not_a_guard(world, monkeypatch):
 
 
 def candidate_prereg(world):
+    """The prereg's batch slots, and a one-candidate batch whose slot 1 is the rewrite-changing ``config_hash``."""
     config_hash = rewrite_identity()["config_hash"]
-    world.write_prereg({"0": {"expansion": "live"}, "0b": {"expansion": "live"},
-                        "1": {"expansion": "candidate", "rewrite_candidate": config_hash}})
+    world.write_prereg()
+    world.declare_batch(entries=[{"config_hash": config_hash, "expansion": "candidate"}])
     return config_hash
 
 

@@ -26,7 +26,7 @@ import pytest
 from langchain_core.documents import Document
 
 import src.evaluator as ev
-from src import eval_privacy, eval_schema, eval_sets, sealed_run
+from src import eval_privacy, eval_schema, eval_sets, sealed_ledger, sealed_run
 from src.eval_schema import row_hash
 from src.eval_sealed_read import load_sealed
 from src.query_rewrite import REWRITE_MODEL, STATUS_LIVE, Expansion
@@ -39,6 +39,11 @@ HELD = "held-out"
 SHEET = "a" * 64
 BOUND_COMMIT, BOUND_PREREG_SHA = "c" * 40, "d" * 64  # what the tests' patched ``sealed_run.bind_prereg`` returns
 CANDIDATES = [c * 64 for c in "1234"]  # a four-candidate batch (slot i runs candidate i)
+BATCH = [{"config_hash": c, "expansion": "replay"} for c in CANDIDATES]  # ... all retrieval-only (replay slot 0's artifact)
+BATCH_SLOTS = {  # the prereg's declaration of slots 1-4: the mode comes from the ledger's batch entry
+    str(n): {"expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
+    for n in (1, 2, 3, 4)
+}
 _CONS, _VOW = "bcdfghjklmnpqrstvwxz", "aeiou"
 TRACING_VARS = ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING")
 
@@ -164,14 +169,26 @@ class World:
         self.prereg = {
             "version": 1,
             "quota": {"floor_sealed": floor[0], "floor_answerable": floor[1]},
-            "slots": slots if slots is not None else {"0": {"expansion": "live"}, "0b": {"expansion": "live"}},
+            "slots": slots if slots is not None else {"0": {"expansion": "live"}, "0b": {"expansion": "live"}, **BATCH_SLOTS},
         }
         self.prereg_path.write_text(json.dumps(self.prereg), encoding="utf-8")
         return self.prereg_path
 
-    def declare_batch(self, n: int = 4) -> str:
-        """Declare the first ``n`` of :data:`CANDIDATES` as the confirmatory batch (after the freeze)."""
-        return self.ledger().record_batch_declaration(CANDIDATES[:n])
+    def record_controls(self) -> None:
+        """The ledger's ``controls`` record and the committed list it binds (a batch needs both), once."""
+        ledger = self.ledger()
+        if ledger.controls_record() is not None:
+            return
+        path = sealed_run.controls_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"version": 1}\n', encoding="utf-8")
+        ledger.record_controls(controls_sha256=sha_of(path), draws_sha256="e" * 64, prereg_sha256=BOUND_PREREG_SHA)
+
+    def declare_batch(self, n: int = 4, entries: Optional[List[Dict[str, str]]] = None) -> str:
+        """Declare the first ``n`` of :data:`BATCH` (or ``entries``) as the confirmatory batch (after the freeze and
+        the controls record)."""
+        self.record_controls()
+        return self.ledger().record_batch_declaration(entries if entries is not None else BATCH[:n])
 
     def ensure_batch(self, slot: Any) -> None:
         """Declare the default batch before a confirmatory slot (1-4) is first used, unless one exists."""
@@ -193,12 +210,24 @@ class World:
         self.twins_payload = twins if twins is not None else {"version": 1, "edges": edges}
         self.pre_freeze_exclusions = dict(exclusions) if isinstance(exclusions, dict) else {g: [g] for g in exclusions or []}
 
+    def freeze_dev(self) -> None:
+        """The two development freezes, as ``sealed_tool freeze`` records them (once each): the sets a slot run's
+        private inputs must be, bound to the same prereg as the sealed freeze."""
+        ledger = self.ledger()
+        for split, path in (("tuning", self.golden_path), ("realistic", self.realistic_path)):
+            if ledger.freeze_record(split) is None:
+                ledger.record_freeze(
+                    split=split, set_sha256=sha_of(path), totals={"families": 4}, prereg_sha256=BOUND_PREREG_SHA,
+                )
+
     def freeze(self, *, set_path: Optional[Path] = None, exclusions_sha256: Optional[str] = None,
-               twins_names: Tuple[str, ...] = ("twins_sealed",)) -> None:
+               twins_names: Tuple[str, ...] = ("twins_sealed",), dev: bool = True) -> None:
         """The sealed freeze, as ``sealed_tool freeze`` records it: the group record is stored as a payload and
         bound by its sha256; the exclusions recorded so far are bound by digest. ``twins_names`` are the payload
         names it is stored under (``{sha16}`` stands for the first 16 hex digits of its sha256: the content name
         ``sealed_tool`` uses; the plain ``twins_sealed`` is the alias older readers load)."""
+        if dev:
+            self.freeze_dev()
         ledger = self.ledger()
         for group, members in self.pre_freeze_exclusions.items():
             ledger.exclude(group, "owner", members=members)
@@ -207,7 +236,7 @@ class World:
             assert ledger.store_payload(name.format(sha16=twins_sha[:16]), self.twins_payload) == twins_sha
         ledger.record_freeze(  # exclusions_sha256=None: the ledger digests the exclusions inside its transaction
             split="sealed", set_sha256=sha_of(set_path or self.sealed_path), totals={"families": len(self.families)},
-            twins_sha256=twins_sha, exclusions_sha256=exclusions_sha256,
+            twins_sha256=twins_sha, exclusions_sha256=exclusions_sha256, prereg_sha256=BOUND_PREREG_SHA,
         )
 
     # -- fakes ------------------------------------------------------------------
@@ -349,6 +378,9 @@ def make_world(root: Path, monkeypatch: Any) -> World:
     }), encoding="utf-8")
     monkeypatch.setattr(eval_schema, "INVENTORY_PATH", inventory)
     monkeypatch.setattr(ev, "_load_absorbed_map", lambda: (None, None))
+    # the 16B embargo is code-level; these worlds exercise the batch and the confirmatory slots behind it (the embargo
+    # itself is tested by setting it back to True)
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
     isolate_env(monkeypatch, *TRACING_VARS)
     try:
         from langsmith import utils as ls_utils
@@ -420,8 +452,8 @@ def make_world(root: Path, monkeypatch: Any) -> World:
 
 
 def kinds(world: "World") -> List[str]:
-    """The ledger's record kinds, oldest first."""
-    return [r["kind"] for r in world.ledger().records()]
+    """The ledger's record kinds, oldest first (the two development freezes the world adds are left out)."""
+    return [r["kind"] for r in world.ledger().records() if not (r["kind"] == "freeze" and r["split"] != "sealed")]
 
 
 def gate_of(call: Callable[[], Any]) -> str:

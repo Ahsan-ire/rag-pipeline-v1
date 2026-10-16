@@ -258,14 +258,18 @@ def _calibration_world(world, hard: int = 8, easy: int = 12):
     return specs, skip
 
 
-def _freeze_records(world, *, only=("sealed", "tuning", "realistic")):
-    """Plant the frozen sealed file (a copy of the component's rows) and the freeze records the calibration needs."""
-    rows = read_rows(world.sealed / "sealed_r1.jsonl")
+def _freeze_records(world, *, only=("sealed", "tuning", "realistic"), rows=None):
+    """Plant the frozen sealed file (``rows``, default a copy of the component's rows) and the freeze records the
+    calibration needs, under the prereg the world has written (the epoch's registered one)."""
+    rows = rows if rows is not None else read_rows(world.sealed / "sealed_r1.jsonl")
     frozen = write_rows(world.sealed / "heldout-v2.jsonl", rows)
     ledger = world.ledger()
     for split in only:
         extra = {"twins_sha256": "a" * 64} if split == "sealed" else {}
-        ledger.record_freeze(split=split, set_sha256=sha(frozen) if split == "sealed" else "b" * 64, totals={}, **extra)
+        ledger.record_freeze(
+            split=split, set_sha256=sha(frozen) if split == "sealed" else "b" * 64, totals={}, prereg_sha256=sha(world.prereg_path),
+            **extra,
+        )
     return rows
 
 
@@ -273,6 +277,7 @@ def test_calibrate_draws_five_refuse_or_partial_and_ten_answer_approved_frozen_f
     specs, unapproved = _calibration_world(world)
     scope = {s.fid: s.scope for s in specs}
     world.write_prereg()
+    world.commit_prereg(push=True)
     _freeze_records(world)
     draw_path = world.sealed / "work" / "calibration_draw.json"
     code, out, err = world.run("calibrate", "--kind", "sealed")
@@ -297,6 +302,7 @@ def test_calibrate_draws_five_refuse_or_partial_and_ten_answer_approved_frozen_f
 def test_calibrate_is_drawn_once_and_a_second_run_only_reemits_or_refuses(world):
     _calibration_world(world)
     world.write_prereg()
+    world.commit_prereg(push=True)
     _freeze_records(world)
     draw_path = world.sealed / "work" / "calibration_draw.json"
     form_path = world.sealed / "work" / "escalations" / "calibration_form.txt"
@@ -320,17 +326,18 @@ def test_calibrate_is_drawn_once_and_a_second_run_only_reemits_or_refuses(world)
 def test_calibrate_needs_every_split_frozen_and_draws_only_from_the_frozen_file(world):
     specs, _ = _calibration_world(world)
     world.write_prereg()
+    world.commit_prereg(push=True)
     code, out, err = world.run("calibrate", "--kind", "sealed")
     assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # nothing frozen yet
-    rows = _freeze_records(world, only=("sealed", "tuning"))
-    code, out, err = world.run("calibrate", "--kind", "sealed")
-    assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # realistic is still open
-    assert not (world.sealed / "work" / "calibration_draw.json").exists()
-    world.ledger().record_freeze(split="realistic", set_sha256="b" * 64, totals={})
     # two approved answer families sit in a component but not in the frozen file: exactly 10 answer families remain,
     # so a draw that ignored the frozen file would (with probability 65/66) include one of them
     gone = [s.fid for s in specs if s.scope == "answer"][:2]
-    write_rows(world.sealed / "heldout-v2.jsonl", [r for r in rows if r["family_id"] not in gone])
+    kept = [r for r in read_rows(world.sealed / "sealed_r1.jsonl") if r["family_id"] not in gone]
+    _freeze_records(world, only=("sealed", "tuning"), rows=kept)  # the file is written before its freeze record
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # realistic is still open
+    assert not (world.sealed / "work" / "calibration_draw.json").exists()
+    world.ledger().record_freeze(split="realistic", set_sha256="b" * 64, totals={}, prereg_sha256=sha(world.prereg_path))
     code, out, err = world.run("calibrate", "--kind", "sealed")
     assert code == 0, err
     drawn = set(json.loads((world.sealed / "work" / "calibration_draw.json").read_text())["families"])
@@ -339,9 +346,85 @@ def test_calibrate_needs_every_split_frozen_and_draws_only_from_the_frozen_file(
     assert code == st.EXIT_REFUSED and "reason=splits_not_frozen" in err  # the frozen tuning / realistic files are absent
 
 
+def test_calibrate_refuses_a_frozen_file_that_changed_after_its_freeze_record(world):
+    _calibration_world(world)
+    world.write_prereg()
+    world.commit_prereg(push=True)
+    rows = _freeze_records(world)
+    frozen = world.sealed / "heldout-v2.jsonl"
+    write_rows(frozen, rows[:-1])  # rewritten after its freeze record: no longer the frozen bytes
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=frozen_file_changed" in err and out == ""
+    assert not (world.sealed / "work" / "calibration_draw.json").exists() and world.ledger().calibration_draw("sealed") is None
+    write_rows(frozen, rows)  # restored: the draw proceeds
+    assert world.run("calibrate", "--kind", "sealed")[0] == 0
+
+
+def test_the_calibration_draw_is_recorded_durably_and_a_deleted_draw_file_is_re_emitted(world):
+    _calibration_world(world)
+    world.write_prereg()
+    world.commit_prereg(push=True)
+    _freeze_records(world)
+    assert world.ledger().calibration_draw("sealed") is None
+    draw_path = world.sealed / "work" / "calibration_draw.json"
+    code, first, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0, err
+    record = world.ledger().calibration_draw("sealed")
+    assert record is not None and record["draw_sha256"] == st.sha_text(st.canon(json.loads(draw_path.read_text())))
+    mirror_line = json.loads((world.repo / "eval" / "sealed_ledger.jsonl").read_text().splitlines()[-1])
+    assert mirror_line["kind"] == "calibration_draw" and mirror_line["digests"] == {"draw_sha256": record["draw_sha256"]}
+    assert "sealed" not in json.dumps(mirror_line["digests"])
+    original = draw_path.read_bytes()
+    draw_path.unlink()  # the file is gone, the ledger record is not: the same draw is recomputed and re-emitted
+    form_before = (world.sealed / "work" / "escalations" / "calibration_form.txt").read_bytes()
+    code, again, err = world.run("calibrate", "--kind", "sealed")
+    assert code == 0, err
+    assert draw_path.read_bytes() == original and again == first
+    assert (world.sealed / "work" / "escalations" / "calibration_form.txt").read_bytes() == form_before
+    assert len(world.ledger().records("calibration_draw")) == 1  # recorded once
+    # the form and the sheet are finished after a crash that left only the ledger record
+    (world.sealed / "work" / "escalations" / "calibration_form.txt").unlink()
+    world.sheet_path("sealed", "calibration").unlink()
+    draw_path.unlink()
+    assert world.run("calibrate", "--kind", "sealed")[0] == 0
+    assert (world.sealed / "work" / "escalations" / "calibration_form.txt").read_bytes() == form_before
+    assert world.sheet_path("sealed", "calibration").is_file() and len(world.ledger().records("calibration_draw")) == 1
+
+
+def test_a_second_ledger_record_for_the_same_draw_kind_is_a_protocol_error_and_kinds_are_independent(world):
+    import pytest as _pytest
+    from src.sealed_ledger import ProtocolError
+
+    ledger = world.ledger()
+    ledger.record_calibration_draw("sealed", "a" * 64)
+    with _pytest.raises(ProtocolError):
+        ledger.record_calibration_draw("sealed", "b" * 64)
+    ledger.record_calibration_draw("development", "c" * 64)  # the other kind has its own draw
+    assert ledger.calibration_draw("sealed")["draw_sha256"] == "a" * 64
+    assert ledger.calibration_draw("development")["draw_sha256"] == "c" * 64
+
+
+def test_calibrate_refuses_an_edited_uncommitted_prereg_and_a_replaced_pushed_one(world):
+    _calibration_world(world)
+    world.write_prereg()
+    world.commit_prereg(push=True)
+    _freeze_records(world)
+    doc = world.prereg_doc()
+    doc["seeds"] = {**doc["seeds"], "calibration": 99}  # another calibration seed, not committed
+    world.prereg_path.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=prereg_modified" in err and out == ""
+    assert not (world.sealed / "work" / "calibration_draw.json").exists() and world.ledger().calibration_draw("sealed") is None
+    world.commit_prereg(push=True)  # now committed and pushed, but not the epoch's registered prereg
+    code, out, err = world.run("calibrate", "--kind", "sealed")
+    assert code == st.EXIT_REFUSED and "reason=prereg_amended" in err and out == ""
+    assert not (world.sealed / "work" / "calibration_draw.json").exists() and world.ledger().calibration_draw("sealed") is None
+
+
 def test_calibrate_is_refused_when_too_few_families_are_approved(world):
     _calibration_world(world, hard=4, easy=12)
     world.write_prereg()
+    world.commit_prereg(push=True)
     _freeze_records(world)
     code, out, err = world.run("calibrate", "--kind", "sealed")
     assert code == st.EXIT_REFUSED and "reason=calibration_short" in err

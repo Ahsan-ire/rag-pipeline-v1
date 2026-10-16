@@ -1939,7 +1939,7 @@ def run_eval_matrix(
         # file is refused here. A slot run is private by construction.
         _sealed_run.check_token_for_run(
             slot_token, set_paths=set_paths, expansion_mode=expansion_mode,
-            artifact_path=artifact_path_arg, meter=meter, top_k=top_k,
+            artifact_path=artifact_path_arg, meter=meter, top_k=top_k, judge=judge,
         )
         if results_path is not None:
             raise ValueError("a slot-gated run publishes only through its slot protocol; --results is refused")

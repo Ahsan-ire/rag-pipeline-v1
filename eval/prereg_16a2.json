@@ -123,7 +123,18 @@
         "against": "incumbent_replay"
       },
       "holm_k": 4,
-      "spent_slot_counts": true
+      "spent_slot_counts": true,
+      "modes": [
+        "replay",
+        "candidate"
+      ],
+      "mode_declared_by": "batch_declaration",
+      "candidate_identity": "sha256_canonical_pipeline_config_checked_at_gate_before_claim",
+      "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
+      "requires": [
+        "controls_record",
+        "judge_on"
+      ]
     },
     "development_evidence": {
       "metric": "strict_hit",
@@ -134,23 +145,27 @@
         "tuning",
         "realistic"
       ],
-      "versions": "frozen_at_slot_0",
+      "versions": "development_freeze_records",
       "draws": 5,
-      "statistic": "mean_over_draws_of_family_difference"
+      "statistic": "mean_over_draws_of_family_difference",
+      "pairing": "by_draw_index",
+      "incumbent_draws": "first_5_recorded_development_draws",
+      "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_own_draws"
     },
     "unsupported_claims": {
       "unit": "claim",
       "where": "candidate_sealed_slot",
       "against": "incumbent",
-      "max_excess_abs": 0.01
+      "reference": "canonical_slot_0_judged_sealed_claims",
+      "max_excess_abs": 0
     },
     "control_flip": {
       "from": "strict_hit",
       "to": "miss",
       "cutoff": 6,
       "mode": "hybrid+rewrite",
-      "draws": "any",
-      "versions": "frozen_at_slot_0"
+      "draws": "any_of_first_5_recorded",
+      "versions": "development_freeze_records"
     }
   },
   "controls": {
@@ -163,11 +178,11 @@
       "hybrid",
       "hybrid+rewrite"
     ],
-    "draws": "every",
+    "draws": "first_5_recorded_development_draws",
     "draws_r": 5,
     "collapse": "all",
     "computed": "once_on_frozen_development_versions",
-    "committed": "before_slot_1",
+    "committed": "ledger_controls_record_before_batch_declaration",
     "recomputed_mid_batch": false,
     "flip": "fail",
     "reverses": "d57_addendum",
@@ -191,25 +206,25 @@
       "usable": "once_after_non_canonical_or_spent_slot_0"
     },
     "1": {
-      "expansion": "replay",
+      "expansion": "batch",
       "artifact": "slot0_canonical",
       "role": "confirmatory",
       "requires": "batch_declaration"
     },
     "2": {
-      "expansion": "replay",
+      "expansion": "batch",
       "artifact": "slot0_canonical",
       "role": "confirmatory",
       "requires": "batch_declaration"
     },
     "3": {
-      "expansion": "replay",
+      "expansion": "batch",
       "artifact": "slot0_canonical",
       "role": "confirmatory",
       "requires": "batch_declaration"
     },
     "4": {
-      "expansion": "replay",
+      "expansion": "batch",
       "artifact": "slot0_canonical",
       "role": "confirmatory",
       "requires": "batch_declaration"
@@ -230,7 +245,7 @@
       ],
       "refusal_share_target": 0.275,
       "refusal_share_counts": "pool_including_preassigned",
-      "refusal_drafts": "round(target_x_pool_total)_minus_preassigned_refusals",
+      "refusal_drafts": "max(round_half_up(0.275_x_pool_total)_minus_preassigned_refusals,sum_of_split_deficits_to_25pct)",
       "seed_phrasings_per_family": 1,
       "registers": [
         "lay",
@@ -238,7 +253,9 @@
         "terse"
       ],
       "conflict_label_families": "development_only",
-      "realistic_lay_min_share": 0.5
+      "realistic_lay_min_share": 0.5,
+      "realistic_lay_share_of": "new_drafts_registered_lay_or_terse",
+      "band_unreachable": "b2_owner_stop"
     },
     "next_attempt": {
       "when": [
@@ -263,7 +280,10 @@
       "quotas": "equal_round_1",
       "related_to_round_1_sealed_group": "dropped",
       "sources": "tutorials_and_primary_sections_unused_by_round_1_sealed_groups",
-      "surplus": "quarantine_r2"
+      "surplus": "quarantine_r2",
+      "max_attempts": 3,
+      "after_cap": "freeze_infeasible_stop",
+      "refusal_drafts": "same_formula_over_round_2_pool"
     },
     "paraphrase": {
       "phrasings_min": 2,

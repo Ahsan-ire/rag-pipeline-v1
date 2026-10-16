@@ -2429,22 +2429,50 @@ The SP's stdout and stderr go to files and are never printed. The launcher print
 - **Power table.** It is computed at α = 0.05, with 42 eligible families in 28 planned groups (7 tutorial groups of 3, 21 singletons). MDE at discordance 0.3 is 0.25 if families are independent and 0.29 if fully correlated. At Holm's first step (α = 0.0125) the MDE is 0.28 if independent and not reachable if fully correlated.
 - **Strata** are empty: the band and `min_share` carry the balance.
 
-## D74 addendum — prereg plan gate r1: completeness and binding (14 Oct 2026)
-**Decision:** every finding of the prereg's plan gate r1 is accepted. Codex returned REVISE with 1 MAJOR; the plan-auditor returned 1 BLOCKER, 5 MAJOR and 10 MINOR. They are fixed in the prereg and in code *before* the prereg is pushed (IMPLEMENTATION_PLAN.md 16A-2b b1a), so none of them is an amendment. This supersedes D74's "prereg file" implementation notes on confirmatory slots and the slot-0 artifact.
-- **Refusal arithmetic.** The drafted pool targets a refusal share of 0.275, counting the preassigned refusals: drafts = round(0.275 × pool) − preassigned. Before, the rule was 30% drafted *plus* development deficits, which overshoots the 25–30% band, so attempt 1 would fail. Round 1 is capped at 3 attempts; a 4th is the stop "split infeasible".
-- **Confirmatory slots 1–4** are now in the prereg as replays of `slot0_canonical`: the sha256 of the canonical slot's run-directory `expansion_artifact.json`, which the ledger's `slot_stored` record carries. A `batch_declaration` ledger record names K ≤ 4 candidate config hashes in slot order. It is written once, before any of slots 1–4 can be claimed. Holm uses K = 4 regardless of how many slots are spent. Checking that a run's configuration equals its declared hash is 16B's job.
+## D74 addendum — prereg plan gates r1 and r2: completeness and binding (13–14 Oct 2026)
+**Decision:** every finding of the prereg's plan gate is accepted.
+- **r1:** Codex REVISE with 1 MAJOR; plan-auditor 1 BLOCKER, 5 MAJOR, 10 MINOR.
+- **r2 closure:** Codex REVISE with 4 MAJOR and 2 MINOR; plan-auditor FAIL with 1 BLOCKER, 6 MAJOR, 10 MINOR.
+
+All are fixed in the prereg and in code *before* the prereg is pushed (IMPLEMENTATION_PLAN.md 16A-2b b1a), so none of them is an amendment. This supersedes:
+- D74's "prereg file" notes on confirmatory slots, the slot-0 artifact and the α = 0.05-only power table;
+- D72's rule that a data dispatch needs the prereg on `origin/<branch>` only (now that or `origin/main`);
+- b1's "a tie is a MISS" (the tie key is gone) and its non-inferiority wording (the guard is exactly its two checks).
+
+What is now registered:
+- **Refusal arithmetic.** Drafts = max(round_half_up(0.275 × pool) − preassigned refusals, the development splits' deficits to 25 %). The old rule, 30 % drafted *plus* deficits, overshot the 25–30 % band, so attempt 1 would fail. An unreachable development band is a b2 stop. Each round allows at most 3 split attempts. The SP brief carries the exact refusal count, and the lay-register share is checked at split.
+- **Confirmatory slots 1–4** are `batch` slots. A once-only `batch_declaration` record names K ≤ 4 candidates in slot order, each with its config hash and mode:
+  - replay of `slot0_canonical`, the canonical slot's run-directory `expansion_artifact.json` sha256 from the ledger;
+  - or a live rewrite candidate against that replay, the case r1's draft could not express (r2 BLOCKER).
+
+  Holm uses K = 4 whatever is spent.
+- **The embargo is in code.** Slots 1–4 and the batch declaration are refused until 16B's reviewed code change lifts it. That change must add the registered identity check: the run's configuration hash equals the declared one, checked before the claim. A confirmatory slot needs the judge on.
 - **Adoption inputs are pinned:**
-  - development evidence is the mean over R = 5 draws of the family strict-hit@6 difference in hybrid+rewrite, on tuning-v2 ∪ realistic-v2 as frozen at slot 0;
-  - unsupported claims must be ≤ the incumbent's + 0.01;
-  - a control flip is a strict HIT@6 → MISS in hybrid+rewrite on any draw.
+  - development evidence is the mean over the first 5 ledger-recorded draws of the paired family strict-hit@6 difference in hybrid+rewrite, on tuning-v2 ∪ realistic-v2 at their freeze records. A replay candidate replays the incumbent's draw artifacts; a rewrite candidate uses its own first 5 recorded draws;
+  - a control flip is a strict HIT@6 → MISS on any of those draws;
+  - unsupported claims must not rise: the candidate's claim-level rate on its sealed slot is ≤ the canonical slot 0's judged rate. r1's draft had added a +0.01 tolerance; that loosened the owner's condition without asking, and it is withdrawn.
+- **Binding.**
+  - `split`, `freeze`, `calibrate`, `declare-batch` and the slot gate accept the prereg only if it is committed, unmodified and an ancestor of `origin/main` or `origin/<branch>`. The second option exists because the branch ref disappears after merge.
+  - The first split attempt fixes the **epoch prereg** sha256. Any later different prereg is refused (`prereg_amended`, a D64 stop), including in `controls.py`.
+  - Every slot's private development inputs must be the tuning and realistic freeze versions.
+  - The control list is a once-only ledger `controls` record, computed by `controls.py` with the rule, ceiling and draw count from the epoch prereg, on both frozen development splits. Deleting the file does not reopen it.
+- **Freeze minimums:** tuning ≥ 60 and realistic ≥ 42 are checked at freeze. **Calibration** is drawn once, after every split is frozen, from the frozen files' own rows, by the epoch prereg's seed. It is recorded in the ledger, so a re-run reproduces it or is refused.
+- **Power:** the table now has cells at α = 0.05 and 0.0125 for both group models, plus a singleton-family table (`eval_stats.power`/`mde`), all recomputed by `prereg-check`. At discordance 0.3:
+  - grouped families, α 0.05: MDE 0.25 if independent, 0.29 if fully correlated;
+  - grouped families, α 0.0125: MDE 0.28 if independent, not reachable if fully correlated;
+  - 42 independent singleton families: MDE 0.24 at α 0.05 and 0.27 at α 0.0125.
 
-  Controls and evidence bind to the development freeze records (`controls.py` refuses any other version, and reads its rule from the prereg).
-- **Binding.** `split`, `freeze` and the slot gate accept the prereg only if it is committed, unmodified and an ancestor of `origin/main` or `origin/<branch>`. The second option exists because the branch ref disappears after merge. Freeze records and slot results carry the prereg's sha256.
-- **Freeze minimums:** tuning ≥ 60 and realistic ≥ 42 are checked at freeze. **Calibration** is drawn once, by the prereg seed only, after every split is frozen, and its draw file is immutable.
-- **Power:** the table now has cells at α = 0.05 and 0.0125 for both group models, plus a singleton-family table (`eval_stats.power`/`mde`). All of it is recomputed by `prereg-check`. At discordance 0.3 the MDE is 0.25 / 0.29 at α 0.05 and 0.28 / not reachable at α 0.0125 (independent / fully correlated groups). With 42 families taken as independent singletons it is 0.24 at α 0.05 and 0.27 at α 0.0125.
-
-**Why:** the auditor showed that the r1 prereg, pushed as it stood, would either fail attempt 1 on arithmetic or leave slots 1–4, the adoption inputs and the controls' data version open to choice after results. Pre-registration only means something if those are fixed first.
+**Why:** pre-registration only means something if the rules are fixed before results. The r1 prereg, pushed as it stood, would have:
+- failed attempt 1 on its arithmetic;
+- left these open to choice after slot 0's results: the slot modes, the candidates, which draws count, the control list's version, and which prereg governs the epoch.
 
 **Rejected:**
-- Leaving slots 1–4 to a 16B-only record with no code support (the D74 note). It binds nothing until 16B writes code, which happens after slot 0's results are seen.
-- Recording the prereg's git blob sha instead of the file sha256. The ledger digests are all sha256, and the file must equal the committed blob anyway.
+- Leaving slots 1–4 to a 16B-only record with no code support. It binds nothing before 16B writes code. The in-code embargo plus the registered identity rule bind it now.
+- A +0.01 unsupported-claims tolerance: it is an owner-level protocol change (D64).
+- Recording the prereg's git blob sha instead of its file sha256. The ledger digests are all sha256, and the file must equal the committed blob anyway.
+
+**Implementation notes (16 Oct 2026).** The r2 fixes landed with the suite at 3235 passed (baseline 3123) and `prereg-check` at status=ok. Choices made in implementation:
+- The `calibration_draw` ledger record stores the CLI's kind as `draw_kind`, because the record's own `kind` is its type.
+- `count-migrated` now always needs the prereg, because it reads the 11/40 refusal share from it.
+- The confirmatory embargo is the first check in `acquire_slot_token`, before the prereg is loaded.
+- **Residual:** the judge and `dev_binding` checks run in the slot preflight (`check_token_for_run`), which the CLI and `run_slot` both run before the claim. A library caller that mints a token with `claim=True` claims before those checks, the same gap the cut-off check has without `top_k`. No installed path does this. It is open for the r3 closure review.

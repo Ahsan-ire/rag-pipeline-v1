@@ -51,8 +51,8 @@ One JSON object per line:
   the paragraphs any one of which would do (OR). The first label of the first group is
   the family's **primary section**.
 - **refuse:** use it when the handbook does not answer the question, or the question
-  needs advice beyond it (Handbook mode, D61). About 30% of the families you draft
-  should be refusals that a practitioner might plausibly ask.
+  needs advice beyond it (Handbook mode, D61). When you draft, draft exactly
+  `task.json:refusals` refusal families (plausible practitioner questions): no more, no fewer.
 - **partial:** use it when the handbook answers only part. Each gap names what is
   missing, using a few keywords.
 - **register:**
@@ -65,11 +65,14 @@ One JSON object per line:
 
 ### `draft`
 Draft `task.json:count` new families, one seed phrasing each (row `…-0`), into
-`out/pool.jsonl`. Follow these rules:
+`out/pool.jsonl`. `task.json` carries these keys: `count` (how many families), `refusals`
+(how many of them are refusals), `lay_min` (see below) and, for a round-2 draft,
+`allowed_sources`. Follow these rules:
 - Spread the families across the sources and quotas in `task.json`. From the
   tutorials, write about 3 families per tutorial and at most 1 per title-document set.
   Never draw on Tutorial 1 or Tutorial 7.
-- Mix the registers. Realistic families must be `lay` or `terse`.
+- Mix the registers. Realistic families must be `lay` or `terse`. Among your `lay` or `terse`
+  drafts, at least `task.json:lay_min` must be `lay`.
 - For a round-2 draft, use only the tutorials and primary sections listed in
   `task.json:allowed_sources`.
 - Also write `out/tutorial_map.json`: one JSON object `{"<family id>": "<tag>"}` with an

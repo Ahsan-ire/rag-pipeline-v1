@@ -54,8 +54,10 @@ FORBIDDEN_WORDS = ("scope", "chapter", "stratum", "sealed")
 @pytest.fixture(autouse=True)
 def _batch_declared_for_the_state_machine(monkeypatch):
     """These tests walk the slot state machine on bare ledgers; the batch rule for slots 1-4 (b1a) is tested in
-    ``tests/test_p16a2b_b1a.py``. Here a four-candidate batch is assumed declared (nothing is written)."""
+    ``tests/test_p16a2b_b1a.py``. Here a four-candidate batch is assumed declared (nothing is written) and the
+    16B embargo on slots 1-4 is off (the embargo is tested in ``tests/test_p16a2b_b1a_r2.py``)."""
     monkeypatch.setattr(sealed_ledger, "_batch_of", lambda records: {"candidates": ["1" * 64] * 4})
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
 
 
 # ---------------------------------------------------------------------------

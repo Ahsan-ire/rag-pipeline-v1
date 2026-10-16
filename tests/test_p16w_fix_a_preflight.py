@@ -42,8 +42,7 @@ class Calls:
         return record
 
 
-@pytest.fixture
-def fakes(world, monkeypatch):
+def make_call_fakes(world, monkeypatch):
     """The matrix's injection seams (``state["kwargs"]``) and a record of every call made through them."""
     calls = Calls()
     retrieval = world.retrieval()
@@ -65,8 +64,7 @@ def fakes(world, monkeypatch):
     return calls, {"kwargs": spied}
 
 
-@pytest.fixture
-def cli_fakes(fakes, monkeypatch):
+def inject_into_run_slot(fakes, monkeypatch):
     """``fakes``, injected into the CLI's ``run_slot`` the way the e2e test does."""
     _calls, state = fakes
     real_run_slot = sealed_run.run_slot
@@ -74,6 +72,18 @@ def cli_fakes(fakes, monkeypatch):
         sealed_run, "run_slot", lambda token, **kw: real_run_slot(token, **{"matrix_kwargs": state["kwargs"], **kw})
     )
     return fakes
+
+
+@pytest.fixture
+def fakes(world, monkeypatch):
+    """The matrix's injection seams (``state["kwargs"]``) and a record of every call made through them."""
+    return make_call_fakes(world, monkeypatch)
+
+
+@pytest.fixture
+def cli_fakes(fakes, monkeypatch):
+    """``fakes``, injected into the CLI's ``run_slot`` the way the e2e test does."""
+    return inject_into_run_slot(fakes, monkeypatch)
 
 
 def assert_refused_unclaimed(world, calls, slot=0):
@@ -110,22 +120,25 @@ def test_the_library_path_refuses_invalid_options_before_the_claim_too(world, fa
 # --- the replay artifact -------------------------------------------------------------------------------------
 
 
-def test_a_replay_artifact_that_does_not_cover_the_sets_spends_no_slot(world, cli_fakes, tmp_path, monkeypatch, capsys):
-    """The artifact was frozen by slot 0; a development set given now has a row it never saw."""
+def test_a_replay_artifact_that_does_not_cover_the_sets_spends_no_slot(
+    world, cli_fakes, tmp_path, monkeypatch, capsys, eval_registry
+):
+    """The artifact was frozen by slot 0; a (public) regression set given now has a row it never saw.
+
+    A private development set must be its frozen version (``dev_binding``), which slot 0 covered, so the
+    uncovered set here is a registered public one, which the binding leaves alone."""
     calls, _state = cli_fakes
     world.run(0)
     capsys.readouterr()
     calls.events.clear()
     r0 = run_id_of(world, 0)
     artifact = world.run_dir(r0) / "expansion_artifact.json"
-    world.write_prereg({
-        "0": {"expansion": "live"},
-        "1": {"expansion": "replay", "artifact_sha256": sealed_run._file_sha(artifact)},
-    })
+    assert sealed_run._file_sha(artifact) == world.ledger().canonical_artifact_sha256()  # slot 1 (a replay entry) replays it
     rows = [json.loads(line) for line in world.realistic_path.read_text().splitlines()]
     extra = dict(rows[0], id="f30000009-0", family_id="f30000009", question=rows[0]["question"] + " again")
     newer = tmp_path / "dev" / "realistic_v2.jsonl"
     newer.write_text("".join(json.dumps(r) + "\n" for r in [*rows, extra]))
+    eval_registry.add(newer, privacy="public", name="regression-newer")
     calls.events.clear()
     claims_before = kinds(world).count("slot_claim")
     code, out, err = cli(
@@ -244,18 +257,20 @@ def test_a_broken_absorbed_map_spends_no_slot(world, cli_fakes, monkeypatch, cap
     assert_refused_unclaimed(world, calls)
 
 
-def test_a_development_set_that_repeats_a_question_spends_no_slot(world, cli_fakes, tmp_path, monkeypatch, capsys):
-    """A v1 golden set with one question twice passes the CLI's load check and is refused by the cohort check."""
-    calls, _state = cli_fakes
-    dup = tmp_path / "dev" / "dup_golden.jsonl"
+def test_a_development_set_that_repeats_a_question_spends_no_slot(bare, monkeypatch, capsys):
+    """A v1 golden set with one question twice passes the CLI's load check and is refused by the cohort check.
+
+    The set is the frozen tuning version (a development set must be, ``dev_binding``): it is written before the freeze.
+    """
     row = {"question": "A synthetic question that appears twice?", "type": "direct", "expected_sections": ["901.1"]}
-    dup.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n")
-    code, out, err = cli(monkeypatch, capsys, world, base=[
-        "--golden", str(dup), "--heldout", str(world.sealed_path), "--realistic", str(world.realistic_path),
-        "--sealed-slot", "0", "--prereg", str(world.prereg_path), "--slot-records", str(world.records_dir), "--judge",
-    ])
+    bare.golden_path.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n")
+    bare.write_prereg()
+    bare.write_records()
+    bare.freeze()
+    calls, _state = inject_into_run_slot(make_call_fakes(bare, monkeypatch), monkeypatch)
+    code, out, err = cli(monkeypatch, capsys, bare)
     assert code == 1 and "error: CohortError" in err
-    assert_refused_unclaimed(world, calls)
+    assert_refused_unclaimed(bare, calls)
 
 
 def test_a_duplicate_row_id_inside_a_set_is_refused_by_the_preflight(world, fakes, monkeypatch):

@@ -20,9 +20,10 @@ What a dispatch does, in order
 2. Refuses if ``ANTHROPIC_API_KEY`` is set (the SP must use the owner's
    subscription login, never metered API spend).
 3. ``--kind data`` only: ``git fetch origin`` and then
-   ``git merge-base --is-ancestor <prereg sha> origin/<branch>``; refused unless
-   the pre-registration commit is reachable from the pushed branch (later
-   commits on top are fine; ``ls-remote`` is not a substitute).
+   ``git merge-base --is-ancestor <prereg sha> origin/<branch>`` (or ``origin/main``,
+   for a merged and deleted branch); refused unless the pre-registration commit is
+   reachable from the pushed branch or from main (later commits on top are fine;
+   ``ls-remote`` is not a substitute).
 4. Creates ``<root>/<dispatch id>/``, copies in exactly the ``--inputs`` and
    creates ``out/``.
 5. Runs ``claude`` with that directory as cwd, under an environment holding only
@@ -1008,14 +1009,14 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Launch the sealed processor in a throwaway directory; prints one validated line, never SP text."
     )
-    ap.add_argument("--kind", choices=KINDS, help="probe (synthetic prereg) or data (prereg must be pushed)")
+    ap.add_argument("--kind", choices=KINDS, help="probe (synthetic prereg) or data (prereg must be on origin/<branch> or origin/main)")
     ap.add_argument("--task", help="task file; its text goes to the SP on stdin")
     ap.add_argument("--brief", help="brief file; its text is the appended system prompt")
     ap.add_argument("--inputs", nargs="*", default=[], metavar="PATH", help="files or trees copied into staging")
     ap.add_argument("--enum", action="append", default=[], dest="enums", metavar="WORD",
                     help="a word the SP's return file may use as a key or value (repeatable)")
     ap.add_argument("--prereg", help="pre-registration commit sha (data; ignored for probe)")
-    ap.add_argument("--branch", help="branch the prereg must be pushed to (data; ignored for probe)")
+    ap.add_argument("--branch", help="branch the prereg must be pushed to, or else main (data; ignored for probe)")
     ap.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
                     help=f"wall-clock limit for the SP, killed at expiry (default {DEFAULT_TIMEOUT}, i.e. 3 h)")
     ap.add_argument("--sweep", action="store_true", help="replay pending moves and delete stale staging, then exit")

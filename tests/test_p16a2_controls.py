@@ -222,13 +222,22 @@ def _cli_draws(tmp_path, sha, *, tweak=None):
     return paths
 
 
-def _freeze(dev, split="tuning"):
-    """Record the dev file's sha256 as the split's freeze (the version the controls bind to), once."""
+def _realistic_set(tmp_path):
+    """The realistic development set of these tests: one non-legacy family, so it brings no control (and no draw rows)."""
+    return _dev_set(tmp_path, [_v2("f0007bbbb", 0, "tutorial")], name="realistic.jsonl")
+
+
+def _freeze(dev, realistic, prereg):
+    """Record both development splits' freezes (the versions the controls bind to) under ``prereg`` (each once; the
+    first record carrying a prereg sha registers the epoch's prereg)."""
     from src.sealed_run import default_ledger
 
     ledger = default_ledger()
-    if ledger.freeze_record(split) is None:
-        ledger.record_freeze(split=split, set_sha256=sha256_file(dev), totals={"families": 1})
+    for split, path in (("tuning", dev), ("realistic", realistic)):
+        if ledger.freeze_record(split) is None:
+            ledger.record_freeze(
+                split=split, set_sha256=sha256_file(path), totals={"families": 1}, prereg_sha256=sha256_file(prereg),
+            )
 
 
 def _prereg(tmp_path, rule, draws_r, ceiling=None):
@@ -239,22 +248,33 @@ def _prereg(tmp_path, rule, draws_r, ceiling=None):
     return path
 
 
-def _argv(rule, draws, dev, out, *, freeze=True, prereg=None):
-    """The CLI arguments: the rule comes from a prereg file written next to ``out``; the dev set is frozen first."""
-    if freeze:
-        _freeze(dev)
+def _argv(rule, draws, dev, out, *, freeze=True, prereg=None, dev_sets=None):
+    """The CLI arguments: the rule comes from a prereg file written next to ``out``; both development sets are frozen
+    first (``dev`` is the tuning set, the realistic one is a second file) and ``dev_sets`` overrides which are passed."""
     prereg = prereg or _prereg(out.parent, rule, len(draws))
-    argv = ["--prereg", str(prereg), "--dev-set", str(dev), "--list", str(out)]
+    realistic = _realistic_set(out.parent)
+    if freeze:
+        _freeze(dev, realistic, prereg)
+    argv = ["--prereg", str(prereg), "--list", str(out)]
+    for d in dev_sets if dev_sets is not None else [dev, realistic]:
+        argv += ["--dev-set", str(d)]
     for d in draws:
         argv += ["--draw", d]
     return argv
 
 
-def test_cli_writes_then_verifies_and_refuses_a_differing_list(tmp_path, capsys):
+def _ledger():
+    from src.sealed_run import default_ledger
+
+    return default_ledger()
+
+
+def test_cli_writes_records_then_verifies_and_refuses_a_differing_list(tmp_path, capsys):
     dev = _dev_set(tmp_path, _rows())
     sha = sha256_file(dev)
     draws = _cli_draws(tmp_path, sha)
     out = tmp_path / "controls_v1.json"
+    prereg = _prereg(tmp_path, "c2", len(draws))
 
     assert controls.main(_argv("c2", draws, dev, out)) == 0
     written = out.read_text(encoding="utf-8")
@@ -264,12 +284,20 @@ def test_cli_writes_then_verifies_and_refuses_a_differing_list(tmp_path, capsys)
         [_rid(OK, 0), _rid(OK, 1), _rid(MIXED, 0), _rid(MIXED, 1), _rid(RANK6)]
     )
     assert _rid(TUTORIAL) not in written
+    # the ledger holds the controls record: the file's sha, the draw files' digest, the prereg's sha
+    import hashlib
+
+    record = _ledger().controls_record()
+    assert record["controls_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
+    shas = sorted(hashlib.sha256(open(d, "rb").read()).hexdigest() for d in draws)
+    assert record["draws_sha256"] == hashlib.sha256(json.dumps(shas, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert record["prereg_sha256"] == hashlib.sha256(prereg.read_bytes()).hexdigest()
+    assert len(_ledger().records("controls")) == 1
 
     assert controls.main(_argv("c2", draws, dev, out)) == 0  # same inputs: verifies, no rewrite
     assert "matches the committed list" in capsys.readouterr().out
-    assert out.read_text(encoding="utf-8") == written
+    assert out.read_text(encoding="utf-8") == written and len(_ledger().records("controls")) == 1
 
-    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_DIFFERS  # another rule differs
     changed = _cli_draws(tmp_path, sha, tweak=lambda d, t: t.update({_rid(OK, 0): (1, 5)}) if d == 2 else None)
     assert controls.main(_argv("c2", changed, dev, out)) == 0  # rank 5 is still a HIT@6: same list
     assert controls.main(_argv("c2", _cli_draws(tmp_path, sha, tweak=lambda d, t: t.update({_rid(OK, 0): (1, 9)})), dev, out)) == (
@@ -279,6 +307,10 @@ def test_cli_writes_then_verifies_and_refuses_a_differing_list(tmp_path, capsys)
     captured = capsys.readouterr()
     assert CANARY not in captured.out + captured.err
     assert "differs from the committed list" in captured.err
+    # another rule needs another prereg, which is not this epoch's registered one: unusable, not a quiet difference
+    assert controls.main(_argv("c1", draws, dev, out)) == controls.EXIT_UNUSABLE
+    assert "not this epoch's registered prereg" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == written
 
 
 def test_cli_c1_list_content_and_text_free_output(tmp_path, capsys):
@@ -288,6 +320,49 @@ def test_cli_c1_list_content_and_text_free_output(tmp_path, capsys):
     assert json.loads(out.read_text(encoding="utf-8"))["controls"][0]["ids"] == [_rid(OK, 0), _rid(OK, 1)]
     captured = capsys.readouterr()
     assert CANARY not in captured.out + captured.err + out.read_text(encoding="utf-8")
+
+
+def test_the_controls_are_computed_once_a_deleted_or_unrecorded_or_altered_file_is_never_recomputed(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "controls_v1.json"
+    assert controls.main(_argv("c2", draws, dev, out)) == 0
+    written = out.read_text(encoding="utf-8")
+    capsys.readouterr()
+    # a deleted file does not allow a recompute: the record stands
+    out.unlink()
+    assert controls.main(_argv("c2", draws, dev, out)) == controls.EXIT_DIFFERS
+    assert "controls already recorded" in capsys.readouterr().err and not out.exists()
+    assert len(_ledger().records("controls")) == 1
+    # a file with the right content but other bytes is not the recorded file
+    out.write_text(json.dumps(json.loads(written), indent=4, sort_keys=True) + "\n", encoding="utf-8")
+    assert controls.main(_argv("c2", draws, dev, out)) == controls.EXIT_DIFFERS
+    assert "not the recorded one" in capsys.readouterr().err
+    # the very bytes again: verifies
+    out.write_text(written, encoding="utf-8")
+    assert controls.main(_argv("c2", draws, dev, out)) == 0
+
+
+def test_a_controls_file_with_no_ledger_record_is_refused(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "controls_v1.json"
+    out.write_text("{}\n", encoding="utf-8")  # a file nobody recorded
+    assert controls.main(_argv("c2", draws, dev, out)) == controls.EXIT_DIFFERS
+    assert "controls file not recorded" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == "{}\n" and _ledger().controls_record() is None
+
+
+def test_the_ledger_records_controls_once(tmp_path):
+    from src.sealed_ledger import ProtocolError
+
+    ledger = _ledger()
+    ledger.record_controls(controls_sha256="a" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64)
+    with pytest.raises(ProtocolError):
+        ledger.record_controls(controls_sha256="d" * 64, draws_sha256="b" * 64, prereg_sha256="c" * 64)
+    assert _ledger().controls_record()["controls_sha256"] == "a" * 64
+    mirror = [json.loads(line) for line in (tmp_path / "eval" / "sealed_ledger.jsonl").read_text().splitlines()]
+    assert mirror[-1]["digests"] == {"controls_sha256": "a" * 64, "draws_sha256": "b" * 64, "prereg_sha256": "c" * 64}
 
 
 def test_cli_exit_codes_for_unusable_and_sealed_input(tmp_path, capsys):
@@ -316,11 +391,15 @@ def test_cli_reads_rule_ceiling_and_draw_count_from_the_prereg(tmp_path, capsys)
     # c1: the number of draw files must be draws_r
     assert controls.main(_argv("c1", draws, dev, out, prereg=_prereg(tmp_path, "c1", len(draws) + 1))) == controls.EXIT_UNUSABLE
     assert "draws_r" in capsys.readouterr().err
-    # c2 does not count draws
-    assert controls.main(_argv("c2", draws, dev, out, prereg=_prereg(tmp_path, "c2", 99))) == 0
     # no --rule flag any more
     with pytest.raises(SystemExit):
         controls.main(["--rule", "c1", "--dev-set", str(dev), "--draw", draws[0]])
+
+
+def test_c2_does_not_count_draws(tmp_path):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    assert controls.main(_argv("c2", draws, dev, tmp_path / "o.json", prereg=_prereg(tmp_path, "c2", 99))) == 0
 
 
 def test_cli_refuses_a_dev_set_that_is_not_its_frozen_version(tmp_path, capsys):
@@ -330,8 +409,52 @@ def test_cli_refuses_a_dev_set_that_is_not_its_frozen_version(tmp_path, capsys):
     assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == controls.EXIT_UNUSABLE  # never frozen
     assert "not its frozen version" in capsys.readouterr().err
     assert not out.exists()
-    _freeze(dev, "realistic")  # a realistic freeze counts too
-    assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == 0
+    assert controls.main(_argv("c1", draws, dev, out)) == 0  # frozen now (the realistic one is the second dev set)
     changed = _dev_set(tmp_path, _rows() + [_v2("f0002dddd", 0, "legacy")], name="changed.jsonl")  # a later version
     other = _cli_draws(tmp_path, sha256_file(changed))
     assert controls.main(_argv("c1", other, changed, tmp_path / "p.json", freeze=False)) == controls.EXIT_UNUSABLE
+    assert "not its frozen version" in capsys.readouterr().err
+    assert not (tmp_path / "p.json").exists()
+
+
+def test_both_development_splits_are_required_each_exactly_once(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    realistic = _realistic_set(tmp_path)
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out, dev_sets=[dev])) == controls.EXIT_UNUSABLE  # realistic omitted
+    assert "both development splits" in capsys.readouterr().err
+    assert controls.main(_argv("c1", draws, dev, out, dev_sets=[realistic])) == controls.EXIT_UNUSABLE  # tuning omitted
+    assert "both development splits" in capsys.readouterr().err
+    assert controls.main(_argv("c1", draws, dev, out, dev_sets=[dev, dev, realistic])) == controls.EXIT_UNUSABLE  # a split twice
+    assert "given twice" in capsys.readouterr().err
+    assert not out.exists() and _ledger().controls_record() is None
+    assert controls.main(_argv("c1", draws, dev, out)) == 0
+
+
+def test_the_prereg_must_be_the_epochs_registered_one(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    registered = _prereg(tmp_path, "c1", len(draws))
+    argv = _argv("c1", draws, dev, out, prereg=registered)  # freezes both splits under `registered`
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text(registered.read_text(encoding="utf-8") + "\n", encoding="utf-8")  # other bytes, same meaning
+    swapped = [str(replacement) if a == str(registered) else a for a in argv]
+    assert controls.main(swapped) == controls.EXIT_UNUSABLE
+    assert "not this epoch's registered prereg" in capsys.readouterr().err
+    assert not out.exists() and _ledger().controls_record() is None
+    assert controls.main(argv) == 0  # the registered one passes
+
+
+def test_a_ledger_with_no_registered_prereg_refuses(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    realistic = _realistic_set(tmp_path)
+    ledger = _ledger()
+    for split, path in (("tuning", dev), ("realistic", realistic)):  # frozen, but under no recorded prereg
+        ledger.record_freeze(split=split, set_sha256=sha256_file(path), totals={"families": 1})
+    assert ledger.epoch_prereg_sha256() is None
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == controls.EXIT_UNUSABLE
+    assert "not this epoch's registered prereg" in capsys.readouterr().err and not out.exists()

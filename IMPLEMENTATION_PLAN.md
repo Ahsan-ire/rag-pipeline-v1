@@ -1659,7 +1659,8 @@ a9. **Docs [C]:** D72 (processors, launcher, scanner, ledgers, slots, recovery, 
 - **(h) CLI** (mocked): `build:` under both skips builds a meter, makes rewrite calls only, propagates exits 3 and 6;
   replay under both skips and both skips alone make zero calls; `--regression` adds a fourth set.
 - **(i) Launcher** (mocked `claude`): the exact argument vector, stdin task and scrubbed environment; refusal with an
-  API key, or with a prereg not reachable from `origin/<branch>` (accepted when a later commit sits on top); a fake
+  API key, or with a prereg not reachable from `origin/<branch>` or `origin/main` (b1a; accepted when a later commit
+  sits on top); a fake
   `claude` printing a canary leaves it out of the launcher's output; a failed run still deletes its staging directory
   and the next launch sweeps a stale one; the two kinds log apart.
 - **(j)** `controls.py` under both rules; `cluster_signflip_p` (two-sided) matches brute-force enumeration on small
@@ -1691,16 +1692,16 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     the pool (sealed 60, 10 above the floor as spare; realistic max(42, preassigned realistic); tuning = the rest, ≥ 60,
     else the SP drafts more before the next attempt); the drafting rule for attempts and round 2; strata; band;
     `min_share` (realistic: tutorial + colleague ≥ 0.25, D71 Q4; none elsewhere); the floor; calibration seed; primary
-    metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse, a tie is a MISS); **MWE +0.10** absolute;
+    metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse); **MWE +0.10** absolute;
     α = 0.05 family-wise over rejections in **either direction** (one two-sided test per candidate; Holm over the K
-    two-sided p-values; a significant result's direction is the sign of Σ d_g); **K_max = 4** confirmatory candidates
-    per epoch, declared as one non-adaptive batch before the first confirmatory slot, Holm across it; **primary test the exact cluster sign-flip test on the family-level
+    two-sided p-values with K = 4 fixed in advance, b1a; a significant result's direction is the sign of Σ d_g); **K_max = 4**
+    confirmatory candidates per epoch, declared as one non-adaptive batch before the first confirmatory slot; **primary test the exact cluster sign-flip test on the family-level
     estimand** (Inference), Durkalski by group and exact McNemar on families the sensitivities (R2, r5);
     rewrite-changing candidates expand live under `--rewrite-candidate` against the incumbent's replay; R = 5; the
     canonical v6 guards; power tables for groups and families. Slots: 0 = descriptive baseline (the canonical run),
     0b = spare, 1–4 = the batch, refused until 16B's sealed comparison passes its own gate. Later changes are amendments.
     **Adoption and controls — decided by the owner on 13 Oct: (A) with (C1) (D74).** The options were:
-    - **(A) Development evidence adopts; sealed is a non-inferiority guard.** Adopted when the development family effect
+    - **(A) Development evidence adopts; sealed is a non-inferiority guard** (b1a: the guard is exactly its two checks). Adopted when the development family effect
       is ≥ MWE, no critical control flips, unsupported claims do not rise, *and* sealed shows no harm (point estimate
       ≥ 0, no Holm-significant loss under the sign-flip primary). Modest real gains below the sealed MDE can ship, but so
       can a change overfitted to development and neutral on sealed. It departs from 003 §5 16B (003:255).
@@ -1719,50 +1720,77 @@ b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): spli
     under (A) an embedding arm spends a slot only on development evidence ≥ MWE, under (B) only if its development effect
     is ≥ the sealed MDE. b9 aligns CLAUDE.md's bake-off line, `.claude/skills/bake-off/SKILL.md:20–21` and
     `docs/harness.md` principle 3 with the choice.
-b1a. **Prereg completeness and binding (13 Oct; prereg plan-gate r1: Codex REVISE 1 MAJOR, plan-auditor 1 BLOCKER / 5
-    MAJOR / 10 MINOR, all ACCEPTED; implemented before the prereg is pushed, so none becomes an amendment) [C].**
-    - **Drafting arithmetic (Au1).** The registered rule targets a pool refusal share of 0.275 (mid-band), counting the
-      preassigned refusals. Draft refusals = round(0.275 × pool_total) − preassigned refusals. Each later attempt adds
-      drafts that keep the pool at 0.275 by the same formula. There are at most 3 round-1 attempts; a 4th is the stop
-      "split infeasible" (Au11).
-    - **Confirmatory slots (Au2, Au9).** The prereg declares slots 1–4 as replay of `slot0_canonical`. The gate
-      resolves that to the sha256 of the canonical slot's (0, or 0b with an intent) run-directory
-      `expansion_artifact.json`, which the ledger's `slot_stored` record now carries. Candidates are bound by a
-      `batch_declaration` ledger record: K ≤ 4 candidate config hashes in slot order (candidate i runs in slot i),
-      mirrored as a digest, required before any claim of slots 1–4, and appendable once. The gate writes the slot's
-      declared candidate into its stored results; checking that a run's computed configuration equals it is 16B's
-      (16B defines candidate identity). Holm always uses K = 4, fixed in advance (Au14), and a spent confirmatory
-      slot still counts.
-    - **Adoption inputs (Au3).**
-      - Development evidence is the family-level strict-hit@6 difference (`all` collapse) in hybrid+rewrite. It is
-        computed on tuning-v2 ∪ realistic-v2 as frozen at slot 0, as the mean over the R = 5 retrieval draws.
-      - "Unsupported claims not higher" means the candidate's claim-level unsupported rate on its sealed slot is
-        ≤ the incumbent's + 0.01 absolute.
-      - A control flip is a strict HIT@6 → MISS in hybrid+rewrite on any draw of the frozen development versions.
-    - **Version binding (Au4).** Controls and development evidence bind to the development set sha256s frozen at
-      slot 0. Later development versions never change this epoch's controls or adoption inputs.
-    - **Freeze-time minimums (Au5).** `freeze` also checks tuning ≥ `tuning_min` (60) and realistic ≥
-      `realistic_min` (42). A breach after round 2 is the stop "freeze infeasible after round 2".
-    - **Binding the pushed prereg (Au6, Au10).** The slot gate loads the prereg only if it is committed and is an
-      ancestor of `origin/main` or of `origin/<branch>` (`split` and `freeze` use the same rule). It records the
-      prereg file's sha256 (the committed blob's bytes) and commit in the slot's stored results, and the sha256 in
-      each freeze record.
-    - **Checks (Au7, Cx1, Au8).**
-      - `prereg-check` validates adoption = a, controls = c1, the cutoff, slots, drafting rule, collapse and caps.
-      - `controls.py` reads its rule, ceiling and draw count from the prereg, and refuses a development set whose
-        sha256 is not its split's freeze record (Au4).
-      - `calibrate` takes its seed only from the prereg.
+b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex REVISE 1 MAJOR, plan-auditor 1 BLOCKER /
+    5 MAJOR / 10 MINOR; closure r2: Codex REVISE 4 MAJOR / 2 MINOR (F1–F6), plan-auditor FAIL 1 BLOCKER / 6 MAJOR /
+    10 MINOR (A1–A17); all ACCEPTED and implemented before the prereg is pushed, so none becomes an amendment) [C].**
+    This item supersedes the b1 text it contradicts.
+    - **Drafting arithmetic (Au1, A2, A16).** Refusal drafts = max(round_half_up(0.275 × pool_total) − preassigned
+      refusals, the sum of the development splits' deficits to 25 % of their quotas), with round_half_up(0.275 × n) =
+      (11n + 20) div 40. `count-migrated` prints the plan (pool total, target, drafts, each split's open slots) and
+      stops (`band_unreachable`, a b2 owner stop) when a development split cannot reach its band: its deficit exceeds
+      its open slots, or its preassigned refusals exceed 30 % of its quota. The SP brief drafts exactly
+      `task.json:refusals` refusals, and at least `task.json:lay_min` of its lay or terse drafts are lay. `split`
+      records an attempt `register_short` (nothing released) when lay < 0.5 of the new lay-or-terse drafts. Round 1
+      allows at most 3 attempts; a 4th is the stop "split infeasible" (Au11). Round 2 allows at most 3 attempts
+      under the same formula over its own pool; a 4th is the stop "freeze infeasible after round 2" (A9).
+    - **Confirmatory slots (Au2, Au9, A1, A3, F3).**
+      - The prereg declares slots 1–4 as `batch` slots. A `batch_declaration` ledger record names K ≤ 4 candidates in
+        slot order (candidate i runs in slot i). Each candidate has a config hash and an expansion mode:
+        - `replay` (retrieval-only): replays `slot0_canonical`, the sha256 of the canonical slot's (0, or 0b with an
+          intent) run-directory `expansion_artifact.json`, carried by its `slot_stored` record;
+        - `candidate` (rewrite-changing): live rewrite under `--rewrite-candidate <hash>`, against the incumbent's
+          replay.
+      - The record is mirrored as a digest, written once, and needs the controls record (below). The gate refuses a
+        slot whose command line does not match its entry.
+      - Holm always uses K = 4, fixed in advance (Au14), and a spent confirmatory slot still counts.
+      - **Embargo:** slots 1–4 and `declare-batch` are refused in code (`CONFIRMATORY_EMBARGO`) until 16B's reviewed
+        code change lifts it. That change must add the registered candidate-identity check: the sha256 of the run's
+        canonical pipeline configuration equals the declared hash, checked at the gate before the claim. The
+        candidates are therefore bound before any confirmatory slot can be spent.
+      - A confirmatory slot needs the judge on.
+    - **Adoption inputs (Au3, A6, A7, A8).**
+      - **Development evidence** is the family-level strict-hit@6 difference (`all` collapse) in hybrid+rewrite on
+        tuning-v2 ∪ realistic-v2 at their freeze records, paired by draw index, as the mean over R = 5 draws. The
+        incumbent's draws are the first 5 development draws recorded in the ledger (b7). A `replay` candidate
+        replays the incumbent's draw-i expansion artifact; a `candidate` one uses its own first 5 recorded draws.
+        Later draws never count, so re-running draws cannot move the mean.
+      - **Unsupported claims "do not rise"** (D74, unchanged; the r1 draft's +0.01 tolerance is withdrawn): the
+        candidate's claim-level unsupported rate on its sealed slot ≤ the canonical slot 0's judged rate.
+      - A **control flip** is a strict HIT@6 → MISS in hybrid+rewrite on any of the first 5 recorded draws.
+    - **Version binding (Au4, A5, A15, F4).**
+      - The controls and the development evidence bind to the tuning and realistic freeze records.
+      - Every slot's private development inputs must be those freeze versions, each once, and slots 0/0b need both
+        (`dev_binding`). `controls.py` needs both splits, each once.
+      - `controls.py` writes a `controls` ledger record once (list sha256, draw-sidecar digest, prereg sha256). A
+        later run only verifies, and deleting the file does not reopen the list.
+      - The b7 draw records (mechanism lands in b7, before its first draw) name which draws count.
+    - **Freeze-time minimums (Au5).** `freeze` checks tuning ≥ `tuning_min` (60) and realistic ≥ `realistic_min`
+      (42); a breach is the stop "freeze infeasible after round 2".
+    - **Binding (Au6, Au10, A4, F2).**
+      - `split`, `freeze`, `calibrate`, `declare-batch` and the slot gate accept the prereg only if it is committed,
+        unmodified and an ancestor of `origin/main` or `origin/<branch>`. Main is accepted because the branch ref
+        disappears after merge; the data dispatch's launcher follows the same rule.
+      - The first split attempt records the prereg's sha256 as the **epoch prereg**. Every later use, `controls.py`
+        included, must present the same sha256 (`prereg_amended`, a D64 stop).
+      - Freeze records and slot results carry the prereg's sha256; slot results also carry its commit.
+    - **Checks (Au7, Cx1, Au8, A12, F5).**
+      - `prereg-check` validates every registered value: adoption, controls, slots, cutoff, test, sidedness,
+        multiplicity, MWE, α, the drafting rule, collapse and caps.
+      - `controls.py` takes its rule, ceiling and draw count from the epoch prereg.
+      - `calibrate` takes its seed only from the epoch prereg.
       - The power table has cells at α ∈ {0.05, 0.0125} for both group models, plus a singleton-family table from
         `eval_stats.power`/`mde`, all recomputed by `prereg-check`.
-    - **Calibration (Au12).** It is drawn once, after every split is frozen, from frozen approved families, by the
-      prereg seed. The draw file is immutable.
-    - **Visibility (Au13).** The sealed freeze reports its source split (tutorial vs drafted), counts only.
-    - **Cosmetic (Au15, Au16).**
+    - **Calibration (Au12, A14, F1).** It is drawn once, after every split is frozen, from the frozen files' own
+      approved rows (their sha256 must equal the freeze records), by the epoch prereg's seed. A `calibration_draw`
+      ledger record makes the draw durable: a re-run reproduces it or is refused.
+    - **Visibility (Au13, F6).** The sealed freeze reports its source split as counts only: tutorial
+      (`source` = tutorial) vs drafted.
+    - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
-      - The non-inferiority wording is replaced by its two checks.
+      - The non-inferiority wording means exactly its two checks.
       - The quota-short example is labelled.
-      - Register proportions are registered (realistic lay ≥ 0.5 of new realistic-eligible drafts).
+      - Holm's K is 4 wherever it is mentioned.
 b2. **Migration and quotas [C].** Golden-v1, realistic-v1 and the 24 T1/T7 rows become v2 development rows (`source`
     `legacy`/`tutorial`) in `eval/private/dev/`, keeping their phrasings (T1/T7 capped at 3); the v1 files stay
     byte-frozen. **Counting** (`count-migrated`): each golden or realistic row is one family, a pair in
@@ -1777,7 +1805,7 @@ b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and
     tutorial, at most 1 per title-document set), ≈ 50 handbook-drafted. Families on a b0 conflict label are dev-only.
 b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin verdict; the orchestrator covers the
     development-only pairs (golden, realistic, T1/T7, heldout-v1) from the pairing map and its own reading. `split`
-    attempts until one is feasible and releases it. The SP then paraphrases every family to 2–3 phrasings (migrated ones
+    makes up to 3 attempts per round (b1a) and releases the first feasible one. The SP then paraphrases every family to 2–3 phrasings (migrated ones
     keep theirs and are topped up to 2); the orchestrator receives only the development side. **Fixed order (R3):**
     round-1 split → b5 validation → SP `recheck` on final content → round 2 → freeze (b6).
 b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets, orchestrator development ones].** The
@@ -1792,8 +1820,10 @@ b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets
     (`second_status: missing`), or a still-doubted sealed family is rejected. **Disagreement** per dimension: scope;
     AND/OR group structure (a missing or extra required group, or a different alternative set, under related matching);
     partial gaps; each rate with a Wilson CI, labelled "an owner-selected sample of doubted items, not a population
-    rate" (D71 Q5). **Optional calibration** (if the owner confirms the colleague can do it): 15 approved families drawn
-    with the prereg seed (5 refuse or partial, 10 answer), labelled from the question alone; agreement per dimension as a
+    rate" (D71 Q5). The owner-hours forecast is recomputed here from the actual counts (D75). **Optional calibration**
+    (if the owner confirms the colleague can do it): 15 approved families drawn once, after every split is frozen, from
+    the frozen files with the epoch prereg's seed (5 refuse or partial, 10 answer; ledger-recorded, b1a), labelled from
+    the question alone; agreement per dimension as a
     random n = 15 sample, or D75 says "not done". Rejected families go to `sealed/quarantine.jsonl` (marked) or
     `eval/private/dev/quarantine.jsonl`.
 b6. **Freeze, clearance, audits [SP; C].** `freeze --split heldout-v2`, then tuning-v2 and realistic-v2 after their
@@ -1803,10 +1833,13 @@ b6. **Freeze, clearance, audits [SP; C].** `freeze --split heldout-v2`, then tun
     slot-0 inputs. `audit` runs at release, at each freeze, before slot 0 and at the phase gate; counts go into D75.
 b7. **Development baseline, controls, cost probe (D76) [C].** On the frozen development sets: offline v6 (zero calls)
     over tuning-v2, realistic-v2 and heldout-v1; R = 5 retrieval-only live draws (`build:`, each with its own
-    `--approved-eur`): per-family flip frequency and the rate range. Draw 1 is the **development artifact**; a later
-    change to a development file voids it (keys carry the set sha256) and means a re-draw. The control list (b1's rule)
-    is computed once on the frozen development versions and committed with its sha256 in the mirror before slot 1 can
-    exist; it is never recomputed mid-batch. **Cost probe** (cost confirmed first, 16A.8):
+    `--approved-eur`): per-family flip frequency and the rate range. **Each draw over the frozen development sets is
+    recorded in the ledger as it completes (a `dev_draw` record: index, artifact and rows-sidecar sha256s; code lands
+    here, before the first draw); only the first 5 recorded count** for the controls and the development evidence
+    (b1a). Draw 1 is the **development artifact**; a later change to a development file voids it (keys carry the set
+    sha256) and means a re-draw. The control list (b1's rule) is computed once from those draws on the frozen
+    development versions and committed as the ledger's `controls` record (digest in the mirror) before the batch
+    declaration can exist; it is never recomputed. **Cost probe** (cost confirmed first, 16A.8):
     one metered public run (golden-, realistic-, heldout-v1, judge on, `--results eval/results_partial.md`,
     `--approved-eur 3`), plus the meter's worst case priced in-process over the final development prompts.
 b8. **Slot 0 [C].** With the week's remaining cap ≥ 2 × the forecast: `pipeline eval --sealed-slot 0` over heldout-v2,
@@ -1845,13 +1878,14 @@ the shortfall, and the owner decides whether that is v2.5.0 (D64: eval protocol)
 **16A-2b acceptance (Tier-2; evidence is counts and hashes only):** the owner's choice in D74 before the prereg commit;
 the prereg pushed before the first `data` dispatch record; `prereg-check` passes on the **committed** prereg; attempts,
 split and freeze in the private ledger, kinds and digests in the mirror; sealed ≥ 50 families and ≥ 35 eligible
-answerable, tuning ≥ 60 and realistic ≥ 40 families, each with 2–3 phrasings, every split in the band (rows reported),
+answerable, tuning ≥ 60 and realistic ≥ 42 families, each with 2–3 phrasings, every split in the band (rows reported),
 realistic tutorial share ≥ 25%; every sealed, refusal and ambiguous label owner-approved and hash-bound; escalation
 counts and disagreement per dimension; calibration done or "not done"; every audit hit has an exclusion
 record, and unexcluded hits = 0 (R5); baseline, draws and controls
 recorded; probe, forecast and slot 0 in D76; `results_v6.md` from a canonical run within the week's cap; `scan_leaks
 --merge-gate --base main --pr <n>` clean. **Stops (D64):** b1's owner question; the weekly cap (exit 3) or lifting it;
-freeze infeasible after round 2; a prereg amendment or new epoch; the floor breached; both private ledgers lost; a sealed
+split infeasible (a 4th round-1 attempt) and freeze infeasible after round 2 (b1a); a development band unreachable
+at b2 (`band_unreachable`); a prereg amendment (`prereg_amended`) or new epoch; the floor breached; both private ledgers lost; a sealed
 hit in pushed history; the owner's `harness-init --refresh`. **Gates:** prereg plan gate → b0–b8 → `/phase-gate
 16A-2b` → Codex merge review → PR, CI → merge and tag **`v2.5.0`** under D64.
 

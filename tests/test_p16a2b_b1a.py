@@ -18,6 +18,7 @@ from scripts import sp_launch as sp
 from src import sealed_ledger, sealed_run
 from src.sealed_ledger import ProtocolError, SealedLedger, SlotRefused
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
+    BATCH,
     BOUND_COMMIT,
     BOUND_PREREG_SHA,
     CANDIDATES,
@@ -36,10 +37,28 @@ def make(tmp_path: Path) -> SealedLedger:
     return SealedLedger(tmp_path / "copy", mirror=tmp_path / "mirror.jsonl")
 
 
+@pytest.fixture(autouse=True)
+def _embargo_off(monkeypatch):
+    """The 16B embargo (``CONFIRMATORY_EMBARGO``) is tested in ``tests/test_p16a2b_b1a_r2.py``; the batch and slot
+    rules behind it are tested here, so it is off."""
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
+
+
 def frozen(tmp_path: Path) -> SealedLedger:
     led = make(tmp_path)
     led.record_freeze(split="sealed", set_sha256=D, twins_sha256=D, totals={"families": 60})
     return led
+
+
+def declarable(tmp_path: Path) -> SealedLedger:
+    """A ledger that is frozen and holds the controls record: what a batch declaration needs."""
+    led = frozen(tmp_path)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    return led
+
+
+def canonical_json_sha(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def run_dir(tmp_path: Path, name: str, artifact: bytes | None = None) -> Path:
@@ -70,35 +89,48 @@ def test_check_prereg_accepts_the_branch_or_main_and_refuses_neither(repos):
 def test_batch_declaration_rules(tmp_path):
     led = make(tmp_path)
     with pytest.raises(ProtocolError):  # needs the sealed freeze
-        led.record_batch_declaration(CANDIDATES)
+        led.record_batch_declaration(BATCH)
     led = frozen(tmp_path)
-    for bad in ([], CANDIDATES + ["5" * 64], [CANDIDATES[0]] * 2, ["A" * 64], ["short"], "1" * 64):
+    with pytest.raises(ProtocolError, match="controls"):  # and the controls record
+        led.record_batch_declaration(BATCH)
+    led.record_controls(controls_sha256=D, draws_sha256=D, prereg_sha256=D)
+    one = {"config_hash": CANDIDATES[0], "expansion": "replay"}
+    bad_entries = [
+        [], BATCH + [{"config_hash": "5" * 64, "expansion": "replay"}], [one, dict(one)],  # none, five, a duplicate hash
+        [{"config_hash": "A" * 64, "expansion": "replay"}], [{"config_hash": "short", "expansion": "replay"}],
+        [{"config_hash": CANDIDATES[0], "expansion": "live"}],  # not a batch mode
+        [{"config_hash": CANDIDATES[0]}], [{"expansion": "replay"}], [{**one, "extra": 1}],  # not {config_hash, expansion}
+        CANDIDATES,  # the old form: bare hashes
+        "1" * 64,
+    ]
+    for bad in bad_entries:
         with pytest.raises(ValueError):
             led.record_batch_declaration(bad)
     assert led.batch_declaration() is None
-    digest = led.record_batch_declaration(CANDIDATES[:3])
-    assert digest == hashlib.sha256(json.dumps(CANDIDATES[:3], separators=(",", ":")).encode()).hexdigest()
+    entries = [BATCH[0], {"config_hash": CANDIDATES[1], "expansion": "candidate"}, BATCH[2]]
+    digest = led.record_batch_declaration(entries)
+    assert digest == canonical_json_sha(entries)  # the digest of the canonical JSON of the list, modes included
     rec = make(tmp_path).batch_declaration()
-    assert rec["candidates"] == CANDIDATES[:3] and rec["candidates_sha256"] == digest
+    assert rec["candidates"] == entries and rec["candidates_sha256"] == digest
     with pytest.raises(ProtocolError):  # appendable once
-        led.record_batch_declaration(CANDIDATES[:2])
+        led.record_batch_declaration(BATCH[:2])
 
 
 def test_the_mirror_carries_the_batch_digest_only(tmp_path):
-    led = frozen(tmp_path)
-    digest = led.record_batch_declaration(CANDIDATES)
+    led = declarable(tmp_path)
+    digest = led.record_batch_declaration(BATCH)
     line = json.loads((tmp_path / "mirror.jsonl").read_text().splitlines()[-1])
     assert line["kind"] == "batch_declaration" and line["digests"] == {"candidates_sha256": digest}
     assert "candidates" not in line and CANDIDATES[0] not in json.dumps(line)
 
 
 def test_no_batch_after_a_confirmatory_claim_and_claims_follow_the_batch(tmp_path):
-    led = frozen(tmp_path)
+    led = declarable(tmp_path)
     for slot in (1, 4):
         with pytest.raises(SlotRefused):  # no declaration yet
             led.claim(slot)
     assert led.claim(0) == "0"  # slots 0 and 0b never need one
-    led.record_batch_declaration(CANDIDATES[:2])
+    led.record_batch_declaration(BATCH[:2])
     assert led.claim(2) == "2"
     with pytest.raises(SlotRefused):
         led.claim(3)  # beyond the declared candidates
@@ -108,17 +140,18 @@ def test_no_batch_after_a_confirmatory_claim_and_claims_follow_the_batch(tmp_pat
 
 
 def test_no_batch_can_be_declared_once_a_confirmatory_slot_was_claimed(tmp_path, monkeypatch):
-    led = frozen(tmp_path)
-    monkeypatch.setattr(sealed_ledger, "_batch_of", lambda records: {"candidates": CANDIDATES})  # claim 1 without a batch
+    led = declarable(tmp_path)
+    monkeypatch.setattr(sealed_ledger, "_batch_of", lambda records: {"candidates": BATCH})  # claim 1 without a batch
     led.claim(1)
     monkeypatch.undo()
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
     with pytest.raises(ProtocolError, match="confirmatory slot"):
-        led.record_batch_declaration(CANDIDATES[:1])
+        led.record_batch_declaration(BATCH[:1])
 
 
 def test_slot_stored_records_the_expansion_artifact_sha_for_slots_0_and_0b_only(tmp_path):
-    led = frozen(tmp_path)
-    led.record_batch_declaration(CANDIDATES)
+    led = declarable(tmp_path)
+    led.record_batch_declaration(BATCH)
     art = b'{"expansions": []}'
     led.claim(0)
     led.store_results(0, run_dir(tmp_path, "r0", art))
@@ -208,19 +241,51 @@ def test_slot0_canonical_resolves_through_the_ledger(tmp_path):
     decl = {"expansion": "replay", "artifact": "slot0_canonical"}
 
     class L:
-        def __init__(self, value):
-            self.value = value
+        def __init__(self, value, batch=None):
+            self.value, self.batch = value, batch
 
         def canonical_artifact_sha256(self):
             return self.value
 
-    assert sealed_run._check_expansion(decl, str(art), None, L(sha)) == ("replay", sha, str(art))
+        def batch_declaration(self):
+            return self.batch
+
+    assert sealed_run._check_expansion(decl, str(art), None, L(sha)) == ("replay", sha, str(art), None, None)
     for ledger in (L(None), L("f" * 64), None):  # no canonical artifact, a different one, no ledger
         with pytest.raises(sealed_run.GateRefused) as info:
             sealed_run._check_expansion(decl, str(art), None, ledger)
         assert info.value.gate == "expansion_mode"
     explicit = {"expansion": "replay", "artifact_sha256": sha}
     assert sealed_run._check_expansion(explicit, str(art), None)[1] == sha  # the explicit form is unchanged
+
+
+def test_a_batch_declaration_resolves_the_slots_mode_from_the_ledgers_batch(tmp_path):
+    art = tmp_path / "expansion_artifact.json"
+    art.write_text('{"x": 1}', encoding="utf-8")
+    sha = hashlib.sha256(art.read_bytes()).hexdigest()
+    decl = {"expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
+    entries = [{"config_hash": CANDIDATES[0], "expansion": "replay"}]
+
+    class L:
+        def __init__(self, batch):
+            self.batch = batch
+
+        def canonical_artifact_sha256(self):
+            return sha
+
+        def batch_declaration(self):
+            return self.batch
+
+    ledger = L({"candidates": entries})
+    assert sealed_run._check_expansion(decl, str(art), None, ledger, "1") == ("replay", sha, str(art), CANDIDATES[0], "replay")
+    for ledger, slot in ((L(None), "1"), (L({"candidates": entries}), "2"), (L({"candidates": entries}), "0"),
+                         (L({"candidates": entries}), None), (None, "1")):  # no batch, no entry, not a batch slot
+        with pytest.raises(sealed_run.GateRefused) as info:
+            sealed_run._check_expansion(decl, str(art), None, ledger, slot)
+        assert info.value.gate == "batch"
+    with pytest.raises(sealed_run.GateRefused) as info:  # a replay entry run live
+        sealed_run._check_expansion(decl, "live", None, L({"candidates": entries}), "1")
+    assert info.value.gate == "expansion_mode"
 
 
 def test_the_gate_binds_the_prereg_first_and_the_token_and_results_carry_it(world, monkeypatch):
@@ -240,21 +305,22 @@ def test_the_gate_binds_the_prereg_first_and_the_token_and_results_carry_it(worl
     monkeypatch.undo()
 
 
-def test_confirmatory_slots_need_a_batch_declaration_and_carry_their_candidate(bare, tmp_path):
-    art = tmp_path / "expansion_artifact.json"
-    art.write_text("{}", encoding="utf-8")
-    sha = hashlib.sha256(art.read_bytes()).hexdigest()
-    slots = {"0": {"expansion": "live"}, "0b": {"expansion": "live"}}
-    slots.update({str(n): {"expansion": "replay", "artifact_sha256": sha} for n in (1, 2, 3)})
-    bare.write_prereg(slots=slots)
+def test_confirmatory_slots_need_a_batch_declaration_and_carry_their_candidate(bare):
+    from src.expansion_artifact import rewrite_identity
+
+    config_hash = rewrite_identity()["config_hash"]
+    bare.write_prereg()
     bare.write_records()
     bare.freeze()
-    call = lambda slot: bare.token(slot, expansion=str(art), baseline_run="run-x", claim=False, declare=False)  # noqa: E731
+    call = lambda slot: bare.token(  # noqa: E731
+        slot, expansion="live", rewrite_candidate=config_hash, baseline_run="run-x", claim=False, declare=False)
+    assert gate_of(lambda: call(1)) == "controls"  # the controls are not recorded yet
+    bare.record_controls()
     assert gate_of(lambda: call(1)) == "batch"  # nothing declared
-    bare.declare_batch(2)
+    bare.declare_batch(entries=[BATCH[0], {"config_hash": config_hash, "expansion": "candidate"}])
     assert gate_of(lambda: call(3)) == "batch"  # beyond the two declared candidates
     assert gate_of(lambda: call(2)) == "baseline"  # the batch gate passed; the baseline gate is next
-    assert gate_of(lambda: bare.token(2, expansion=str(art), claim=False, declare=False)) == "baseline"
+    assert gate_of(lambda: bare.token(2, expansion="live", rewrite_candidate=config_hash, claim=False, declare=False)) == "baseline"
     assert "batch" in sealed_run.GATES and "prereg_binding" in sealed_run.GATES
 
 
@@ -263,15 +329,13 @@ def test_the_token_for_a_confirmatory_slot_names_the_slots_candidate(world, tmp_
     baseline = world.ledger().records("slot_stored")[0]["run_id"]
     art = world.run_dir(baseline) / "expansion_artifact.json"
     sha = hashlib.sha256(art.read_bytes()).hexdigest()
-    world.write_prereg(slots={"0": {"expansion": "live"}, "0b": {"expansion": "live"},
-                              **{str(n): {"expansion": "replay", "artifact": "slot0_canonical"} for n in (1, 2)}})
     assert world.ledger().canonical_artifact_sha256() == sha
     tok = world.token(2, expansion=str(art), baseline_run=baseline, claim=False)
-    assert tok.candidate_config_hash == CANDIDATES[1] and tok.artifact_sha256 == sha
+    assert tok.candidate_config_hash == CANDIDATES[1] and tok.artifact_sha256 == sha and tok.candidate_expansion == "replay"
     tok.release()
     outcome = world.run(1, expansion=str(art), baseline_run=baseline)
     doc = json.loads((world.run_dir(outcome.run_id) / "results.json").read_text())
-    assert doc["candidate_config_hash"] == CANDIDATES[0]
+    assert doc["candidate_config_hash"] == CANDIDATES[0] and doc["candidate_expansion"] == "replay"
 
 
 # --- 3b. the real bind_prereg against a temp repo with an origin ---------------------------------------------------
@@ -373,12 +437,48 @@ MISMATCHES = [
     ("power.alphas", [0.05]), ("power.alphas", [0.05, 0.02]),
 ]
 
+#: r2 (R5): every other registered value b1a now pins, changed and (below) removed
+NEW_REGISTERED = [
+    ("mwe", 0.2), ("alpha", 0.1), ("primary_metric.test", "permutation"), ("primary_metric.sided", "one"),
+    ("primary_metric.multiplicity", "none"), ("adoption.sealed_point_estimate_min", 0.01),
+    ("adoption.sealed_holm_significant_loss", "allowed"), ("adoption.critical_control_flips_max", 1),
+    ("adoption.confirmatory_batch.spent_slot_counts", False),
+    ("adoption.confirmatory_batch.state", "open"), ("adoption.confirmatory_batch.modes", ["replay"]),
+    ("adoption.confirmatory_batch.mode_declared_by", "prereg"), ("adoption.confirmatory_batch.candidate_identity", "none"),
+    ("adoption.confirmatory_batch.embargo_lifted_by", "nobody"), ("adoption.confirmatory_batch.requires", ["judge_on"]),
+    ("adoption.development_evidence.versions", "frozen_at_slot_0"), ("adoption.development_evidence.pairing", "pooled"),
+    ("adoption.development_evidence.incumbent_draws", "every_draw"), ("adoption.development_evidence.candidate_draws", "any"),
+    ("adoption.unsupported_claims.reference", "incumbent_dev"), ("adoption.control_flip.versions", "frozen_at_slot_0"),
+    ("adoption.control_flip.draws", "any_of_first_3_recorded"),
+    ("controls.draws", "every"), ("controls.committed", "before_slot_1"),
+    ("slots.1.expansion", "replay"), ("slots.4.expansion", "candidate"),
+    ("drafting_rule.attempt_1.refusal_drafts", "round(target_x_pool_total)_minus_preassigned_refusals"),
+    ("drafting_rule.attempt_1.realistic_lay_share_of", "all_realistic"), ("drafting_rule.attempt_1.band_unreachable", "continue"),
+    ("drafting_rule.round_2.max_attempts", 4), ("drafting_rule.round_2.after_cap", "go_on"),
+    ("drafting_rule.round_2.refusal_drafts", "none"),
+]
+NEW_REGISTERED_KEYS = [path for path, _ in NEW_REGISTERED]
 
-@pytest.mark.parametrize("path,value", MISMATCHES)
+
+@pytest.mark.parametrize("path,value", MISMATCHES + NEW_REGISTERED)
 def test_validate_prereg_registered_values(good_prereg, path, value):
     errors = st.validate_prereg(mutate(good_prereg, path, value))
     assert errors and all(why in st.PREREG_ERRORS for _, why in errors)
     assert any(why in ("mismatch", "out_of_range") for _, why in errors), errors
+
+
+@pytest.mark.parametrize("path", NEW_REGISTERED_KEYS)
+def test_validate_prereg_requires_every_registered_value_to_be_present(good_prereg, path):
+    errors = st.validate_prereg(mutate(good_prereg, path, KeyError))
+    assert errors and any(why in ("mismatch", "missing") for _, why in errors), errors
+
+
+def test_validate_prereg_slots_1_to_4_are_batch_declarations(good_prereg):
+    for sid in ("1", "2", "3", "4"):
+        assert good_prereg["slots"][sid]["expansion"] == "batch"
+    old = copy.deepcopy(good_prereg)
+    old["slots"]["2"] = {"expansion": "replay", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
+    assert any(f.startswith("slots.2") for f, _ in st.validate_prereg(old))
 
 
 def test_validate_prereg_required_keys_and_dropped_keys(good_prereg):

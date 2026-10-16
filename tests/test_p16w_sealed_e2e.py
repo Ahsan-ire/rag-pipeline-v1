@@ -35,7 +35,7 @@ import pytest
 import src.evaluator as ev
 from scripts import sealed_tool as st
 from scripts import sp_launch as sp
-from src import eval_privacy, sealed_run
+from src import eval_privacy, sealed_ledger, sealed_run
 from src.eval_sealed_read import load_sealed
 from src.sealed_ledger import RecoveryAction
 from tests import p16_slot as slot
@@ -260,8 +260,15 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     assert freeze["set_sha256"] == frozen_line["sha256"] and freeze["twins_sha256"] == frozen_line["twins_sha256"]
     assert not (w.sealed / "work" / "twins.json").exists() and not (w.sealed / "work" / "exclusions.json").exists()
 
+    # --- 5b. the two development splits freeze too: a slot run's development inputs must be these versions (b1a) -----
+    w.approve_all("development")
+    for split in ("tuning", "realistic"):
+        code, out, err = w.recheck(f"{split}-v2")
+        assert code == 0, err
+        assert w.last(out, "freeze")["status"] == "frozen"
+
     # --- 6. pipeline eval --sealed-slot 0, every model faked ---------------------------------------------------------
-    golden, realistic = w.dev / "tuning_r1.jsonl", w.dev / "realistic_r1.jsonl"
+    golden, realistic = w.dev / "tuning-v2.jsonl", w.dev / "realistic-v2.jsonl"
     fakes = slot_fakes(w, frozen, golden, realistic)
     retrieval = fakes.retrieval()
     matrix_kwargs = {
@@ -332,7 +339,15 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
 
     # a slot-1 gate (a confirmatory slot, paired with slot 0's stored run) sees the exclusion
     cand = "7" * 64
-    code, out, err = w.run("declare-batch", "--candidate", cand)  # slot 1 needs the batch declaration (b1a)
+    monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the 16B embargo is code-level; this chain goes behind it
+    controls_bytes = b'{"version": 1}\n'  # a batch needs the controls recorded in the ledger and the file unchanged
+    for controls_file in (w.repo / "eval" / "controls_v1.json", tmp_path / "eval" / "controls_v1.json"):  # tool / gate
+        controls_file.write_bytes(controls_bytes)
+    w.ledger().record_controls(
+        controls_sha256=hashlib.sha256(controls_bytes).hexdigest(), draws_sha256="e" * 64,
+        prereg_sha256=hashlib.sha256(w.prereg_path.read_bytes()).hexdigest(),
+    )
+    code, out, err = w.run("declare-batch", "--candidate", f"{cand}:replay")  # slot 1 needs the batch declaration (b1a)
     assert code == 0 and w.last(out, "batch_declared")["candidates"] == "1", err
     baseline_id = w.ledger().recover(0).run_id
     artifact = eval_privacy.sealed_run_dir(baseline_id, create=False) / "expansion_artifact.json"  # slot 0's, replayed
@@ -352,8 +367,9 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     # --- the ledger: every record kind in order, dispatches included; the mirror carries kinds and digests only ---------
     records = w.ledger().records()
     assert [r["kind"] for r in records] == [
-        "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze",
-        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "batch_declaration", "slot_claim",
+        "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze", "freeze", "freeze",
+        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "controls", "batch_declaration",
+        "slot_claim",
     ]
     dispatches = [r for r in records if r["kind"] == "dispatch"]
     assert [d["dispatch_id"] for d in dispatches] == [d["dispatch_id"] for d in env.log("sp_dispatch.jsonl")] == [draft, twins, recheck]

@@ -212,8 +212,9 @@ def test_count_migrated_counts_families_by_split_and_each_splits_refusal_deficit
     tutorial = tmp_path / "tutorial.jsonl"
     tutorial.write_text("".join(json.dumps(r) + "\n" for r in (
         {"id": "T01-Aa", "type": "direct"}, {"id": "T01-Ab", "type": "direct"}, {"id": "T01-Ba", "type": "refusal"}, {"id": "T01-Bb", "type": "refusal"})), encoding="utf-8")
+    world.write_prereg()  # the refusal share (11/40) is read from it
     code, out, err = world.run("count-migrated", "--golden", gold, "--realistic", real, "--pairing", pairing, "--tutorial", tutorial,
-                               "--quota-tuning", "16", "--quota-realistic", "8")
+                               "--quota-tuning", "16", "--quota-realistic", "10", "--drafts", "27")
     assert code == 0, err
     line = world.last(out, "count_migrated")
     assert (line["pairs"], line["tutorial_exercises"]) == ("2", "2")
@@ -221,7 +222,11 @@ def test_count_migrated_counts_families_by_split_and_each_splits_refusal_deficit
     assert (line["tuning_families"], line["tuning_refuse"]) == ("6", "1")  # golden-only families go to tuning; g0 is the refusal
     assert (line["realistic_families"], line["realistic_refuse"]) == ("7", "3")  # 5 realistic rows (a pair is ONE family) + 2 exercises; r0, r2, T01-B
     assert (line["tuning_quota"], line["tuning_deficit"]) == ("16", "3")  # 25 % of 16 is 4 refusal families, 1 present
-    assert (line["realistic_quota"], line["realistic_deficit"]) == ("8", "0")
+    assert (line["realistic_quota"], line["realistic_deficit"]) == ("10", "0")  # 25 % of 10 is 2.5: 3 refusal families, 3 present
+    # b1a r2: the pool is the 13 migrated families plus the 27 drafts; 11/40 of 40 is 11 refusals, 4 of them preassigned
+    assert (line["migrated_families"], line["preassigned_refusals"], line["pool_total"]) == ("13", "4", "40")
+    assert (line["refusal_target"], line["refusal_drafts"]) == ("11", "7")  # max(11 - 4, deficits 3 + 0)
+    assert (line["tuning_open"], line["tuning_band"], line["realistic_open"], line["realistic_band"]) == ("10", "ok", "3", "ok")
     assert_allowlisted(out)
     assert CANARY not in out + err
 
@@ -236,7 +241,7 @@ def test_count_migrated_quotas_default_to_the_prereg_and_a_bad_pairing_is_refuse
     pairing = tmp_path / "p.json"
     pairing.write_text(json.dumps({"pairs": [["q:000000000000", "q:111111111111"]]}), encoding="utf-8")
     world.write_prereg()
-    argv = ("count-migrated", "--golden", path, "--realistic", path, "--tutorial", tutorial)
+    argv = ("count-migrated", "--golden", path, "--realistic", path, "--tutorial", tutorial, "--drafts", "4")
     code, out, err = world.run(*argv, "--pairing", pairing)
     assert code == st.EXIT_USAGE and "reason=inputs_invalid" in err  # the pair names ids that are not in the sets
     pairing.write_text(json.dumps({"pairs": []}), encoding="utf-8")

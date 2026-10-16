@@ -351,7 +351,7 @@ def _inference_lines(doc: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], 
         f"- Sensitivity (labelled, not the test): exact two-sided McNemar on families: "
         f"b = {stats['gains']}, c = {stats['losses']}, p = {stats['p_mcnemar']:.4f}."
     )
-    lines.append("- Holm across the declared candidate batch is applied by the prereg analysis, not here.")
+    lines.append("- Holm with K = 4 fixed in advance (prereg `holm_k`), applied by the prereg analysis, not here.")
     lines.append("")
     return lines
 

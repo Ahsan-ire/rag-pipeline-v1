@@ -210,12 +210,11 @@ def test_a_prereg_declared_cutoff_replaces_the_default_for_every_slot(world):
 
 
 def test_the_stored_results_record_the_cutoff_and_the_baseline_block_carries_it(world):
-    candidate_prereg(world)
+    config_hash = candidate_prereg(world)
     world.run(0)
     r0 = run_id_of(world, 0)
     doc0 = world.stored_doc(0)
     assert doc0["cutoff"] == doc0["k"] == doc0["top_k"] == 6 and doc0["baseline"] is None
-    config_hash = world.prereg["slots"]["1"]["rewrite_candidate"]
     world.run(1, expansion="live", rewrite_candidate=config_hash, baseline_run=r0)
     doc1 = world.stored_doc(1)
     assert doc1["cutoff"] == 6 and doc1["baseline"]["cutoff"] == 6 and doc1["baseline"]["run_id"] == r0
@@ -309,10 +308,10 @@ def test_identical_rankings_with_the_evidence_at_rank_four_never_pair_a_hit_at_6
 
 
 def test_the_renderer_refuses_a_document_that_pairs_two_cutoffs_or_records_none(world):
-    candidate_prereg(world)
+    config_hash = candidate_prereg(world)
     world.run(0)
     r0 = run_id_of(world, 0)
-    world.run(1, expansion="live", rewrite_candidate=world.prereg["slots"]["1"]["rewrite_candidate"], baseline_run=r0)
+    world.run(1, expansion="live", rewrite_candidate=config_hash, baseline_run=r0)
     doc = world.stored_doc(1)
     render = lambda d: sealed_report.format_sealed_report(d, excluded=frozenset(), canonical=False)  # noqa: E731
     assert render(doc)  # the genuine document renders

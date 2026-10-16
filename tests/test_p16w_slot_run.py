@@ -350,33 +350,37 @@ def test_slot_zero_b_is_available_only_after_a_non_canonical_slot_zero(world):
 # --- the expansion mode must be the one the prereg declares for the slot ---------
 
 
-def test_the_expansion_mode_must_equal_the_declared_one(bare, tmp_path, no_calls):
+def test_the_expansion_mode_must_equal_the_declared_one(world, tmp_path):
     config_hash = rewrite_identity()["config_hash"]
-    artifact = tmp_path / "declared.json"
-    artifact.write_text("{}")
-    bare.write_prereg({
-        "0": {"expansion": "live"},
-        "1": {"expansion": "replay", "artifact_sha256": sha_of(artifact)},
-        "2": {"expansion": "candidate", "rewrite_candidate": config_hash},
-        "3": {"expansion": "candidate", "rewrite_candidate": "b" * 64},
-    })
-    bare.write_records()
-    bare.freeze()
-    # live declared: a candidate flag, a replay path or a build target are all wrong modes
-    assert gate_of(lambda: bare.token(0, rewrite_candidate=config_hash)) == "expansion_mode"
-    assert gate_of(lambda: bare.token(0, expansion=str(artifact))) == "expansion_mode"
-    assert gate_of(lambda: bare.token(0, expansion="build:x.json")) == "expansion_mode"
-    # replay declared: live is wrong, a different artifact is wrong
+    # slot 0 declares live: a candidate flag, a replay path or a build target are all wrong modes
+    assert gate_of(lambda: world.token(0, rewrite_candidate=config_hash)) == "expansion_mode"
+    assert gate_of(lambda: world.token(0, expansion=str(tmp_path / "declared.json"))) == "expansion_mode"
+    assert gate_of(lambda: world.token(0, expansion="build:x.json")) == "expansion_mode"
+    world.run(0)  # canonical: the replay entries below replay its stored expansion artifact
+    claims = [r for r in world.ledger().records() if r["kind"] == "slot_claim"]
+    # the batch declares each confirmatory slot's mode: slots 1 and 4 replay, slot 2 is the rewrite-changing
+    # candidate of this code, slot 3 a candidate configuration this code does not have
+    world.declare_batch(entries=[
+        {"config_hash": "1" * 64, "expansion": "replay"},
+        {"config_hash": config_hash, "expansion": "candidate"},
+        {"config_hash": "b" * 64, "expansion": "candidate"},
+        {"config_hash": "4" * 64, "expansion": "replay"},
+    ])
     other = tmp_path / "other.json"
     other.write_text("{ }")
-    assert gate_of(lambda: bare.token(1, expansion="live", baseline_run="r1")) == "expansion_mode"
-    assert gate_of(lambda: bare.token(1, expansion=str(other), baseline_run="r1")) == "expansion_mode"
-    assert gate_of(lambda: bare.token(1, expansion=str(tmp_path / "missing.json"), baseline_run="r1")) == "expansion_mode"
-    # candidate declared: live without the flag is wrong; the wrong hash is wrong; a declared hash the code does not have is wrong
-    assert gate_of(lambda: bare.token(2, expansion="live", baseline_run="r1")) == "expansion_mode"
-    assert gate_of(lambda: bare.token(2, rewrite_candidate="c" * 64, baseline_run="r1")) == "expansion_mode"
-    assert gate_of(lambda: bare.token(3, rewrite_candidate="b" * 64, baseline_run="r1")) == "expansion_mode"
-    assert unclaimed(bare) and no_calls == []
+    # replay entry: live is wrong, a different artifact is wrong, a missing one is wrong, a candidate flag is wrong
+    assert gate_of(lambda: world.token(1, expansion="live", baseline_run="r1")) == "expansion_mode"
+    assert gate_of(lambda: world.token(1, expansion=str(other), baseline_run="r1")) == "expansion_mode"
+    assert gate_of(lambda: world.token(1, expansion=str(tmp_path / "missing.json"), baseline_run="r1")) == "expansion_mode"
+    assert gate_of(lambda: world.token(1, rewrite_candidate=config_hash, baseline_run="r1")) == "expansion_mode"
+    # candidate entry: live without the flag is wrong; the wrong hash is wrong; a replay is wrong
+    canonical = world.run_dir(world.ledger().recover(0).run_id) / "expansion_artifact.json"
+    assert gate_of(lambda: world.token(2, expansion="live", baseline_run="r1")) == "expansion_mode"
+    assert gate_of(lambda: world.token(2, rewrite_candidate="c" * 64, baseline_run="r1")) == "expansion_mode"
+    assert gate_of(lambda: world.token(2, expansion=str(canonical), baseline_run="r1")) == "expansion_mode"
+    # a declared hash the code does not have is wrong even when the flag repeats it
+    assert gate_of(lambda: world.token(3, rewrite_candidate="b" * 64, baseline_run="r1")) == "expansion_mode"
+    assert [r for r in world.ledger().records() if r["kind"] == "slot_claim"] == claims  # nothing was claimed
 
 
 # --- the tracing gate -----------------------------------------------------------

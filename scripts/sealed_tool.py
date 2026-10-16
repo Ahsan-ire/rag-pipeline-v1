@@ -104,8 +104,12 @@ After the sealed freeze a twin found by a later development recheck never moves 
 pools those two sources) and the b1a blocks, all required and checked against their registered values:
 ``primary_metric`` (cut-off 6, hybrid+rewrite, strict_hit), ``collapse`` (``{"rule": "all"}``), ``adoption`` (rule a,
 the confirmatory batch, the development evidence, unsupported claims and control flip definitions), ``controls``
-(rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 replay ``slot0_canonical`` after a batch declaration) and
-``drafting_rule`` (refusal share 0.275 over the whole pool, at most 3 round-1 attempts). ``prereg-check`` recomputes
+(rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 are declared ``batch``: each one's mode, replay of
+``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's) and ``drafting_rule`` (refusal share 0.275
+over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts).
+**One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a split attempt, usually) registers it;
+``split``, ``freeze``, ``calibrate``, ``declare-batch``, the slot gate and ``controls.py`` refuse any other
+(``prereg_amended``). ``prereg-check`` recomputes
 ``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``. The same file is the
 slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
 ``quota.floor_answerable`` and the expansion mode of each slot from ``slots`` (``{"0": {"expansion": "live"}, ...}``).
@@ -215,6 +219,7 @@ REASONS = (
     "round_order", "unknown_family", "nothing_to_do", "already_intaken", "tag_conflict",
     "path_outside", "locked", "freeze_recovery_failed", "dump_missing", "staging_live",
     "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
+    "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -222,6 +227,7 @@ ENUM_WORDS = frozenset(
         *SCOPES, *REGISTERS, *SOURCES, *SPLITS, *KINDS, *MODELS, *TARGET_CLASSES, *EXCLUSION_REASONS, *REASONS,
         *RETURN_ENUMS, "none", "invalid", "released", "infeasible", "quota_short", "frozen", "ok", "clean",
         "hits", "already", "recheck_required", "owner_selected_sample", "random_sample_n15", "feasible",
+        "register_short", "unreachable",
         # split_families constraint names (SplitInfeasible.counts keys)
         "quota_total", "eligibility", "band", "strata", "min_share", "preassignment_conflicts",
         "preassigned_ineligible", "unit_no_allowed_split", "search", "floor", "approvals",
@@ -1006,27 +1012,46 @@ def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
         if got is _ABSENT or not _eq(got, value):
             errors.append((path, "mismatch"))
 
+    draws_r = doc.get("draws_r")
+    first_r = f"first_{draws_r}_recorded_development_draws"
+    want("mwe", 0.1)
+    want("alpha", 0.05)
     want("primary_metric.cutoff", 6)
     want("primary_metric.mode", "hybrid+rewrite")
     want("primary_metric.metric", "strict_hit")
+    want("primary_metric.test", "exact_cluster_signflip")
+    want("primary_metric.sided", "two")
+    want("primary_metric.multiplicity", "holm")
     want("collapse", {"rule": "all"})
     want("k_max", 4)
     want("adoption.rule", "a")
+    want("adoption.sealed_point_estimate_min", 0)
+    want("adoption.sealed_holm_significant_loss", "forbidden")
+    want("adoption.critical_control_flips_max", 0)
     want("adoption.confirmatory_batch.k_max", 4)
     want("adoption.confirmatory_batch.holm_k", 4)
     want("adoption.confirmatory_batch.slots", ["1", "2", "3", "4"])
     want("adoption.confirmatory_batch.replays", "slot0_canonical")
+    want("adoption.confirmatory_batch.spent_slot_counts", True)
+    want("adoption.confirmatory_batch.state", "refused_until_16b_sealed_comparison_gate")
+    want("adoption.confirmatory_batch.modes", ["replay", "candidate"])
+    want("adoption.confirmatory_batch.mode_declared_by", "batch_declaration")
+    want("adoption.confirmatory_batch.candidate_identity", "sha256_canonical_pipeline_config_checked_at_gate_before_claim")
+    want("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check")
+    want("adoption.confirmatory_batch.requires", ["controls_record", "judge_on"])
     want("adoption.development_evidence", {
         "metric": "strict_hit", "cutoff": 6, "collapse": "all", "mode": "hybrid+rewrite",
-        "sets": ["tuning", "realistic"], "versions": "frozen_at_slot_0", "draws": doc.get("draws_r"),
-        "statistic": "mean_over_draws_of_family_difference",
+        "sets": ["tuning", "realistic"], "versions": "development_freeze_records", "draws": draws_r,
+        "statistic": "mean_over_draws_of_family_difference", "pairing": "by_draw_index", "incumbent_draws": first_r,
+        "candidate_draws": f"replay_mode_replays_incumbent_draw_artifacts_else_first_{draws_r}_recorded_own_draws",
     })
     want("adoption.unsupported_claims", {
-        "unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent", "max_excess_abs": 0.01,
+        "unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent",
+        "reference": "canonical_slot_0_judged_sealed_claims", "max_excess_abs": 0,
     })
     want("adoption.control_flip", {
-        "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite", "draws": "any",
-        "versions": "frozen_at_slot_0",
+        "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite",
+        "draws": f"any_of_first_{draws_r}_recorded", "versions": "development_freeze_records",
     })
     want("adoption.development_family_effect_min", doc.get("mwe"))
     adoption = doc.get("adoption")
@@ -1035,8 +1060,10 @@ def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
     want("controls.rule", "c1")
     want("controls.rank_ceiling", 3)
     want("controls.modes", ["hybrid", "hybrid+rewrite"])
-    want("controls.draws_r", doc.get("draws_r"))
+    want("controls.draws_r", draws_r)
+    want("controls.draws", first_r)
     want("controls.collapse", "all")
+    want("controls.committed", "ledger_controls_record_before_batch_declaration")
     want("controls.binds_to", "development_freeze_records")
     slots = doc.get("slots")
     if not isinstance(slots, dict) or set(slots) != {"0", "0b", "1", "2", "3", "4"}:
@@ -1046,10 +1073,10 @@ def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
             want(f"slots.{sid}.expansion", "live")
         for sid in ("1", "2", "3", "4"):
             want(f"slots.{sid}", {
-                "expansion": "replay", "artifact": "slot0_canonical", "role": "confirmatory",
+                "expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory",
                 "requires": "batch_declaration",
             })
-    a1 =_at(doc, "drafting_rule.attempt_1")
+    a1 = _at(doc, "drafting_rule.attempt_1")
     if isinstance(a1, dict):
         for old in ("refusal_pct_approx", "plus"):
             if old in a1:
@@ -1059,9 +1086,16 @@ def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
     if _is_num(share) and not 0.25 <= share <= 0.30:
         errors.append(("drafting_rule.attempt_1.refusal_share_target", "out_of_range"))
     want("drafting_rule.attempt_1.refusal_share_counts", "pool_including_preassigned")
+    want("drafting_rule.attempt_1.refusal_drafts",
+         "max(round_half_up(0.275_x_pool_total)_minus_preassigned_refusals,sum_of_split_deficits_to_25pct)")
     want("drafting_rule.attempt_1.realistic_lay_min_share", 0.5)
+    want("drafting_rule.attempt_1.realistic_lay_share_of", "new_drafts_registered_lay_or_terse")
+    want("drafting_rule.attempt_1.band_unreachable", "b2_owner_stop")
     want("drafting_rule.next_attempt.max_round_1_attempts", 3)
     want("drafting_rule.next_attempt.after_cap", "split_infeasible_stop")
+    want("drafting_rule.round_2.max_attempts", 3)
+    want("drafting_rule.round_2.after_cap", "freeze_infeasible_stop")
+    want("drafting_rule.round_2.refusal_drafts", "same_formula_over_round_2_pool")
     want("drafting_rule.paraphrase.t1_t7_cap", 3)
 
 
@@ -1213,6 +1247,20 @@ def bind_prereg_sha(ctx: Ctx, prereg: Mapping[str, Any]) -> str:
     return sha_file(ctx.prereg_file)
 
 
+def check_epoch_prereg(ledger: SealedLedger, prereg_sha: str) -> None:
+    """The epoch has one registered prereg (the first ledger record that carries a ``prereg_sha256``): a different one is refused."""
+    registered = ledger.epoch_prereg_sha256()
+    if registered is not None and registered != prereg_sha:
+        raise Stop(EXIT_REFUSED, "prereg_amended")
+
+
+def bind_epoch_prereg(ctx: Ctx, prereg: Mapping[str, Any], ledger: SealedLedger) -> str:
+    """The prereg's file sha256 if it is committed, unmodified, pushed AND the epoch's registered prereg."""
+    sha = bind_prereg_sha(ctx, prereg)
+    check_epoch_prereg(ledger, sha)
+    return sha
+
+
 # ---------------------------------------------------------------------------
 # ids, digest, count-migrated, inputs-check
 # ---------------------------------------------------------------------------
@@ -1314,8 +1362,16 @@ def _tutorial_exercises(path: Path) -> Dict[str, bool]:
 
 
 def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tutorial: str,
-                       quota_tuning: Optional[int], quota_realistic: Optional[int]) -> int:
-    """b2's counting: families per development split and each split's refusal deficit (to 25 % of its quota)."""
+                       quota_tuning: Optional[int], quota_realistic: Optional[int], drafts: Optional[int] = None) -> int:
+    """b2's counting: families per development split, each split's refusal deficit (to 25 % of its quota), and the
+    refusal drafts the pool needs.
+
+    ``drafts`` is the number of new drafts (default the prereg's ``attempt_1.families_approx``). The pool is the
+    migrated families plus the drafts; its refusal target is the registered share (11/40) of it, rounded half up,
+    and the drafts must supply ``max(target - preassigned refusals, sum of the splits' deficits)`` refusals.
+    A split whose deficit exceeds its open slots, or whose preassigned refusals exceed 30 % of its quota, cannot
+    reach the band: ``band_unreachable`` after printing (b2's owner stop).
+    """
     gold, real, tut = _v1_families(Path(golden)), _v1_families(Path(realistic)), _tutorial_exercises(Path(tutorial))
     doc = read_json(Path(pairing))
     pairs = doc.get("pairs") if isinstance(doc, dict) else None
@@ -1344,13 +1400,43 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     def deficit(q: int, refuse: int) -> int:
         return max(0, -(-q * BAND_MIN_NUM // BAND_MIN_DEN) - refuse)
 
+    from fractions import Fraction
+
+    prereg_doc = read_json(prereg) if prereg.is_file() else None
+    attempt = prereg_doc.get("drafting_rule", {}).get("attempt_1", {}) if isinstance(prereg_doc, dict) else {}
+    if not isinstance(attempt, dict) or "refusal_share_target" not in attempt:
+        raise Stop(EXIT_USAGE, "prereg_missing")
+    share = Fraction(str(attempt["refusal_share_target"]))
+    if share != Fraction(11, 40):
+        raise Stop(EXIT_REFUSED, "prereg_invalid")
+    new_drafts = drafts if drafts is not None else attempt.get("families_approx")
+    if isinstance(new_drafts, bool) or not isinstance(new_drafts, int) or new_drafts < 0:
+        raise Stop(EXIT_USAGE, "usage")
+    deficits = {"tuning": deficit(quotas["tuning"], tuning_refuse), "realistic": deficit(quotas["realistic"], realistic_refuse)}
+    families = {"tuning": tuning_n, "realistic": realistic_n}
+    refuse_have = {"tuning": tuning_refuse, "realistic": realistic_refuse}
+    migrated, preassigned = tuning_n + realistic_n, tuning_refuse + realistic_refuse
+    pool_total = migrated + new_drafts
+    target = (2 * share.numerator * pool_total + share.denominator) // (2 * share.denominator)  # round half up
+    needed = max(target - preassigned, deficits["tuning"] + deficits["realistic"])
+    bands: Dict[str, str] = {}
+    open_slots: Dict[str, int] = {}
+    for split in DEV_SPLITS:
+        open_slots[split] = max(0, quotas[split] - families[split])
+        too_many = BAND_MAX_DEN * refuse_have[split] > BAND_MAX_NUM * quotas[split]
+        bands[split] = "unreachable" if deficits[split] > open_slots[split] or too_many else "ok"
     ctx.printer.emit(
         "count_migrated", pairs=len(pairs), pair_scope_conflicts=conflicts, tutorial_exercises=len(tut),
         tuning_families=tuning_n, tuning_refuse=tuning_refuse, tuning_quota=quotas["tuning"],
-        tuning_deficit=deficit(quotas["tuning"], tuning_refuse),
+        tuning_deficit=deficits["tuning"],
         realistic_families=realistic_n, realistic_refuse=realistic_refuse, realistic_quota=quotas["realistic"],
-        realistic_deficit=deficit(quotas["realistic"], realistic_refuse),
+        realistic_deficit=deficits["realistic"],
+        migrated_families=migrated, preassigned_refusals=preassigned, pool_total=pool_total, refusal_target=target,
+        refusal_drafts=needed, tuning_open=open_slots["tuning"], tuning_band=bands["tuning"],
+        realistic_open=open_slots["realistic"], realistic_band=bands["realistic"],
     )
+    if "unreachable" in bands.values():
+        raise Stop(EXIT_REFUSED, "band_unreachable")
     return EXIT_OK
 
 
@@ -1753,6 +1839,8 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
     gate_prereg(ctx, prereg, round_no)
     recover_state(ctx)
     ledger = ctx.ledger()
+    prereg_sha = sha_file(ctx.prereg_file)  # gate_prereg proved it committed, unmodified and pushed
+    check_epoch_prereg(ledger, prereg_sha)  # before anything is recorded: the epoch has one registered prereg
     releases = {int(r["round"]): r for r in ledger.records("release")}
     if round_no in releases:
         raise Stop(EXIT_REFUSED, "already_released")
@@ -1764,6 +1852,10 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         cap = int(prereg["drafting_rule"]["next_attempt"]["max_round_1_attempts"])
         if sum(1 for r in ledger.records("split_attempt") if r["round"] == 1) >= cap:
             raise Stop(EXIT_REFUSED, "split_infeasible")
+    else:  # round 2 is capped too: past it the freeze is infeasible, a stop with nothing recorded
+        cap2 = int(prereg["drafting_rule"]["round_2"]["max_attempts"])
+        if sum(1 for r in ledger.records("split_attempt") if r["round"] == 2) >= cap2:
+            raise Stop(EXIT_FREEZE_INFEASIBLE, "split_infeasible")
     pool = load_pool(ctx)
     if not pool:
         raise Stop(EXIT_REFUSED, "pool_empty")
@@ -1794,8 +1886,18 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         surplus = max(0, (total - sum(pinned_n.values())) - sum(quotas[s] - pinned_n[s] for s in SPLITS))
     attempts = sum(1 for r in ledger.records("split_attempt") if r["round"] == round_no)
     if quotas["tuning"] < int(quota_doc["tuning_min"]):
-        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="quota_short")
+        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="quota_short", prereg_sha256=prereg_sha)
         ctx.printer.emit("split", round=round_no, outcome="quota_short", attempt=attempts + 1)
+        return EXIT_SPLIT_INFEASIBLE
+    # the registered share of lay among the new drafts that are lay or terse (what realistic can take): a short pool
+    # releases nothing and counts toward the cap, like a short quota
+    from fractions import Fraction
+
+    new_reg = [f.register for f in pool.values() if f.source != "legacy" and f.register in ("lay", "terse")]
+    lay_min = Fraction(str(prereg["drafting_rule"]["attempt_1"]["realistic_lay_min_share"]))
+    if new_reg and Fraction(sum(1 for r in new_reg if r == "lay"), len(new_reg)) < lay_min:
+        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="register_short", prereg_sha256=prereg_sha)
+        ctx.printer.emit("split", round=round_no, outcome="register_short", attempt=attempts + 1)
         return EXIT_SPLIT_INFEASIBLE
     seed = int(prereg["seeds"][f"split_r{round_no}"])
     strata, min_share = prereg.get("strata") or None, prereg.get("min_share") or None
@@ -1804,7 +1906,7 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
             records, twins, supply["preassigned"], quotas, seed, strata, min_share, surplus,
         )
     except SplitInfeasible as exc:
-        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="infeasible")
+        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="infeasible", prereg_sha256=prereg_sha)
         ctx.printer.emit("split", round=round_no, outcome="infeasible", attempt=attempts + 1)
         for name, node in sorted(exc.counts.items()):
             if name in ENUM_WORDS and _violated(node):
@@ -1819,7 +1921,9 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         "dropped": supply["dropped"], "surplus": shelved, "twins_payload": ptr["payload"], "twins_sha256": ptr["sha256"],
     }
     sha = ledger.store_payload(assign_name(round_no), payload)
-    ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="feasible", payload_sha256=sha)
+    ledger.record_split_attempt(
+        round_no=round_no, pool_digest=digest, outcome="feasible", payload_sha256=sha, prereg_sha256=prereg_sha,
+    )
     totals = {s: sum(1 for v in assignment.values() if v == s) for s in SPLITS}
     new_totals = {s: sum(1 for f, v in assignment.items() if v == s and f in pool) for s in SPLITS}
     ledger.record_release(
@@ -2221,26 +2325,42 @@ def cmd_escalate(ctx: Ctx, kind: str, sheet: str, name: Optional[str]) -> int:
     return EXIT_OK
 
 
-def cmd_calibrate(ctx: Ctx, kind: str) -> int:
-    """Draw 15 approved families by the prereg seed (5 refuse-or-partial, 10 answer) for a calibration form.
+def _frozen_family_rows(ctx: Ctx, ledger: SealedLedger, kind: str) -> Dict[str, List[Dict[str, Any]]]:
+    """The families of the frozen split file(s) of ``kind`` (sealed: the sealed file; development: tuning and realistic).
 
-    Only after every split is frozen, only from families in the frozen split file(s) of ``kind`` (sealed: the
-    sealed file; development: tuning and realistic), once: a second draw must recompute identically (then it
-    only re-emits) or ``calibration_drawn`` is refused.
+    Every file must still be the frozen one (its sha256 is its freeze record's ``set_sha256``), else
+    ``frozen_file_changed``; the rows are the file's own, not the component files'.
     """
-    use_seed = int(load_prereg(ctx)["seeds"]["calibration"])
-    ledger = ctx.ledger()
-    if any(ledger.freeze_record(sp_name) is None for sp_name in SPLITS):
-        raise Stop(EXIT_REFUSED, "splits_not_frozen")
-    in_scope = ("sealed",) if kind == "sealed" else DEV_SPLITS
-    frozen_ids: Set[str] = set()
-    for name in in_scope:
+    by: Dict[str, List[Dict[str, Any]]] = {}
+    for name in ("sealed",) if kind == "sealed" else DEV_SPLITS:
         path = frozen_path(ctx, name)
         if not path.is_file():
             raise Stop(EXIT_REFUSED, "splits_not_frozen")
+        if sha_file(path) != ledger.freeze_record(name)["set_sha256"]:
+            raise Stop(EXIT_REFUSED, "frozen_file_changed")
         rows = load_sealed_rows(ctx, path) if name == "sealed" else load_dev_rows(ctx, path)
-        frozen_ids.update(str(r["family_id"]) for r in rows)
-    fams = {f: r for f, r in _family_rows(ctx, kind).items() if f in frozen_ids}
+        for row in rows:
+            by.setdefault(str(row["family_id"]), []).append(row)
+    return {fid: sorted(rs, key=row_no) for fid, rs in by.items()}
+
+
+def cmd_calibrate(ctx: Ctx, kind: str) -> int:
+    """Draw 15 approved families by the prereg seed (5 refuse-or-partial, 10 answer) for a calibration form.
+
+    Only under the epoch's registered prereg (committed, unmodified, pushed), only after every split is frozen,
+    and only from the rows of the frozen split file(s) of ``kind`` (sealed: the sealed file; development: tuning
+    and realistic), each of which must still be the frozen one. Once per kind, durably: the ledger's
+    ``calibration_draw`` record is written before the form and sheet files; a later run recomputes the draw and,
+    if it is the recorded one, re-emits it (finishing any file a crash left out) or else refuses
+    ``calibration_drawn``.
+    """
+    prereg = load_prereg(ctx)
+    use_seed = int(prereg["seeds"]["calibration"])
+    ledger = ctx.ledger()
+    bind_epoch_prereg(ctx, prereg, ledger)
+    if any(ledger.freeze_record(sp_name) is None for sp_name in SPLITS):
+        raise Stop(EXIT_REFUSED, "splits_not_frozen")
+    fams = _frozen_family_rows(ctx, ledger, kind)
     approvals = load_approvals(ctx, kind)["approved"]
     ok = [
         fid for fid, rows in fams.items()
@@ -2253,28 +2373,33 @@ def cmd_calibrate(ctx: Ctx, kind: str) -> int:
     rng = random.Random(use_seed)
     drawn = sorted([*rng.sample(hard, 5), *rng.sample(easy, 10)])
     draw_doc = {"seed": use_seed, "families": drawn, "n": len(drawn)}
+    draw_sha = sha_text(canon(draw_doc))
+    recorded = ledger.calibration_draw(kind)
+    if recorded is not None and recorded["draw_sha256"] != draw_sha:
+        raise Stop(EXIT_REFUSED, "calibration_drawn")
     draw_path = ctx.work_for(kind) / "calibration_draw.json"
-    if draw_path.is_file():
-        if read_json(draw_path, "input_invalid") != draw_doc:
-            raise Stop(EXIT_REFUSED, "calibration_drawn")
-        form_old = safe_dest(ctx.work_for(kind), "escalations", "calibration_form.txt")
-        extra = {"form_sha256": sha_file(form_old)} if form_old.is_file() else {}
-        ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=sha_file(draw_path), **extra)
-        return EXIT_OK
-    items = [(fid, fams[fid][:1], "") for fid in drawn]
-    form = _write_form(ctx, kind, "calibration_form", "Calibration form (a random few questions, used to check the key as a whole)", items)
-    pages = load_pages(ctx)
-    recs = [
-        {
-            "row_id": r["id"], "family_id": fid, "row_hash": eval_schema.row_hash(r), "phrasing_no": row_no(r), "phrasing": r["question"],
-            "scope": r["scope"], "evidence": render_evidence(r["evidence"], pages), "gaps": render_gaps(r["gaps"]),
-            "ambiguous": "yes" if r.get("ambiguous") else "no",
-        }
-        for fid in drawn for r in fams[fid][:1]
-    ]
-    write_atomic(sheet_dest(ctx, kind, "calibration.csv"), csv_bytes(SHEET_COLUMNS, recs))
-    digest = write_json(draw_path, draw_doc)
-    ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=digest, form_sha256=sha_file(form))
+    if draw_path.is_file() and read_json(draw_path, "input_invalid") != draw_doc:
+        raise Stop(EXIT_REFUSED, "calibration_drawn")
+    if recorded is None:
+        ledger.record_calibration_draw(kind, draw_sha)  # durable before any file: a crash re-run finishes the files
+    form_path = safe_dest(ctx.work_for(kind), "escalations", "calibration_form.txt")
+    if not form_path.is_file():
+        items = [(fid, fams[fid][:1], "") for fid in drawn]
+        _write_form(ctx, kind, "calibration_form", "Calibration form (a random few questions, used to check the key as a whole)", items)
+    sheet_path = sheet_dest(ctx, kind, "calibration.csv")
+    if not sheet_path.is_file():
+        pages = load_pages(ctx)
+        recs = [
+            {
+                "row_id": r["id"], "family_id": fid, "row_hash": eval_schema.row_hash(r), "phrasing_no": row_no(r), "phrasing": r["question"],
+                "scope": r["scope"], "evidence": render_evidence(r["evidence"], pages), "gaps": render_gaps(r["gaps"]),
+                "ambiguous": "yes" if r.get("ambiguous") else "no",
+            }
+            for fid in drawn for r in fams[fid][:1]
+        ]
+        write_atomic(sheet_path, csv_bytes(SHEET_COLUMNS, recs))
+    digest = sha_file(draw_path) if draw_path.is_file() else write_json(draw_path, draw_doc)
+    ctx.printer.emit("calibrate", kind=kind, drawn=len(drawn), refuse_or_partial=5, answer=10, sha256=digest, form_sha256=sha_file(form_path))
     return EXIT_OK
 
 
@@ -2737,6 +2862,7 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
     prereg_sha = bind_prereg_sha(ctx, prereg)  # every freeze is made under a committed, unmodified, pushed prereg
     recover_state(ctx)
     ledger = ctx.ledger()
+    check_epoch_prereg(ledger, prereg_sha)
     if ledger.freeze_record(split) is not None:
         raise Stop(EXIT_REFUSED, "already_frozen")
     releases = ledger.records("release")
@@ -2895,7 +3021,7 @@ def cmd_freeze(ctx: Ctx, split_name: str, verdict: Optional[str], verdict_return
         "prereg_sha256": prereg_sha,
     }
     if split == "sealed":  # source split of the frozen families, counts only
-        n_tutorial = sum(1 for f in fams.values() if source_class(f.source) == "tutorial_or_colleague")
+        n_tutorial = sum(1 for f in fams.values() if f.source == "tutorial")
         tx["emit"].update(tutorial=n_tutorial, drafted=len(fams) - n_tutorial)
     write_atomic(freeze_data_path(ctx, split), data)
     write_json(freeze_journal_path(ctx, split), tx)
@@ -3150,20 +3276,45 @@ def cmd_prereg_check(ctx: Ctx, committed: bool) -> int:
     return EXIT_OK
 
 
+def controls_file(ctx: Ctx) -> Path:
+    """``eval/controls_v1.json`` of the repo: the committed critical-controls list."""
+    return ctx.repo / "eval" / "controls_v1.json"
+
+
 def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
-    """Declare the confirmatory batch (1-4 candidate config hashes, slot order) once, after the sealed freeze."""
+    """Declare the confirmatory batch once: 1-4 candidates ``<config hash>:replay|candidate`` in slot order.
+
+    Refused while the confirmatory embargo holds (``embargoed``), before the sealed freeze, under any prereg but the
+    epoch's registered one (committed, unmodified, pushed), and before the controls are recorded in the ledger and
+    match ``eval/controls_v1.json`` (``controls_missing``).
+    """
+    from src import sealed_ledger
+
+    if sealed_ledger.CONFIRMATORY_EMBARGO:
+        raise Stop(EXIT_REFUSED, "embargoed")
+    entries: List[Dict[str, str]] = []
+    for text in candidates:
+        config_hash, _, mode = text.partition(":")
+        if not _SHA256.fullmatch(config_hash) or mode not in sealed_ledger.BATCH_EXPANSIONS:
+            raise Stop(EXIT_REFUSED, "batch_invalid")
+        entries.append({"config_hash": config_hash, "expansion": mode})
     ledger = ctx.ledger()
     if ledger.freeze_record("sealed") is None:
         raise Stop(EXIT_REFUSED, "freeze_missing")
+    bind_epoch_prereg(ctx, load_prereg(ctx), ledger)
+    controls = ledger.controls_record()
+    path = controls_file(ctx)
+    if controls is None or not path.is_file() or sha_file(path) != controls["controls_sha256"]:
+        raise Stop(EXIT_REFUSED, "controls_missing")
     if ledger.batch_declaration() is not None:
         raise Stop(EXIT_REFUSED, "batch_declared")
     try:
-        digest = ledger.record_batch_declaration(list(candidates))
+        digest = ledger.record_batch_declaration(entries)
     except ValueError:
         raise Stop(EXIT_REFUSED, "batch_invalid") from None
     except ProtocolError:
         raise Stop(EXIT_REFUSED, "batch_declared") from None
-    ctx.printer.emit("batch_declared", candidates=len(candidates), sha256=digest)
+    ctx.printer.emit("batch_declared", candidates=len(entries), sha256=digest)
     return EXIT_OK
 
 
@@ -3204,7 +3355,8 @@ def build_parser() -> argparse.ArgumentParser:
     add("ids", ("--count", {"type": int, "required": True}), ("--out", {"default": None}))
     add("digest", ("path", {}))
     add("count-migrated", ("--golden", {"required": True}), ("--realistic", {"required": True}), ("--pairing", {"required": True}),
-        ("--tutorial", {"required": True}), ("--quota-tuning", {"type": int, "default": None}), ("--quota-realistic", {"type": int, "default": None}))
+        ("--tutorial", {"required": True}), ("--quota-tuning", {"type": int, "default": None}), ("--quota-realistic", {"type": int, "default": None}),
+        ("--drafts", {"type": int, "default": None}))
     add("inputs-check", ("--pairing", {"default": None}), ("--conflicts", {"default": None}), ("--golden-ids", {"default": None}),
         ("--realistic-ids", {"default": None}))
     add("intake", ("--dispatch", {"required": True}))
@@ -3244,7 +3396,7 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
     if c == "digest":
         return cmd_digest(ctx, a.path)
     if c == "count-migrated":
-        return cmd_count_migrated(ctx, a.golden, a.realistic, a.pairing, a.tutorial, a.quota_tuning, a.quota_realistic)
+        return cmd_count_migrated(ctx, a.golden, a.realistic, a.pairing, a.tutorial, a.quota_tuning, a.quota_realistic, a.drafts)
     if c == "inputs-check":
         return cmd_inputs_check(ctx, a.pairing, a.conflicts, a.golden_ids, a.realistic_ids)
     if c == "intake":
