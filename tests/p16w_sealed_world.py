@@ -13,6 +13,7 @@ and exactly fill the development quotas. So tests know which families end up sea
 
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import json
@@ -34,61 +35,18 @@ SECTIONS = [f"{ch}.{n}" for ch in range(1, 10) for n in range(1, 21)] + ["CANARY
 INVENTORY = {"version": 1, "map_sha256": "a" * 64, "sections": SECTIONS, "aliases": []}
 
 
-def b1a_blocks(*, mwe: float, draws_r: int) -> Dict[str, Any]:
-    """The prereg blocks b1a requires (primary metric, collapse, adoption, controls, slots, drafting rule), as registered."""
-    first_r = f"first_{draws_r}_recorded_development_draws"
-    return {
-        "primary_metric": {
-            "cutoff": 6, "metric": "strict_hit", "mode": "hybrid+rewrite", "test": "exact_cluster_signflip", "sided": "two",
-            "multiplicity": "holm",
-        },
-        "collapse": {"rule": "all"},
-        "adoption": {
-            "rule": "a", "development_family_effect_min": mwe, "critical_control_flips_max": 0, "sealed_point_estimate_min": 0,
-            "sealed_holm_significant_loss": "forbidden",
-            "confirmatory_batch": {
-                "slots": ["1", "2", "3", "4"], "k_max": 4, "holm_k": 4, "replays": "slot0_canonical", "spent_slot_counts": True,
-                "state": "refused_until_16b_sealed_comparison_gate", "modes": ["replay", "candidate"],
-                "mode_declared_by": "batch_declaration",
-                "candidate_identity": "sha256_canonical_pipeline_config_checked_at_gate_before_claim",
-                "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
-                "requires": ["controls_record", "judge_on"],
-            },
-            "development_evidence": {
-                "metric": "strict_hit", "cutoff": 6, "collapse": "all", "mode": "hybrid+rewrite",
-                "sets": ["tuning", "realistic"], "versions": "development_freeze_records", "draws": draws_r,
-                "statistic": "mean_over_draws_of_family_difference", "pairing": "by_draw_index", "incumbent_draws": first_r,
-                "candidate_draws": f"replay_mode_replays_incumbent_draw_artifacts_else_first_{draws_r}_recorded_own_draws",
-            },
-            "unsupported_claims": {
-                "unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent",
-                "reference": "canonical_slot_0_judged_sealed_claims", "max_excess_abs": 0,
-            },
-            "control_flip": {
-                "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite", "draws": f"any_of_first_{draws_r}_recorded",
-                "versions": "development_freeze_records",
-            },
-        },
-        "controls": {
-            "rule": "c1", "rank_ceiling": 3, "modes": ["hybrid", "hybrid+rewrite"], "draws": first_r, "draws_r": draws_r,
-            "collapse": "all", "committed": "ledger_controls_record_before_batch_declaration", "binds_to": "development_freeze_records",
-        },
-        "slots": {
-            "0": {"expansion": "live"}, "0b": {"expansion": "live"},
-            **{str(n): {"expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
-               for n in (1, 2, 3, 4)},
-        },
-        "drafting_rule": {
-            "attempt_1": {
-                "refusal_share_target": 0.275, "refusal_share_counts": "pool_including_preassigned", "realistic_lay_min_share": 0.5,
-                "refusal_drafts": "max(round_half_up(0.275_x_pool_total)_minus_preassigned_refusals,sum_of_split_deficits_to_25pct)",
-                "realistic_lay_share_of": "new_drafts_registered_lay_or_terse", "band_unreachable": "b2_owner_stop",
-            },
-            "next_attempt": {"max_round_1_attempts": 3, "after_cap": "split_infeasible_stop"},
-            "round_2": {"max_attempts": 3, "after_cap": "freeze_infeasible_stop", "refusal_drafts": "same_formula_over_round_2_pool"},
-            "paraphrase": {"t1_t7_cap": 3},
-        },
-    }
+def b1a_blocks() -> Dict[str, Any]:
+    """The prereg's registered blocks (``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``primary_metric``, ``collapse``,
+    ``adoption``, ``controls``, ``slots``, ``drafting_rule``), complete, built from ``sealed_tool.REGISTERED_VALUES``:
+    the one table ``prereg-check`` walks and ``eval/prereg_16a2.json`` must equal (a test walks the real file against it)."""
+    out: Dict[str, Any] = {}
+    for path, value in st.REGISTERED_VALUES:
+        node = out
+        *parents, last = path.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[last] = copy.deepcopy(value)
+    return out
 
 
 def q(tag: str) -> str:
@@ -270,9 +228,9 @@ class World:
         doc = {
             "version": 1, "branch": "main", "rounds": [1, 2],
             "seeds": {"split_r1": 11, "split_r2": 12, "repair": 13, "calibration": 14},
-            "quota": quota, "band": {"min_pct": 25, "max_pct": 30}, "mwe": 0.1, "alpha": 0.05, "k_max": 4, "draws_r": 5,
+            "quota": quota, "band": {"min_pct": 25, "max_pct": 30},
             "min_share": {"realistic": {"tutorial_or_colleague": 0.25}}, "power": power,
-            **b1a_blocks(mwe=0.1, draws_r=5),
+            **b1a_blocks(),
         }
         doc.update(self.prereg_extra)
         doc.update(over)

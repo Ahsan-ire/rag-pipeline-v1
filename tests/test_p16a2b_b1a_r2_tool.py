@@ -144,7 +144,9 @@ def test_count_migrated_drafts_default_to_the_preregs_families_approx(world, eva
     run = _migrated(world, eval_registry, tmp_path, gold=["direct"] * 8, real=["direct"] * 4)
     code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12")
     assert code == 0 and world.last(out, "count_migrated")["pool_total"] == "40", err
-    world.write_prereg()  # no families_approx and no --drafts
+    rule = world.prereg_doc()["drafting_rule"]
+    del rule["attempt_1"]["families_approx"]
+    world.write_prereg(drafting_rule=rule)  # no families_approx and no --drafts
     code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12")
     assert code == st.EXIT_USAGE and "reason=usage" in err
 

@@ -6,6 +6,7 @@ questions. Rank tables are invented; no model, index or `data/` is touched.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -216,6 +217,7 @@ def _cli_draws(tmp_path, sha, *, tweak=None):
         if tweak:
             tweak(d, table)
         doc = _sidecar(sha, table, refusal=("f0008aaaa",))
+        doc["expansion"] = {**EXPANSION, "draw": d}  # real draws differ in their expansion; the CLI refuses a repeated file
         p = tmp_path / f"draw{d}.rows.json"
         p.write_text(json.dumps(doc), encoding="utf-8")
         paths.append(str(p))
@@ -299,7 +301,10 @@ def test_cli_writes_records_then_verifies_and_refuses_a_differing_list(tmp_path,
     assert out.read_text(encoding="utf-8") == written and len(_ledger().records("controls")) == 1
 
     changed = _cli_draws(tmp_path, sha, tweak=lambda d, t: t.update({_rid(OK, 0): (1, 5)}) if d == 2 else None)
-    assert controls.main(_argv("c2", changed, dev, out)) == 0  # rank 5 is still a HIT@6: same list
+    # rank 5 is still a HIT@6, so the list is the same, but these are not the recorded draws (r3 F5): refused, nothing written
+    assert controls.main(_argv("c2", changed, dev, out)) == controls.EXIT_DIFFERS
+    assert "not the recorded draws" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == written and len(_ledger().records("controls")) == 1
     assert controls.main(_argv("c2", _cli_draws(tmp_path, sha, tweak=lambda d, t: t.update({_rid(OK, 0): (1, 9)})), dev, out)) == (
         controls.EXIT_DIFFERS
     )
@@ -458,3 +463,45 @@ def test_a_ledger_with_no_registered_prereg_refuses(tmp_path, capsys):
     out = tmp_path / "o.json"
     assert controls.main(_argv("c1", draws, dev, out, freeze=False)) == controls.EXIT_UNUSABLE
     assert "not this epoch's registered prereg" in capsys.readouterr().err and not out.exists()
+
+
+# --- b1a r3 F5: distinct draws, and a verify run must supply the recorded draws -------------------------------------
+def test_the_draw_files_must_be_distinct_by_content(tmp_path, capsys):
+    import shutil
+
+    dev = _dev_set(tmp_path, _rows())
+    draws = _cli_draws(tmp_path, sha256_file(dev))
+    out = tmp_path / "o.json"
+    copy = tmp_path / "copy_of_draw0.rows.json"
+    shutil.copyfile(draws[0], copy)  # another name, the same bytes: not another draw
+    for repeated in ([draws[0], draws[0], draws[1]], [draws[0], str(copy), draws[1]]):
+        assert controls.main(_argv("c1", repeated, dev, out)) == controls.EXIT_UNUSABLE
+        assert "must be distinct" in capsys.readouterr().err
+        assert not out.exists() and _ledger().controls_record() is None
+    assert controls.main(_argv("c1", draws, dev, out)) == 0
+
+
+def test_a_verify_run_needs_the_recorded_draws_in_any_order_and_the_record_is_untouched(tmp_path, capsys):
+    dev = _dev_set(tmp_path, _rows())
+    sha = sha256_file(dev)
+    draws = _cli_draws(tmp_path, sha)
+    out = tmp_path / "o.json"
+    assert controls.main(_argv("c1", draws, dev, out)) == 0
+    written, record = out.read_text(encoding="utf-8"), _ledger().controls_record()
+    capsys.readouterr()
+    assert controls.main(_argv("c1", list(reversed(draws)), dev, out)) == 0  # the recorded set, another order
+    assert "matches the committed list" in capsys.readouterr().out
+    # three other draws with the same outcome (every rank the same, another expansion identity): the list would match,
+    # the draws are not the recorded ones
+    other = tmp_path / "other"
+    other.mkdir()
+    swapped = _cli_draws(other, sha)
+    for path in swapped:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+        doc["expansion"]["draw"] += 100
+        Path(path).write_text(json.dumps(doc), encoding="utf-8")
+    prereg = _prereg(tmp_path, "c1", len(swapped))  # the registered prereg's bytes again (same file)
+    argv = _argv("c1", swapped, dev, out, prereg=prereg, freeze=False)
+    assert controls.main(argv) == controls.EXIT_DIFFERS
+    assert "not the recorded draws" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == written and _ledger().controls_record() == record

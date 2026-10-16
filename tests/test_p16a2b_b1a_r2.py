@@ -23,6 +23,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     CANDIDATES,
     _langsmith_env_cache,
     bare,
+    candidate_entry,
     gate_of,
     kinds,
     sha_of,
@@ -30,6 +31,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
 )
 
 D = "a" * 64
+PIPELINE = "9" * 64  # a candidate's pipeline configuration hash (not its rewrite identity)
 
 
 def make(tmp_path: Path) -> SealedLedger:
@@ -155,26 +157,26 @@ def test_a_candidate_entry_accepts_the_matching_rewrite_candidate_and_refuses_a_
     config_hash = rewrite_identity()["config_hash"]
     world.run(0)
     r0 = world.ledger().recover(0).run_id
-    world.declare_batch(entries=[
-        {"config_hash": config_hash, "expansion": "candidate"}, {"config_hash": "2" * 64, "expansion": "replay"},
-    ])
+    world.declare_batch(entries=[candidate_entry(PIPELINE, config_hash), {"config_hash": "2" * 64, "expansion": "replay"}])
     tok = world.token(1, expansion="live", rewrite_candidate=config_hash, baseline_run=r0, claim=False)
-    assert tok.expansion_mode == "candidate" and tok.candidate_config_hash == config_hash
+    # the entry's config_hash is the candidate's pipeline configuration; the run is held to its rewrite identity
+    assert tok.expansion_mode == "candidate" and tok.candidate_config_hash == PIPELINE
+    assert tok.candidate_rewrite_config_hash == config_hash
     assert tok.candidate_expansion == "candidate" and tok.artifact_sha256 is None
     tok.release()
     canonical = world.run_dir(r0) / "expansion_artifact.json"
     assert gate_of(lambda: world.token(1, expansion=str(canonical), baseline_run=r0, claim=False)) == "expansion_mode"
     assert gate_of(lambda: world.token(1, expansion="live", baseline_run=r0, claim=False)) == "expansion_mode"
     assert gate_of(lambda: world.token(1, rewrite_candidate="c" * 64, baseline_run=r0, claim=False)) == "expansion_mode"
+    # the pipeline hash is not the rewrite identity: naming it as --rewrite-candidate is refused
+    assert gate_of(lambda: world.token(1, expansion="live", rewrite_candidate=PIPELINE, baseline_run=r0, claim=False)) == "expansion_mode"
 
 
 def test_a_replay_entry_replays_the_canonical_artifact_and_refuses_a_rewrite_candidate(world):
     config_hash = rewrite_identity()["config_hash"]
     world.run(0)
     r0 = world.ledger().recover(0).run_id
-    world.declare_batch(entries=[
-        {"config_hash": "1" * 64, "expansion": "replay"}, {"config_hash": config_hash, "expansion": "candidate"},
-    ])
+    world.declare_batch(entries=[{"config_hash": "1" * 64, "expansion": "replay"}, candidate_entry(PIPELINE, config_hash)])
     canonical = world.run_dir(r0) / "expansion_artifact.json"
     tok = world.token(1, expansion=str(canonical), baseline_run=r0, claim=False)
     assert tok.expansion_mode == "replay" and tok.candidate_expansion == "replay" and tok.candidate_config_hash == "1" * 64
@@ -191,7 +193,7 @@ def test_a_confirmatory_slot_without_the_judge_is_refused_before_the_claim(world
     config_hash = rewrite_identity()["config_hash"]
     world.run(0)
     r0 = world.ledger().recover(0).run_id
-    world.declare_batch(entries=[{"config_hash": config_hash, "expansion": "candidate"}])
+    world.declare_batch(entries=[candidate_entry(PIPELINE, config_hash)])
     token = world.token(1, expansion="live", rewrite_candidate=config_hash, baseline_run=r0, claim=False)  # as the CLI mints it
     assert gate_of(lambda: world.run(1, token=token, judge=False, expansion="live", rewrite_candidate=config_hash)) == "judge"
     assert not any(r["kind"] == "slot_claim" and r["slot"] == "1" for r in world.ledger().records())
@@ -200,14 +202,16 @@ def test_a_confirmatory_slot_without_the_judge_is_refused_before_the_claim(world
     assert outcome.rendered
 
 
-def test_the_confirmatory_gate_needs_the_controls_record_and_the_unchanged_file(world):
+def test_the_confirmatory_gate_needs_the_controls_record_and_the_unchanged_file(world, monkeypatch):
     config_hash = rewrite_identity()["config_hash"]
-    world.run(0)
+    world.run(0)  # slot 0 itself needs the controls record (r3 F6), so a confirmatory slot always finds one
     r0 = world.ledger().recover(0).run_id
+    world.declare_batch(entries=[candidate_entry(PIPELINE, config_hash)])
     call = lambda: world.token(1, expansion="live", rewrite_candidate=config_hash, baseline_run=r0, claim=False, declare=False)  # noqa: E731
-    assert gate_of(call) == "controls"  # no record yet
-    world.declare_batch(entries=[{"config_hash": config_hash, "expansion": "candidate"}])  # records the controls too
-    assert isinstance(call(), sealed_run.SlotToken)
+    call().release()
+    with monkeypatch.context() as m:  # defensive: a ledger without the record (cannot arise once slot 0 needs it)
+        m.setattr(SealedLedger, "controls_record", lambda self: None)
+        assert gate_of(call) == "controls"
     sealed_run.controls_path().write_text('{"version": 2}\n', encoding="utf-8")  # the committed list changed after its record
     assert gate_of(call) == "controls"
 

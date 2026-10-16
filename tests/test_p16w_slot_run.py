@@ -26,6 +26,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     TRACING_VARS,
     _langsmith_env_cache,
     bare,
+    candidate_entry,
     gate_of,
     isolate_env,
     kinds,
@@ -362,8 +363,8 @@ def test_the_expansion_mode_must_equal_the_declared_one(world, tmp_path):
     # candidate of this code, slot 3 a candidate configuration this code does not have
     world.declare_batch(entries=[
         {"config_hash": "1" * 64, "expansion": "replay"},
-        {"config_hash": config_hash, "expansion": "candidate"},
-        {"config_hash": "b" * 64, "expansion": "candidate"},
+        candidate_entry("2" * 64, config_hash),
+        candidate_entry("3" * 64, "b" * 64),
         {"config_hash": "4" * 64, "expansion": "replay"},
     ])
     other = tmp_path / "other.json"

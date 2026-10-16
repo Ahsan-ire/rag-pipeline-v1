@@ -9,6 +9,7 @@ behaves as the test scripts it (exit code, canary on stdout/stderr, files under
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -181,6 +182,22 @@ class GitRepos:
         git(repo, "commit", "--quiet", "-m", f"add {name}")
         return git(repo, "rev-parse", "HEAD")
 
+    @staticmethod
+    def commit_prereg(repo: Path, text: str = '{"branch": "main"}\n') -> str:
+        """Commit ``eval/prereg_16a2.json`` (the file a data dispatch is bound to) with ``text``; returns the commit."""
+        path = repo / "eval" / "prereg_16a2.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        git(repo, "add", "eval/prereg_16a2.json")
+        git(repo, "commit", "--quiet", "-m", "prereg")
+        return git(repo, "rev-parse", "HEAD")
+
+    def pushed_prereg(self, text: str = '{"branch": "main"}\n') -> str:
+        """A prereg committed in the work clone and pushed to origin/main: what a data dispatch is launched under."""
+        sha = self.commit_prereg(self.work, text)
+        git(self.work, "push", "--quiet", "origin", "main")
+        return sha
+
 
 @pytest.fixture
 def repos(tmp_path, monkeypatch):
@@ -265,7 +282,7 @@ def test_refuses_with_api_key_set(env, monkeypatch, capfd, value):
 
 
 def test_prereg_refused_when_not_reachable_from_origin(env, repos):
-    unpushed = repos.commit(repos.work, "b.txt")
+    unpushed = repos.commit_prereg(repos.work)
     outcome = env.launch("data", prereg=unpushed, branch="main", repo=repos.work)
     assert outcome.exit_status == sp.EXIT_REFUSED and outcome.line is None
     assert "not reachable" in outcome.message
@@ -274,10 +291,11 @@ def test_prereg_refused_when_not_reachable_from_origin(env, repos):
 
 
 def test_prereg_accepted_with_later_commits_on_top_after_fetch(env, repos):
-    prereg = repos.commit(repos.other, "b.txt")
-    tip = repos.commit(repos.other, "c.txt")
+    prereg = repos.pushed_prereg()  # committed in the work clone and pushed
+    git(repos.other, "pull", "--quiet", "origin", "main")
+    tip = repos.commit(repos.other, "c.txt")  # a later commit on top, pushed from elsewhere
     git(repos.other, "push", "origin", "main")
-    assert git(repos.work, "rev-parse", "origin/main") == repos.first  # not fetched yet
+    assert git(repos.work, "rev-parse", "origin/main") == prereg  # not fetched yet
     env.make_claude(ret={"status": "ok"})
     outcome = env.launch("data", prereg=prereg, branch="main", repo=repos.work, enums=["status", "ok"])
     assert outcome.exit_status == sp.EXIT_OK, outcome.message
@@ -287,7 +305,7 @@ def test_prereg_accepted_with_later_commits_on_top_after_fetch(env, repos):
 
 
 def test_prereg_equal_to_branch_tip_is_accepted(env, repos):
-    outcome = env.launch("data", prereg=repos.first, branch="main", repo=repos.work)
+    outcome = env.launch("data", prereg=repos.pushed_prereg(), branch="main", repo=repos.work)
     assert outcome.message is None and len(env.records()) == 1
 
 
@@ -752,7 +770,7 @@ def test_crash_after_the_copy_leaves_staging_for_recovery(env, monkeypatch, capf
 def test_the_two_kinds_log_to_different_files_and_never_log_text(env, repos):
     env.make_claude(canary=CANARY, ret={"count": 1})
     probe = env.launch("probe", enums=["count"])
-    data = env.launch("data", prereg=repos.first, branch="main", repo=repos.work, enums=["count"])
+    data = env.launch("data", prereg=repos.pushed_prereg(), branch="main", repo=repos.work, enums=["count"])
     assert probe.exit_status == data.exit_status == sp.EXIT_OK
     [p] = env.log("sp_probe.jsonl")
     [d] = env.log("sp_dispatch.jsonl")
@@ -782,14 +800,16 @@ def test_a_data_dispatch_is_also_recorded_in_the_out_of_tree_ledger_and_a_probe_
     env.make_claude(canary=CANARY, ret={"count": 1})
     assert env.launch("probe", enums=["count"]).exit_status == sp.EXIT_OK
     assert _ledger_records() == []  # a probe leaves the epoch's ledger alone
-    assert env.launch("data", prereg=repos.first, branch="main", repo=repos.work, enums=["count"]).exit_status == sp.EXIT_OK
+    assert env.launch("data", prereg=repos.pushed_prereg(), branch="main", repo=repos.work, enums=["count"]).exit_status == sp.EXIT_OK
     [d] = env.log("sp_dispatch.jsonl")
     [rec] = _ledger_records("dispatch")
-    assert set(rec) == {"v", "seq", "kind", "ts", "dispatch_id", "dispatch_kind", "argv_hash"}
+    assert set(rec) == {"v", "seq", "kind", "ts", "dispatch_id", "dispatch_kind", "argv_hash", "prereg_sha256"}
+    assert rec["prereg_sha256"] == hashlib.sha256((repos.work / "eval" / "prereg_16a2.json").read_bytes()).hexdigest()
     assert rec["dispatch_id"] == d["dispatch_id"] and rec["dispatch_kind"] == "data" and rec["argv_hash"] == d["argv_hash"]
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", rec["ts"])
     mirror = [json.loads(line) for line in (env.private.parent / "sealed_ledger.jsonl").read_text().splitlines()]
-    assert [set(m) for m in mirror] == [{"seq", "kind", "digest"}]  # the kind and a digest, nothing else
+    assert [set(m) for m in mirror] == [{"seq", "kind", "digest", "digests"}]  # the kind and digests (line, prereg), nothing else
+    assert mirror[0]["digests"] == {"prereg_sha256": rec["prereg_sha256"]}
     assert mirror[0]["kind"] == "dispatch" and d["dispatch_id"] not in json.dumps(mirror)
     for path in (Path(os.environ["CC_SEALED_LEDGER"]), env.private / "sealed" / "ledger" / "sealed_ledger.jsonl"):
         assert CANARY not in path.read_text() and "TASK" not in path.read_text()
@@ -802,7 +822,7 @@ def test_a_dispatch_the_ledger_cannot_record_is_refused_and_the_sp_never_runs(en
         def record_dispatch(self, **kw):
             raise LedgerCorrupt("the ledger is damaged: secret text that must not be printed")
 
-    outcome = env.launch("data", prereg=repos.first, branch="main", repo=repos.work, ledger=Broken())
+    outcome = env.launch("data", prereg=repos.pushed_prereg(), branch="main", repo=repos.work, ledger=Broken())
     assert outcome.exit_status == sp.EXIT_REFUSED and outcome.line is None
     assert outcome.message == "sp_launch: the sealed ledger could not record the dispatch"
     assert env.records() == [] and env.staging_dirs() == []  # claude never started, staging was removed

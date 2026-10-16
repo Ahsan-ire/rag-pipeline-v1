@@ -18,7 +18,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
 
 Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
 ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
-``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``return``.
+``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``epoch``, ``return``.
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
@@ -107,9 +107,12 @@ the confirmatory batch, the development evidence, unsupported claims and control
 (rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 are declared ``batch``: each one's mode, replay of
 ``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's) and ``drafting_rule`` (refusal share 0.275
 over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts).
-**One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a split attempt, usually) registers it;
-``split``, ``freeze``, ``calibrate``, ``declare-batch``, the slot gate and ``controls.py`` refuse any other
-(``prereg_amended``). ``prereg-check`` recomputes
+**One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
+launcher records the prereg it ran under) registers it; every dispatch, ``split``, ``freeze``, ``calibrate``,
+``declare-batch``, the slot gate and ``controls.py`` refuse any other (``prereg_amended``). ``epoch`` prints the
+registered sha256 and whether the working prereg is it. **Every registered value** is one entry of
+:data:`REGISTERED_VALUES` (a table of dotted path and exact value) that ``prereg-check`` walks; a leaf under a
+registered root that is not in the table is ``unknown_key``. ``prereg-check`` recomputes
 ``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``. The same file is the
 slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
 ``quota.floor_answerable`` and the expansion mode of each slot from ``slots`` (``{"0": {"expansion": "live"}, ...}``).
@@ -227,7 +230,7 @@ ENUM_WORDS = frozenset(
         *SCOPES, *REGISTERS, *SOURCES, *SPLITS, *KINDS, *MODELS, *TARGET_CLASSES, *EXCLUSION_REASONS, *REASONS,
         *RETURN_ENUMS, "none", "invalid", "released", "infeasible", "quota_short", "frozen", "ok", "clean",
         "hits", "already", "recheck_required", "owner_selected_sample", "random_sample_n15", "feasible",
-        "register_short", "unreachable",
+        "register_short", "unreachable", "families_approx", "pool_floor", "explicit", "yes", "no",
         # split_families constraint names (SplitInfeasible.counts keys)
         "quota_total", "eligibility", "band", "strata", "min_share", "preassignment_conflicts",
         "preassigned_ineligible", "unit_no_allowed_split", "search", "floor", "approvals",
@@ -473,7 +476,7 @@ def default_ctx(printer: Printer, **overrides: Any) -> Ctx:
 # ---------------------------------------------------------------------------
 LOCK_NAME = ".lock"
 #: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
-#: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``return``, ``audit``) take no lock.
+#: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``return``, ``audit``) take no lock.
 STATE_COMMANDS = frozenset(
     {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
 )
@@ -1004,99 +1007,199 @@ def _eq(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
-    """The b1a registered values: primary metric, collapse, adoption, controls, slots, drafting rule (``mismatch``)."""
+#: Every registered value of the prereg outside the structural blocks, as ``(dotted path, exact value)``: the one
+#: table ``prereg-check`` walks (b1a r3). A leaf is a scalar or a list of scalars; the tests build their prereg from
+#: this table and fail when a leaf of ``eval/prereg_16a2.json`` outside :data:`STRUCTURAL_ROOTS` is not in it.
+REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
+    ("mwe", 0.1),
+    ("alpha", 0.05),
+    ("k_max", 4),
+    ("draws_r", 5),
+    ("primary_metric.cutoff", 6),
+    ("primary_metric.metric", "strict_hit"),
+    ("primary_metric.mode", "hybrid+rewrite"),
+    ("primary_metric.set", "sealed"),
+    ("primary_metric.unit", "family"),
+    ("primary_metric.eligible_scopes", ["answer", "partial"]),
+    ("primary_metric.estimand", "family_level_difference"),
+    ("primary_metric.mwe_scale", "absolute"),
+    ("primary_metric.test", "exact_cluster_signflip"),
+    ("primary_metric.sided", "two"),
+    ("primary_metric.direction", "sign_of_sum_d_g"),
+    ("primary_metric.alpha_scope", "family_wise"),
+    ("primary_metric.multiplicity", "holm"),
+    ("primary_metric.sensitivities", ["durkalski_by_group", "mcnemar_exact_families"]),
+    ("collapse.rule", "all"),
+    ("adoption.rule", "a"),
+    ("adoption.decision", "d74"),
+    ("adoption.development_family_effect_min", 0.1),
+    ("adoption.critical_control_flips_max", 0),
+    ("adoption.sealed_point_estimate_min", 0),
+    ("adoption.sealed_holm_significant_loss", "forbidden"),
+    ("adoption.label", "adopted_on_development_evidence"),
+    ("adoption.fail_if", ["critical_control_flip", "holm_significant_sealed_loss"]),
+    ("adoption.departs_from", "design_003_s5_16b"),
+    ("adoption.phase_21", "beats_single_pass_on_sealed"),
+    ("adoption.embedding_arm_slot", "development_effect_ge_mwe"),
+    ("adoption.rejected", ["b"]),
+    ("adoption.confirmatory_batch.slots", ["1", "2", "3", "4"]),
+    ("adoption.confirmatory_batch.k_max", 4),
+    ("adoption.confirmatory_batch.declared", "one_non_adaptive_batch_before_first_confirmatory_slot"),
+    ("adoption.confirmatory_batch.multiplicity", "holm"),
+    ("adoption.confirmatory_batch.state", "refused_until_16b_sealed_comparison_gate"),
+    ("adoption.confirmatory_batch.slots_declared_by", "batch_declaration_record_before_slot_1"),
+    ("adoption.confirmatory_batch.expansion", "batch"),
+    ("adoption.confirmatory_batch.replays", "slot0_canonical"),
+    ("adoption.confirmatory_batch.rewrite_changing_candidate.expansion", "candidate"),
+    ("adoption.confirmatory_batch.rewrite_changing_candidate.flag", "rewrite_candidate"),
+    ("adoption.confirmatory_batch.rewrite_changing_candidate.arm", "live"),
+    ("adoption.confirmatory_batch.rewrite_changing_candidate.against", "incumbent_replay"),
+    ("adoption.confirmatory_batch.holm_k", 4),
+    ("adoption.confirmatory_batch.spent_slot_counts", True),
+    ("adoption.confirmatory_batch.modes", ["replay", "candidate"]),
+    ("adoption.confirmatory_batch.mode_declared_by", "batch_declaration"),
+    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_sha256_canonical_pipeline_config_checked_by_16b_gate_before_claim"),
+    ("adoption.confirmatory_batch.rewrite_identity", "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim"),
+    ("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check"),
+    ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on"]),
+    ("adoption.development_evidence.metric", "strict_hit"),
+    ("adoption.development_evidence.cutoff", 6),
+    ("adoption.development_evidence.collapse", "all"),
+    ("adoption.development_evidence.mode", "hybrid+rewrite"),
+    ("adoption.development_evidence.sets", ["tuning", "realistic"]),
+    ("adoption.development_evidence.versions", "development_freeze_records"),
+    ("adoption.development_evidence.draws", 5),
+    ("adoption.development_evidence.statistic", "mean_over_draws_of_family_difference"),
+    ("adoption.development_evidence.pairing", "by_draw_index"),
+    ("adoption.development_evidence.incumbent_draws", "first_5_recorded_development_draws_under_the_incumbent_config_hash"),
+    ("adoption.development_evidence.candidate_draws", "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash"),
+    ("adoption.unsupported_claims.unit", "claim"),
+    ("adoption.unsupported_claims.where", "candidate_sealed_slot"),
+    ("adoption.unsupported_claims.against", "incumbent"),
+    ("adoption.unsupported_claims.reference", "canonical_slot_0_judged_sealed_claims"),
+    ("adoption.unsupported_claims.max_excess_abs", 0),
+    ("adoption.control_flip.from", "strict_hit"),
+    ("adoption.control_flip.to", "miss"),
+    ("adoption.control_flip.cutoff", 6),
+    ("adoption.control_flip.modes", ["hybrid", "hybrid+rewrite"]),
+    ("adoption.control_flip.draws", "any_of_first_5_recorded_under_the_incumbent_config_hash"),
+    ("adoption.control_flip.versions", "development_freeze_records"),
+    ("controls.rule", "c1"),
+    ("controls.decision", "d74"),
+    ("controls.families", "public_lineage_development"),
+    ("controls.metric", "strict_completion_rank"),
+    ("controls.rank_ceiling", 3),
+    ("controls.modes", ["hybrid", "hybrid+rewrite"]),
+    ("controls.draws", "first_5_recorded_development_draws_under_the_incumbent_config_hash"),
+    ("controls.draws_r", 5),
+    ("controls.collapse", "all"),
+    ("controls.computed", "once_on_frozen_development_versions"),
+    ("controls.committed", "ledger_controls_record_before_batch_declaration"),
+    ("controls.recomputed_mid_batch", False),
+    ("controls.flip", "fail"),
+    ("controls.reverses", "d57_addendum"),
+    ("controls.rejected", ["c2"]),
+    ("controls.binds_to", "development_freeze_records"),
+    ("slots.0.expansion", "live"),
+    ("slots.0.role", "descriptive_baseline"),
+    ("slots.0.builds", "run_dir_expansion_artifact"),
+    ("slots.0.canonical", "v6_guards"),
+    ("slots.0b.expansion", "live"),
+    ("slots.0b.role", "spare"),
+    ("slots.0b.builds", "run_dir_expansion_artifact"),
+    ("slots.0b.canonical", "v6_guards"),
+    ("slots.0b.usable", "once_after_non_canonical_or_spent_slot_0"),
+    ("slots.1.expansion", "batch"),
+    ("slots.1.artifact", "slot0_canonical"),
+    ("slots.1.role", "confirmatory"),
+    ("slots.1.requires", "batch_declaration"),
+    ("slots.2.expansion", "batch"),
+    ("slots.2.artifact", "slot0_canonical"),
+    ("slots.2.role", "confirmatory"),
+    ("slots.2.requires", "batch_declaration"),
+    ("slots.3.expansion", "batch"),
+    ("slots.3.artifact", "slot0_canonical"),
+    ("slots.3.role", "confirmatory"),
+    ("slots.3.requires", "batch_declaration"),
+    ("slots.4.expansion", "batch"),
+    ("slots.4.artifact", "slot0_canonical"),
+    ("slots.4.role", "confirmatory"),
+    ("slots.4.requires", "batch_declaration"),
+    ("drafting_rule.attempt_1.families_approx", 100),
+    ("drafting_rule.attempt_1.families_rule", "max(families_approx,sealed_quota+tuning_min+realistic_quota_minus_migrated_families)"),
+    ("drafting_rule.attempt_1.tutorial_sourced_approx", 50),
+    ("drafting_rule.attempt_1.handbook_drafted_approx", 50),
+    ("drafting_rule.attempt_1.per_unseen_tutorial_approx", 3),
+    ("drafting_rule.attempt_1.unseen_tutorials", 15),
+    ("drafting_rule.attempt_1.per_title_document_set_max", 1),
+    ("drafting_rule.attempt_1.title_document_sets", 7),
+    ("drafting_rule.attempt_1.never_drafted_from", ["t01", "t07"]),
+    ("drafting_rule.attempt_1.refusal_share_target", 0.275),
+    ("drafting_rule.attempt_1.refusal_share_counts", "pool_including_preassigned"),
+    ("drafting_rule.attempt_1.refusal_drafts", "max(round_half_up(0.275_x_pool_total)_minus_preassigned_refusals,sum_of_split_deficits_to_25pct)"),
+    ("drafting_rule.attempt_1.seed_phrasings_per_family", 1),
+    ("drafting_rule.attempt_1.registers", ["lay", "modelled", "terse"]),
+    ("drafting_rule.attempt_1.conflict_label_families", "development_only"),
+    ("drafting_rule.attempt_1.realistic_lay_min_share", 0.5),
+    ("drafting_rule.attempt_1.realistic_lay_share_of", "new_drafts_registered_lay_or_terse"),
+    ("drafting_rule.attempt_1.band_unreachable", "b2_owner_stop"),
+    ("drafting_rule.next_attempt.when", ["quota_short", "infeasible"]),
+    ("drafting_rule.next_attempt.action", "sp_drafts_more_before_next_attempt"),
+    ("drafting_rule.next_attempt.split_seed", "same_per_round"),
+    ("drafting_rule.next_attempt.released", "first_feasible_attempt"),
+    ("drafting_rule.next_attempt.max_round_1_attempts", 3),
+    ("drafting_rule.next_attempt.after_cap", "split_infeasible_stop"),
+    ("drafting_rule.round_2.purpose", "replacements"),
+    ("drafting_rule.round_2.order", ["round_1_split", "b5_validation", "sp_recheck", "round_2", "freeze"]),
+    ("drafting_rule.round_2.quotas", "equal_round_1"),
+    ("drafting_rule.round_2.related_to_round_1_sealed_group", "dropped"),
+    ("drafting_rule.round_2.sources", "tutorials_and_primary_sections_unused_by_round_1_sealed_groups"),
+    ("drafting_rule.round_2.surplus", "quarantine_r2"),
+    ("drafting_rule.round_2.max_attempts", 3),
+    ("drafting_rule.round_2.after_cap", "freeze_infeasible_stop"),
+    ("drafting_rule.round_2.refusal_drafts", "same_formula_over_round_2_pool"),
+    ("drafting_rule.paraphrase.phrasings_min", 2),
+    ("drafting_rule.paraphrase.phrasings_max", 3),
+    ("drafting_rule.paraphrase.migrated_top_up_to", 2),
+    ("drafting_rule.paraphrase.t1_t7_cap", 3),
+    ("drafting_rule.infeasible_after_round_2", "d64_owner_stop"),
+)
+REGISTERED: Dict[str, Any] = dict(REGISTERED_VALUES)
+REGISTERED_ROOTS = tuple(dict.fromkeys(path.split(".")[0] for path, _ in REGISTERED_VALUES))
+#: Top-level prereg keys with their own structural checks and recomputations (``validate_prereg``): not in the table.
+STRUCTURAL_ROOTS = ("version", "branch", "rounds", "seeds", "quota", "band", "strata", "min_share", "power")
 
-    def want(path: str, value: Any) -> None:
+
+def prereg_leaves(node: Any, prefix: str = "") -> Iterator[Tuple[str, Any]]:
+    """``(dotted path, value)`` of every leaf of a JSON value (a scalar, a list or an empty object is a leaf)."""
+    if isinstance(node, dict) and node:
+        for key, value in node.items():
+            yield from prereg_leaves(value, f"{prefix}.{key}" if prefix else str(key))
+    else:
+        yield prefix, node
+
+
+def _check_b1a(doc: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
+    """Every registered value is present and exact, and no leaf under a registered root is unregistered.
+
+    A missing or changed value is ``mismatch``; an unregistered leaf is ``unknown_key`` (and its parent ``mismatch``).
+    """
+    for path, value in REGISTERED_VALUES:
         got = _at(doc, path)
         if got is _ABSENT or not _eq(got, value):
             errors.append((path, "mismatch"))
-
-    draws_r = doc.get("draws_r")
-    first_r = f"first_{draws_r}_recorded_development_draws"
-    want("mwe", 0.1)
-    want("alpha", 0.05)
-    want("primary_metric.cutoff", 6)
-    want("primary_metric.mode", "hybrid+rewrite")
-    want("primary_metric.metric", "strict_hit")
-    want("primary_metric.test", "exact_cluster_signflip")
-    want("primary_metric.sided", "two")
-    want("primary_metric.multiplicity", "holm")
-    want("collapse", {"rule": "all"})
-    want("k_max", 4)
-    want("adoption.rule", "a")
-    want("adoption.sealed_point_estimate_min", 0)
-    want("adoption.sealed_holm_significant_loss", "forbidden")
-    want("adoption.critical_control_flips_max", 0)
-    want("adoption.confirmatory_batch.k_max", 4)
-    want("adoption.confirmatory_batch.holm_k", 4)
-    want("adoption.confirmatory_batch.slots", ["1", "2", "3", "4"])
-    want("adoption.confirmatory_batch.replays", "slot0_canonical")
-    want("adoption.confirmatory_batch.spent_slot_counts", True)
-    want("adoption.confirmatory_batch.state", "refused_until_16b_sealed_comparison_gate")
-    want("adoption.confirmatory_batch.modes", ["replay", "candidate"])
-    want("adoption.confirmatory_batch.mode_declared_by", "batch_declaration")
-    want("adoption.confirmatory_batch.candidate_identity", "sha256_canonical_pipeline_config_checked_at_gate_before_claim")
-    want("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check")
-    want("adoption.confirmatory_batch.requires", ["controls_record", "judge_on"])
-    want("adoption.development_evidence", {
-        "metric": "strict_hit", "cutoff": 6, "collapse": "all", "mode": "hybrid+rewrite",
-        "sets": ["tuning", "realistic"], "versions": "development_freeze_records", "draws": draws_r,
-        "statistic": "mean_over_draws_of_family_difference", "pairing": "by_draw_index", "incumbent_draws": first_r,
-        "candidate_draws": f"replay_mode_replays_incumbent_draw_artifacts_else_first_{draws_r}_recorded_own_draws",
-    })
-    want("adoption.unsupported_claims", {
-        "unit": "claim", "where": "candidate_sealed_slot", "against": "incumbent",
-        "reference": "canonical_slot_0_judged_sealed_claims", "max_excess_abs": 0,
-    })
-    want("adoption.control_flip", {
-        "from": "strict_hit", "to": "miss", "cutoff": 6, "mode": "hybrid+rewrite",
-        "draws": f"any_of_first_{draws_r}_recorded", "versions": "development_freeze_records",
-    })
-    want("adoption.development_family_effect_min", doc.get("mwe"))
-    adoption = doc.get("adoption")
-    if isinstance(adoption, dict) and "sealed_guard" in adoption:
-        errors.append(("adoption.sealed_guard", "unknown_key"))
-    want("controls.rule", "c1")
-    want("controls.rank_ceiling", 3)
-    want("controls.modes", ["hybrid", "hybrid+rewrite"])
-    want("controls.draws_r", draws_r)
-    want("controls.draws", first_r)
-    want("controls.collapse", "all")
-    want("controls.committed", "ledger_controls_record_before_batch_declaration")
-    want("controls.binds_to", "development_freeze_records")
-    slots = doc.get("slots")
-    if not isinstance(slots, dict) or set(slots) != {"0", "0b", "1", "2", "3", "4"}:
-        errors.append(("slots", "mismatch"))
-    else:
-        for sid in ("0", "0b"):
-            want(f"slots.{sid}.expansion", "live")
-        for sid in ("1", "2", "3", "4"):
-            want(f"slots.{sid}", {
-                "expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory",
-                "requires": "batch_declaration",
-            })
-    a1 = _at(doc, "drafting_rule.attempt_1")
-    if isinstance(a1, dict):
-        for old in ("refusal_pct_approx", "plus"):
-            if old in a1:
-                errors.append((f"drafting_rule.attempt_1.{old}", "unknown_key"))
-    want("drafting_rule.attempt_1.refusal_share_target", 0.275)
+    for root in REGISTERED_ROOTS:
+        if root not in doc:
+            continue
+        for path, _ in prereg_leaves(doc[root], root):
+            if path not in REGISTERED:
+                errors.append((path, "unknown_key"))
+                parent = path.rpartition(".")[0]
+                if parent and (parent, "mismatch") not in errors:
+                    errors.append((parent, "mismatch"))
     share = _at(doc, "drafting_rule.attempt_1.refusal_share_target")
     if _is_num(share) and not 0.25 <= share <= 0.30:
         errors.append(("drafting_rule.attempt_1.refusal_share_target", "out_of_range"))
-    want("drafting_rule.attempt_1.refusal_share_counts", "pool_including_preassigned")
-    want("drafting_rule.attempt_1.refusal_drafts",
-         "max(round_half_up(0.275_x_pool_total)_minus_preassigned_refusals,sum_of_split_deficits_to_25pct)")
-    want("drafting_rule.attempt_1.realistic_lay_min_share", 0.5)
-    want("drafting_rule.attempt_1.realistic_lay_share_of", "new_drafts_registered_lay_or_terse")
-    want("drafting_rule.attempt_1.band_unreachable", "b2_owner_stop")
-    want("drafting_rule.next_attempt.max_round_1_attempts", 3)
-    want("drafting_rule.next_attempt.after_cap", "split_infeasible_stop")
-    want("drafting_rule.round_2.max_attempts", 3)
-    want("drafting_rule.round_2.after_cap", "freeze_infeasible_stop")
-    want("drafting_rule.round_2.refusal_drafts", "same_formula_over_round_2_pool")
-    want("drafting_rule.paraphrase.t1_t7_cap", 3)
 
 
 def _check_examples_labels(quota: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
@@ -1181,8 +1284,7 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
                 and all(isinstance(t, dict) and all(t.get(k) == w[k] for k in w) for t, w in zip(table, want_cells))
             )
             need("power.table", same, "mismatch")
-    if not errors:
-        _check_b1a(doc, errors)
+    _check_b1a(doc, errors)  # whatever else is wrong: a registered value is exact on its own
     strata, min_share = doc.get("strata", {}), doc.get("min_share", {})
     need("strata", isinstance(strata, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in strata.items()))
     need("min_share", isinstance(min_share, dict) and all(s in SPLITS and isinstance(m, dict) for s, m in min_share.items()))
@@ -1366,8 +1468,12 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     """b2's counting: families per development split, each split's refusal deficit (to 25 % of its quota), and the
     refusal drafts the pool needs.
 
-    ``drafts`` is the number of new drafts (default the prereg's ``attempt_1.families_approx``). The pool is the
-    migrated families plus the drafts; its refusal target is the registered share (11/40) of it, rounded half up,
+    ``drafts`` is the number of new drafts. Its default is the prereg's ``attempt_1.families_rule``: the registered
+    ``families_approx``, or more when the first split needs a bigger pool (sealed + ``tuning_min`` + the realistic
+    quota); the printed ``drafts_rule`` says which bound (``families_approx`` / ``pool_floor``), or ``explicit``. The
+    tuning quota is ``cmd_split``'s (the pool less the sealed and realistic quotas) unless ``--quota-tuning`` is given.
+    The pool is the migrated families plus the drafts; its refusal target is the registered share (11/40) of it,
+    rounded half up,
     and the drafts must supply ``max(target - preassigned refusals, sum of the splits' deficits)`` refusals.
     A split whose deficit exceeds its open slots, or whose preassigned refusals exceed 30 % of its quota, cannot
     reach the band: ``band_unreachable`` after printing (b2's owner stop).
@@ -1391,11 +1497,7 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     tuning_n = sum(1 for g in gold if g not in paired_gold)
     realistic_n = len(real) + len(tut)
     realistic_refuse = sum(real_refuse.values()) + sum(tut.values())
-    quotas: Dict[str, int] = {}
     prereg = ctx.prereg_file
-    quota_doc = read_json(prereg).get("quota", {}) if prereg.is_file() and quota_tuning is None else {}
-    quotas["tuning"] = quota_tuning if quota_tuning is not None else int(quota_doc.get("tuning_min", 0))
-    quotas["realistic"] = quota_realistic if quota_realistic is not None else max(int(quota_doc.get("realistic_min", 0)), realistic_n)
 
     def deficit(q: int, refuse: int) -> int:
         return max(0, -(-q * BAND_MIN_NUM // BAND_MIN_DEN) - refuse)
@@ -1409,14 +1511,34 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     share = Fraction(str(attempt["refusal_share_target"]))
     if share != Fraction(11, 40):
         raise Stop(EXIT_REFUSED, "prereg_invalid")
-    new_drafts = drafts if drafts is not None else attempt.get("families_approx")
+    # the quota block is read whether or not the quotas are overridden: the default tuning quota needs the sealed quota
+    quota_doc = prereg_doc.get("quota") if isinstance(prereg_doc, dict) else None
+    quota_doc = quota_doc if isinstance(quota_doc, dict) else {}
+    migrated, preassigned = tuning_n + realistic_n, tuning_refuse + realistic_refuse
+    sealed_q = int(quota_doc.get("sealed", 0))
+    realistic_q = quota_realistic if quota_realistic is not None else max(int(quota_doc.get("realistic_min", 0)), realistic_n)
+    # the drafts rule (prereg drafting_rule.attempt_1.families_rule): the registered approximate count, raised to what the
+    # first split needs (sealed + tuning_min + realistic quotas; `spare` is already inside `sealed`), else attempt 1 would
+    # be quota_short and burn a capped attempt
+    approx = attempt.get("families_approx")
+    if drafts is not None:
+        new_drafts, drafts_rule = drafts, "explicit"
+    else:
+        if isinstance(approx, bool) or not isinstance(approx, int) or approx < 0:
+            raise Stop(EXIT_USAGE, "usage")
+        floor_drafts = max(0, sealed_q + int(quota_doc.get("tuning_min", 0)) + realistic_q - migrated)
+        new_drafts = max(approx, floor_drafts)
+        drafts_rule = "pool_floor" if floor_drafts > approx else "families_approx"
     if isinstance(new_drafts, bool) or not isinstance(new_drafts, int) or new_drafts < 0:
         raise Stop(EXIT_USAGE, "usage")
+    pool_total = migrated + new_drafts
+    # the default tuning quota is cmd_split's (compute_quotas): the pool less the sealed and the realistic quotas, so a
+    # pool large enough for the split gives a tuning quota of at least tuning_min (never printed negative)
+    tuning_q = quota_tuning if quota_tuning is not None else max(0, pool_total - sealed_q - realistic_q)
+    quotas: Dict[str, int] = {"tuning": tuning_q, "realistic": realistic_q}
     deficits = {"tuning": deficit(quotas["tuning"], tuning_refuse), "realistic": deficit(quotas["realistic"], realistic_refuse)}
     families = {"tuning": tuning_n, "realistic": realistic_n}
     refuse_have = {"tuning": tuning_refuse, "realistic": realistic_refuse}
-    migrated, preassigned = tuning_n + realistic_n, tuning_refuse + realistic_refuse
-    pool_total = migrated + new_drafts
     target = (2 * share.numerator * pool_total + share.denominator) // (2 * share.denominator)  # round half up
     needed = max(target - preassigned, deficits["tuning"] + deficits["realistic"])
     bands: Dict[str, str] = {}
@@ -1431,7 +1553,8 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
         tuning_deficit=deficits["tuning"],
         realistic_families=realistic_n, realistic_refuse=realistic_refuse, realistic_quota=quotas["realistic"],
         realistic_deficit=deficits["realistic"],
-        migrated_families=migrated, preassigned_refusals=preassigned, pool_total=pool_total, refusal_target=target,
+        migrated_families=migrated, preassigned_refusals=preassigned, drafts=new_drafts, drafts_rule=drafts_rule,
+        pool_total=pool_total, refusal_target=target,
         refusal_drafts=needed, tuning_open=open_slots["tuning"], tuning_band=bands["tuning"],
         realistic_open=open_slots["realistic"], realistic_band=bands["realistic"],
     )
@@ -3282,7 +3405,12 @@ def controls_file(ctx: Ctx) -> Path:
 
 
 def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
-    """Declare the confirmatory batch once: 1-4 candidates ``<config hash>:replay|candidate`` in slot order.
+    """Declare the confirmatory batch once: 1-4 candidates in slot order, each ``<config hash>:replay`` or
+    ``<config hash>:candidate:<rewrite config hash>``.
+
+    ``config hash`` is the candidate's PIPELINE configuration hash (16B's identity check); a ``candidate`` entry also
+    names its ``rewrite config hash`` (the rewrite model, prompt and caps: what the slot gate compares with the code's
+    ``rewrite_identity()`` and the run's ``--rewrite-candidate``).
 
     Refused while the confirmatory embargo holds (``embargoed``), before the sealed freeze, under any prereg but the
     epoch's registered one (committed, unmodified, pushed), and before the controls are recorded in the ledger and
@@ -3294,10 +3422,18 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
         raise Stop(EXIT_REFUSED, "embargoed")
     entries: List[Dict[str, str]] = []
     for text in candidates:
-        config_hash, _, mode = text.partition(":")
+        parts = text.split(":")
+        config_hash, mode = parts[0], parts[1] if len(parts) > 1 else ""
         if not _SHA256.fullmatch(config_hash) or mode not in sealed_ledger.BATCH_EXPANSIONS:
             raise Stop(EXIT_REFUSED, "batch_invalid")
-        entries.append({"config_hash": config_hash, "expansion": mode})
+        entry = {"config_hash": config_hash, "expansion": mode}
+        if mode == "candidate":
+            if len(parts) != 3 or not _SHA256.fullmatch(parts[2]):
+                raise Stop(EXIT_REFUSED, "batch_invalid")
+            entry["rewrite_config_hash"] = parts[2]
+        elif len(parts) != 2:
+            raise Stop(EXIT_REFUSED, "batch_invalid")
+        entries.append(entry)
     ledger = ctx.ledger()
     if ledger.freeze_record("sealed") is None:
         raise Stop(EXIT_REFUSED, "freeze_missing")
@@ -3315,6 +3451,23 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     except ProtocolError:
         raise Stop(EXIT_REFUSED, "batch_declared") from None
     ctx.printer.emit("batch_declared", candidates=len(entries), sha256=digest)
+    return EXIT_OK
+
+
+def cmd_epoch(ctx: Ctx) -> int:
+    """Read-only: the epoch's registered prereg from the ledger, and whether the working prereg file is it.
+
+    Prints ``epoch prereg_sha256=<sha256 or none> records=<ledger records> matches=<yes|no>`` (counts and a digest
+    only). ``matches`` is ``yes`` exactly when a prereg is registered and the working prereg file hashes to it;
+    ``no`` when none is registered yet, the file differs, or the file is absent. Appends no record.
+    """
+    ledger = ctx.ledger()
+    registered = ledger.epoch_prereg_sha256()
+    working = sha_file(ctx.prereg_file) if ctx.prereg_file.is_file() else None
+    ctx.printer.emit(
+        "epoch", prereg_sha256=registered if registered is not None else "none", records=len(ledger.records()),
+        matches="yes" if registered is not None and registered == working else "no",
+    )
     return EXIT_OK
 
 
@@ -3377,6 +3530,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--alpha", {"type": float, "default": None}), ("--draws", {"type": int, "default": None}), ("--seed", {"type": int, "default": None}))
     add("prereg-check", ("--committed", {"action": "store_true"}))
     add("declare-batch", ("--candidate", {"action": "append", "default": [], "dest": "candidates"}))
+    add("epoch")
     add("return", ("path", {}), ("--enum", {"action": "append", "default": [], "dest": "enums"}))
     return ap
 
@@ -3427,6 +3581,8 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_prereg_check(ctx, a.committed)
     if c == "declare-batch":
         return cmd_declare_batch(ctx, a.candidates)
+    if c == "epoch":
+        return cmd_epoch(ctx)
     return cmd_return(ctx, a.path, a.enums)
 
 

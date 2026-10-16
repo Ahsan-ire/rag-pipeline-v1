@@ -34,7 +34,12 @@ exclusions: the epoch ends, a D64 stop), ``baseline`` (a confirmatory slot
 without a verified baseline run that published a canonical report),
 ``retrieval_backend`` (the preflight could not load the index a default path
 needs) and ``claim`` (a4's claim refused: claimed before, 0b not available, or
-the slot's execution lock is held: ``busy``).
+the slot's execution lock is held: ``busy``; or an eager ``claim=True``: ``eager``).
+Also: ``controls`` (every slot, 0 and 0b included, needs the ledger's ``controls`` record and the
+unchanged ``eval/controls_v1.json``: the list exists before the first sealed result), ``embargo``
+(slots 1-4 while ``CONFIRMATORY_EMBARGO`` holds), ``identity`` (a confirmatory slot's candidate
+identity check, a stub that always refuses until 16B's reviewed change replaces it: lifting the
+embargo flag alone opens nothing), ``batch``, ``judge``, ``prereg_binding`` and ``dev_binding``.
 
 Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
 ----------------------------------------------------------------------------------------------
@@ -95,10 +100,9 @@ a draft that is not in the sealed set: its connectivity is kept, it is not a mem
 
 The slot protocol (:func:`run_slot`, :func:`finish_slot`)
 ---------------------------------------------------------
-1. the slot is claimed (a4 step 1): by :func:`run_slot` after its preflight for a token minted
-   with ``claim=False`` (the default, and what the CLI does), or by the gate itself for a token
-   minted with ``claim=True`` (an explicit opt-in that skips the preflight, so the gate then
-   insists on being given ``top_k`` to check the cut-off before it claims);
+1. the slot is claimed (a4 step 1) by :func:`run_slot` after its preflight, for a token minted
+   by the gate (which never claims: ``claim=True`` is refused, ``claim``, because the gate cannot
+   see the run's development inputs or its judge flag, which the preflight checks before the claim);
 2. ``run_eval_matrix(..., slot_token=token)`` runs the matrix and writes, under
    ``eval/private/sealed/runs/<run id>/`` and never beside any report:
    ``results.json`` (the stored results document, ids and enums only),
@@ -192,7 +196,7 @@ _SLOT = re.compile(r"0b|0|[1-9][0-9]{0,2}")
 GATES = (
     "slot", "prereg", "cutoff", "expansion_mode", "meter", "tracing", "freeze_record", "set_file", "twins_record",
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
-    "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding",
+    "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding", "identity",
 )
 
 #: The canonical-v6 guards, in report order. Each is a pure function of the stored facts.
@@ -573,6 +577,7 @@ class SlotToken:
     prereg_commit: Optional[str] = field(repr=False, default=None)  # and the commit that last changed it
     candidate_config_hash: Optional[str] = field(repr=False, default=None)  # a confirmatory slot's declared candidate
     candidate_expansion: Optional[str] = field(repr=False, default=None)  # and its declared mode: replay or candidate
+    candidate_rewrite_config_hash: Optional[str] = field(repr=False, default=None)  # a candidate entry's rewrite identity
 
     def __post_init__(self) -> None:
         if self.mint is not _MINT:
@@ -679,7 +684,7 @@ def _expansion_mode(expansion: str, rewrite_candidate: Optional[str]) -> str:
 def _check_expansion(
     decl: Mapping[str, Any], expansion: str, rewrite_candidate: Optional[str], ledger: Optional[SealedLedger] = None,
     slot: Optional[str] = None,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Match the command line against the prereg's declaration.
 
     A replay declaration naming ``slot0_canonical`` resolves to the ledger's canonical expansion
@@ -687,22 +692,26 @@ def _check_expansion(
     A ``batch`` declaration (confirmatory slots) resolves the slot's entry from the ledger's batch
     declaration (``GateRefused("batch")`` when there is no batch or no entry for the slot): a ``replay``
     entry must be run as a replay of the canonical artifact, a ``candidate`` entry as live expansion
-    under ``--rewrite-candidate`` equal to the entry's config hash.
+    under ``--rewrite-candidate`` equal to the entry's ``rewrite_config_hash`` (the rewrite model, prompt and caps
+    that :func:`expansion_artifact.rewrite_identity` computes; the entry's ``config_hash`` is the candidate's
+    PIPELINE configuration, which 16B's identity check compares, see :func:`check_candidate_identity`).
 
     Returns:
-        ``(mode, artifact sha256 or None, artifact path or None, declared candidate config hash or None,
-        declared candidate expansion or None)``; the last two only for a ``batch`` declaration.
+        ``(mode, artifact sha256 or None, artifact path or None, declared candidate pipeline config hash or None,
+        declared candidate expansion or None, declared candidate rewrite config hash or None)``; the last three
+        only for a ``batch`` declaration.
     """
     mode = _expansion_mode(expansion, rewrite_candidate)
     want_candidate: Optional[str] = None
     batch_mode: Optional[str] = None
+    want_rewrite: Optional[str] = None
     if decl["expansion"] == BATCH_EXPANSION:
         batch = ledger.batch_declaration() if ledger is not None else None
         if batch is None or slot is None or not slot.isdigit() or not 1 <= int(slot) <= len(batch["candidates"]):
             raise GateRefused("batch")
         entry = batch["candidates"][int(slot) - 1]
-        batch_mode, want_candidate = entry["expansion"], entry["config_hash"]
-        decl = {"expansion": batch_mode, "artifact": SLOT0_CANONICAL, "rewrite_candidate": want_candidate}
+        batch_mode, want_candidate, want_rewrite = entry["expansion"], entry["config_hash"], entry.get("rewrite_config_hash")
+        decl = {"expansion": batch_mode, "artifact": SLOT0_CANONICAL, "rewrite_candidate": want_rewrite}
     if mode != decl["expansion"]:
         raise GateRefused("expansion_mode")
     if mode == "replay":
@@ -714,13 +723,29 @@ def _check_expansion(
         sha = _file_sha(expansion)
         if sha is None or sha != want:
             raise GateRefused("expansion_mode")
-        return mode, sha, expansion, want_candidate, batch_mode
+        return mode, sha, expansion, want_candidate, batch_mode, want_rewrite
     if mode == "candidate":
         from src.expansion_artifact import rewrite_identity
 
         if rewrite_candidate != decl["rewrite_candidate"] or rewrite_identity()["config_hash"] != rewrite_candidate:
             raise GateRefused("expansion_mode")
-    return mode, None, None, want_candidate, batch_mode
+    return mode, None, None, want_candidate, batch_mode, want_rewrite
+
+
+def check_candidate_identity(
+    slot: str, ledger: SealedLedger, config_hash: Optional[str], expansion: Optional[str], rewrite_config_hash: Optional[str],
+) -> None:
+    """A confirmatory slot's candidate must be the one it was declared to be (the 16B check; a stub until then).
+
+    The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration. The check
+    16B adds compares it with the run's own canonical pipeline configuration hash (the rewrite identity is checked
+    by :func:`_check_expansion`). Until 16B's reviewed code change lands there is no such computation, so this
+    refuses always: lifting ``CONFIRMATORY_EMBARGO`` alone cannot open a confirmatory slot. 16B replaces this body.
+
+    Raises:
+        GateRefused: ``identity``, always in this phase.
+    """
+    raise GateRefused("identity")
 
 
 def check_controls_bound(ledger: SealedLedger) -> None:
@@ -756,6 +781,13 @@ def dev_sets_of(ledger: SealedLedger, shas: Iterable[str]) -> Dict[str, str]:
     return found
 
 
+def _is_private_input(path: Union[str, os.PathLike]) -> bool:
+    """True iff ``path`` classifies as a private (not public, not sealed) eval input: the sets a freeze record binds."""
+    from src import eval_sets
+
+    return eval_sets.classify(path) == eval_sets.PRIVATE
+
+
 def check_dev_binding(slot: str, ledger: SealedLedger, other_paths: Iterable[Union[str, os.PathLike]]) -> None:
     """Every private, non-sealed input set must be the frozen ``tuning`` or ``realistic`` version, each split once.
 
@@ -764,11 +796,9 @@ def check_dev_binding(slot: str, ledger: SealedLedger, other_paths: Iterable[Uni
     Raises:
         GateRefused: ``dev_binding``.
     """
-    from src import eval_sets
-
     shas = []
     for path in other_paths:
-        if eval_sets.classify(path) == eval_sets.PRIVATE:
+        if _is_private_input(path):
             sha = _file_sha(path)
             if sha is None:
                 raise GateRefused("dev_binding")
@@ -847,26 +877,25 @@ def acquire_slot_token(
     claim: bool = False,
     top_k: Optional[int] = None,
 ) -> SlotToken:
-    """Run every gate for ``slot`` and, if all pass, mint the token (claiming the slot only if ``claim=True``).
+    """Run every gate for ``slot`` and, if all pass, mint the (unclaimed) token.
 
-    See the module docstring for the gates, their order and the formats. The
-    claim is the last step, so any refusal leaves the slot unclaimed. Just
-    before it the gate takes the slot's execution lock (non-blocking; the token
-    keeps it until :func:`run_slot` ends). By default the token comes
-    back unclaimed (the gate only checks that the slot COULD be claimed) and
-    :func:`run_slot` claims it after its preflight, right before the first model
-    call: that is how the CLI makes every refusal precede the claim, and why a library
-    caller must opt in (``claim=True``) to claim at the gate, skipping that preflight.
+    See the module docstring for the gates, their order and the formats. The gate never claims: just before
+    minting it takes the slot's execution lock (non-blocking; the token keeps it until :func:`run_slot` ends) and
+    checks that the slot COULD be claimed, and :func:`run_slot` claims the token after its preflight (the run's
+    development inputs, judge flag, cut-off, replay artifact, metered clients and index), right before the first
+    model call: that is how every refusal precedes the claim. ``claim`` exists only to be refused: an eager claim
+    at the gate would precede the preflight's checks (``claim=True`` raises ``GateRefused("claim")``).
 
     ``top_k`` is the cut-off the caller will run at. When given it is checked against the prereg's
-    hit cut-off right away (``cutoff``); ``claim=True`` requires it, because the gate is then the last
-    place that can refuse before the claim. Without it (the CLI path) :func:`preflight_slot` checks it.
+    hit cut-off right away (``cutoff``); :func:`preflight_slot` checks it in any case.
 
     Raises:
         GateRefused: a gate refused (its name is on the exception).
         src.sealed_ledger.SealedLedgerError: the ledger itself failed (a lost,
             corrupt or tampered ledger is a D64 stop).
     """
+    if claim:  # every claim goes through run_slot's preflight (development inputs, judge, cut-off, artifacts ...)
+        raise GateRefused("claim", "eager")
     sid = normalise_slot(slot)
     confirmatory = is_confirmatory(sid)
     if confirmatory and _sealed_ledger.CONFIRMATORY_EMBARGO:  # first among the confirmatory checks (16B lifts it)
@@ -876,13 +905,15 @@ def acquire_slot_token(
     decl = prereg["slots"].get(sid)
     if decl is None or (decl["expansion"] == BATCH_EXPANSION) != confirmatory:
         raise GateRefused("prereg")  # a confirmatory slot is declared by its batch entry; slot 0 / 0b are not
-    if top_k is not None or claim:
-        check_cutoff(prereg["cutoff"], top_k)  # None with claim=True is refused too: the gate cannot vouch for it
+    if top_k is not None:
+        check_cutoff(prereg["cutoff"], top_k)
     if confirmatory:
         check_controls_bound(ledger)
-    mode, artifact_sha, artifact_path, candidate_hash, candidate_expansion = _check_expansion(
+    mode, artifact_sha, artifact_path, candidate_hash, candidate_expansion, candidate_rewrite = _check_expansion(
         decl, expansion, rewrite_candidate, ledger, sid,
     )
+    if confirmatory:  # 16B replaces this stub with the registered check; until then it refuses
+        check_candidate_identity(sid, ledger, candidate_hash, candidate_expansion, candidate_rewrite)
 
     from src.spend import SpendMeter
 
@@ -898,6 +929,8 @@ def acquire_slot_token(
         raise GateRefused("freeze_record")
     if prereg_sha256 != freeze.get("prereg_sha256") or prereg_sha256 != ledger.epoch_prereg_sha256():
         raise GateRefused("prereg_binding")  # the epoch has one registered prereg, the one the freeze was made under
+    if not confirmatory:  # slots 0 and 0b: the controls are recorded (and unchanged) before the first sealed result exists
+        check_controls_bound(ledger)
     approvals_path = Path(records_dir) / "approvals.json"
     if _file_sha(set_path) != freeze["set_sha256"]:
         raise GateRefused("set_file")
@@ -946,15 +979,12 @@ def acquire_slot_token(
         token = _mint_token(
             sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor,
             prereg["cutoff"], ledger, approvals_path, approvals_sha, baseline, lock,
-            prereg_sha256, prereg_commit, candidate_hash, candidate_expansion,
+            prereg_sha256, prereg_commit, candidate_hash, candidate_expansion, candidate_rewrite,
         )
-        if claim:
-            token.claim()
-        else:
-            try:
-                ledger.check_claimable(sid)
-            except SlotRefused:
-                raise GateRefused("claim") from None
+        try:
+            ledger.check_claimable(sid)
+        except SlotRefused:
+            raise GateRefused("claim") from None
     except BaseException:
         if lock is not None:
             lock.release()
@@ -983,8 +1013,9 @@ def _mint_token(
     prereg_commit: Optional[str] = None,
     candidate_config_hash: Optional[str] = None,
     candidate_expansion: Optional[str] = None,
+    candidate_rewrite: Optional[str] = None,
 ) -> SlotToken:
-    """Build the (unclaimed) token: the gate's last step before the claim."""
+    """Build the (unclaimed) token: the gate's last step."""
     return SlotToken(
         slot=sid,
         run_id=new_run_id(),
@@ -1010,6 +1041,7 @@ def _mint_token(
         prereg_commit=prereg_commit,
         candidate_config_hash=candidate_config_hash,
         candidate_expansion=candidate_expansion,
+        candidate_rewrite_config_hash=candidate_rewrite,
     )
 
 
@@ -1181,7 +1213,12 @@ def build_results_doc(slot_token: SlotToken, result: Mapping[str, Any], facts: M
         "prereg_sha256": slot_token.prereg_sha256, "prereg_commit": slot_token.prereg_commit,
         "candidate_config_hash": slot_token.candidate_config_hash,
         "candidate_expansion": slot_token.candidate_expansion,
-        "dev_sets": dev_sets_of(slot_token.ledger, [s["sha256"] for s in sets if s["role"] == "development"]),
+        "candidate_rewrite_config_hash": slot_token.candidate_rewrite_config_hash,
+        # only private development inputs are bound to a freeze record: a registered public set (the regression
+        # set slot 0 may run with) is not a development version, so it names no split (the gate's own rule)
+        "dev_sets": dev_sets_of(slot_token.ledger, [
+            s["sha256"] for s in result["sets"] if not s.get("owned") and _is_private_input(s["path"])
+        ]),
         "groups": dict(slot_token.groups),
         "baseline": baseline,
         "facts": dict(facts),

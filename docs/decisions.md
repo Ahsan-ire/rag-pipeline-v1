@@ -2475,4 +2475,40 @@ What is now registered:
 - The `calibration_draw` ledger record stores the CLI's kind as `draw_kind`, because the record's own `kind` is its type.
 - `count-migrated` now always needs the prereg, because it reads the 11/40 refusal share from it.
 - The confirmatory embargo is the first check in `acquire_slot_token`, before the prereg is loaded.
-- **Residual:** the judge and `dev_binding` checks run in the slot preflight (`check_token_for_run`), which the CLI and `run_slot` both run before the claim. A library caller that mints a token with `claim=True` claims before those checks, the same gap the cut-off check has without `top_k`. No installed path does this. It is open for the r3 closure review.
+- **Residual:** the judge and `dev_binding` checks run in the slot preflight (`check_token_for_run`), which the CLI and `run_slot` both run before the claim. A library caller that mints a token with `claim=True` claims before those checks, the same gap the cut-off check has without `top_k`. No installed path does this. It is closed in r3 (F3). The cut-off comparison in this bullet was wrong: the gate checks the cut-off whenever `claim` is True.
+
+## D74 addendum — prereg plan gate r3 closure (16 Oct 2026)
+**Decision:** the r3 closure findings on 16aaa62 are accepted, except for two items deferred with a reason. Codex (sol, xhigh) was COMPLETE with outcome REVISE: 1 BLOCKER, 3 MAJOR, 1 MINOR. The plan-auditor (fresh context) returned FAIL: 1 BLOCKER, 7 MAJOR, 6 MINOR. Everything below is fixed before the prereg is pushed (IMPLEMENTATION_PLAN.md b1a "Closure r3"), so none of it is an amendment.
+
+| Finding | Disposition |
+|---|---|
+| Codex BLOCKER: a public `--regression` set fails results assembly (`dev_binding`) after the slot is spent | FIXED (F1) |
+| Codex MAJOR and auditor minor: `count-migrated` used `tuning_min`, not split's tuning quota | FIXED (F2) |
+| Codex MAJOR and auditor minor: an eager `claim=True` claims before the judge and `dev_binding` checks | FIXED (F3): eager claims are refused |
+| Codex MAJOR and auditor minor: `prereg-check` did not check every registered value; a stale `confirmatory_batch.expansion` | FIXED (F4): one table of registered values, and unregistered leaves are refused |
+| Codex MINOR and auditor MAJOR (M1): controls ignored the recorded draws; duplicate draws accepted; controls could be made after slot 0 | FIXED (F5, F6). The `dev_draw` mechanism stays in b7, now with a config hash |
+| Auditor MAJOR (M2): one `config_hash` had two meanings for a candidate entry | FIXED (F9): `config_hash` = pipeline config, plus `rewrite_config_hash` |
+| Auditor MAJOR (M3): candidate draws could not be attributed | FIXED (F10): draws count per config hash |
+| Auditor MAJOR (M4): rules left to 16B | PARTLY FIXED (F11): the identity check refuses until 16B writes it. Holm and the adoption analysis are DEFERRED to 16B: they read the immutable epoch prereg |
+| Auditor MAJOR (M5): the prereg was not bound at data dispatch | FIXED (F7): the commit must be the last one to touch the file; dispatch records carry the prereg sha256 and register the epoch |
+| Auditor MAJOR (M6): the control flip narrowed to hybrid+rewrite against D57 | FIXED (F8): raw hybrid or hybrid+rewrite, as D57 registered |
+| Auditor MAJOR (M7): attempt 1 predictably `quota_short` | FIXED (F12): a draft-count floor from the quotas |
+| Auditor minor: `lay_min` and refusal counts unregistered and unchecked | DEFERRED to b3/b4, with the rule written into the plan |
+| Auditor minor: naming slips | FIXED in the plan text |
+| Auditor minor: the live ledger may already hold a prereg sha | FIXED (F13): `sealed_tool epoch`, which b2 runs first |
+| Auditor BLOCKER (B1): candidates and modes are declared only after slot 0's results | RESIDUAL, recorded here (below) |
+
+**The residual (auditor B1).** Slot 0's descriptive sealed aggregates exist before the confirmatory batch is declared, because 16B builds its candidates after slot 0. The plan's disposition table has carried this as "Residual (D74)" since r1; this entry records it in D74 itself.
+- The r2 addendum's *Why* overstated this point. It said r2 removed the choice of candidates and modes after slot 0's results. What r2 actually does is bind them before any confirmatory slot is spent, not before slot 0.
+- **What limits it:**
+  - Adoption under (A) is decided on development evidence.
+  - The sealed side is only a guard, with fixed checks.
+  - Holm uses K = 4 whatever is declared.
+  - The rules for development draws, controls and the prereg are all fixed before slot 0.
+- Declaring the batch before slot 0 would mean designing 16B's candidates before 16B. That is an owner-level change to the D74 plan, so it is not made here.
+
+**Why:** the r3 fixes close the remaining ways a value could be chosen after results: controls, the prereg at dispatch, draws per config, the control-flip modes and candidate identity. They also remove one spent-slot failure on the legitimate b8 path.
+
+**Rejected:**
+- Keeping eager claims with a full preflight: no production caller uses them.
+- A `spare` term in the draft floor: spare is already inside `quota.sealed`.

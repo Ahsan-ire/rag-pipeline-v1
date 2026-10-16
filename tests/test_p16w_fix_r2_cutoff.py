@@ -99,11 +99,19 @@ def test_the_gate_refuses_a_top_k_that_is_not_the_cutoff_before_it_claims(world,
         pass
 
 
-def test_a_gate_that_is_to_claim_must_be_told_the_top_k_it_is_vouching_for(world):
-    assert gate_of(lambda: world.token(0, claim=True, top_k=None)) == "cutoff"
+def test_the_gate_never_claims_whatever_top_k_it_is_given(world):
+    """r3 F3 (this replaces "a gate that is to claim must be told its top_k"): an eager claim is refused outright, so
+    no cut-off is ever vouched for at a claim the preflight has not seen."""
+    for top_k in (None, 6):
+        assert gate_of(lambda: sealed_run.acquire_slot_token(
+            0, ledger=world.ledger(), set_path=world.sealed_path, prereg_path=world.prereg_path, records_dir=world.records_dir,
+            expansion="live", meter=make_meter(), claim=True, top_k=top_k,
+        )) == "claim"
     assert kinds(world) == ["freeze"]
-    token = world.token(0, claim=True, top_k=6)  # the cut-off itself passes
-    assert token.cutoff == 6 and token.claimed == [True] and "slot_claim" in kinds(world)
+    token = world.token(0, claim=False, top_k=None)  # the CLI's route: minted unclaimed, the preflight checks top_k
+    assert token.cutoff == 6 and token.claimed == [False] and "slot_claim" not in kinds(world)
+    token.claim()  # what run_slot does after its preflight
+    assert token.claimed == [True] and "slot_claim" in kinds(world)
     token.release()
 
 

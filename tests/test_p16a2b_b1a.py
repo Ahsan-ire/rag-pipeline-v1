@@ -16,6 +16,7 @@ import pytest
 from scripts import sealed_tool as st
 from scripts import sp_launch as sp
 from src import sealed_ledger, sealed_run
+from src.expansion_artifact import rewrite_identity
 from src.sealed_ledger import ProtocolError, SealedLedger, SlotRefused
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     BATCH,
@@ -24,6 +25,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     CANDIDATES,
     _langsmith_env_cache,
     bare,
+    candidate_entry,
     gate_of,
     world,
 )
@@ -42,6 +44,8 @@ def _embargo_off(monkeypatch):
     """The 16B embargo (``CONFIRMATORY_EMBARGO``) is tested in ``tests/test_p16a2b_b1a_r2.py``; the batch and slot
     rules behind it are tested here, so it is off."""
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
+    # ... and so is 16B's candidate-identity check, which refuses always in this phase (tests/test_p16a2b_b1a_r3.py)
+    monkeypatch.setattr(sealed_run, "check_candidate_identity", lambda *args, **kwargs: None)
 
 
 def frozen(tmp_path: Path) -> SealedLedger:
@@ -100,6 +104,12 @@ def test_batch_declaration_rules(tmp_path):
         [{"config_hash": "A" * 64, "expansion": "replay"}], [{"config_hash": "short", "expansion": "replay"}],
         [{"config_hash": CANDIDATES[0], "expansion": "live"}],  # not a batch mode
         [{"config_hash": CANDIDATES[0]}], [{"expansion": "replay"}], [{**one, "extra": 1}],  # not {config_hash, expansion}
+        # r3 F9: a candidate entry carries its rewrite identity (64 hex), a replay entry carries none
+        [{"config_hash": CANDIDATES[0], "expansion": "candidate"}],
+        [{"config_hash": CANDIDATES[0], "expansion": "candidate", "rewrite_config_hash": "short"}],
+        [{"config_hash": CANDIDATES[0], "expansion": "candidate", "rewrite_config_hash": "A" * 64}],
+        [{**one, "rewrite_config_hash": CANDIDATES[1]}],
+        [{"config_hash": CANDIDATES[0], "expansion": "candidate", "rewrite_config_hash": CANDIDATES[1], "extra": 1}],
         CANDIDATES,  # the old form: bare hashes
         "1" * 64,
     ]
@@ -107,7 +117,7 @@ def test_batch_declaration_rules(tmp_path):
         with pytest.raises(ValueError):
             led.record_batch_declaration(bad)
     assert led.batch_declaration() is None
-    entries = [BATCH[0], {"config_hash": CANDIDATES[1], "expansion": "candidate"}, BATCH[2]]
+    entries = [BATCH[0], candidate_entry(CANDIDATES[1], D), BATCH[2]]
     digest = led.record_batch_declaration(entries)
     assert digest == canonical_json_sha(entries)  # the digest of the canonical JSON of the list, modes included
     rec = make(tmp_path).batch_declaration()
@@ -250,7 +260,7 @@ def test_slot0_canonical_resolves_through_the_ledger(tmp_path):
         def batch_declaration(self):
             return self.batch
 
-    assert sealed_run._check_expansion(decl, str(art), None, L(sha)) == ("replay", sha, str(art), None, None)
+    assert sealed_run._check_expansion(decl, str(art), None, L(sha)) == ("replay", sha, str(art), None, None, None)
     for ledger in (L(None), L("f" * 64), None):  # no canonical artifact, a different one, no ledger
         with pytest.raises(sealed_run.GateRefused) as info:
             sealed_run._check_expansion(decl, str(art), None, ledger)
@@ -265,6 +275,7 @@ def test_a_batch_declaration_resolves_the_slots_mode_from_the_ledgers_batch(tmp_
     sha = hashlib.sha256(art.read_bytes()).hexdigest()
     decl = {"expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
     entries = [{"config_hash": CANDIDATES[0], "expansion": "replay"}]
+    candidate = candidate_entry(CANDIDATES[1], rewrite_identity()["config_hash"])
 
     class L:
         def __init__(self, batch):
@@ -277,7 +288,15 @@ def test_a_batch_declaration_resolves_the_slots_mode_from_the_ledgers_batch(tmp_
             return self.batch
 
     ledger = L({"candidates": entries})
-    assert sealed_run._check_expansion(decl, str(art), None, ledger, "1") == ("replay", sha, str(art), CANDIDATES[0], "replay")
+    assert sealed_run._check_expansion(decl, str(art), None, ledger, "1") == ("replay", sha, str(art), CANDIDATES[0], "replay", None)
+    # a candidate entry: the run is checked against its REWRITE identity; the pipeline config hash is only carried
+    both = L({"candidates": [candidate]})
+    assert sealed_run._check_expansion(decl, "live", candidate["rewrite_config_hash"], both, "1") == (
+        "candidate", None, None, CANDIDATES[1], "candidate", candidate["rewrite_config_hash"])
+    for flag in (CANDIDATES[1], "c" * 64):  # the pipeline hash is not the rewrite identity
+        with pytest.raises(sealed_run.GateRefused) as info:
+            sealed_run._check_expansion(decl, "live", flag, both, "1")
+        assert info.value.gate == "expansion_mode"
     for ledger, slot in ((L(None), "1"), (L({"candidates": entries}), "2"), (L({"candidates": entries}), "0"),
                          (L({"candidates": entries}), None), (None, "1")):  # no batch, no entry, not a batch slot
         with pytest.raises(sealed_run.GateRefused) as info:
@@ -306,18 +325,16 @@ def test_the_gate_binds_the_prereg_first_and_the_token_and_results_carry_it(worl
 
 
 def test_confirmatory_slots_need_a_batch_declaration_and_carry_their_candidate(bare):
-    from src.expansion_artifact import rewrite_identity
-
     config_hash = rewrite_identity()["config_hash"]
     bare.write_prereg()
     bare.write_records()
-    bare.freeze()
+    bare.freeze(controls=False)
     call = lambda slot: bare.token(  # noqa: E731
         slot, expansion="live", rewrite_candidate=config_hash, baseline_run="run-x", claim=False, declare=False)
     assert gate_of(lambda: call(1)) == "controls"  # the controls are not recorded yet
     bare.record_controls()
     assert gate_of(lambda: call(1)) == "batch"  # nothing declared
-    bare.declare_batch(entries=[BATCH[0], {"config_hash": config_hash, "expansion": "candidate"}])
+    bare.declare_batch(entries=[BATCH[0], candidate_entry(CANDIDATES[1], config_hash)])
     assert gate_of(lambda: call(3)) == "batch"  # beyond the two declared candidates
     assert gate_of(lambda: call(2)) == "baseline"  # the batch gate passed; the baseline gate is next
     assert gate_of(lambda: bare.token(2, expansion="live", rewrite_candidate=config_hash, claim=False, declare=False)) == "baseline"
@@ -396,8 +413,8 @@ def good_prereg():
     power = {"alphas": [0.05, 0.0125], "discordance": [0.5], "planned_groups": [1] * 10 + [2] * 3, "draws": 40, "seed": 5}
     doc = {
         "version": 1, "branch": "main", "rounds": [1, 2], "seeds": {"split_r1": 1, "split_r2": 2, "repair": 3, "calibration": 4},
-        "quota": quota, "band": {"min_pct": 25, "max_pct": 30}, "mwe": 0.1, "alpha": 0.05, "k_max": 4, "draws_r": 5,
-        "min_share": {"realistic": {"tutorial_or_colleague": 0.25}}, "power": power, **b1a_blocks(mwe=0.1, draws_r=5),
+        "quota": quota, "band": {"min_pct": 25, "max_pct": 30},
+        "min_share": {"realistic": {"tutorial_or_colleague": 0.25}}, "power": power, **b1a_blocks(),
     }
     power["table"] = st.power_cells(power, 0.1)
     power["family_table"] = st.family_cells(power, 0.1)

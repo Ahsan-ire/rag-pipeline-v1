@@ -44,6 +44,13 @@ BATCH_SLOTS = {  # the prereg's declaration of slots 1-4: the mode comes from th
     str(n): {"expansion": "batch", "artifact": "slot0_canonical", "role": "confirmatory", "requires": "batch_declaration"}
     for n in (1, 2, 3, 4)
 }
+
+
+def candidate_entry(config_hash: str, rewrite_config_hash: str) -> Dict[str, str]:
+    """A rewrite-changing batch entry: the candidate's pipeline config hash and its rewrite identity hash."""
+    return {"config_hash": config_hash, "expansion": "candidate", "rewrite_config_hash": rewrite_config_hash}
+
+
 _CONS, _VOW = "bcdfghjklmnpqrstvwxz", "aeiou"
 TRACING_VARS = ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING")
 
@@ -210,24 +217,27 @@ class World:
         self.twins_payload = twins if twins is not None else {"version": 1, "edges": edges}
         self.pre_freeze_exclusions = dict(exclusions) if isinstance(exclusions, dict) else {g: [g] for g in exclusions or []}
 
-    def freeze_dev(self) -> None:
+    def freeze_dev(self, controls: bool = True) -> None:
         """The two development freezes, as ``sealed_tool freeze`` records them (once each): the sets a slot run's
-        private inputs must be, bound to the same prereg as the sealed freeze."""
+        private inputs must be, bound to the same prereg as the sealed freeze. The critical-controls record, which
+        every slot (0 and 0b included) needs, is made with them (``controls.py`` runs before slot 0)."""
         ledger = self.ledger()
         for split, path in (("tuning", self.golden_path), ("realistic", self.realistic_path)):
             if ledger.freeze_record(split) is None:
                 ledger.record_freeze(
                     split=split, set_sha256=sha_of(path), totals={"families": 4}, prereg_sha256=BOUND_PREREG_SHA,
                 )
+        if controls:
+            self.record_controls()
 
     def freeze(self, *, set_path: Optional[Path] = None, exclusions_sha256: Optional[str] = None,
-               twins_names: Tuple[str, ...] = ("twins_sealed",), dev: bool = True) -> None:
+               twins_names: Tuple[str, ...] = ("twins_sealed",), dev: bool = True, controls: bool = True) -> None:
         """The sealed freeze, as ``sealed_tool freeze`` records it: the group record is stored as a payload and
         bound by its sha256; the exclusions recorded so far are bound by digest. ``twins_names`` are the payload
         names it is stored under (``{sha16}`` stands for the first 16 hex digits of its sha256: the content name
         ``sealed_tool`` uses; the plain ``twins_sealed`` is the alias older readers load)."""
         if dev:
-            self.freeze_dev()
+            self.freeze_dev(controls=controls)
         ledger = self.ledger()
         for group, members in self.pre_freeze_exclusions.items():
             ledger.exclude(group, "owner", members=members)
@@ -297,16 +307,24 @@ class World:
               meter: Any = "default", baseline_run: Optional[str] = None, ledger: Optional[SealedLedger] = None,
               claim: bool = True, top_k: Optional[int] = 6, declare: bool = True):
         """The slot gate. ``claim=False`` mints the token unclaimed, as the CLI does (``run_slot`` claims it
-        after its preflight); the library default of the gate itself is unclaimed, this helper claims unless told
-        otherwise (so ``claim=True`` is passed explicitly, with the ``top_k`` the gate then checks). A confirmatory
-        slot gets the default four-candidate batch declared first unless ``declare=False``."""
+        after its preflight). The gate itself never claims (``claim=True`` is refused), so this helper, unless told
+        ``claim=False``, claims the minted token the way ``run_slot`` does after its preflight (``SlotToken.claim``),
+        releasing the slot's lock if the claim is refused: tests that need a claimed, not yet run slot use it. A
+        confirmatory slot gets the default four-candidate batch declared first unless ``declare=False``."""
         if declare:
             self.ensure_batch(slot)
-        return sealed_run.acquire_slot_token(
+        token = sealed_run.acquire_slot_token(
             slot, ledger=ledger or self.ledger(), set_path=self.sealed_path, prereg_path=self.prereg_path,
             records_dir=self.records_dir, expansion=expansion, rewrite_candidate=rewrite_candidate,
-            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, claim=claim, top_k=top_k,
+            meter=make_meter() if meter == "default" else meter, baseline_run=baseline_run, top_k=top_k,
         )
+        if claim:
+            try:
+                token.claim()
+            except BaseException:
+                token.release()
+                raise
+        return token
 
     def run(self, slot: Any = 0, *, token: Any = None, modes: Optional[List[str]] = None, top_k: int = 6,
             skip_refusals: bool = False, skip_completeness: bool = False, judge: bool = True,
@@ -378,9 +396,10 @@ def make_world(root: Path, monkeypatch: Any) -> World:
     }), encoding="utf-8")
     monkeypatch.setattr(eval_schema, "INVENTORY_PATH", inventory)
     monkeypatch.setattr(ev, "_load_absorbed_map", lambda: (None, None))
-    # the 16B embargo is code-level; these worlds exercise the batch and the confirmatory slots behind it (the embargo
-    # itself is tested by setting it back to True)
+    # the 16B embargo and candidate-identity check are code-level; these worlds exercise the batch and the confirmatory
+    # slots behind them (each is tested by putting it back: the embargo True, the identity check the real stub)
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)
+    monkeypatch.setattr(sealed_run, "check_candidate_identity", lambda *args, **kwargs: None)
     isolate_env(monkeypatch, *TRACING_VARS)
     try:
         from langsmith import utils as ls_utils
@@ -452,8 +471,11 @@ def make_world(root: Path, monkeypatch: Any) -> World:
 
 
 def kinds(world: "World") -> List[str]:
-    """The ledger's record kinds, oldest first (the two development freezes the world adds are left out)."""
-    return [r["kind"] for r in world.ledger().records() if not (r["kind"] == "freeze" and r["split"] != "sealed")]
+    """The ledger's record kinds, oldest first (the two development freezes and the controls record the world adds are left out)."""
+    return [
+        r["kind"] for r in world.ledger().records()
+        if not (r["kind"] == "freeze" and r["split"] != "sealed") and r["kind"] != "controls"
+    ]
 
 
 def gate_of(call: Callable[[], Any]) -> str:

@@ -114,7 +114,7 @@
       "multiplicity": "holm",
       "state": "refused_until_16b_sealed_comparison_gate",
       "slots_declared_by": "batch_declaration_record_before_slot_1",
-      "expansion": "replay",
+      "expansion": "batch",
       "replays": "slot0_canonical",
       "rewrite_changing_candidate": {
         "expansion": "candidate",
@@ -129,7 +129,8 @@
         "candidate"
       ],
       "mode_declared_by": "batch_declaration",
-      "candidate_identity": "sha256_canonical_pipeline_config_checked_at_gate_before_claim",
+      "candidate_identity": "config_hash_is_sha256_canonical_pipeline_config_checked_by_16b_gate_before_claim",
+      "rewrite_identity": "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim",
       "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
       "requires": [
         "controls_record",
@@ -149,8 +150,8 @@
       "draws": 5,
       "statistic": "mean_over_draws_of_family_difference",
       "pairing": "by_draw_index",
-      "incumbent_draws": "first_5_recorded_development_draws",
-      "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_own_draws"
+      "incumbent_draws": "first_5_recorded_development_draws_under_the_incumbent_config_hash",
+      "candidate_draws": "replay_mode_replays_incumbent_draw_artifacts_else_first_5_recorded_draws_under_its_config_hash"
     },
     "unsupported_claims": {
       "unit": "claim",
@@ -163,8 +164,11 @@
       "from": "strict_hit",
       "to": "miss",
       "cutoff": 6,
-      "mode": "hybrid+rewrite",
-      "draws": "any_of_first_5_recorded",
+      "modes": [
+        "hybrid",
+        "hybrid+rewrite"
+      ],
+      "draws": "any_of_first_5_recorded_under_the_incumbent_config_hash",
       "versions": "development_freeze_records"
     }
   },
@@ -178,7 +182,7 @@
       "hybrid",
       "hybrid+rewrite"
     ],
-    "draws": "first_5_recorded_development_draws",
+    "draws": "first_5_recorded_development_draws_under_the_incumbent_config_hash",
     "draws_r": 5,
     "collapse": "all",
     "computed": "once_on_frozen_development_versions",
@@ -233,6 +237,7 @@
   "drafting_rule": {
     "attempt_1": {
       "families_approx": 100,
+      "families_rule": "max(families_approx,sealed_quota+tuning_min+realistic_quota_minus_migrated_families)",
       "tutorial_sourced_approx": 50,
       "handbook_drafted_approx": 50,
       "per_unseen_tutorial_approx": 3,

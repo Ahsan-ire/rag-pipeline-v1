@@ -23,7 +23,11 @@ What a dispatch does, in order
    ``git merge-base --is-ancestor <prereg sha> origin/<branch>`` (or ``origin/main``,
    for a merged and deleted branch); refused unless the pre-registration commit is
    reachable from the pushed branch or from main (later commits on top are fine;
-   ``ls-remote`` is not a substitute).
+   ``ls-remote`` is not a substitute). The commit must also be the last one that touched
+   ``eval/prereg_16a2.json`` and equal the working file (the binding ``sealed_run.bind_prereg``
+   applies), and the dispatch record carries that file's sha256: the first record of any kind
+   that carries one registers the epoch's prereg, and a dispatch under any other prereg is
+   refused.
 4. Creates ``<root>/<dispatch id>/``, copies in exactly the ``--inputs`` and
    creates ``out/``.
 5. Runs ``claude`` with that directory as cwd, under an environment holding only
@@ -53,7 +57,7 @@ What a dispatch does, in order
 9. A line with the dispatch id, kind, UTC time, argv hash and the SP's exit
    status (never any text) is appended to ``eval/private/sp_dispatch.jsonl``
    (``data``) or ``eval/private/sp_probe.jsonl`` (``probe``). A ``data`` dispatch
-   also appends a ``dispatch`` record (dispatch id, kind, argv hash; the ledger adds
+   also appends a ``dispatch`` record (dispatch id, kind, argv hash, prereg sha256; the ledger adds
    the UTC time) to the out-of-tree sealed ledger **before the SP starts**, so a
    dispatch that dies mid-run is still on the record; if the ledger cannot record
    it the dispatch is refused (exit ``8``) and the SP never runs.
@@ -97,7 +101,7 @@ if REPO not in sys.path:
 # monkeypatches ``src.eval_privacy.private_root`` is honoured at call time.
 import src.eval_privacy as eval_privacy  # noqa: E402
 from src.eval_sealed_read import load_sealed  # noqa: E402  (the only sealed reader)
-from src.sealed_ledger import SealedLedger, SealedLedgerError  # noqa: E402
+from src.sealed_ledger import ProtocolError, SealedLedger, SealedLedgerError  # noqa: E402
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -117,6 +121,7 @@ RESERVED_STAGING_NAMES = frozenset({OUT_DIR, STDOUT_LOG, STDERR_LOG})
 ENV_KEYS = ("HOME", "PATH", "USER", "LANG", "TMPDIR")
 INVALID = "invalid"
 DEFAULT_TIMEOUT = 3 * 60 * 60  # seconds the SP may run (D4)
+PREREG_RELATIVE = "eval/prereg_16a2.json"  # the pre-registration a data dispatch runs under, inside the repo
 MAX_TIMEOUT = 7 * 24 * 60 * 60  # a sanity bound: a huge value overflows the OS wait
 STATUS_TIMEOUT = -124  # dispatch-log exit_status of a timed-out SP: no signal has this number, so it is unambiguous
 
@@ -736,7 +741,7 @@ def _read_text(path: os.PathLike | str, what: str) -> str:
 # ---------------------------------------------------------------------------
 # Refusals and the claude invocation
 # ---------------------------------------------------------------------------
-def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str) -> None:
+def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str, file: Optional[os.PathLike | str] = None) -> None:
     """Require ``git fetch`` then ``merge-base --is-ancestor <sha>`` of ``origin/<branch>`` OR of ``origin/main``.
 
     Raises :class:`LaunchError` (refused) unless the commit is an ancestor of
@@ -744,6 +749,10 @@ def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str) -> None:
     deleted branch's ref fails the first test; main then carries the commit).
     A prereg with later commits on top passes. ``ls-remote`` would only prove a ref exists, not that the commit is
     in its history.
+
+    With ``file`` (the prereg file, inside ``repo``) the commit must also BE the prereg: the last commit that touched
+    ``file``, and its copy of the file must equal the working file's bytes (the rule ``sealed_run.bind_prereg``
+    and ``sealed_tool`` apply), so a data dispatch cannot run under a prereg other than the one in the tree.
     """
     if not SHA_RE.fullmatch(sha or ""):
         raise LaunchError(EXIT_USAGE, "--prereg must be a full lowercase commit sha")
@@ -766,6 +775,35 @@ def check_prereg(sha: str, branch: str, *, repo: os.PathLike | str) -> None:
         raise LaunchError(EXIT_REFUSED, "git fetch failed; the prereg cannot be checked")
     if reachable.returncode != 0:
         raise LaunchError(EXIT_REFUSED, "the prereg commit is not reachable from origin/<branch> or origin/main")
+    if file is not None:
+        _check_prereg_is_last_commit(sha, repo, Path(file))
+
+
+def _git_stdout(repo: os.PathLike | str, *args: str) -> Optional[bytes]:
+    """Stdout of ``git -C repo args``, or ``None`` if git fails or cannot run."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(repo), *args], check=False, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+        )
+    except OSError:
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _check_prereg_is_last_commit(sha: str, repo: os.PathLike | str, file: Path) -> None:
+    """``sha`` is the last commit touching ``file`` and its blob equals the working file (else refused)."""
+    try:
+        top = _git_stdout(repo, "rev-parse", "--show-toplevel")
+        rel = file.resolve().relative_to(Path(top.decode().strip()).resolve()).as_posix() if top else None
+        working = file.read_bytes() if rel else None
+    except (OSError, ValueError):
+        raise LaunchError(EXIT_REFUSED, "the prereg file is not committed in this repository") from None
+    last = (_git_stdout(repo, "log", "-1", "--format=%H", "--", rel) or b"").decode().strip() if rel else ""
+    if not last or last != sha:
+        raise LaunchError(EXIT_REFUSED, "the prereg commit is not the last commit that changed the prereg file")
+    if _git_stdout(repo, "show", f"{sha}:{rel}") != working:
+        raise LaunchError(EXIT_REFUSED, "the prereg file differs from its committed copy")
 
 
 def build_argv(brief_text: str) -> List[str]:
@@ -847,10 +885,20 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _record_dispatch(ledger: SealedLedger, dispatch_id: str, kind: str, argv: Sequence[str]) -> None:
-    """Append the ``dispatch`` record to the out-of-tree ledger; a ledger failure refuses the dispatch (no SP runs)."""
+def _record_dispatch(
+    ledger: SealedLedger, dispatch_id: str, kind: str, argv: Sequence[str], prereg_sha256: Optional[str] = None,
+) -> None:
+    """Append the ``dispatch`` record to the out-of-tree ledger; a ledger failure refuses the dispatch (no SP runs).
+
+    The record carries the sha256 of the prereg the dispatch runs under; the ledger refuses it (inside its own
+    transaction) if the epoch has already registered another prereg, and the first record that carries one registers it.
+    """
     try:
-        ledger.record_dispatch(dispatch_id=dispatch_id, dispatch_kind=kind, argv_hash=argv_hash(argv))
+        ledger.record_dispatch(
+            dispatch_id=dispatch_id, dispatch_kind=kind, argv_hash=argv_hash(argv), prereg_sha256=prereg_sha256,
+        )
+    except ProtocolError:
+        raise LaunchError(EXIT_REFUSED, "the prereg is not this epoch's registered prereg") from None
     except (SealedLedgerError, OSError, ValueError):
         raise LaunchError(EXIT_REFUSED, "the sealed ledger could not record the dispatch") from None
 
@@ -858,7 +906,7 @@ def _record_dispatch(ledger: SealedLedger, dispatch_id: str, kind: str, argv: Se
 def _dispatch(
     *, kind: str, root: Path, dest: Path, work: Path, log_path: Path, brief_text: str, task: bytes,
     inputs: Sequence[Path], enums: Collection[str], ledger: Optional[SealedLedger] = None,
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float = DEFAULT_TIMEOUT, prereg_sha256: Optional[str] = None,
 ) -> Outcome:
     dispatch_id, staging = _new_staging(root)
     journal = root / JOURNAL_NAME
@@ -870,7 +918,7 @@ def _dispatch(
         out_dir.mkdir(mode=0o700)
         argv = build_argv(brief_text)
         if ledger is not None:  # a data dispatch: on the record before the SP can run
-            _record_dispatch(ledger, dispatch_id, kind, argv)
+            _record_dispatch(ledger, dispatch_id, kind, argv, prereg_sha256)
         returncode = _run_sp(argv, scrubbed_env(), task, staging, timeout)
         _append_jsonl(log_path, {
             "argv_hash": argv_hash(argv), "dispatch_id": dispatch_id, "exit_status": returncode,
@@ -916,6 +964,7 @@ def launch(
     dispatch_log: Optional[os.PathLike | str] = None,
     ledger: Optional[SealedLedger] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    prereg_file: Optional[os.PathLike | str] = None,
 ) -> Outcome:
     """Run one SP dispatch (see the module docstring); never raises for an expected stop.
 
@@ -971,13 +1020,18 @@ def launch(
                 raise LaunchError(EXIT_FAILED, "sweep failed; a pending move was not recovered") from None
             if "ANTHROPIC_API_KEY" in os.environ:
                 raise LaunchError(EXIT_REFUSED, "ANTHROPIC_API_KEY is set; the SP must use the subscription login")
+            prereg_sha256: Optional[str] = None
             if kind == "data":
-                check_prereg(prereg, branch, repo=repo if repo is not None else REPO)
+                repo_dir = Path(repo) if repo is not None else Path(REPO)
+                prereg_path = Path(prereg_file) if prereg_file is not None else repo_dir / PREREG_RELATIVE
+                check_prereg(prereg, branch, repo=repo_dir, file=prereg_path)
+                prereg_sha256 = _sha256_file(prereg_path)
             if shutil.which("claude", path=os.environ.get("PATH", "")) is None:
                 raise LaunchError(EXIT_USAGE, "claude was not found on PATH")
             return _dispatch(
                 kind=kind, root=root, dest=dest_dir, work=work_dir, log_path=log_path, brief_text=brief_text,
                 task=task_bytes, inputs=staged, enums=allowed, ledger=dispatch_ledger, timeout=timeout,
+                prereg_sha256=prereg_sha256,
             )
     except LaunchError as exc:
         return Outcome(exc.status, None, f"sp_launch: {exc.reason}")

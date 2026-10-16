@@ -153,6 +153,7 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     std = build_standard(w, sealed_mark=SEALED_MARK, dev_mark=DEV_MARK)
     w.write_prereg()
     prereg_sha = w.commit_prereg(push=True)
+    prereg_file_sha = hashlib.sha256(w.prereg_path.read_bytes()).hexdigest()
     code, out, err = w.run("prereg-check", "--committed")
     assert code == 0, err
 
@@ -267,6 +268,15 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
         assert code == 0, err
         assert w.last(out, "freeze")["status"] == "frozen"
 
+    # --- 5c. the critical-controls list is recorded before slot 0 (r3 F6: every slot needs it; controls.py runs first) ---
+    controls_bytes = b'{"version": 1}\n'  # a batch needs the controls recorded in the ledger and the file unchanged
+    for controls_file in (w.repo / "eval" / "controls_v1.json", tmp_path / "eval" / "controls_v1.json"):  # tool / gate
+        controls_file.write_bytes(controls_bytes)
+    w.ledger().record_controls(
+        controls_sha256=hashlib.sha256(controls_bytes).hexdigest(), draws_sha256="e" * 64,
+        prereg_sha256=hashlib.sha256(w.prereg_path.read_bytes()).hexdigest(),
+    )
+
     # --- 6. pipeline eval --sealed-slot 0, every model faked ---------------------------------------------------------
     golden, realistic = w.dev / "tuning-v2.jsonl", w.dev / "realistic-v2.jsonl"
     fakes = slot_fakes(w, frozen, golden, realistic)
@@ -340,22 +350,16 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     # a slot-1 gate (a confirmatory slot, paired with slot 0's stored run) sees the exclusion
     cand = "7" * 64
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the 16B embargo is code-level; this chain goes behind it
-    controls_bytes = b'{"version": 1}\n'  # a batch needs the controls recorded in the ledger and the file unchanged
-    for controls_file in (w.repo / "eval" / "controls_v1.json", tmp_path / "eval" / "controls_v1.json"):  # tool / gate
-        controls_file.write_bytes(controls_bytes)
-    w.ledger().record_controls(
-        controls_sha256=hashlib.sha256(controls_bytes).hexdigest(), draws_sha256="e" * 64,
-        prereg_sha256=hashlib.sha256(w.prereg_path.read_bytes()).hexdigest(),
-    )
+    monkeypatch.setattr(sealed_run, "check_candidate_identity", lambda *a, **k: None)  # ... and behind 16B's identity check (a stub)
     code, out, err = w.run("declare-batch", "--candidate", f"{cand}:replay")  # slot 1 needs the batch declaration (b1a)
     assert code == 0 and w.last(out, "batch_declared")["candidates"] == "1", err
     baseline_id = w.ledger().recover(0).run_id
     artifact = eval_privacy.sealed_run_dir(baseline_id, create=False) / "expansion_artifact.json"  # slot 0's, replayed
     token = sealed_run.acquire_slot_token(
         1, ledger=w.ledger(), set_path=frozen, prereg_path=w.prereg_path, records_dir=w.sealed / "work",
-        expansion=str(artifact), meter=make_meter(), baseline_run=baseline_id,
-        claim=True, top_k=6,  # the gate claims only on request (the library default is unclaimed), and then it checks top_k
+        expansion=str(artifact), meter=make_meter(), baseline_run=baseline_id, top_k=6,
     )
+    token.claim()  # the gate never claims (r3 F3): run_slot claims a minted token after its preflight; done by hand here
     assert token.slot == "1" and token.excluded == frozenset({target_group[0]})
     assert token.candidate_config_hash == cand and token.prereg_sha256 == hashlib.sha256(w.prereg_path.read_bytes()).hexdigest()  # the real prereg binding
     assert token.prereg_commit == prereg_sha
@@ -367,8 +371,8 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     # --- the ledger: every record kind in order, dispatches included; the mirror carries kinds and digests only ---------
     records = w.ledger().records()
     assert [r["kind"] for r in records] == [
-        "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze", "freeze", "freeze",
-        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "controls", "batch_declaration",
+        "dispatch", "dispatch", "split_attempt", "release", "dispatch", "freeze", "freeze", "freeze", "controls",
+        "slot_claim", "slot_stored", "publication_intent", "slot_consumed", "exclusion", "batch_declaration",
         "slot_claim",
     ]
     dispatches = [r for r in records if r["kind"] == "dispatch"]
@@ -377,7 +381,11 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     mirror = [json.loads(line) for line in (tmp_path / "eval" / "sealed_ledger.jsonl").read_text().splitlines()]
     assert [m["kind"] for m in mirror] == [r["kind"] for r in records]
     assert all(set(m) <= {"seq", "kind", "digest", "digests", "split"} for m in mirror)
-    assert all(set(m) == {"seq", "kind", "digest"} for m in mirror if m["kind"] == "dispatch")
+    # a dispatch's mirror line carries the kind, its line digest and the prereg's sha256 (r3 F7), nothing else; the first
+    # dispatch registered the epoch's prereg
+    assert all(set(m) == {"seq", "kind", "digest", "digests"} for m in mirror if m["kind"] == "dispatch")
+    assert all(m["digests"] == {"prereg_sha256": prereg_file_sha} for m in mirror if m["kind"] == "dispatch")
+    assert records[0]["kind"] == "dispatch" and w.ledger().epoch_prereg_sha256() == prereg_file_sha
 
     # --- the validator accepts what the SP brief names: family ids and row ids ------------------------------------------
     ret = tmp_path / "ret_with_ids.json"

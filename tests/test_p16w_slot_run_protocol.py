@@ -25,6 +25,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     Crash,
     _langsmith_env_cache,
     bare,
+    candidate_entry,
     gate_of,
     kinds,
     socket_spy,
@@ -508,7 +509,10 @@ def test_only_a_canonical_run_writes_results_v6_and_no_v6_run_writes_results_md(
     assert not canonical_md.exists() and not partial_md.exists()
     assert before == {p: p.stat().st_mtime_ns for p in (ROOT / "eval").rglob("*") if p.is_file()}
     # The sidecar never lands beside the report: it stays in sealed/runs/<id>/.
-    assert sorted(p.name for p in report.parent.iterdir()) == ["private", "results_v6.md", "sealed_ledger.jsonl"]
+    # (plus the committed critical-controls list the world records before slot 0, which every slot now needs: r3 F6)
+    assert sorted(p.name for p in report.parent.iterdir()) == [
+        "controls_v1.json", "private", "results_v6.md", "sealed_ledger.jsonl",
+    ]
     assert (world.run_dir(run_id_of(world, "0b")) / "rows.json").is_file()
     assert not list(world.root.rglob("*.rows.json")) or all(
         "sealed" in p.parts for p in world.root.rglob("*.rows.json")
@@ -641,7 +645,7 @@ def candidate_prereg(world):
     """The prereg's batch slots, and a one-candidate batch whose slot 1 is the rewrite-changing ``config_hash``."""
     config_hash = rewrite_identity()["config_hash"]
     world.write_prereg()
-    world.declare_batch(entries=[{"config_hash": config_hash, "expansion": "candidate"}])
+    world.declare_batch(entries=[candidate_entry("9" * 64, config_hash)])
     return config_hash
 
 

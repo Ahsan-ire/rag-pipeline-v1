@@ -1732,50 +1732,64 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       `task.json:refusals` refusals, and at least `task.json:lay_min` of its lay or terse drafts are lay. `split`
       records an attempt `register_short` (nothing released) when lay < 0.5 of the new lay-or-terse drafts. Round 1
       allows at most 3 attempts; a 4th is the stop "split infeasible" (Au11). Round 2 allows at most 3 attempts
-      under the same formula over its own pool; a 4th is the stop "freeze infeasible after round 2" (A9).
+      under the same formula over its own pool; a 4th exits `EXIT_FREEZE_INFEASIBLE` with reason `split_infeasible`,
+      the stop "freeze infeasible after round 2" (A9). Round 2's lay check reuses attempt 1's registered share.
     - **Confirmatory slots (Au2, Au9, A1, A3, F3).**
       - The prereg declares slots 1–4 as `batch` slots. A `batch_declaration` ledger record names K ≤ 4 candidates in
         slot order (candidate i runs in slot i). Each candidate has a config hash and an expansion mode:
         - `replay` (retrieval-only): replays `slot0_canonical`, the sha256 of the canonical slot's (0, or 0b with an
           intent) run-directory `expansion_artifact.json`, carried by its `slot_stored` record;
-        - `candidate` (rewrite-changing): live rewrite under `--rewrite-candidate <hash>`, against the incumbent's
-          replay.
+        - `candidate` (rewrite-changing): live rewrite under `--rewrite-candidate <rewrite hash>`, against the
+          incumbent's replay. The entry also carries `rewrite_config_hash`, which the gate checks against
+          `rewrite_identity()` now; `config_hash` is the canonical pipeline configuration, which 16B checks (r3 F9).
       - The record is mirrored as a digest, written once, and needs the controls record (below). The gate refuses a
         slot whose command line does not match its entry.
       - Holm always uses K = 4, fixed in advance (Au14), and a spent confirmatory slot still counts.
       - **Embargo:** slots 1–4 and `declare-batch` are refused in code (`CONFIRMATORY_EMBARGO`) until 16B's reviewed
         code change lifts it. That change must add the registered candidate-identity check: the sha256 of the run's
-        canonical pipeline configuration equals the declared hash, checked at the gate before the claim. The
-        candidates are therefore bound before any confirmatory slot can be spent.
+        canonical pipeline configuration equals the declared hash, checked at the gate before the claim. Until then the
+        gate's `check_candidate_identity` always refuses (`identity`), so flipping the boolean alone opens nothing
+        (r3 F11). The candidates are bound before any confirmatory slot can be spent, but after slot 0's descriptive
+        aggregates (the D74 residual, below).
       - A confirmatory slot needs the judge on.
     - **Adoption inputs (Au3, A6, A7, A8).**
       - **Development evidence** is the family-level strict-hit@6 difference (`all` collapse) in hybrid+rewrite on
         tuning-v2 ∪ realistic-v2 at their freeze records, paired by draw index, as the mean over R = 5 draws. The
-        incumbent's draws are the first 5 development draws recorded in the ledger (b7). A `replay` candidate
-        replays the incumbent's draw-i expansion artifact; a `candidate` one uses its own first 5 recorded draws.
+        incumbent's draws are the first 5 development draws recorded in the ledger under the incumbent's config hash
+        (b7). A `replay` candidate replays the incumbent's draw-i expansion artifact; a `candidate` one uses the first
+        5 draws recorded under its own config hash (r3 F10).
         Later draws never count, so re-running draws cannot move the mean.
       - **Unsupported claims "do not rise"** (D74, unchanged; the r1 draft's +0.01 tolerance is withdrawn): the
         candidate's claim-level unsupported rate on its sealed slot ≤ the canonical slot 0's judged rate.
-      - A **control flip** is a strict HIT@6 → MISS in hybrid+rewrite on any of the first 5 recorded draws.
+      - A **control flip** is a strict HIT@6 → MISS in raw hybrid or hybrid+rewrite on any of the first 5 recorded
+        draws (D57's rule; r3 F8 restores raw hybrid, which r2 had dropped without an owner decision).
     - **Version binding (Au4, A5, A15, F4).**
       - The controls and the development evidence bind to the tuning and realistic freeze records.
       - Every slot's private development inputs must be those freeze versions, each once, and slots 0/0b need both
         (`dev_binding`). `controls.py` needs both splits, each once.
       - `controls.py` writes a `controls` ledger record once (list sha256, draw-sidecar digest, prereg sha256). A
         later run only verifies, and deleting the file does not reopen the list.
-      - The b7 draw records (mechanism lands in b7, before its first draw) name which draws count.
+      - The b7 draw records (mechanism lands in b7, before its first draw) name which draws count; each carries the
+        config hash it ran under (r3 F10). `controls.py` refuses repeated draw files (distinct sha256s) and, on a
+        verify run, draws other than the recorded ones (r3 F5).
+      - Slots 0 and 0b also need the `controls` record and the unchanged file, so the control list exists before
+        slot 0's results (r3 F6).
     - **Freeze-time minimums (Au5).** `freeze` checks tuning ≥ `tuning_min` (60) and realistic ≥ `realistic_min`
       (42); a breach is the stop "freeze infeasible after round 2".
     - **Binding (Au6, Au10, A4, F2).**
       - `split`, `freeze`, `calibrate`, `declare-batch` and the slot gate accept the prereg only if it is committed,
         unmodified and an ancestor of `origin/main` or `origin/<branch>`. Main is accepted because the branch ref
-        disappears after merge; the data dispatch's launcher follows the same rule.
-      - The first split attempt records the prereg's sha256 as the **epoch prereg**. Every later use, `controls.py`
+        disappears after merge. The data dispatch's launcher follows the same rule, including that the commit is the
+        last one touching the prereg and its blob equals the working file (r3 F7).
+      - The first ledger record carrying a prereg sha256 (normally the first data dispatch, r3 F7; else the first
+        split attempt) registers the **epoch prereg**. Every later use, `controls.py`
         included, must present the same sha256 (`prereg_amended`, a D64 stop).
       - Freeze records and slot results carry the prereg's sha256; slot results also carry its commit.
     - **Checks (Au7, Cx1, Au8, A12, F5).**
-      - `prereg-check` validates every registered value: adoption, controls, slots, cutoff, test, sidedness,
-        multiplicity, MWE, α, the drafting rule, collapse and caps.
+      - `prereg-check` validates every registered value against one table (`REGISTERED_VALUES`, r3 F4): every leaf
+        of `primary_metric`, `collapse`, `adoption`, `controls`, `slots` and `drafting_rule`, plus `mwe`, `alpha`,
+        `k_max` and `draws_r` (= 5). An unregistered leaf under those roots is refused. Seeds, quota, band and
+        power keep their own recomputation checks.
       - `controls.py` takes its rule, ceiling and draw count from the epoch prereg.
       - `calibrate` takes its seed only from the epoch prereg.
       - The power table has cells at α ∈ {0.05, 0.0125} for both group models, plus a singleton-family table from
@@ -1785,13 +1799,31 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       ledger record makes the draw durable: a re-run reproduces it or is refused.
     - **Visibility (Au13, F6).** The sealed freeze reports its source split as counts only: tutorial
       (`source` = tutorial) vs drafted.
+    - **Closure r3 (16 Oct; Codex REVISE 1 BLOCKER / 3 MAJOR / 1 MINOR, plan-auditor FAIL 1 BLOCKER / 7 MAJOR /
+      6 MINOR; dispositioned in D74's addendum).** Besides the in-place changes above (F4–F11):
+      - **Results (F1).** Only private non-sealed inputs are bound to the development freezes; a registered public
+        regression set (b8's `--regression`) no longer fails results assembly after the claim.
+      - **Quotas (F2).** `count-migrated`'s default tuning quota is split's own (pool − sealed − realistic).
+      - **No eager claim (F3).** `acquire_slot_token(claim=True)` is refused (`claim`); every claim goes through
+        `run_slot`'s preflight. `SlotToken.claim()` stays public for `run_slot`; only tests call it directly.
+      - **Attempt-1 size (F12).** Drafts = max(`families_approx`, sealed + tuning_min + realistic quota − migrated),
+        so attempt 1 is not predictably `quota_short` (≈ 57 migrated → 105 drafts).
+      - **Epoch check (F13).** `sealed_tool epoch` prints the registered epoch prereg (or none) and whether the
+        working file matches; b2 runs it first.
+      - **Deferred to b3/b4 (Au m2).** b3's dispatch writes `task.json:refusals` from `count-migrated`'s
+        `refusal_drafts` and `lay_min` = ceil(0.5 × the attempt's planned lay-or-terse drafts); b4's intake refuses a
+        pool whose refusal count differs from `task.json:refusals`.
+      - **Deferred to 16B (Au M4).** Holm with K = 4 and the adoption inputs (development evidence, unsupported
+        claims, control flips) are 16B's analysis code. It reads the epoch prereg, which nothing can amend
+        (`prereg_amended`), so 16B can implement but not choose them.
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
       - The non-inferiority wording means exactly its two checks.
       - The quota-short example is labelled.
       - Holm's K is 4 wherever it is mentioned.
-b2. **Migration and quotas [C].** Golden-v1, realistic-v1 and the 24 T1/T7 rows become v2 development rows (`source`
+b2. **Migration and quotas [C].** First `sealed_tool epoch`: it must print `prereg_sha256=none` or the pushed
+    prereg's sha256 with `matches=yes` (else a D64 stop). Golden-v1, realistic-v1 and the 24 T1/T7 rows become v2 development rows (`source`
     `legacy`/`tutorial`) in `eval/private/dev/`, keeping their phrasings (T1/T7 capped at 3); the v1 files stay
     byte-frozen. **Counting** (`count-migrated`): each golden or realistic row is one family, a pair in
     `eval/v2_pairing.json` one realistic family; T1/T7 rows group by exercise (the id without its phrasing letter); a
@@ -1834,12 +1866,13 @@ b6. **Freeze, clearance, audits [SP; C].** `freeze --split heldout-v2`, then tun
 b7. **Development baseline, controls, cost probe (D76) [C].** On the frozen development sets: offline v6 (zero calls)
     over tuning-v2, realistic-v2 and heldout-v1; R = 5 retrieval-only live draws (`build:`, each with its own
     `--approved-eur`): per-family flip frequency and the rate range. **Each draw over the frozen development sets is
-    recorded in the ledger as it completes (a `dev_draw` record: index, artifact and rows-sidecar sha256s; code lands
+    recorded in the ledger as it completes (a `dev_draw` record: index, config hash, artifact and rows-sidecar
+    sha256s; code lands
     here, before the first draw); only the first 5 recorded count** for the controls and the development evidence
     (b1a). Draw 1 is the **development artifact**; a later change to a development file voids it (keys carry the set
     sha256) and means a re-draw. The control list (b1's rule) is computed once from those draws on the frozen
     development versions and committed as the ledger's `controls` record (digest in the mirror) before the batch
-    declaration can exist; it is never recomputed. **Cost probe** (cost confirmed first, 16A.8):
+    declaration and before slot 0 (the gate refuses slot 0 without it); it is never recomputed. **Cost probe** (cost confirmed first, 16A.8):
     one metered public run (golden-, realistic-, heldout-v1, judge on, `--results eval/results_partial.md`,
     `--approved-eur 3`), plus the meter's worst case priced in-process over the final development prompts.
 b8. **Slot 0 [C].** With the week's remaining cap ≥ 2 × the forecast: `pipeline eval --sealed-slot 0` over heldout-v2,

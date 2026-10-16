@@ -118,7 +118,8 @@ def record_controls(world, content: bytes = b'{"version": 1}\n'):
 def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(world, monkeypatch):
     monkeypatch.setattr(sealed_ledger, "CONFIRMATORY_EMBARGO", False)  # the embargo itself: tests/test_p16a2b_b1a_r2.py
     a, b = "1" * 64, "2" * 64
-    cand = lambda h, mode="replay": ["--candidate", f"{h}:{mode}"]  # noqa: E731
+    rewrite = "7" * 64  # a candidate entry's rewrite identity (r3 F9): <config hash>:candidate:<rewrite config hash>
+    cand = lambda h, mode="replay": ["--candidate", f"{h}:{mode}" if mode == "replay" else f"{h}:{mode}:{rewrite}"]  # noqa: E731
     code, out, err = world.run("declare-batch", *cand(a))
     assert code == st.EXIT_REFUSED and "reason=freeze_missing" in err
     sealed_frozen(world)
@@ -127,6 +128,8 @@ def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(
     record_controls(world)
     for bad in (cand(a) + cand(a), [], ["--candidate", f"short:replay"], ["--candidate", f"{'A' * 64}:replay"],
                 ["--candidate", a], ["--candidate", f"{a}:live"], ["--candidate", f"{a}:"], ["--candidate", f"{a}:replay:candidate"],
+                ["--candidate", f"{a}:candidate"], ["--candidate", f"{a}:candidate:short"],  # a candidate names its rewrite identity
+                ["--candidate", f"{a}:replay:{rewrite}"], ["--candidate", f"{a}:candidate:{rewrite}:x"],  # a replay entry has none
                 sum((cand(str(n) * 64) for n in range(1, 6)), [])):
         code, out, err = world.run("declare-batch", *bad)
         assert code == st.EXIT_REFUSED and "reason=batch_invalid" in err and out == "", bad
@@ -136,7 +139,10 @@ def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(
     line = world.last(out, "batch_declared")
     rec = world.ledger().batch_declaration()
     assert line["candidates"] == "2" and line["sha256"] == rec["candidates_sha256"]
-    assert rec["candidates"] == [{"config_hash": a, "expansion": "replay"}, {"config_hash": b, "expansion": "candidate"}]
+    assert rec["candidates"] == [
+        {"config_hash": a, "expansion": "replay"},
+        {"config_hash": b, "expansion": "candidate", "rewrite_config_hash": rewrite},
+    ]
     code, out, err = world.run("declare-batch", *cand(b))
     assert code == st.EXIT_REFUSED and "reason=batch_declared" in err
     assert a not in out + err and world.ledger().batch_declaration() == rec

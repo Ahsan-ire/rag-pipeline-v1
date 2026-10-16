@@ -241,13 +241,17 @@ def test_count_migrated_quotas_default_to_the_prereg_and_a_bad_pairing_is_refuse
     pairing = tmp_path / "p.json"
     pairing.write_text(json.dumps({"pairs": [["q:000000000000", "q:111111111111"]]}), encoding="utf-8")
     world.write_prereg()
-    argv = ("count-migrated", "--golden", path, "--realistic", path, "--tutorial", tutorial, "--drafts", "4")
+    argv = ("count-migrated", "--golden", path, "--realistic", path, "--tutorial", tutorial)
     code, out, err = world.run(*argv, "--pairing", pairing)
     assert code == st.EXIT_USAGE and "reason=inputs_invalid" in err  # the pair names ids that are not in the sets
     pairing.write_text(json.dumps({"pairs": []}), encoding="utf-8")
     code, out, err = world.run(*argv, "--pairing", pairing)
     line = world.last(out, "count_migrated")
-    assert code == 0 and (line["tuning_quota"], line["realistic_quota"]) == ("8", "4")  # tuning_min and realistic_min from the prereg
+    # r3 F2: the realistic quota is the prereg's realistic_min; the tuning quota is cmd_split's (the pool less the sealed
+    # quota 12 and the realistic one): the pool is the 3 migrated families plus the drafts, which default to the prereg's
+    # families_approx (100) because that already exceeds sealed + tuning_min + realistic - migrated (12 + 8 + 4 - 3)
+    assert code == 0 and (line["drafts"], line["drafts_rule"], line["pool_total"]) == ("100", "families_approx", "103")
+    assert (line["tuning_quota"], line["realistic_quota"]) == ("87", "4")
 
 
 # --- inputs-check (wired to src/sealed_inputs.py) -----------------------------------------------------------------------------

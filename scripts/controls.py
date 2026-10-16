@@ -33,14 +33,16 @@ list is computed once on the frozen development sets (b7) and committed to the
 ledger: on the first run the file is written and a ``controls`` record is added
 (the file's sha256, the digest of the draw files' sha256s and the prereg's sha256).
 Once recorded the run only **verifies**: the computation must equal the file and
-the file must still be the recorded one, else exit 1 and nothing is written. A file
+the file must still be the recorded one, and the supplied draw files must be the recorded draws (their
+``draws_sha256`` equals the record's), else exit 1 and nothing is written. A file
 with no record ("controls file not recorded") or a record with no file ("controls
 already recorded") exits 1: deleting the file never allows a recompute.
 
 The rule, rank ceiling and draw count come from the prereg's ``controls`` block
 (``--prereg``, default ``eval/prereg_16a2.json``), not from the command line: the
 ceiling must be the rule's (``RANK_CEILING``) and, for C1, the number of ``--draw``
-files must be ``draws_r``. The prereg file's sha256 must be the ledger's
+files must be ``draws_r``. On every run the ``--draw`` files must have distinct sha256s (a repeated draw is not
+another draw; exit 2). The prereg file's sha256 must be the ledger's
 ``epoch_prereg_sha256()`` (the epoch's one registered prereg). The ``--dev-set``
 files must be the frozen versions of BOTH development splits, each exactly once:
 their sha256s are the ``set_sha256`` of the ledger's ``freeze`` records for
@@ -235,6 +237,18 @@ def read_controls_prereg(path: str, n_draws: int) -> str:
     return rule
 
 
+def check_distinct_draws(paths: Sequence[str]) -> List[str]:
+    """The sha256 of each draw file; the draws must be distinct files by content (a repeat is not another draw).
+
+    Raises:
+        ControlsError: two ``--draw`` files hash alike.
+    """
+    shas = [_file_sha256(p) for p in paths]
+    if len(set(shas)) != len(shas):
+        raise ControlsError("a draw file is given twice (the draws must be distinct)")
+    return shas
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -324,6 +338,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             with open(path, encoding="utf-8") as fh:
                 draws.append(json.load(fh))
         rule = read_controls_prereg(args.prereg, len(args.draw))
+        draw_shas = check_distinct_draws(args.draw)
         lineage = load_lineage(args.dev_set)  # a sealed set is refused (exit 4) before the version check
         check_frozen_versions(ledger, args.dev_set)
         prereg_sha = check_epoch_prereg(ledger, args.prereg)
@@ -362,6 +377,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if _file_sha256(args.list_path) != record["controls_sha256"]:
             print("[controls] the controls file is not the recorded one; nothing written", file=sys.stderr)
             return EXIT_DIFFERS
+        if _canonical_sha256(sorted(draw_shas)) != record["draws_sha256"]:
+            print("[controls] the supplied draws are not the recorded draws; nothing written", file=sys.stderr)
+            return EXIT_DIFFERS
         print(f"[controls] matches the committed list ({summary})")
         return 0
     if record is not None:
@@ -371,7 +389,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         ledger.record_controls(
             controls_sha256=_file_sha256(args.list_path),
-            draws_sha256=_canonical_sha256(sorted(_file_sha256(p) for p in args.draw)),
+            draws_sha256=_canonical_sha256(sorted(draw_shas)),
             prereg_sha256=prereg_sha,
         )
     except ProtocolError:

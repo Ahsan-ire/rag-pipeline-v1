@@ -99,8 +99,9 @@ Dispatches
 ``record_dispatch`` appends a ``dispatch`` record when ``scripts/sp_launch.py``
 starts a ``data`` sealed-processor run: the 8-hex dispatch id, the launch kind
 (``dispatch_kind``: the record's own ``kind`` is ``dispatch``), the argument-vector
-hash and the UTC time. Nothing else. The committed mirror carries the record's
-kind and line digest only (no digest field is listed for it).
+hash, the sha256 of the pre-registration it ran under (the first record of any kind
+that carries one registers the epoch's prereg) and the UTC time. Nothing else. The
+committed mirror carries the record's kind, line digest and that prereg digest.
 
 Groups and exclusions
 ---------------------
@@ -169,6 +170,7 @@ MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "freeze": ("set_sha256", "twins_sha256", "exclusions_sha256", "prereg_sha256"),
     "slot_stored": ("results_digest", "expansion_artifact_sha256"),
     "batch_declaration": ("candidates_sha256",),
+    "dispatch": ("prereg_sha256",),
     "calibration_draw": ("draw_sha256",),
     "controls": ("controls_sha256", "draws_sha256", "prereg_sha256"),
     "publication_intent": ("results_digest",),
@@ -969,9 +971,12 @@ class SealedLedger:
     def record_batch_declaration(self, candidates: Sequence[Mapping[str, str]]) -> str:
         """Declare the confirmatory batch: 1..4 candidates in slot order, each ``{"config_hash", "expansion"}``.
 
-        ``config_hash`` is a distinct 64-hex candidate configuration hash; ``expansion`` is ``"replay"``
+        ``config_hash`` is a distinct 64-hex candidate PIPELINE configuration hash (what 16B's identity check
+        compares with the run's canonical pipeline configuration); ``expansion`` is ``"replay"``
         (retrieval-only: the slot replays slot 0's canonical artifact) or ``"candidate"`` (a rewrite-changing
-        candidate: live rewrite under its config hash). Candidate i runs in slot i. Needs the sealed freeze and
+        candidate: live rewrite). A ``candidate`` entry also carries ``rewrite_config_hash`` (64 hex): the hash of
+        the rewrite model, prompt and caps (``expansion_artifact.rewrite_identity``) that the slot gate checks the
+        run's ``--rewrite-candidate`` and code against; a ``replay`` entry carries none. Candidate i runs in slot i. Needs the sealed freeze and
         the ``controls`` record; appendable once, and only before any of slots 1-4 was claimed
         (``ProtocolError`` otherwise, and always while ``CONFIRMATORY_EMBARGO`` holds). Returns the sha256 of
         the canonical JSON of the list (the mirror carries only that digest).
@@ -980,11 +985,17 @@ class SealedLedger:
             raise ValueError(f"a batch has 1 to {K_MAX} candidates")
         cands: List[Dict[str, str]] = []
         for entry in candidates:
-            if not isinstance(entry, Mapping) or set(entry) != {"config_hash", "expansion"}:
-                raise ValueError("a batch candidate is {config_hash, expansion}")
+            if not isinstance(entry, Mapping) or not {"config_hash", "expansion"} <= set(entry):
+                raise ValueError("a batch candidate is {config_hash, expansion[, rewrite_config_hash]}")
             if entry["expansion"] not in BATCH_EXPANSIONS:
                 raise ValueError(f"a batch candidate's expansion is one of {BATCH_EXPANSIONS}")
-            cands.append({"config_hash": _hex64(entry["config_hash"], "candidate"), "expansion": entry["expansion"]})
+            want_keys = {"config_hash", "expansion"} | ({"rewrite_config_hash"} if entry["expansion"] == "candidate" else set())
+            if set(entry) != want_keys:  # only a rewrite-changing candidate has a rewrite identity
+                raise ValueError("a batch candidate carries rewrite_config_hash exactly when its expansion is candidate")
+            cand = {"config_hash": _hex64(entry["config_hash"], "candidate"), "expansion": entry["expansion"]}
+            if entry["expansion"] == "candidate":
+                cand["rewrite_config_hash"] = _hex64(entry["rewrite_config_hash"], "rewrite_config_hash")
+            cands.append(cand)
         if len({c["config_hash"] for c in cands}) != len(cands):
             raise ValueError("batch candidates must be distinct")
         digest = hashlib.sha256(_canonical(cands)).hexdigest()
@@ -1063,14 +1074,27 @@ class SealedLedger:
 
     # -- sealed-processor dispatches (a7) --------------------------------------------
 
-    def record_dispatch(self, *, dispatch_id: str, dispatch_kind: str, argv_hash: str) -> None:
-        """Record that a sealed-processor run was started (ids, an enum and a digest; the time is the record's ``ts``)."""
+    def record_dispatch(
+        self, *, dispatch_id: str, dispatch_kind: str, argv_hash: str, prereg_sha256: Optional[str] = None,
+    ) -> None:
+        """Record that a sealed-processor run was started (ids, an enum and digests; the time is the record's ``ts``).
+
+        ``prereg_sha256`` (the launcher always gives it) is the sha256 of the pre-registration the dispatch was
+        made under; the first record of any kind that carries one registers the epoch's prereg
+        (``epoch_prereg_sha256``), so a data dispatch registers it. Raises ``ProtocolError`` when the epoch's prereg is
+        already registered and is another file's (checked inside the transaction).
+        """
         fields: Dict[str, Any] = {
             "dispatch_id": _token(dispatch_id, "dispatch_id", _DISPATCH_ID),
             "dispatch_kind": _token(dispatch_kind, "dispatch_kind"),
             "argv_hash": _hex64(argv_hash, "argv_hash"),
         }
+        if prereg_sha256 is not None:
+            fields["prereg_sha256"] = _hex64(prereg_sha256, "prereg_sha256")
         with self._txn() as txn:
+            registered = next((r["prereg_sha256"] for r in txn.records if r.get("prereg_sha256") is not None), None)
+            if prereg_sha256 is not None and registered is not None and registered != prereg_sha256:
+                raise ProtocolError("the prereg is not this epoch's registered prereg")
             txn.append("dispatch", **fields)
 
     # -- payloads (content-free records too big for a ledger line) -------------------
