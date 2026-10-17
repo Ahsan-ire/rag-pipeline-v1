@@ -23,7 +23,12 @@ ROOT = Path(__file__).resolve().parent.parent
 REAL_PREREG = ROOT / "eval" / "prereg_16a2.json"
 
 #: the registered quota of eval/prereg_16a2.json (sealed already holds the spare: sealed = floor_sealed + spare)
-REAL_QUOTA = {"sealed": 60, "spare": 10, "floor_sealed": 50, "floor_answerable": 35, "realistic_min": 42, "tuning_min": 60}
+REAL_QUOTA = {
+    "sealed": 60, "spare": 10, "floor_sealed": 50, "floor_answerable": 35, "realistic_min": 42, "tuning_min": 60,
+    # b2 (quota amendment): the registered text of the quota rules, pinned by prereg-check
+    "dev_quota_rule": "max(min,F,ceil(4(F-R)/3),ceil(10R/3))", "realistic_rule": "dev_quota_rule_at_realistic_min",
+    "tuning_floor_rule": "dev_quota_rule_at_tuning_min", "tuning_rule": "pool_total-sealed-realistic_quota",
+}
 
 
 def real_prereg() -> dict:
@@ -52,7 +57,7 @@ def test_fifty_migrated_tuning_families_with_nineteen_refusals_are_in_band_once_
     line = world.last(out, "count_migrated")
     assert (line["migrated_families"], line["pool_total"], line["drafts_rule"]) == ("70", "170", "explicit")
     assert (line["tuning_quota"], line["tuning_open"], line["tuning_band"]) == ("68", "18", "ok")
-    assert line["tuning_quota"] == str(st.compute_quotas(REAL_QUOTA, 170, 20)["tuning"])  # the split's own number
+    assert line["tuning_quota"] == str(st.compute_quotas(REAL_QUOTA, 170, 20, 0)["tuning"])  # the split's own number
     assert (line["realistic_quota"], line["realistic_band"]) == ("42", "ok")
     assert_allowlisted(out)
 
@@ -87,9 +92,10 @@ def test_the_default_drafts_make_the_first_split_feasible_with_57_migrated_famil
     assert (line["tuning_quota"], line["realistic_quota"]) == ("65", "42") and "tuning_band=ok" in out
     # what cmd_split does with that pool: its tuning quota reaches tuning_min (no quota_short), where 100 drafts would not,
     # and keeps the margin as headroom (the 105 drafts of the bare pool floor made exactly tuning_min)
-    assert st.compute_quotas(REAL_QUOTA, 167, 17)["tuning"] == 65 >= REAL_QUOTA["tuning_min"]
-    assert st.compute_quotas(REAL_QUOTA, 162, 17)["tuning"] >= REAL_QUOTA["tuning_min"]
-    assert st.compute_quotas(REAL_QUOTA, 157, 17)["tuning"] < REAL_QUOTA["tuning_min"]
+    assert st.compute_quotas(REAL_QUOTA, 167, 17, 0)["tuning"] == 65 >= REAL_QUOTA["tuning_min"]
+    assert st.compute_quotas(REAL_QUOTA, 162, 17, 0)["tuning"] >= REAL_QUOTA["tuning_min"]
+    assert st.compute_quotas(REAL_QUOTA, 157, 17, 0)["tuning"] < REAL_QUOTA["tuning_min"]
+    assert st.tuning_floor(REAL_QUOTA, 40, 0) == REAL_QUOTA["tuning_min"]  # 40 tuning families: ceil(4 x 40 / 3) = 54 < 60, so the bare minimum
     # `spare` is already inside `sealed` (sealed = floor_sealed + spare), so the rule adds nothing for it
     assert REAL_QUOTA["sealed"] == REAL_QUOTA["floor_sealed"] + REAL_QUOTA["spare"]
     assert_allowlisted(out)

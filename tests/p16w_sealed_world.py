@@ -45,6 +45,17 @@ WORLD_PINS = (
 )
 
 
+def quota_example(quota: Dict[str, Any], pool_total: int, pre_r: int, pre_r_refuse: int, pre_t: int, pre_t_refuse: int) -> Dict[str, Any]:
+    """A prereg quota example (``quota.examples[]``) for the given pool and preassigned counts, with the quotas and ``label``
+    the rules give: realistic by ``compute_quotas``, tuning the rest, ``quota_short`` below tuning's own minimum feasible quota."""
+    got = st.compute_quotas(quota, pool_total, pre_r, pre_r_refuse)
+    return {
+        "pool_total": pool_total, "preassigned_realistic": pre_r, "preassigned_realistic_refusals": pre_r_refuse,
+        "preassigned_tuning": pre_t, "preassigned_tuning_refusals": pre_t_refuse, **got,
+        "label": "quota_short" if got["tuning"] < st.tuning_floor(quota, pre_t, pre_t_refuse) else "ok",
+    }
+
+
 def b1a_blocks() -> Dict[str, Any]:
     """The prereg's registered blocks (``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``primary_metric``, ``collapse``,
     ``adoption``, ``controls``, ``slots``, ``drafting_rule``), complete, built from ``sealed_tool.REGISTERED_VALUES``:
@@ -242,7 +253,7 @@ class World:
     # -- prereg and git ---------------------------------------------------------
     def prereg_doc(self, **over: Any) -> Dict[str, Any]:
         quota = dict(WORLD_QUOTA)
-        quota["examples"] = [{"pool_total": 24, "preassigned_realistic": 1, **st.compute_quotas(quota, 24, 1)}]
+        quota["examples"] = [quota_example(quota, 24, 1, 0, 0, 0)]
         power = {"alphas": [0.05, 0.0125], "discordance": [0.5], "planned_groups": [1] * 30 + [2] * 5, "draws": 60, "seed": 5}
         doc = {
             "version": 1, "branch": "main", "rounds": [1, 2],

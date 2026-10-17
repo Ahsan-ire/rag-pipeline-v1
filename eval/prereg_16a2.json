@@ -18,10 +18,17 @@
     "floor_answerable": 35,
     "realistic_min": 42,
     "tuning_min": 60,
+    "dev_quota_rule": "max(min,F,ceil(4(F-R)/3),ceil(10R/3))",
+    "realistic_rule": "dev_quota_rule_at_realistic_min",
+    "tuning_floor_rule": "dev_quota_rule_at_tuning_min",
+    "tuning_rule": "pool_total-sealed-realistic_quota",
     "examples": [
       {
         "pool_total": 170,
         "preassigned_realistic": 31,
+        "preassigned_realistic_refusals": 8,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 19,
         "sealed": 60,
         "realistic": 42,
         "tuning": 68,
@@ -30,17 +37,56 @@
       {
         "pool_total": 180,
         "preassigned_realistic": 47,
+        "preassigned_realistic_refusals": 10,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 19,
         "sealed": 60,
-        "realistic": 47,
-        "tuning": 73,
+        "realistic": 50,
+        "tuning": 70,
         "label": "ok"
       },
       {
         "pool_total": 160,
         "preassigned_realistic": 31,
+        "preassigned_realistic_refusals": 8,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 19,
         "sealed": 60,
         "realistic": 42,
         "tuning": 58,
+        "label": "quota_short"
+      },
+      {
+        "pool_total": 180,
+        "preassigned_realistic": 49,
+        "preassigned_realistic_refusals": 10,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 19,
+        "sealed": 60,
+        "realistic": 52,
+        "tuning": 68,
+        "label": "ok"
+      },
+      {
+        "pool_total": 180,
+        "preassigned_realistic": 45,
+        "preassigned_realistic_refusals": 15,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 19,
+        "sealed": 60,
+        "realistic": 50,
+        "tuning": 70,
+        "label": "ok"
+      },
+      {
+        "pool_total": 170,
+        "preassigned_realistic": 31,
+        "preassigned_realistic_refusals": 8,
+        "preassigned_tuning": 50,
+        "preassigned_tuning_refusals": 22,
+        "sealed": 60,
+        "realistic": 42,
+        "tuning": 68,
         "label": "quota_short"
       }
     ]
@@ -275,7 +321,7 @@
     "attempt_1": {
       "families_approx": 100,
       "draft_margin": 5,
-      "families_rule": "max(families_approx,(sealed_quota+tuning_min+realistic_quota)-migrated_families)+draft_margin",
+      "families_rule": "max(families_approx,(sealed_quota+tuning_floor+realistic_quota)-migrated_families)+draft_margin",
       "source_mix": "tutorial_sourced_about_half_rest_handbook",
       "per_unseen_tutorial_approx": 3,
       "unseen_tutorials": 15,

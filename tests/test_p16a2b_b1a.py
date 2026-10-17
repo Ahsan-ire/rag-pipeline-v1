@@ -30,7 +30,7 @@ from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     gate_of,
     world,
 )
-from tests.p16w_sealed_world import b1a_blocks
+from tests.p16w_sealed_world import b1a_blocks, quota_example
 from tests.test_p16w_sp_launch import GitRepos, git, repos  # noqa: F401  (fixture)
 
 D = "a" * 64
@@ -407,10 +407,7 @@ def test_bind_prereg_refuses_a_file_outside_any_repo_or_unreadable(tmp_path):
 @pytest.fixture(scope="module")
 def good_prereg():
     quota = {"sealed": 12, "spare": 4, "floor_sealed": 8, "floor_answerable": 5, "realistic_min": 4, "tuning_min": 8}
-    quota["examples"] = [
-        {"pool_total": 24, "preassigned_realistic": 1, **st.compute_quotas(quota, 24, 1), "label": "ok"},
-        {"pool_total": 18, "preassigned_realistic": 1, **st.compute_quotas(quota, 18, 1), "label": "quota_short"},
-    ]
+    quota["examples"] = [quota_example(quota, 24, 1, 0, 0, 0), quota_example(quota, 18, 1, 0, 0, 0)]  # labels: ok, quota_short
     power = {"alphas": [0.05, 0.0125], "discordance": [0.5], "planned_groups": [1] * 10 + [2] * 3, "draws": 40, "seed": 5}
     doc = {
         "version": 1, "branch": "main", "rounds": [1, 2], "seeds": {"split_r1": 1, "split_r2": 2, "repair": 3, "calibration": 4},
@@ -552,4 +549,4 @@ def test_the_committed_prereg_validates_with_its_seeds_unchanged():
     }
     assert doc["power"]["seed"] == 5722486815998357046
     assert doc["power"]["alphas"] == [0.05, 0.0125] and len(doc["power"]["table"]) == 12 and len(doc["power"]["family_table"]) == 6
-    assert [e["label"] for e in doc["quota"]["examples"]] == ["ok", "ok", "quota_short"]
+    assert [e["label"] for e in doc["quota"]["examples"]] == ["ok", "ok", "quota_short", "ok", "ok", "quota_short"]

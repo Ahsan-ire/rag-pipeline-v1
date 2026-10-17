@@ -177,7 +177,8 @@ def test_an_unknown_judge_leaf_is_refused_and_the_root_is_required():
 def test_the_draft_count_rule_is_registered_with_a_margin_and_a_source_mix():
     attempt = real_prereg()["drafting_rule"]["attempt_1"]
     assert attempt["draft_margin"] == 5
-    assert attempt["families_rule"] == "max(families_approx,(sealed_quota+tuning_min+realistic_quota)-migrated_families)+draft_margin"
+    # b2 (quota amendment): tuning's own minimum feasible quota (quota.tuning_floor_rule), not the bare tuning_min
+    assert attempt["families_rule"] == "max(families_approx,(sealed_quota+tuning_floor+realistic_quota)-migrated_families)+draft_margin"
     assert attempt["source_mix"] == "tutorial_sourced_about_half_rest_handbook"
     # the fixed 50/50 counts are gone; the per-tutorial caps stay
     assert "tutorial_sourced_approx" not in attempt and "handbook_drafted_approx" not in attempt
@@ -237,11 +238,16 @@ def test_the_pins_are_the_real_preregs_values_and_cover_every_quota_number_and_m
     doc = real_prereg()
     assert {path for path, _ in REAL_PINS} == {
         "quota.sealed", "quota.spare", "quota.floor_sealed", "quota.floor_answerable", "quota.realistic_min",
-        "quota.tuning_min", "min_share.realistic.tutorial_or_colleague",
+        "quota.tuning_min", "quota.dev_quota_rule", "quota.realistic_rule", "quota.tuning_floor_rule", "quota.tuning_rule",
+        "min_share.realistic.tutorial_or_colleague",
     }
     assert dict(REAL_PINS) == {
         "quota.sealed": 60, "quota.spare": 10, "quota.floor_sealed": 50, "quota.floor_answerable": 35,
-        "quota.realistic_min": 42, "quota.tuning_min": 60, "min_share.realistic.tutorial_or_colleague": 0.25,
+        "quota.realistic_min": 42, "quota.tuning_min": 60,
+        # b2 (quota amendment): the registered text of the quota rules the code implements
+        "quota.dev_quota_rule": "max(min,F,ceil(4(F-R)/3),ceil(10R/3))", "quota.realistic_rule": "dev_quota_rule_at_realistic_min",
+        "quota.tuning_floor_rule": "dev_quota_rule_at_tuning_min", "quota.tuning_rule": "pool_total-sealed-realistic_quota",
+        "min_share.realistic.tutorial_or_colleague": 0.25,
     }
     for path, value in REAL_PINS:
         assert st._eq(st._at(doc, path), value), path
@@ -252,7 +258,7 @@ def test_the_pins_are_the_real_preregs_values_and_cover_every_quota_number_and_m
 @pytest.mark.parametrize("path,value", REAL_PINS)
 def test_every_pinned_value_is_refused_when_changed_or_removed(path, value):
     doc = real_prereg()
-    changed = value + 1 if isinstance(value, int) else value + 0.05
+    changed = value + "_x" if isinstance(value, str) else value + 1 if isinstance(value, int) else value + 0.05
     assert (path, "mismatch") in st.pinned_errors(put(doc, path, changed))
     assert (path, "mismatch") in st.pinned_errors(put(doc, path, KeyError))
     assert (path, "mismatch") in st.pinned_errors(put(doc, path, True if value != 1 else 0))  # a bool is not the number

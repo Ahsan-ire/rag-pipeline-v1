@@ -1689,7 +1689,7 @@ b0. **Inputs [C].** The handbook dump (`scripts/handbook_sections.py`, from the 
     pairs public golden-v1 and realistic-v1 ids that are one scenario; `inputs-check`); `eval/conflict_sections.json`
     (labels only: the pre-1975 architect's-certificate date conflict plus any the owner flags; `inputs-check`).
 b1. **Pre-registration (D74) [C].** `eval/prereg_16a2.json` (content-free): split seed (`secrets`); quota formulas over
-    the pool (sealed 60, 10 above the floor as spare; realistic max(42, preassigned realistic); tuning = the rest, ≥ 60,
+    the pool (sealed 60, 10 above the floor as spare; realistic = the b2 feasibility rule max(42, F, ⌈4(F−R)/3⌉, ⌈10R/3⌉) over the preassigned realistic families F and refusals R (b2, 17 Oct, owner-approved; it was max(42, preassigned realistic)); tuning = the rest, ≥ its own feasible floor (same rule at 60),
     else the SP drafts more before the next attempt); the drafting rule for attempts and round 2; strata; band;
     `min_share` (realistic: tutorial + colleague ≥ 0.25, D71 Q4; none elsewhere); the floor; calibration seed; primary
     metric = sealed family strict hit@6, hybrid+rewrite (`all` collapse); **MWE +0.10** absolute;
@@ -1936,6 +1936,22 @@ b2. **Migration and quotas [C].** First `sealed_tool epoch`: it must print `prer
     refusal family's migrated scope is `refuse`. Golden-only families go to tuning; paired, unpaired realistic and T1/T7
     families to realistic. The refusal drafts follow b1a's rule (pool share 0.275 including the preassigned
     refusals), placed in the registers of the splits that lack them.
+    **b2 amendment (17 Oct; owner-approved after an astra design review; D74 b2 addendum).** The first `count-migrated` on
+    the real inputs stopped `band_unreachable`: realistic had 49 preassigned families with 10 refusals, quota 49, no room
+    for its 3 missing refusals. The registered quota rule is now the general feasibility rule above, shared by
+    `count-migrated` and `split` (`sealed_tool.min_feasible_quota`); tuning's own feasible floor enters the attempt-1
+    draft size; `count-migrated` checks that the pool's refusal target fits the sum of the three splits' reachable
+    refusal intervals; round 2 reuses round 1's quotas. Realistic 52 is minimal by owner choice: every open realistic
+    slot is a refusal, so a rejected one is replaced in round 2.
+    **Migration (`scripts/migrate_dev_v2.py`).** Writes `eval/private/dev/tuning_migrated.jsonl` and
+    `realistic_migrated.jsonl` with minted private family ids (idempotent via `eval/private/inputs/migration_map.json`).
+    T1/T7: 24 exercise families plus the 2 document-specific refusal variants (T07-Ca-RV, T07-Cc-RV) as their own
+    tutorial refusal families (26). Phrasings: the first up-to-3 in file order that share the family's label (owner
+    rule; per-family selections in `eval/private/inputs/t1t7_labels.json`). Of the 10 PARTIAL exercises, 5 carry gaps
+    drafted by an Opus pass from the candidates' check notes (rank tables removed; annotation record
+    `eval/private/inputs/t1t7_gap_annotations.md`; synthetic matcher check), and 5 were relabelled `answer` by the owner
+    (T01-A, also a twin candidate of a golden row for b4; T07-Ba; T07-Ca; T07-Cc; T07-D). Every T1/T7 row and every
+    legacy refusal row is `owner_status: draft`.
 b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and the tutorial folder (the 15 unseen
     tutorials and 7 title-document sets; never T1 or T7): one seed phrasing per family; scope, evidence (inventory
     sections), gaps, `ambiguous`; refusals by b1a's 0.275 rule; lay, modelled and terse registers; written only
@@ -1948,7 +1964,7 @@ b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin ve
     makes up to 3 attempts per round (b1a) and releases the first feasible one. The SP then paraphrases every family to 2–3 phrasings (migrated ones
     keep theirs and are topped up to 2); the orchestrator receives only the development side. **Fixed order (R3):**
     round-1 split → b5 validation → SP `recheck` on final content → round 2 → freeze (b6).
-b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets, orchestrator development ones].** The
+b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets, orchestrator development ones].** (b2: the owner validates all 10 originally-PARTIAL T1/T7 families, i.e. the 5 drafted gap sets against the question and the corpus (evidence, missing concepts, keyword alternatives) and the 5 relabelled `answer`, plus the phrasing selections.) The
     owner validates every sealed family, every refusal or ambiguous label anywhere, every new development label (fast
     review), every SP paraphrase of a migrated family, and the flagged items: T01-Bb; realistic-v1's planning-extension
     refusal (relabelled under D61); T07-Ab/T07-Ba secondary groups; the pre-1975 date conflict (b0). **Escalation:**

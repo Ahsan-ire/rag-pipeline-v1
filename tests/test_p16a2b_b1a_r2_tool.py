@@ -124,14 +124,19 @@ def _migrated(world, eval_registry, tmp_path, *, gold, real, tutorial=1):
 def test_count_migrated_rounds_the_refusal_target_half_up(world, eval_registry, tmp_path):
     world.write_prereg()
     run = _migrated(world, eval_registry, tmp_path, gold=["direct"] * 8, real=["direct"] * 4)  # 8 + (4 + 1 exercise) = 13 migrated
-    for drafts, pool, target in ((7, 20, 6), (127, 140, 39), (27, 40, 11)):  # 5.5 -> 6, 38.5 -> 39, 11 exactly
-        code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12", "--drafts", str(drafts))
+    # b2 (quota amendment): the quotas add up to the pool (sealed 12 + tuning + realistic), or the pool's refusal target is not
+    # comparable with what the three splits can reach together. The half-way cases are the pools of 20 mod 40 (11 x pool / 40 = x.5):
+    # 16.5 -> 17, 38.5 -> 39; 11 is exact. (The old pool of 20, 5.5 -> 6, cannot hold 13 migrated families beside a sealed quota of 12.)
+    for drafts, tuning, realistic, pool, target in ((47, 28, 20, 60, 17), (127, 68, 60, 140, 39), (27, 18, 10, 40, 11)):
+        code, out, err = run("--quota-tuning", str(tuning), "--quota-realistic", str(realistic), "--drafts", str(drafts))
         assert code == 0, err
         line = world.last(out, "count_migrated")
         assert (line["migrated_families"], line["pool_total"], line["refusal_target"]) == ("13", str(pool), str(target)), pool
-        assert line["preassigned_refusals"] == "0"
-    # the drafts cover the larger of the share and the splits' deficits (4 + 3): pool 20 needs 7, not 6
+        assert line["preassigned_refusals"] == "0" and line["supply"] == "ok"
+    # the drafts cover the larger of the share and the splits' deficits (4 + 3): pool 20 needs 7, not 6. That pool is deliberately
+    # not the quotas' sum, so the run stops at band_unreachable (after printing), but the refusal_drafts formula is what is tested
     code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12", "--drafts", "7")
+    assert code == st.EXIT_REFUSED and "reason=band_unreachable" in err
     assert world.last(out, "count_migrated")["refusal_drafts"] == "7"
     code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12", "--drafts", "127")
     assert world.last(out, "count_migrated")["refusal_drafts"] == "39"
@@ -143,14 +148,14 @@ def test_count_migrated_drafts_default_to_the_preregs_families_approx(world, eva
     doc["drafting_rule"]["attempt_1"]["families_approx"] = 27
     world.write_prereg(drafting_rule=doc["drafting_rule"])
     run = _migrated(world, eval_registry, tmp_path, gold=["direct"] * 8, real=["direct"] * 4)
-    code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12")
+    code, out, err = run("--quota-tuning", "21", "--quota-realistic", "12")  # b2: 12 + 21 + 12 = the pool of 45
     # r4 D1: the default is max(families_approx, pool floor) + the registered draft_margin (5): 13 migrated + (27 + 5)
     line = world.last(out, "count_migrated")
     assert code == 0 and line["pool_total"] == "45" and (line["drafts"], line["draft_margin"]) == ("32", "5"), err
     rule = world.prereg_doc()["drafting_rule"]
     del rule["attempt_1"]["families_approx"]
     world.write_prereg(drafting_rule=rule)  # no families_approx and no --drafts
-    code, out, err = run("--quota-tuning", "16", "--quota-realistic", "12")
+    code, out, err = run("--quota-tuning", "21", "--quota-realistic", "12")
     assert code == st.EXIT_USAGE and "reason=usage" in err
 
 

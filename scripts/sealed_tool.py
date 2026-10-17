@@ -75,8 +75,11 @@ sealed set is the surviving ``sealed_r*.jsonl`` families, so a pre-freeze exclus
 
 **split.** Needs the pushed prereg (a7's ancestry rule) declaring the round, a current ``twins`` record for the
 pool, and passes the exact final quotas (``compute_quotas``) to ``split_families`` with the pinned families
-preassigned. ``SplitInfeasible`` (or a tuning quota under ``tuning_min``) records the attempt and releases nothing;
-the first feasible attempt stores ``assign_r<R>`` and the release record, then moves the files under the journal.
+preassigned. Round 1's realistic quota is the smallest that can still end inside the refusal band over its pinned
+families and refusal families (``min_feasible_quota``, ``quota.dev_quota_rule``); tuning's is the rest of the pool.
+``SplitInfeasible`` (or a tuning quota under tuning's own minimum feasible quota, ``tuning_floor``) records the attempt
+and releases nothing; the first feasible attempt stores ``assign_r<R>`` and the release record, then moves the files
+under the journal. Round 2 reuses round 1's released quotas and recomputes none.
 
 **freeze.** Without a verdict it writes the lexical-screen pairs and a content digest to ``W/screen_<split>.json``
 and stops (``recheck_missing``, with ``pairs_required``). With ``--recheck-verdict`` / ``--recheck-return`` (the
@@ -98,7 +101,9 @@ After the sealed freeze a twin found by a later development recheck never moves 
 
 **prereg** (``eval/prereg_16a2.json``): ``version``, ``branch``, ``rounds``, ``seeds`` (``split_r1``, ``split_r2``,
 ``repair``, ``calibration``), ``quota`` (``sealed``, ``spare``, ``floor_sealed``, ``floor_answerable``,
-``realistic_min``, ``tuning_min``, ``examples``), ``band``, ``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``power``
+``realistic_min``, ``tuning_min``, the text of the quota rules ``dev_quota_rule`` / ``realistic_rule`` /
+``tuning_floor_rule`` / ``tuning_rule``, ``examples`` with the preassigned families and refusal families of each
+development split), ``band``, ``mwe``, ``alpha``, ``k_max``, ``draws_r``, ``power``
 (``alphas`` = [alpha, alpha / k_max], ``discordance``, ``planned_groups``, ``draws``, ``seed``, ``table``,
 ``family_table``), optional ``strata``, ``min_share`` (keyed by split; the source class ``tutorial_or_colleague``
 pools those two sources) and the b1a blocks, all required and checked against their registered values:
@@ -107,7 +112,7 @@ the confirmatory batch, the development evidence, unsupported claims and control
 (rule c1, rank ceiling 3), ``slots`` (0 and 0b live; 1-4 are declared ``batch``: each one's mode, replay of
 ``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's), ``drafting_rule`` (refusal share 0.275
 over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts,
-and attempt 1's draft count: ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``),
+and attempt 1's draft count: ``max(families_approx, (sealed + tuning floor + realistic quota) - migrated) + draft_margin``),
 ``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v4``, its components and the registered
 list of ``src`` modules left out of the code hash) and
 ``judge`` (the registered judge every sealed slot runs). **One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
@@ -116,8 +121,8 @@ launcher records the prereg it ran under) registers it; every dispatch, ``split`
 registered sha256 and whether the working prereg is it. **Every registered value** is one entry of
 :data:`REGISTERED_VALUES` (a table of dotted path and exact value) that ``prereg-check`` walks; a leaf under a
 registered root that is not in the table is ``unknown_key``. ``prereg-check`` recomputes
-``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``, pins the quota numbers and
-minimum shares (:data:`PINNED_VALUES`) and checks the values the code computes: ``incumbent.components`` is the code's
+``quota.examples`` (and their ``label``), ``power.table`` and ``power.family_table``, pins the quota numbers, the quota rule
+text and the minimum shares (:data:`PINNED_VALUES`) and checks the values the code computes: ``incumbent.components`` is the code's
 ``PIPELINE_CONFIG_KEYS`` and ``judge.model`` / ``judge.prompt_version`` / ``judge.config_hash`` are ``src.judge``'s
 (:data:`COMPUTED_VALUES`). The same file is the
 slot gate's prereg (``pipeline eval --prereg``): the gate takes the floor from ``quota.floor_sealed`` /
@@ -236,6 +241,8 @@ REASONS = (
     "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
     "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable", "draws_uncovered",
     "draws_mismatch", "exclusion_late",
+    # scripts/migrate_dev_v2.py (16A-2b b2)
+    "unresolved_partial", "pair_scope_conflict", "map_invalid", "id_collision", "count_mismatch",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -243,7 +250,7 @@ ENUM_WORDS = frozenset(
         *SCOPES, *REGISTERS, *SOURCES, *SPLITS, *KINDS, *MODELS, *TARGET_CLASSES, *EXCLUSION_REASONS, *REASONS,
         *RETURN_ENUMS, "none", "invalid", "released", "infeasible", "quota_short", "frozen", "ok", "clean",
         "hits", "already", "recheck_required", "owner_selected_sample", "random_sample_n15", "feasible",
-        "register_short", "unreachable", "families_approx", "pool_floor", "explicit", "yes", "no",
+        "register_short", "unreachable", "families_approx", "pool_floor", "explicit", "yes", "no", "held",
         # split_families constraint names (SplitInfeasible.counts keys)
         "quota_total", "eligibility", "band", "strata", "min_share", "preassignment_conflicts",
         "preassigned_ineligible", "unit_no_allowed_split", "search", "floor", "approvals",
@@ -939,11 +946,81 @@ def _is_num(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-def compute_quotas(quota: Mapping[str, Any], pool_total: int, pre_realistic: int) -> Dict[str, int]:
-    """b1's formulas: sealed fixed; realistic = max(floor, preassigned realistic); tuning = the rest."""
+#: The registered text of the quota rules (``quota.dev_quota_rule`` ... in the prereg, pinned by ``prereg-check``):
+#: what :func:`min_feasible_quota`, :func:`compute_quotas` and :func:`tuning_floor` implement.
+DEV_QUOTA_RULE = "max(min,F,ceil(4(F-R)/3),ceil(10R/3))"
+REALISTIC_QUOTA_RULE = "dev_quota_rule_at_realistic_min"
+TUNING_FLOOR_RULE = "dev_quota_rule_at_tuning_min"
+TUNING_QUOTA_RULE = "pool_total-sealed-realistic_quota"
+
+
+def band_bounds(quota: int) -> Tuple[int, int]:
+    """``(lo, hi)``: the refusal-family counts a split of ``quota`` families may hold, 25 % rounded up to 30 % rounded down.
+
+    Integer arithmetic only, from the same constants as the splitter's band (``src.eval_split._band``: ``4r >= q`` and
+    ``10r <= 3q``); a test holds the two equal.
+    """
+    return -(-quota * BAND_MIN_NUM // BAND_MIN_DEN), quota * BAND_MAX_NUM // BAND_MAX_DEN
+
+
+def min_feasible_quota(minimum: int, families: int, refusals: int) -> int:
+    """The smallest quota of a development split with ``families`` preassigned (``refusals`` of them refusal families)
+    that can still end inside the refusal band: ``max(min, F, ceil(4(F-R)/3), ceil(10R/3))`` (:data:`DEV_QUOTA_RULE`).
+
+    Why each term. The split must hold its own families (``Q >= F``) and its registered minimum. Its ``Q - F`` open slots
+    must be able to bring the refusal count up to ``ceil(Q/4)``: ``ceil(Q/4) <= R + Q - F``, i.e. ``Q >= ceil(4(F-R)/3)``.
+    And the refusals already in it must not pass the ceiling: ``R <= floor(3Q/10)``, i.e. ``Q >= ceil(10R/3)``; adding
+    refusals cannot fix that, only a bigger quota of non-refusal families can (the dilution term).
+    The three bounds come from :data:`BAND_MIN_NUM` and friends, so they follow the band if it ever changes.
+
+    The band itself is empty for a few small quotas (``ceil(Q/4) > floor(3Q/10)`` at Q = 5, 6, 9 and 13): a quota must
+    also not be one of those, so the result is bumped past them. That never binds above 13, hence never for the registered
+    minimums (42 and 60); the test worlds' tiny minimums do meet it.
+
+    Raises:
+        ValueError: negative inputs, or more refusals than families.
+    """
+    for value in (minimum, families, refusals):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("quota inputs must be non-negative integers")
+    if refusals > families:
+        raise ValueError("more refusal families than families")
+    quota = max(
+        minimum, families,
+        -(-(families - refusals) * BAND_MIN_DEN // (BAND_MIN_DEN - BAND_MIN_NUM)),
+        -(-refusals * BAND_MAX_DEN // BAND_MAX_NUM),
+    )
+    while band_bounds(quota)[0] > band_bounds(quota)[1]:
+        quota += 1
+    return quota
+
+
+def refusal_interval(quota: int, families: int = 0, refusals: int = 0) -> Tuple[int, int]:
+    """``(lo, hi)``: the final refusal-family counts a split can reach.
+
+    A sealed split (nothing preassigned) reaches ``[ceil(Q/4), floor(3Q/10)]``. A development split with ``families``
+    preassigned, ``refusals`` of them refusal families, reaches ``[max(R, ceil(Q/4)), min(R + Q - F, floor(3Q/10))]``: it
+    keeps its refusals and can add one per open slot. ``lo > hi`` means the split cannot end inside the band.
+    """
+    low, high = band_bounds(quota)
+    return max(refusals, low), min(refusals + quota - families, high)
+
+
+def compute_quotas(quota: Mapping[str, Any], pool_total: int, pre_realistic: int, pre_realistic_refuse: int) -> Dict[str, int]:
+    """The quotas of a round-1 split: sealed fixed; realistic = :func:`min_feasible_quota` at ``realistic_min`` over its
+    preassigned families (``pre_realistic``, ``pre_realistic_refuse`` of them refusals); tuning = the rest of the pool."""
     sealed = int(quota["sealed"])
-    realistic = max(int(quota["realistic_min"]), int(pre_realistic))
+    realistic = min_feasible_quota(int(quota["realistic_min"]), int(pre_realistic), int(pre_realistic_refuse))
     return {"sealed": sealed, "realistic": realistic, "tuning": int(pool_total) - sealed - realistic}
+
+
+def tuning_floor(quota: Mapping[str, Any], pre_tuning: int, pre_tuning_refuse: int) -> int:
+    """Tuning's own minimum feasible quota: :func:`min_feasible_quota` at ``tuning_min`` over its preassigned families.
+
+    A tuning quota below it is ``quota_short`` (the split could not end inside the band); it is also the tuning term of
+    attempt 1's draft count (``drafting_rule.attempt_1.families_rule``).
+    """
+    return min_feasible_quota(int(quota["tuning_min"]), int(pre_tuning), int(pre_tuning_refuse))
 
 
 def mc_power_pm(groups: Sequence[int], disc: float, effect: float, alpha: float, draws: int, seed: int, model: str) -> int:
@@ -1162,7 +1239,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("slots.4.requires", "batch_declaration"),
     ("drafting_rule.attempt_1.families_approx", 100),
     ("drafting_rule.attempt_1.draft_margin", 5),
-    ("drafting_rule.attempt_1.families_rule", "max(families_approx,(sealed_quota+tuning_min+realistic_quota)-migrated_families)+draft_margin"),
+    ("drafting_rule.attempt_1.families_rule", "max(families_approx,(sealed_quota+tuning_floor+realistic_quota)-migrated_families)+draft_margin"),
     ("drafting_rule.attempt_1.source_mix", "tutorial_sourced_about_half_rest_handbook"),
     ("drafting_rule.attempt_1.per_unseen_tutorial_approx", 3),
     ("drafting_rule.attempt_1.unseen_tutorials", 15),
@@ -1249,7 +1326,8 @@ COMPUTED_VALUES: Tuple[Tuple[str, str], ...] = (("judge.config_hash", "judge_ide
 COMPUTED_PATHS = frozenset(path for path, _ in COMPUTED_VALUES)
 
 #: The structural blocks' exact values that ``prereg-check`` (``recompute``) pins to the real prereg: the quota
-#: numbers and the minimum shares (the quota *examples* and the power tables keep their recomputation). Not checked on
+#: numbers, the text of the quota rules the code implements (:data:`DEV_QUOTA_RULE` ...) and the minimum shares (the quota
+#: *examples* and the power tables keep their recomputation). Not checked on
 #: every load: a test world's small quotas are valid preregs for the commands, but only the registered numbers are the
 #: pre-registration.
 PINNED_VALUES: Tuple[Tuple[str, Any], ...] = (
@@ -1259,6 +1337,10 @@ PINNED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("quota.floor_answerable", 35),
     ("quota.realistic_min", 42),
     ("quota.tuning_min", 60),
+    ("quota.dev_quota_rule", DEV_QUOTA_RULE),
+    ("quota.realistic_rule", REALISTIC_QUOTA_RULE),
+    ("quota.tuning_floor_rule", TUNING_FLOOR_RULE),
+    ("quota.tuning_rule", TUNING_QUOTA_RULE),
     ("min_share.realistic.tutorial_or_colleague", 0.25),
 )
 
@@ -1343,12 +1425,32 @@ def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
     return errors
 
 
+#: The keys of a prereg quota example (and ``label``, optional): the pool, the preassigned families and refusal families of
+#: each development split, and the quotas the rules (:func:`compute_quotas`, :func:`tuning_floor`) give.
+EXAMPLE_COUNT_KEYS = (
+    "pool_total", "preassigned_realistic", "preassigned_realistic_refusals", "preassigned_tuning", "preassigned_tuning_refusals",
+)
+EXAMPLE_KEYS = frozenset({*EXAMPLE_COUNT_KEYS, "sealed", "realistic", "tuning"})
+
+
+def _example_counts_ok(ex: Mapping[str, Any]) -> bool:
+    """Whether a quota example's counts are non-negative integers with no more refusal families than families (so the
+    rules can be recomputed from them)."""
+    return (
+        all(_is_int(ex.get(k), 0) for k in (*EXAMPLE_COUNT_KEYS, "sealed", "realistic"))
+        and _is_int(ex.get("tuning"), -10**9)
+        and ex["preassigned_realistic_refusals"] <= ex["preassigned_realistic"]
+        and ex["preassigned_tuning_refusals"] <= ex["preassigned_tuning"]
+    )
+
+
 def _check_examples_labels(quota: Mapping[str, Any], errors: List[Tuple[str, str]]) -> None:
-    """A quota example may carry ``label``: ``quota_short`` exactly when its tuning is below ``tuning_min``."""
+    """A quota example may carry ``label``: ``quota_short`` exactly when its tuning is below tuning's own minimum feasible
+    quota (:func:`tuning_floor` over the example's preassigned tuning families)."""
     for i, ex in enumerate(quota.get("examples", [])):
-        if not isinstance(ex, dict) or not _is_int(ex.get("tuning"), -10**9):
+        if not isinstance(ex, dict) or not _example_counts_ok(ex):
             continue
-        short = ex["tuning"] < quota["tuning_min"]
+        short = ex["tuning"] < tuning_floor(quota, ex["preassigned_tuning"], ex["preassigned_tuning_refusals"])
         label = ex.get("label")
         if "label" in ex and label != ("quota_short" if short else "ok"):
             errors.append((f"quota.examples[{i}]", "mismatch"))
@@ -1389,9 +1491,9 @@ def validate_prereg(doc: Any, *, recompute: bool = True) -> List[Tuple[str, str]
             examples = quota.get("examples", [])
             if need("quota.examples", isinstance(examples, list)):
                 for i, ex in enumerate(examples):
-                    ok = isinstance(ex, dict) and set(ex) - {"label"} == {"pool_total", "preassigned_realistic", "sealed", "realistic", "tuning"}
+                    ok = isinstance(ex, dict) and set(ex) - {"label"} == EXAMPLE_KEYS and _example_counts_ok(ex)
                     if need(f"quota.examples[{i}]", ok) and recompute:
-                        want = compute_quotas(quota, ex["pool_total"], ex["preassigned_realistic"])
+                        want = compute_quotas(quota, ex["pool_total"], ex["preassigned_realistic"], ex["preassigned_realistic_refusals"])
                         need(f"quota.examples[{i}]", all(ex[k] == want[k] for k in want), "mismatch")
                 if isinstance(examples, list):
                     _check_examples_labels(quota, errors)
@@ -1512,12 +1614,15 @@ def bind_epoch_prereg(ctx: Ctx, prereg: Mapping[str, Any], ledger: SealedLedger)
 _FID_ANY = sp.FAMILY_ID_RE
 
 
-def known_family_ids(ctx: Ctx) -> Set[str]:
-    """Every family-id-shaped token in the private root's JSON / JSONL / text files (no loaders)."""
+def known_family_ids(ctx: Ctx, exclude: Iterable[Path] = ()) -> Set[str]:
+    """Every family-id-shaped token in the private root's JSON / JSONL / text files (no loaders), except in the files
+    named by ``exclude`` (``migrate_dev_v2`` asks which ids the files it does not own already hold)."""
     found: Set[str] = set()
+    skip = {Path(p).resolve() for p in exclude}
     if ctx.private.is_dir():
         for path in ctx.private.rglob("*"):
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() in (".jsonl", ".json", ".txt", ".csv"):
+            readable = path.is_file() and not path.is_symlink() and path.suffix.lower() in (".jsonl", ".json", ".txt", ".csv")
+            if readable and path.resolve() not in skip:
                 try:
                     found.update(_FID_ANY.findall(path.read_bytes().decode("utf-8", errors="replace")))
                 except OSError:
@@ -1606,29 +1711,35 @@ def _tutorial_exercises(path: Path) -> Dict[str, bool]:
     return out
 
 
-def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tutorial: str,
-                       quota_tuning: Optional[int], quota_realistic: Optional[int], drafts: Optional[int] = None) -> int:
-    """b2's counting: families per development split, each split's refusal deficit (to 25 % of its quota), and the
-    refusal drafts the pool needs.
-
-    ``drafts`` is the number of new drafts. Its default is the prereg's ``attempt_1.families_rule``:
-    ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``: the registered
-    ``families_approx``, or more when the first split needs a bigger pool, plus the registered ``draft_margin`` (a
-    drafted family can be rejected at the owner's review, so the pool is drafted with room); the printed
-    ``drafts_rule`` says which bound binds (``families_approx`` / ``pool_floor``), or ``explicit`` (no margin is added
-    to an explicit count), and ``draft_margin`` the margin the default used. The
-    tuning quota is ``cmd_split``'s (the pool less the sealed and realistic quotas) unless ``--quota-tuning`` is given.
-    The pool is the migrated families plus the drafts; its refusal target is the registered share (11/40) of it,
-    rounded half up,
-    and the drafts must supply ``max(target - preassigned refusals, sum of the splits' deficits)`` refusals.
-    A split whose deficit exceeds its open slots, or whose preassigned refusals exceed 30 % of its quota, cannot
-    reach the band: ``band_unreachable`` after printing (b2's owner stop).
-    """
-    gold, real, tut = _v1_families(Path(golden)), _v1_families(Path(realistic)), _tutorial_exercises(Path(tutorial))
-    doc = read_json(Path(pairing))
+def load_pairs(path: Path) -> List[List[str]]:
+    """``eval/v2_pairing.json``'s ``pairs``: ``[[golden id, realistic id], ...]`` (the shape only; ``inputs-check`` checks the ids)."""
+    doc = read_json(path)
     pairs = doc.get("pairs") if isinstance(doc, dict) else None
-    if not isinstance(pairs, list) or not all(isinstance(p, list) and len(p) == 2 for p in pairs):
+    if not isinstance(pairs, list) or not all(isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) for x in p) for p in pairs):
         raise Stop(EXIT_USAGE, "input_invalid")
+    return pairs
+
+
+@dataclass(frozen=True)
+class MigratedCounts:
+    """What ``count-migrated`` counts from the v1 sets, the pairing and the tutorial families (``migrate_dev_v2`` asserts its
+    output equals it): golden-only families are tuning's, realistic ones, pairs (ONE family) and T1/T7 families are realistic's."""
+
+    pairs: int
+    conflicts: int  # pairs whose two rows disagree on refusal (a pair counts as a refusal family if either does)
+    tutorial_families: int
+    tuning_families: int
+    tuning_refuse: int
+    realistic_families: int
+    realistic_refuse: int
+
+
+def migrated_counts(gold: Mapping[str, bool], real: Mapping[str, bool], tut: Mapping[str, bool], pairs: Sequence[Sequence[str]]) -> MigratedCounts:
+    """The migrated families and refusal families per development split (the shared core of ``count-migrated`` and ``migrate_dev_v2``).
+
+    ``gold`` / ``real`` / ``tut`` map a family (or tutorial exercise) to ``is_refusal``; ``pairs`` is ``[[golden id, realistic
+    id], ...]``. A pair naming an unknown id, or a golden id twice, is ``inputs_invalid``.
+    """
     paired_gold: Set[str] = set()
     conflicts = 0
     real_refuse = dict(real)
@@ -1639,14 +1750,47 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
         if gold[g] != real[r]:
             conflicts += 1
         real_refuse[r] = real[r] or gold[g]
-    tuning_refuse = sum(1 for g, refuse in gold.items() if g not in paired_gold and refuse)
-    tuning_n = sum(1 for g in gold if g not in paired_gold)
-    realistic_n = len(real) + len(tut)
-    realistic_refuse = sum(real_refuse.values()) + sum(tut.values())
+    return MigratedCounts(
+        pairs=len(pairs), conflicts=conflicts, tutorial_families=len(tut),
+        tuning_families=sum(1 for g in gold if g not in paired_gold),
+        tuning_refuse=sum(1 for g, refuse in gold.items() if g not in paired_gold and refuse),
+        realistic_families=len(real) + len(tut),
+        realistic_refuse=sum(real_refuse.values()) + sum(tut.values()),
+    )
+
+
+def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tutorial: str,
+                       quota_tuning: Optional[int], quota_realistic: Optional[int], drafts: Optional[int] = None) -> int:
+    """b2's counting: families per development split, each split's refusal deficit (to 25 % of its quota), and the
+    refusal drafts the pool needs.
+
+    The realistic quota is ``cmd_split``'s (:func:`compute_quotas`): the smallest that can still end inside the refusal
+    band over the migrated realistic families and refusal families (``quota.dev_quota_rule``), unless ``--quota-realistic``
+    is given. ``drafts`` is the number of new drafts. Its default is the prereg's ``attempt_1.families_rule``:
+    ``max(families_approx, (sealed + tuning floor + realistic quota) - migrated) + draft_margin``: the registered
+    ``families_approx``, or more when the first split needs a bigger pool, plus the registered ``draft_margin`` (a
+    drafted family can be rejected at the owner's review, so the pool is drafted with room). The tuning floor is tuning's
+    own minimum feasible quota over the migrated tuning families (:func:`tuning_floor`), not the bare ``tuning_min``; the
+    printed ``drafts_rule`` says which bound binds (``families_approx`` / ``pool_floor``), or ``explicit`` (no margin is added
+    to an explicit count), and ``draft_margin`` the margin the default used. The
+    tuning quota is ``cmd_split``'s (the pool less the sealed and realistic quotas) unless ``--quota-tuning`` is given.
+    The pool is the migrated families plus the drafts; its refusal target is the registered share (11/40) of it,
+    rounded half up,
+    and the drafts must supply ``max(target - preassigned refusals, sum of the splits' deficits)`` refusals.
+    A split whose deficit exceeds its open slots, or whose preassigned refusals exceed 30 % of its quota, cannot
+    reach the band, and neither can a pool whose refusal target lies outside the sum of the three splits' reachable
+    refusal intervals (:func:`refusal_interval`; the dilution that one split's quota needs shows up here): either way
+    ``band_unreachable`` after printing every split's quota, interval and the target (b2's owner stop).
+    """
+    gold, real, tut = _v1_families(Path(golden)), _v1_families(Path(realistic)), _tutorial_exercises(Path(tutorial))
+    pairs = load_pairs(Path(pairing))
+    counts = migrated_counts(gold, real, tut, pairs)
+    tuning_n, tuning_refuse = counts.tuning_families, counts.tuning_refuse
+    realistic_n, realistic_refuse = counts.realistic_families, counts.realistic_refuse
     prereg = ctx.prereg_file
 
     def deficit(q: int, refuse: int) -> int:
-        return max(0, -(-q * BAND_MIN_NUM // BAND_MIN_DEN) - refuse)
+        return max(0, band_bounds(q)[0] - refuse)
 
     from fractions import Fraction
 
@@ -1662,9 +1806,13 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     quota_doc = quota_doc if isinstance(quota_doc, dict) else {}
     migrated, preassigned = tuning_n + realistic_n, tuning_refuse + realistic_refuse
     sealed_q = int(quota_doc.get("sealed", 0))
-    realistic_q = quota_realistic if quota_realistic is not None else max(int(quota_doc.get("realistic_min", 0)), realistic_n)
+    realistic_q = (
+        quota_realistic if quota_realistic is not None
+        else min_feasible_quota(int(quota_doc.get("realistic_min", 0)), realistic_n, realistic_refuse)
+    )
+    tuning_floor_q = min_feasible_quota(int(quota_doc.get("tuning_min", 0)), tuning_n, tuning_refuse)
     # the drafts rule (prereg drafting_rule.attempt_1.families_rule): the registered approximate count, raised to what the
-    # first split needs (sealed + tuning_min + realistic quotas; `spare` is already inside `sealed`), else attempt 1 would
+    # first split needs (sealed + tuning floor + realistic quotas; `spare` is already inside `sealed`), else attempt 1 would
     # be quota_short and burn a capped attempt
     approx, margin = attempt.get("families_approx"), attempt.get("draft_margin")
     if drafts is not None:
@@ -1674,7 +1822,7 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
             raise Stop(EXIT_USAGE, "usage")
         if isinstance(margin, bool) or not isinstance(margin, int) or margin < 0:
             raise Stop(EXIT_USAGE, "usage")
-        floor_drafts = max(0, sealed_q + int(quota_doc.get("tuning_min", 0)) + realistic_q - migrated)
+        floor_drafts = max(0, sealed_q + tuning_floor_q + realistic_q - migrated)
         new_drafts = max(approx, floor_drafts) + margin
         margin_used = margin
         drafts_rule = "pool_floor" if floor_drafts > approx else "families_approx"
@@ -1682,7 +1830,7 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
         raise Stop(EXIT_USAGE, "usage")
     pool_total = migrated + new_drafts
     # the default tuning quota is cmd_split's (compute_quotas): the pool less the sealed and the realistic quotas, so a
-    # pool large enough for the split gives a tuning quota of at least tuning_min (never printed negative)
+    # pool large enough for the split gives a tuning quota of at least the tuning floor (never printed negative)
     tuning_q = quota_tuning if quota_tuning is not None else max(0, pool_total - sealed_q - realistic_q)
     quotas: Dict[str, int] = {"tuning": tuning_q, "realistic": realistic_q}
     deficits = {"tuning": deficit(quotas["tuning"], tuning_refuse), "realistic": deficit(quotas["realistic"], realistic_refuse)}
@@ -1692,14 +1840,20 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
     needed = max(target - preassigned, deficits["tuning"] + deficits["realistic"])
     bands: Dict[str, str] = {}
     open_slots: Dict[str, int] = {}
+    # each split's reachable final refusal-family count; the pool's target must be coverable by the three together
+    intervals = {"sealed": refusal_interval(sealed_q)}
     for split in DEV_SPLITS:
         open_slots[split] = max(0, quotas[split] - families[split])
         too_many = BAND_MAX_DEN * refuse_have[split] > BAND_MAX_NUM * quotas[split]
-        bands[split] = "unreachable" if deficits[split] > open_slots[split] or too_many else "ok"
+        intervals[split] = refusal_interval(quotas[split], families[split], refuse_have[split])
+        empty = intervals[split][0] > intervals[split][1]
+        bands[split] = "unreachable" if deficits[split] > open_slots[split] or too_many or empty else "ok"
+    supply_lo, supply_hi = (sum(intervals[s][i] for s in SPLITS) for i in (0, 1))
+    supply = "ok" if supply_lo <= target <= supply_hi and all(lo <= hi for lo, hi in intervals.values()) else "unreachable"
     ctx.printer.emit(
-        "count_migrated", pairs=len(pairs), pair_scope_conflicts=conflicts, tutorial_exercises=len(tut),
+        "count_migrated", pairs=counts.pairs, pair_scope_conflicts=counts.conflicts, tutorial_exercises=counts.tutorial_families,
         tuning_families=tuning_n, tuning_refuse=tuning_refuse, tuning_quota=quotas["tuning"],
-        tuning_deficit=deficits["tuning"],
+        tuning_deficit=deficits["tuning"], tuning_floor=tuning_floor_q,
         realistic_families=realistic_n, realistic_refuse=realistic_refuse, realistic_quota=quotas["realistic"],
         realistic_deficit=deficits["realistic"],
         migrated_families=migrated, preassigned_refusals=preassigned, drafts=new_drafts, drafts_rule=drafts_rule,
@@ -1707,8 +1861,11 @@ def cmd_count_migrated(ctx: Ctx, golden: str, realistic: str, pairing: str, tuto
         pool_total=pool_total, refusal_target=target,
         refusal_drafts=needed, tuning_open=open_slots["tuning"], tuning_band=bands["tuning"],
         realistic_open=open_slots["realistic"], realistic_band=bands["realistic"],
+        sealed_quota=sealed_q,
+        **{f"{s}_refuse_{end}": max(0, intervals[s][i]) for s in SPLITS for i, end in enumerate(("min", "max"))},
+        supply_min=max(0, supply_lo), supply_max=max(0, supply_hi), supply=supply,
     )
-    if "unreachable" in bands.values():
+    if "unreachable" in bands.values() or supply == "unreachable":
         raise Stop(EXIT_REFUSED, "band_unreachable")
     return EXIT_OK
 
@@ -2147,9 +2304,15 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
     total = len(records)
     quota_doc = prereg["quota"]
     pinned_n = {s: sum(1 for v in supply["preassigned"].values() if v == s) for s in SPLITS}
+    pinned_refuse = {
+        s: sum(1 for f, v in supply["preassigned"].items() if v == s and records[f]["scope"] == "refuse") for s in SPLITS
+    }
     surplus = 0
     if round_no == 1:
-        quotas = compute_quotas(quota_doc, total, pinned_n["realistic"])
+        # the realistic quota is the smallest that can still end inside the refusal band over its pinned families and
+        # refusal families (quota.dev_quota_rule); tuning is the rest and must reach its own minimum feasible quota
+        quotas = compute_quotas(quota_doc, total, pinned_n["realistic"], pinned_refuse["realistic"])
+        tuning_needed = tuning_floor(quota_doc, pinned_n["tuning"], pinned_refuse["tuning"])
     else:
         # Each split's quota is its pinned families plus its replacements, i.e. round 1's quota (a split can only be
         # larger if more families were pinned into it since). Tuning is NOT "the rest": drafts beyond the replacement
@@ -2157,8 +2320,10 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         prior = ledger.load_payload(assign_name(1), releases[1]["payload_sha256"])["quotas"]
         quotas = {s: max(int(prior[s]), pinned_n[s]) for s in SPLITS}
         surplus = max(0, (total - sum(pinned_n.values())) - sum(quotas[s] - pinned_n[s] for s in SPLITS))
+        # round 1's released quotas are reused, never recomputed from the survivors: the minimum is the registered one
+        tuning_needed = int(quota_doc["tuning_min"])
     attempts = sum(1 for r in ledger.records("split_attempt") if r["round"] == round_no)
-    if quotas["tuning"] < int(quota_doc["tuning_min"]):
+    if quotas["tuning"] < tuning_needed:
         ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="quota_short", prereg_sha256=prereg_sha)
         ctx.printer.emit("split", round=round_no, outcome="quota_short", attempt=attempts + 1)
         return EXIT_SPLIT_INFEASIBLE

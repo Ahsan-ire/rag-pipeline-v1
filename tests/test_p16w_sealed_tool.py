@@ -214,19 +214,26 @@ def test_count_migrated_counts_families_by_split_and_each_splits_refusal_deficit
         {"id": "T01-Aa", "type": "direct"}, {"id": "T01-Ab", "type": "direct"}, {"id": "T01-Ba", "type": "refusal"}, {"id": "T01-Bb", "type": "refusal"})), encoding="utf-8")
     world.write_prereg()  # the refusal share (11/40) is read from it
     code, out, err = world.run("count-migrated", "--golden", gold, "--realistic", real, "--pairing", pairing, "--tutorial", tutorial,
-                               "--quota-tuning", "16", "--quota-realistic", "10", "--drafts", "27")
+                               "--quota-tuning", "18", "--quota-realistic", "10", "--drafts", "27")
     assert code == 0, err
     line = world.last(out, "count_migrated")
     assert (line["pairs"], line["tutorial_exercises"]) == ("2", "2")
     assert line["pair_scope_conflicts"] == "1"  # g1 is a refusal, r2 is not: the pair counts as a refusal and is flagged
     assert (line["tuning_families"], line["tuning_refuse"]) == ("6", "1")  # golden-only families go to tuning; g0 is the refusal
     assert (line["realistic_families"], line["realistic_refuse"]) == ("7", "3")  # 5 realistic rows (a pair is ONE family) + 2 exercises; r0, r2, T01-B
-    assert (line["tuning_quota"], line["tuning_deficit"]) == ("16", "3")  # 25 % of 16 is 4 refusal families, 1 present
+    # b2 (quota amendment): the quotas must add up to the pool now (sealed 12 + tuning 18 + realistic 10 = 40), because the pool's
+    # refusal target is checked against what the three splits can reach together
+    assert (line["tuning_quota"], line["tuning_deficit"]) == ("18", "4")  # 25 % of 18 is 4.5: 5 refusal families, 1 present
     assert (line["realistic_quota"], line["realistic_deficit"]) == ("10", "0")  # 25 % of 10 is 2.5: 3 refusal families, 3 present
     # b1a r2: the pool is the 13 migrated families plus the 27 drafts; 11/40 of 40 is 11 refusals, 4 of them preassigned
     assert (line["migrated_families"], line["preassigned_refusals"], line["pool_total"]) == ("13", "4", "40")
-    assert (line["refusal_target"], line["refusal_drafts"]) == ("11", "7")  # max(11 - 4, deficits 3 + 0)
-    assert (line["tuning_open"], line["tuning_band"], line["realistic_open"], line["realistic_band"]) == ("10", "ok", "3", "ok")
+    assert (line["refusal_target"], line["refusal_drafts"]) == ("11", "7")  # max(11 - 4, deficits 4 + 0)
+    assert (line["tuning_open"], line["tuning_band"], line["realistic_open"], line["realistic_band"]) == ("12", "ok", "3", "ok")
+    # each split's reachable final refusal count: sealed [3, 3] (quota 12), tuning [5, 5] (keeps its 1, 12 open slots, 5 to 5),
+    # realistic [3, 3]; together 11 to 11, and the target is 11
+    assert (line["sealed_quota"], line["sealed_refuse_min"], line["sealed_refuse_max"]) == ("12", "3", "3")
+    assert (line["tuning_refuse_min"], line["tuning_refuse_max"], line["realistic_refuse_min"], line["realistic_refuse_max"]) == ("5", "5", "3", "3")
+    assert (line["supply_min"], line["supply_max"], line["supply"]) == ("11", "11", "ok")
     assert_allowlisted(out)
     assert CANARY not in out + err
 

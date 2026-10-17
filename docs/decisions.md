@@ -2697,3 +2697,48 @@ Residuals from r3–r7 all stand. Chief among them:
 - out-of-band operator runs (r6).
 
 **Next:** the owner gives a go to push the prereg, which fixes it for the epoch. Then b2 begins with `sealed_tool epoch`.
+
+## D74 addendum — b2: realistic quota feasibility rule and T1/T7 migration labels (17 Oct 2026)
+**Context.** After the waiver, `phase-16a2b-data` was pushed at 1fcd3c0. The pushed prereg's sha256 was `6e4f19b1490a61217692088aa31d068507548a916981ca56d55232095f014ad6`. `sealed_tool epoch` then printed `prereg_sha256=none records=0`: no epoch was registered. b2's first `count-migrated` on the real inputs printed, in counts only:
+- 26 tuning families (5 refusals);
+- 49 realistic families (10 refusals);
+- 26 tutorial exercises and 9 pairs, with 0 pair-scope conflicts;
+- realistic quota 49, deficit 3, 0 open slots.
+
+It stopped with `band_unreachable`, a registered b2 owner stop. The cause was the realistic quota rule, `max(realistic_min, preassigned realistic)`. It leaves no slots for realistic's own refusal deficit once more than 42 families are preassigned.
+
+**Decision (owner-approved, after a design consult with Codex astra).** The consult: gpt-6-astra, xhigh, account `~/.codex-alt`. Completion COMPLETE; outcome AGREE-WITH-CHANGES on both proposals; all changes adopted.
+- **The general integer feasibility rule.** A development split's quota is `max(M, F, ⌈4(F−R)/3⌉, ⌈10R/3⌉)`: the smallest quota whose exact 25–30 % band is reachable from F preassigned families with R refusals, where M is the split's minimum.
+  - **Dilution term.** `⌈10R/3⌉` adds non-refusal slots when too many refusals are preassigned. The owner approved it explicitly.
+  - **Realistic** uses the rule at 42, which gives 52 here.
+  - **Tuning** is the rest of the pool and must be at least its own feasible floor (the rule at 60). That floor also enters the attempt-1 draft size.
+  - **Refusal supply.** `count-migrated` checks that the pool's refusal target fits the sum of the three splits' reachable refusal intervals: 45–51 here, against a target of 50.
+  - **Round 2** reuses round 1's quotas.
+  - **One function** implements the rule for both `count-migrated` and `split`. A brute-force test checks it against the splitter's exact band.
+- **Realistic 52 is minimal by owner choice.** There is no realistic margin. Every open realistic slot must be a refusal, so a rejected one is replaced in round 2.
+
+**T1/T7 migration labels (owner decisions).**
+- **Families.** The 24 exercise rows become 24 families. The 2 document-specific refusal variants, already split off in the candidate files, become 2 tutorial refusal families. That makes 26, which matches the counter.
+- **Phrasings.** A family keeps its first up-to-3 phrasings, in file order, that share the family's label.
+- **The 10 PARTIAL exercises.**
+  - 5 carry gaps drafted by Claude Opus. The drafter's inputs were the questions, expected sections and check notes, with the retrieval-rank tables removed. It wrote an annotation record and passed a synthetic matcher check, and its output is marked draft.
+  - The other 5 were relabelled `answer` by the owner (T01-A, T07-Ba, T07-Ca, T07-Cc, T07-D), because their notes name no missing concept. T01-A is also flagged as a twin candidate of a golden row for b4.
+- **b5.** The owner validates all 10 families and the phrasing selections.
+
+**Why:** this is a deterministic feasibility correction. It was made after seeing label counts only, never retrieval results or answers. The original rule could not satisfy its own registered band.
+
+**Rejected:**
+- Accepting a below-band realistic split, which loosens a registered band.
+- Dropping migrated families, which breaks the placement rule.
+- A one-off `--quota-realistic 52`: `split` recomputes the quota, so the override would not hold.
+- Migrating the PARTIAL rows as `answer` without owner review, which writes a knowingly wrong label.
+
+**Commitment record.**
+- The original pushed prereg stays in history: sha256 `6e4f19b1…14ad6`, commit 1fcd3c0.
+- The amended prereg's sha256 is `9147bcde0d2d293712637c540eb9ac0117f23bf167898fcaf1c2795244b88c1f`. The first data dispatch will register it as the epoch.
+- **Migration outputs** (private, gitignored; digests only):
+  - `tuning_migrated.jsonl` `5d9fe7d1…d61b`: 26 families, 26 rows, 5 refusals.
+  - `realistic_migrated.jsonl` `fa5d67cf…a877`: 49 families, 102 rows, 10 refusals, 5 partial.
+  - `migration_map.json` `298e9c19…609b`.
+  - Labels file `67d96445…5a94`.
+- **`count-migrated` after the amendment:** realistic 52, tuning 68 (floor 60), both bands ok, refusal supply 45–51 against a target of 50.
