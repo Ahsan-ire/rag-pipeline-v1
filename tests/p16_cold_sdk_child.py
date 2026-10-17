@@ -127,6 +127,9 @@ def main() -> None:
             run.on_llm_end(LLMResult(generations=[[ChatGeneration(message=message)]]))
             return message
 
+    from src import seams
+
+    seams.TEST_SEAMS = True  # this child is test code in its own process: the meter's inner_factory is a test seam (r7, T1)
     meter = spend.SpendMeter(
         spend.load_prices(PRICES), None, 1.0, models=MODELS,
         inner_factory=lambda kind: RawSDKChat(), sleep=lambda s: None, max_attempts=1,

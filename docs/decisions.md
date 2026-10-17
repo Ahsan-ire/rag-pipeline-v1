@@ -2614,3 +2614,32 @@ What is now registered:
 **Rejected:**
 - Keeping `record-draw` with stronger validation: recording after the fact is the selection problem itself.
 - Making the judge use `retriever.format_context`: a candidate could then change what the judge sees while keeping the judge hash.
+
+## D74 addendum — prereg plan gate r7, targeted (17 Oct 2026)
+**Decision:** every r7 finding on 52b74fd is accepted, through a targeted round the owner chose. Codex (sol, xhigh) was COMPLETE with outcome REVISE: 1 BLOCKER, 3 MAJOR, 1 RESIDUAL-CLASS. The plan-auditor returned FAIL: 0 BLOCKER, 3 MAJOR, 6 MINOR, 3 RESIDUAL-CLASS. The owner's end rule for this gate: if r8 has no blocker and only residual-class findings, prepare an owner waiver; otherwise report and recommend waiving.
+
+| Finding | Disposition |
+|---|---|
+| Codex BLOCKER: injectable scanner and judge on `run_slot` / `recover_slot` / `matrix_kwargs` | FIXED: every seam is test-only (`src.seams.TEST_SEAMS`) |
+| Codex M3, auditor M1: the judge client builder, the meter wrapper and the judge-path packages | FIXED: all three are in the judge identity |
+| Codex M2, auditor m3: scorer glue in `evaluator.py` | FIXED: moved to the hashed `scoring_glue.py`; counted draws carry the scorer identity, and the batch requires it to equal the incumbent's |
+| Codex M4, auditor m2: a no-op recorder; unlogged failures | FIXED: the ledger is verified before any output; failures are logged; the hash is re-taken at both ends |
+| Auditor M2: batch modes not bound to draw modes | FIXED |
+| Auditor M3: rewrite fallbacks in counted draws (`llm_transport` timeouts) | FIXED: fallback draws are voided and logged, not counted |
+| Auditor m1: late exclusions; unhashed scanner inputs | FIXED: `exclusion_late`; `scan_inputs` |
+| Auditor m4: 16B outline errors | CORRECTED |
+| Auditor m5: no pre-freeze smoke path | FIXED: `--preflight-only`, run first in b7 |
+| Auditor m6: script imports unscanned | FIXED: `sp_launch.py` is hashed; one registered inert import (`sp_launch` → `sealed_tool`, only in `check_prereg_valid`) |
+| Codex R5: raw `record_batch_declaration` accepts a low `draws_required` | RESIDUAL (raw primitive; the installed `declare-batch` passes the prereg's value) |
+
+**Dependency:** `packaging==26.2` is now pinned in `requirements.txt`. The judge-runtime dependency closure imports it directly, to parse requirement strings. It was already installed as a hard transitive requirement of langchain-core and pytest. The alternative, hand-parsing requirement strings, was rejected because it is error-prone.
+
+**Residuals added:**
+- **Kill before record.** A `--record-draw` process can be killed after its rows sidecar is written and before the ledger record. The logging `finally` then does not run. This needs deliberate process control.
+- **Edit-run-revert.** Code edited during a run and reverted before the second hash take is not detected. The hash is taken at both ends of the run, not continuously.
+- **Library parameters.** `run_slot(ledger=...)` still accepts a caller-supplied ledger object, and `record_batch_declaration` accepts any `draws_required`. Both are raw library parameters, used correctly by the installed entry points.
+- **The handbook dump.** `scan_inputs` digests it, so regenerating the dump changes the incumbent hash.
+
+Earlier residuals stand. The two that matter most are r6's operator out-of-band runs and r3's batch declared after slot 0's aggregates.
+
+**Why:** r7 removed the last ways that installed entry points let a caller replace the measuring instruments (scanner, judge, recorder). It also closed the remaining gaps in the judge and scorer identities, and bound each candidate's declared mode to how its draws were made.

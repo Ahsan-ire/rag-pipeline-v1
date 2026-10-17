@@ -126,10 +126,12 @@
       "spent_slot_counts": true,
       "modes": [
         "replay",
-        "candidate"
+        "candidate",
+        "abandoned"
       ],
+      "mode_binding": "replay_entries_need_replay_draws_candidate_entries_need_build_draws_and_a_new_rewrite_identity",
       "mode_declared_by": "batch_declaration",
-      "candidate_identity": "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim",
+      "candidate_identity": "config_hash_is_pipeline_config_v4_checked_by_16b_gate_before_claim",
       "rewrite_identity": "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim",
       "embargo_lifted_by": "16b_reviewed_code_change_with_identity_check",
       "requires": [
@@ -157,6 +159,7 @@
       "draws_recorded_by": "pipeline_eval_record_draw_in_run",
       "unrecorded_runs": "never_count_and_are_logged_per_config",
       "abandoned": "counts_toward_k",
+      "fallback_draws": "void_logged_not_counted",
       "all_recorded_candidates_declared": true
     },
     "unsupported_claims": {
@@ -180,7 +183,7 @@
     },
     "scoring": {
       "identity": "scorer_identity_v1",
-      "compare": "candidate_and_slot0_equal",
+      "compare": "candidate_and_slot0_equal_and_counted_draws_equal_incumbent_draws",
       "covers": [
         "eval_cohort.py",
         "eval_schema.py",
@@ -191,6 +194,7 @@
         "judge_prep.py",
         "sealed_groups.py",
         "sealed_results.py",
+        "scoring_glue.py",
         "text_utils.py",
         "generator.py:_sections_related",
         "generator.CAVEAT_PREFIX",
@@ -202,7 +206,8 @@
         "eval/absorbed_sections.json",
         "eval/section_inventory.json"
       ]
-    }
+    },
+    "exclusions": "confirmatory_comparison_uses_exclusions_recorded_before_slot0_store_plus_each_confirmatory_slots_own_s_hit_exclusions_applied_to_both_arms"
   },
   "controls": {
     "rule": "c1",
@@ -504,7 +509,7 @@
     ]
   },
   "incumbent": {
-    "config_fn": "pipeline_config_v3",
+    "config_fn": "pipeline_config_v4",
     "components": [
       "version",
       "code",
@@ -516,7 +521,8 @@
       "fusion",
       "rewrite",
       "generation",
-      "scoring_inputs"
+      "scoring_inputs",
+      "scan_inputs"
     ],
     "code": "all_src_modules_except_code_excluded_and_hashed_scripts",
     "code_excluded": [
@@ -544,7 +550,11 @@
       "tracing_guard.py:tracing_problems"
     ],
     "code_scripts": [
-      "scan_leaks.py"
+      "scan_leaks.py",
+      "sp_launch.py"
+    ],
+    "code_scripts_inert_imports": [
+      "sp_launch.py:sealed_tool.py"
     ],
     "excluded": [
       "timeouts_retries",
@@ -559,7 +569,7 @@
       "0",
       "0b"
     ],
-    "candidates": "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate"
+    "candidates": "batch_entry_config_hash_is_pipeline_config_v4_of_the_candidate"
   },
   "judge": {
     "required_on": [
@@ -572,7 +582,7 @@
     ],
     "model": "claude-sonnet-5",
     "prompt_version": "faithfulness-judge-v1",
-    "config_hash": "7129469ad7298be76755ddde15dfedadb1fbe72d42640f3fb72818a98ec47976",
+    "config_hash": "35fe6f283272b3bb17d33a966facb8cdcf650c7918d339bdaa26af238ee7d10a",
     "sample": "all_eligible",
     "eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
     "rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
@@ -588,7 +598,10 @@
       "scoring",
       "endpoint",
       "preparation",
-      "client_construction"
+      "client_construction",
+      "client_builder",
+      "metering_wrapper",
+      "judge_runtime"
     ],
     "errors": "any_sealed_judge_error_means_not_shown"
   }

@@ -139,7 +139,10 @@ def test_declare_batch_needs_the_freeze_the_controls_validates_and_appends_once(
         code, out, err = world.run("declare-batch", *bad)
         assert code == st.EXIT_REFUSED and "reason=batch_invalid" in err and out == "", bad
     assert world.ledger().batch_declaration() is None
-    record_draws(world.ledger(), a, b)  # r5: the batch's candidates have their draws recorded (the coverage rules: r5 tests)
+    # r5: the batch's candidates have their draws recorded (the coverage rules: r5 tests). r7: a replay entry's draws are replay
+    # draws of the incumbent's, a candidate entry's are build draws under its own rewrite identity (the binding: r7 tests)
+    record_draws(world.ledger(), a, mode="replay")
+    record_draws(world.ledger(), b, rewrite=rewrite)
     code, out, err = world.run("declare-batch", *cand(a), *cand(b, "candidate"))
     assert code == 0, err
     line = world.last(out, "batch_declared")

@@ -123,7 +123,17 @@ is the same cap and controls rule as a pre-check (``pipeline eval --record-draw`
 ``record_dev_run_unrecorded`` appends a ``dev_run_unrecorded`` record (the run's configuration hash or ``None``, and its
 run id) for every ``pipeline eval`` run over a frozen tuning or realistic version that was not a ``--record-draw`` run,
 before the run prints its results. Such a run never counts, but it is visible: ``dev_unrecorded_counts()`` counts them per
-configuration (``sealed_tool audit`` prints the counts).
+configuration (``sealed_tool draws`` prints the counts). Since r7 a ``--record-draw`` run whose record failed or was refused
+at or after the sidecar write is logged the same way, with ``reason`` ``record_failed``.
+
+Since r7 a ``dev_draw`` also stores the draw's ``mode`` (``build`` or ``replay``; one configuration's draws are all one mode),
+``replay_of`` (the incumbent draw number, or null), the ``rewrite_config_hash`` of its expansions and the run's
+``scorer_identity`` (the last two from the rows sidecar). A draw whose rewrite fell back for any question is not recorded:
+``record_dev_draw_void`` logs a ``dev_draw_void`` (configuration hash, run id, reason ``rewrite_fallback``) instead, and the
+draw consumes no index. ``record_batch_declaration`` binds the batch to those fields (``DrawBindingRefused``): the counted
+draws of every runnable entry carry the incumbent's scorer identity; a ``replay`` entry's are replay draws of the incumbent's
+same-index draws; a ``candidate`` entry's are build draws under a rewrite identity that is the entry's and is not the
+incumbent's.
 
 ``record_batch_declaration(candidates, draws_required=...)`` enforces the draw coverage unconditionally (``draws_required`` is
 the prereg's ``draws_r`` and has no default): every runnable candidate has at least that many recorded draws, every recorded
@@ -143,7 +153,9 @@ was made) and the gate resolves ``excluded_families()`` against the freeze-bound
 groups at run time instead of trusting the recorded name.
 ``exclusions_digest`` and ``SealedLedger.exclusions_at_freeze`` give the digest
 the sealed freeze binds, so the slot gate re-checks it from the ledger itself
-(no separate exclusion file).
+(no separate exclusion file). Since r7 an exclusion also records ``slots_stored``, the slots whose results were stored when it
+was made, so the confirmatory comparison can use the exclusions recorded before slot 0 was stored plus each confirmatory
+slot's own ``s_hit`` ones (prereg ``adoption.exclusions``).
 
 Errors are ``BaseException`` subclasses, like D70's, so no broad
 ``except Exception`` can turn a refusal into a fall-through.
@@ -193,6 +205,7 @@ KINDS = (
     "controls",
     "dev_draw",
     "dev_run_unrecorded",
+    "dev_draw_void",
 )
 
 #: The only fields of a record the committed mirror may carry besides the
@@ -208,11 +221,23 @@ MIRROR_DIGEST_FIELDS: Dict[str, tuple] = {
     "controls": ("controls_sha256", "draws_sha256", "prereg_sha256", "incumbent_config_hash"),
     "dev_draw": ("config_hash", "artifact_sha256", "rows_sidecar_sha256"),
     "dev_run_unrecorded": ("config_hash",),
+    "dev_draw_void": ("config_hash",),
     "publication_intent": ("results_digest",),
 }
 
 #: The confirmatory batch holds at most this many candidates (slots 1..K_MAX).
 K_MAX = 4
+
+#: How a development draw was made: ``build`` (live expansion, frozen into a new artifact) or ``replay`` (a candidate's draw
+#: replays the incumbent's draw of the same index). One configuration's draws are all one mode.
+DRAW_MODES = ("build", "replay")
+
+#: Why a draw was voided instead of recorded (``record_dev_draw_void``): a rewrite fell back to the raw query during the draw.
+DRAW_VOID_REASONS = ("rewrite_fallback",)
+
+#: Why a ``--record-draw`` run left only an ``dev_run_unrecorded`` record: its record failed, or was refused, at or after the
+#: sidecar write.
+UNRECORDED_REASONS = ("record_failed",)
 
 #: At most this many distinct pipeline configurations may ever have ``dev_draw`` records in an epoch: the incumbent's
 #: and up to ``K_MAX`` candidates' (prereg ``adoption.development_evidence.recorded_configs_max`` counts the candidates).
@@ -298,6 +323,11 @@ class ProtocolError(SealedLedgerError):
 
 class DrawCoverageRefused(ProtocolError):
     """``record_batch_declaration`` refused: the recorded development draws do not cover the batch (b1a r5)."""
+
+
+class DrawBindingRefused(ProtocolError):
+    """``record_batch_declaration`` refused: the counted draws are not bound to the batch entry's mode, or to the
+    incumbent's scorer, as the entry requires (b1a r7)."""
 
 
 class SlotRefused(ProtocolError):
@@ -727,6 +757,11 @@ def _check_draw_config(records: Sequence[Mapping[str, Any]], config: str) -> Non
             raise ProtocolError(f"at most {DEV_DRAW_CONFIGS_MAX} pipeline configurations may have recorded draws")
 
 
+def _draw_mode(record: Mapping[str, Any]) -> str:
+    """A ``dev_draw`` record's mode (``build`` or ``replay``); a record without one is read as its ``replay_of`` says."""
+    return record.get("mode") or ("replay" if record.get("replay_of") is not None else "build")
+
+
 def exclusions_digest(groups: Iterable[str]) -> str:
     """sha256 of the canonical JSON list of the sorted, distinct group ids (what the sealed freeze binds)."""
     return hashlib.sha256(_dumps(sorted(set(groups)))).hexdigest()
@@ -1072,8 +1107,53 @@ class SealedLedger:
             undeclared = set(drawn) - {controls["incumbent_config_hash"]} - {c["config_hash"] for c in cands}
             if undeclared:
                 raise DrawCoverageRefused("a configuration with recorded development draws is not in the batch")
+            self._check_draw_binding(txn.records, cands, controls["incumbent_config_hash"], draws_required)
             txn.append("batch_declaration", candidates=cands, candidates_sha256=digest)
         return digest
+
+    @staticmethod
+    def _check_draw_binding(
+        records: Sequence[Mapping[str, Any]], cands: Sequence[Mapping[str, str]], incumbent: str, draws_required: int,
+    ) -> None:
+        """The counted draws (the first ``draws_required`` per configuration) are the evidence the entry's mode claims (r7).
+
+        * every runnable entry's counted draws were scored by the incumbent's scorer: one ``scorer_identity``, equal to the one
+          the incumbent's counted draws carry (an incumbent with no counted draw, or counted draws that disagree among
+          themselves, cannot be compared with);
+        * a ``replay`` entry's counted draws are all ``replay`` draws and draw ``i`` replays the incumbent's draw ``i``;
+        * a ``candidate`` entry's counted draws are all ``build`` draws, their rewrite identity is the entry's
+          ``rewrite_config_hash`` and that is not the identity of the incumbent's counted draws (a candidate declared
+          rewrite-changing must change the rewrite).
+
+        An ``abandoned`` entry is never run and is not compared.
+
+        Raises:
+            DrawBindingRefused: any rule above.
+        """
+        def counted(config: str) -> List[Mapping[str, Any]]:
+            return [r for r in records if r["kind"] == "dev_draw" and r["config_hash"] == config][:draws_required]
+
+        incumbent_draws = counted(incumbent)
+        incumbent_scorers = {r.get("scorer_identity") for r in incumbent_draws}
+        incumbent_rewrites = {r.get("rewrite_config_hash") for r in incumbent_draws}
+        for c in cands:
+            if c["expansion"] == ABANDONED:
+                continue
+            mine = counted(c["config_hash"])
+            scorers = {r.get("scorer_identity") for r in mine}
+            if len(incumbent_scorers) != 1 or None in incumbent_scorers or scorers != incumbent_scorers:
+                raise DrawBindingRefused("a batch candidate's counted draws were not scored by the incumbent's scorer identity")
+            if c["expansion"] == "replay":
+                if any(_draw_mode(r) != "replay" or r.get("replay_of") != r["draw_index"] for r in mine):
+                    raise DrawBindingRefused("a replay entry's counted draws must be replay draws of the incumbent's same-index draws")
+            else:
+                rewrite = c["rewrite_config_hash"]
+                if any(_draw_mode(r) != "build" for r in mine):
+                    raise DrawBindingRefused("a candidate entry's counted draws must be build draws")
+                if {r.get("rewrite_config_hash") for r in mine} != {rewrite}:
+                    raise DrawBindingRefused("a candidate entry's rewrite identity is not the one its counted draws were made under")
+                if rewrite in incumbent_rewrites:
+                    raise DrawBindingRefused("a candidate entry's rewrite identity must differ from the incumbent's")
 
     def batch_declaration(self) -> Optional[Dict[str, Any]]:
         """The batch declaration record, or ``None`` before it."""
@@ -1149,13 +1229,20 @@ class SealedLedger:
 
     def record_dev_draw(
         self, config_hash: str, artifact_sha256: str, rows_sidecar_sha256: str, execution_receipt: str,
-        *, replay_of: Optional[int] = None,
+        *, scorer_identity: str, rewrite_config_hash: str, replay_of: Optional[int] = None,
     ) -> int:
         """Record a development draw (b7) that may count: its pipeline configuration, expansion artifact, rows sidecar and run.
 
         The three digests are 64-hex; ``execution_receipt`` is the run id of the run that produced the draw
-        (``[A-Za-z0-9_-]{3,64}``). The ledger assigns the draw's per-configuration index (1 for the first record
+        (``[A-Za-z0-9_-]{3,64}``). ``scorer_identity`` (the sidecar's: ``src.scoring_identity``) and ``rewrite_config_hash``
+        (the sidecar's expansion ``config_hash``: the rewrite model, prompt and caps the draw's expansions came from) are
+        64-hex too and are what ``record_batch_declaration`` binds the batch entries to (r7). The record also stores the draw's
+        ``mode`` (``replay`` iff ``replay_of`` is given, else ``build``) and ``replay_of`` (the incumbent draw number or null).
+        The ledger assigns the draw's per-configuration index (1 for the first record
         under ``config_hash``, 2 for the next...) and returns it. Raises ``ProtocolError`` for:
+
+        * a mode that differs from the mode of the configuration's earlier draws (one configuration is all ``build`` or all
+          ``replay``);
 
         * a configuration beyond the cap: at most ``DEV_DRAW_CONFIGS_MAX`` (5) distinct configuration hashes may ever
           have records (the incumbent's and four candidates');
@@ -1171,17 +1258,21 @@ class SealedLedger:
         artifact = _hex64(artifact_sha256, "artifact_sha256")
         sidecar = _hex64(rows_sidecar_sha256, "rows_sidecar_sha256")
         receipt = _token(execution_receipt, "execution_receipt", _RUN_ID)
+        scorer = _hex64(scorer_identity, "scorer_identity")
+        rewrite = _hex64(rewrite_config_hash, "rewrite_config_hash")
         if replay_of is not None and (isinstance(replay_of, bool) or not isinstance(replay_of, int) or replay_of < 1):
             raise ValueError("replay_of is the number (>= 1) of the incumbent's draw that was replayed")
+        mode = "build" if replay_of is None else "replay"
         with self._txn() as txn:
             draws = [r for r in txn.records if r["kind"] == "dev_draw"]
             _check_draw_config(txn.records, config)
+            if any(r["config_hash"] == config and _draw_mode(r) != mode for r in draws):
+                raise ProtocolError("a configuration's draws are all build draws or all replay draws")
             if any(r["rows_sidecar_sha256"] == sidecar for r in draws):
                 raise ProtocolError("this draw's rows sidecar is already recorded")
             if any(r.get("execution_receipt") == receipt for r in draws):
                 raise ProtocolError("this draw's execution receipt is already recorded")
             index = 1 + sum(1 for r in draws if r["config_hash"] == config)
-            fields: Dict[str, Any] = {}
             if replay_of is not None:
                 controls = next((r for r in txn.records if r["kind"] == "controls"), None)
                 if controls is None:
@@ -1193,12 +1284,42 @@ class SealedLedger:
                     raise ProtocolError("a replay draw's artifact is not the incumbent draw's artifact")
                 if index != replay_of:
                     raise ProtocolError("a replay draw's index must equal the incumbent draw it replays")
-                fields["replay_of"] = replay_of
             txn.append(
                 "dev_draw", config_hash=config, draw_index=index, artifact_sha256=artifact, rows_sidecar_sha256=sidecar,
-                execution_receipt=receipt, **fields,
+                execution_receipt=receipt, mode=mode, replay_of=replay_of, rewrite_config_hash=rewrite,
+                scorer_identity=scorer,
             )
         return index
+
+    def record_dev_draw_void(self, config_hash: str, run_id: str, reason: str) -> None:
+        """Log a development draw that was voided instead of recorded (r7): its run had a rewrite fallback.
+
+        A draw whose expansion fell back to the raw query for any question (a rewrite timeout, say) is not a draw of the
+        configuration: its ranks depend on a transport failure. ``pipeline eval --record-draw`` appends this record in place
+        of a ``dev_draw``; the run releases nothing, the draw does not count and **consumes no index**, so the configuration's
+        next draw takes the number the voided one would have had. The record is digests and an enum only (the mirror carries
+        the configuration hash). A run id that is already a recorded draw's receipt, or already voided, is refused.
+
+        Raises:
+            ProtocolError: the run id is already recorded as a draw or as a void.
+            ValueError: a malformed hash or run id, or a reason that is not in :data:`DRAW_VOID_REASONS`.
+        """
+        config = _hex64(config_hash, "config_hash")
+        rid = _token(run_id, "run_id", _RUN_ID)
+        if reason not in DRAW_VOID_REASONS:
+            raise ValueError(f"reason must be one of {DRAW_VOID_REASONS}")
+        with self._txn() as txn:
+            for r in txn.records:
+                if (r["kind"] == "dev_draw" and r.get("execution_receipt") == rid) or (
+                    r["kind"] == "dev_draw_void" and r.get("run_id") == rid
+                ):
+                    raise ProtocolError("this run is already recorded as a draw or as a void")
+            txn.append("dev_draw_void", config_hash=config, run_id=rid, reason=reason)
+
+    def dev_draw_voids(self, config_hash: str) -> List[Dict[str, Any]]:
+        """The ``dev_draw_void`` records of one pipeline configuration, in the order they were logged."""
+        config = _hex64(config_hash, "config_hash")
+        return [r for r in self.records("dev_draw_void") if r["config_hash"] == config]
 
     def dev_draws(self, config_hash: str) -> List[Dict[str, Any]]:
         """The ``dev_draw`` records of one pipeline configuration, in the order they were recorded (index 1, 2, ...)."""
@@ -1213,16 +1334,23 @@ class SealedLedger:
                 seen.append(r["config_hash"])
         return seen
 
-    def record_dev_run_unrecorded(self, config_hash: Optional[str], run_id: str) -> None:
+    def record_dev_run_unrecorded(self, config_hash: Optional[str], run_id: str, reason: Optional[str] = None) -> None:
         """Log a ``pipeline eval`` run over a frozen development version that was not a ``--record-draw`` run.
 
         ``config_hash`` is the run's pipeline configuration hash (``None`` when the run had no index to identify) and
         ``run_id`` its private run id. The run never counts; the record makes it visible (``dev_unrecorded_counts``).
+        ``reason`` (r7) is ``record_failed`` for a ``--record-draw`` run whose record failed or was refused at or after the
+        sidecar write (:data:`UNRECORDED_REASONS`), stored only when given: a run without ``--record-draw`` has none.
         """
         config = None if config_hash is None else _hex64(config_hash, "config_hash")
         rid = _token(run_id, "run_id", _RUN_ID)
+        fields: Dict[str, Any] = {}
+        if reason is not None:
+            if reason not in UNRECORDED_REASONS:
+                raise ValueError(f"reason must be one of {UNRECORDED_REASONS}")
+            fields["reason"] = reason
         with self._txn() as txn:
-            txn.append("dev_run_unrecorded", config_hash=config, run_id=rid)
+            txn.append("dev_run_unrecorded", config_hash=config, run_id=rid, **fields)
 
     def dev_unrecorded_counts(self) -> Dict[str, int]:
         """``{configuration hash (or "none"): number of unrecorded development runs}`` in the order first logged."""
@@ -1488,6 +1616,10 @@ class SealedLedger:
         ``None`` means ``[group_id]``, the group's own smallest-member name. The
         gate resolves the families (``excluded_families``) against the frozen
         groups at run time, so a group renamed by a later rejection still resolves.
+
+        The record also stores ``slots_stored`` (r7): the slots whose results were stored when the exclusion was made. The
+        confirmatory comparison uses the exclusions recorded before slot 0 was stored, plus each confirmatory slot's own
+        ``s_hit`` exclusions applied to both arms (prereg ``adoption.exclusions``), and this field is what tells them apart.
         """
         fields: Dict[str, Any] = {"group_id": _token(group_id, "group_id", _ID), "reason": _token(reason, "reason")}
         if members is None:
@@ -1499,7 +1631,13 @@ class SealedLedger:
             raise ValueError("an exclusion names at least one member family")
         fields["members"] = names
         with self._txn() as txn:
+            fields["slots_stored"] = sorted(sid for sid, state in txn.slots.items() if state.stored is not None)
             txn.append("exclusion", **fields)
+
+    def stored_slots(self) -> List[str]:
+        """The slots whose results are stored so far (a4 step 3), sorted: the slot state an exclusion is made in."""
+        with self._txn() as txn:
+            return sorted(sid for sid, state in txn.slots.items() if state.stored is not None)
 
     def exclusions(self) -> FrozenSet[str]:
         """The group ids excluded so far."""

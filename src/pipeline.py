@@ -653,6 +653,14 @@ Examples:
         "ledger recovers it from storage and never makes a fresh call",
     )
     eval_parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="With --sealed-slot: the pre-freeze smoke. Run every gate and the preflight (the embedding model, index and BM25 "
+        "sidecar a default path loads) with the same command line as the real run, and claim nothing, call no model and "
+        "record nothing. The gates that need the ledger's controls record (controls, incumbent) report 'pending' while it "
+        "does not exist yet instead of refusing; exit 0 when every other gate passes",
+    )
+    eval_parser.add_argument(
         "--prereg",
         default=None,
         help="With --sealed-slot: the pre-registration JSON (per-slot expansion mode, floor)",
@@ -772,6 +780,9 @@ def _eval_command(args: argparse.Namespace) -> int:
     if args.replay_incumbent_draw is not None and not args.record_draw:
         print("[eval] --replay-incumbent-draw needs --record-draw", file=sys.stderr)
         return EXIT_USAGE
+    if args.preflight_only and args.sealed_slot is None:
+        print("[eval] --preflight-only needs --sealed-slot", file=sys.stderr)
+        return EXIT_USAGE
     if args.record_draw:
         return _record_draw_command(args, set_specs, modes)
 
@@ -890,10 +901,13 @@ def _record_draw_command(args: argparse.Namespace, set_specs: list, modes: list)
 
     The draw's inputs, expansion, modes, cut-off, prereg and ledger are checked before any call
     (``sealed_run.check_record_draw``; exit 4 with the gate name). The run is an ordinary private report-v6 run
-    (``run_eval_matrix``) with a recorder: after the expansion artifact and the rows sidecar are written, and before the
-    report is written or anything is printed, the recorder checks the sidecar against the plan
-    (``sealed_run.validate_draw_sidecar``) and appends the ``dev_draw`` record (pipeline configuration hash, artifact sha256,
-    sidecar sha256, the run id as the execution receipt). A run that stops before that point leaves no countable draw.
+    (``run_eval_matrix``) with a recorder (``sealed_run.DrawRecorder``): after the expansion artifact and the rows sidecar are
+    written, and before the report is written or anything is printed, the recorder checks the sidecar against the plan
+    (``sealed_run.validate_draw_sidecar``), takes the pipeline hash again and appends the ``dev_draw`` record (pipeline
+    configuration hash, artifact sha256, sidecar sha256, the run id as the execution receipt, the scorer and rewrite
+    identities), and the run checks the ledger holds it. A run that stops before that point leaves no countable draw (and,
+    from the sidecar write on, a ``dev_run_unrecorded`` record); a draw in which a rewrite fell back is voided (a
+    ``dev_draw_void`` record, no index used) and releases nothing.
     Everything printed is a count, a hash or a gate name; exit codes as for ``pipeline eval`` (3 and 6 the spend limits,
     4 a refusal, 8 a ledger stop).
     """
@@ -902,7 +916,7 @@ def _record_draw_command(args: argparse.Namespace, set_specs: list, modes: list)
     from src.eval_sets import floor
     from src.evaluator import run_eval_matrix
     from src.generator import api_key_usable
-    from src.sealed_ledger import ProtocolError, SealedLedgerError
+    from src.sealed_ledger import SealedLedgerError
     from src.spend import SpendLimitReached, SpendMeter, SpendMeterError, load_prices
 
     def refuse(gate: str, detail: Optional[str] = None) -> int:
@@ -956,20 +970,12 @@ def _record_draw_command(args: argparse.Namespace, set_specs: list, modes: list)
                 print(f"[eval] spend: run EUR {meter.run_total_eur:.4f}, week EUR {meter.week_total_eur:.4f} "
                       f"(ceiling EUR {meter.ceiling_eur:.2f})", file=sys.stderr)
 
-        def recorder(*, run_id: str, artifact_path: str, artifact_sha256: str, sidecar_path: str,
-                     sidecar_sha256: str, sidecar: dict) -> None:
-            """Validate the finished draw and append its ledger record; the run prints nothing until this returns."""
-            sealed_run.validate_draw_sidecar(
-                sidecar, plan=plan, artifact_path=artifact_path, artifact_sha256=artifact_sha256, run_id=run_id,
-            )
-            try:
-                index = ledger.record_dev_draw(
-                    plan.config_hash, artifact_sha256, sidecar_sha256, run_id, replay_of=plan.replay_of,
-                )
-            except ProtocolError:
-                raise sealed_run.GateRefused("draw_ledger") from None
-            print(f"[eval] draw recorded: config={plan.config_hash} index={index} "
-                  f"draws={len(ledger.dev_draws(plan.config_hash))} receipt={run_id}")
+        # The recorder is the module's own object (not a function of ours): it validates the finished draw, takes the pipeline
+        # hash again right before the record and appends the ledger record; the run prints nothing until it returns, and the
+        # evaluator then checks the ledger really holds that record (r7).
+        recorder = sealed_run.DrawRecorder(
+            ledger=ledger, plan=plan, persist_directory=args.persist_directory, top_k=args.top_k,
+        )
 
         run_eval_matrix(
             set_specs,
@@ -989,7 +995,9 @@ def _record_draw_command(args: argparse.Namespace, set_specs: list, modes: list)
         )
     except sealed_run.GateRefused as exc:
         detail = f" ({exc.detail})" if exc.detail else ""
-        print(f"[eval] record-draw refused: gate={exc.gate}{detail}; nothing was recorded", file=sys.stderr)
+        outcome = ("the draw was voided and logged (dev_draw_void); it counts for nothing and used no draw index"
+                   if exc.gate == "draw_void" else "nothing was recorded")
+        print(f"[eval] record-draw refused: gate={exc.gate}{detail}; {outcome}", file=sys.stderr)
         return EXIT_SEALED
     except SpendLimitReached as exc:
         run_totals()
@@ -1028,6 +1036,11 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     or guard name; never a path, a row id or text. Exit codes: 4 a gate refused,
     5 the pre-publication scan could not clear the report, 8 a sealed epoch stop
     (lost or tampered ledger, below the floor), 3 and 6 the spend limits.
+
+    ``--preflight-only`` (r7) is the pre-freeze smoke: the same command line, but only the gates and the preflight run. It never
+    recovers or finishes a stored slot (a slot already in the ledger is a ``claim`` refusal), claims nothing, calls no model and
+    writes nothing; the gates that need the controls record are reported ``pending`` while it does not exist. The plan runs it
+    once before the first recorded draw, so a defect in a gate shows up before the code is frozen into the identity.
     """
     from pathlib import Path
 
@@ -1064,7 +1077,8 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
     try:
         ledger = sealed_run.default_ledger()
         records_dir = Path(args.slot_records) if args.slot_records else sealed_run.default_records_dir()
-        outcome = sealed_run.recover_slot(args.sealed_slot, ledger=ledger)
+        # (the smoke never recovers: recovery would finish a stored slot, and the smoke touches nothing)
+        outcome = None if args.preflight_only else sealed_run.recover_slot(args.sealed_slot, ledger=ledger)
         if outcome is None:
             # A fresh slot. Everything that could refuse without spending the slot is checked first.
             sealed_paths = [p for _l, p in set_specs if eval_sets.is_sealed(p)]
@@ -1112,7 +1126,25 @@ def _sealed_slot_command(args: argparse.Namespace, set_specs: list, modes: list)
                 baseline_run=args.baseline_run,
                 top_k=args.top_k,  # refused here (gate=cutoff) unless it is the prereg's hit cut-off
                 claim=False,  # run_slot claims after its preflight, right before the first model call
+                defer_controls=args.preflight_only,  # the smoke reports the controls-record gates pending
             )
+            if args.preflight_only:
+                pending = sealed_run.smoke_slot(
+                    token,
+                    set_specs=set_specs,
+                    modes=modes,
+                    top_k=args.top_k,
+                    skip_refusals=args.skip_refusals,
+                    skip_completeness=args.skip_completeness,
+                    judge=args.judge,
+                    judge_sample=args.judge_sample,
+                    persist_directory=args.persist_directory,
+                    meter=meter,
+                    expansion=args.expansion,
+                )
+                print(f"[eval] sealed slot {sealed_run.normalise_slot(args.sealed_slot)} preflight passed; nothing was claimed; "
+                      f"pending gates: {', '.join(pending) if pending else 'none'}")
+                return 0
             outcome = sealed_run.run_slot(
                 token,
                 ledger=ledger,

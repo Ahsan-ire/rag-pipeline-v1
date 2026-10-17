@@ -29,18 +29,19 @@ def real_prereg() -> dict:
 
 # --- A: the incumbent root -----------------------------------------------------------------------------------------------------
 INCUMBENT = {
-    "incumbent.config_fn": "pipeline_config_v3",
+    "incumbent.config_fn": "pipeline_config_v4",
     "incumbent.components": ["version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
-                             "scoring_inputs"],
+                             "scoring_inputs", "scan_inputs"],
     "incumbent.code": "all_src_modules_except_code_excluded_and_hashed_scripts",
     "incumbent.code_excluded": list(pipeline_config.CODE_EXCLUDED),
     "incumbent.code_excluded_imports": list(pipeline_config.CODE_EXCLUDED_IMPORTS),
     "incumbent.code_scripts": list(pipeline_config.HASHED_SCRIPTS),
+    "incumbent.code_scripts_inert_imports": list(pipeline_config.HASHED_SCRIPT_IMPORTS_INERT),
     "incumbent.excluded": ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"],
     "incumbent.fixed_by": "controls_record_incumbent_config_hash",
     "incumbent.draws": "each_counted_draw_sidecar_carries_the_incumbent_config_hash",
     "incumbent.slots": ["0", "0b"],
-    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate",
+    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v4_of_the_candidate",
 }
 
 
@@ -51,7 +52,7 @@ def test_the_incumbent_root_is_registered_exactly_and_the_real_prereg_carries_it
     assert set(doc["incumbent"]) == {p.split(".")[1] for p in INCUMBENT}
     assert doc["incumbent"]["components"] == list(pipeline_config.PIPELINE_CONFIG_KEYS)
     assert doc["adoption"]["confirmatory_batch"]["candidate_identity"] == (
-        "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim")
+        "config_hash_is_pipeline_config_v4_checked_by_16b_gate_before_claim")
     assert st.validate_prereg(doc, recompute=False) == [] and st.computed_errors(doc) == [] and st.pinned_errors(doc) == []
 
 
@@ -95,7 +96,7 @@ JUDGE = {
     "judge.rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
     "judge.compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity",
     "judge.covers": ["model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-                     "preparation", "client_construction"],
+                     "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"],
     "judge.errors": "any_sealed_judge_error_means_not_shown",
 }
 

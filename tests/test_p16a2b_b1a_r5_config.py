@@ -53,7 +53,7 @@ def test_every_src_module_is_hashed_or_registered_as_excluded():
     assert "llm_transport.py" in pc.CODE_EXCLUDED
     for name in MUST_BE_HASHED:
         assert name in pc.code_modules(), name  # code that retrieves, generates, judges or scores is never excluded
-    assert set(pc.code_identity()) == {*pc.code_modules(), "scripts/scan_leaks.py"}  # r6: the hashed scripts are keyed scripts/<file>
+    assert set(pc.code_identity()) == {*pc.code_modules(), "scripts/scan_leaks.py", "scripts/sp_launch.py"}  # r6: the hashed scripts are keyed scripts/<file>; r7: + sp_launch
 
 
 def test_the_registered_exclusions_are_modules_nothing_hashed_depends_on_beyond_inert_names():
@@ -308,8 +308,8 @@ def test_the_collection_metadata_that_configures_hnsw_is_part_of_the_index_ident
 
 
 # --- the version ---------------------------------------------------------------------------------------------------------------------
-def test_the_recipe_is_version_three(with_index):
-    assert pc.PIPELINE_CONFIG_VERSION == 3 and pc.pipeline_config("unused", top_k=6)["version"] == 3  # r6: v3
+def test_the_recipe_is_version_four(with_index):
+    assert pc.PIPELINE_CONFIG_VERSION == 4 and pc.pipeline_config("unused", top_k=6)["version"] == 4  # r6: v3; r7: v4 (+ scan_inputs)
 
 
 # --- R4: the judge's identity covers parsing, eligibility, scoring and the endpoint ---------------------------------------------------
@@ -317,7 +317,7 @@ def test_the_judge_identity_names_what_it_covers_and_the_prereg_registers_the_sa
     prereg = json.loads((ROOT / "eval" / "prereg_16a2.json").read_text(encoding="utf-8"))
     assert list(judge.JUDGE_COVERS) == prereg["judge"]["covers"] == [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction"]  # r6: + the preparation path and the client construction
+        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"]  # r6: + the preparation path and the client construction; r7: + the execution stack
     assert set(judge.JUDGE_CODE_MODULES) == {"judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py"}
     assert all((pc.CODE_DIR / name).is_file() and name in pc.code_modules() for name in judge.JUDGE_CODE_MODULES)
 

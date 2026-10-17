@@ -1,4 +1,4 @@
-"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, r5, r6; D74).
+"""The identity of the running pipeline: ``pipeline_config_hash`` (16A-2b b1a r4, r5, r6, r7; D74).
 
 A sealed slot compares a candidate with the **incumbent**, so "the incumbent" must be a value a machine can
 check, not a claim. This module computes that value with **zero calls** (no model is loaded, no network is
@@ -8,12 +8,14 @@ pipeline retrieves, generates, judges and scores.
 ``pipeline_config(persist_directory, *, top_k)`` is a dict with exactly the keys :data:`PIPELINE_CONFIG_KEYS`:
 
 ``version``
-    :data:`PIPELINE_CONFIG_VERSION` (3), bumped when this recipe changes.
+    :data:`PIPELINE_CONFIG_VERSION` (4), bumped when this recipe changes.
 ``code``
     ``{module file: sha256 of its ast.dump with docstrings stripped}`` for **every** ``src`` module that is not in
     :data:`CODE_EXCLUDED`, plus the scripts in :data:`HASHED_SCRIPTS` (keyed ``scripts/<file>``). New modules are
     hashed by default; a module is left out only by being added, reviewed, to the registered exclusion list, and only if
-    nothing hashed imports it except the registered inert names (:data:`CODE_EXCLUDED_IMPORTS`; a test holds this).
+    nothing hashed imports it except the registered inert names (:data:`CODE_EXCLUDED_IMPORTS`; a test holds this). The
+    same test holds that every script a hashed module imports (``scan_leaks.py``, ``sp_launch.py``) is itself in
+    :data:`HASHED_SCRIPTS`.
     ``ast.dump`` carries no line numbers, so a comment, a docstring or a whitespace edit does not change it; any change
     to the code that runs does.
 ``runtime``
@@ -45,6 +47,12 @@ pipeline retrieves, generates, judges and scores.
     ``{data file: sha256 or None}`` for the committed data files the scoring path reads
     (:func:`src.scoring_identity.scoring_inputs`: the absorbed-section map, whose aliases decide strict ranks, and the
     section inventory the evidence labels are validated against); ``None`` for a file that is absent.
+``scan_inputs``
+    :func:`scan_inputs_component`: ``{"handbook_dump", "public_registry", "legacy_public": sha256 or None, "public_sets":
+    {name: sha256 or None}}`` for the data the pre-publication scan (``scripts/scan_leaks.py``) reads that no freeze record
+    binds: the handbook dump whose text exempts sealed windows, the public-set registry and legacy list, and each registered
+    public set's current file (a drifted one exempts nothing). They decide which families an S-hit excludes, so they are part
+    of the identity as well as the scanner's code. ``None`` for a file that is absent.
 
 **Excluded on purpose** (they change whether a call succeeds, or are about the run rather than the pipeline):
 timeouts and retries (their literals live in ``src.llm_transport``, itself in :data:`CODE_EXCLUDED`, and the client
@@ -69,16 +77,16 @@ import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from dotenv import load_dotenv
 
 from src.expansion_artifact import _canonical_json
 
-PIPELINE_CONFIG_VERSION = 3
+PIPELINE_CONFIG_VERSION = 4
 PIPELINE_CONFIG_KEYS = (
     "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
-    "scoring_inputs",
+    "scoring_inputs", "scan_inputs",
 )
 
 #: The ``src`` modules whose code is NOT hashed (registered in the prereg as ``incumbent.code_excluded``; ``prereg-check``
@@ -121,12 +129,25 @@ CODE_EXCLUDED_IMPORTS = (
 )
 
 #: The scripts whose code is hashed with the ``src`` modules (keyed ``scripts/<file>``): ``scan_leaks.py`` decides which
-#: sealed groups the pre-publication scan excludes from analysis, so a change to it can change the analysed population.
-HASHED_SCRIPTS = ("scan_leaks.py",)
+#: sealed groups the pre-publication scan excludes from analysis, so a change to it can change the analysed population, and
+#: ``sp_launch.py`` is imported by ``sealed_run`` (``bind_prereg`` takes its prereg-ancestry rule from it), so what the gate
+#: accepts as the registered prereg depends on it. A hashed module may import only the scripts listed here
+#: (:func:`excluded_import_violations`).
+HASHED_SCRIPTS = ("scan_leaks.py", "sp_launch.py")
+
+#: The only imports of an unhashed script that a hashed *script* may make, as ``"<hashed script>:<imported script>"``
+#: (registered in the prereg as ``incumbent.code_scripts_inert_imports``). ``sp_launch.check_prereg_valid`` imports
+#: ``scripts.sealed_tool`` lazily to run ``prereg-check`` in-process before a sealed-processor data dispatch; ``sealed_run``
+#: never calls it (the gate's prereg binding uses ``sp_launch.check_prereg``, which reaches no other script), and hashing
+#: ``sealed_tool.py`` would pull the operator tooling (and the data-preparation modules it imports) into the pipeline's
+#: identity. A hashed *src* module has no such allowance: any script it imports is in :data:`HASHED_SCRIPTS`.
+HASHED_SCRIPT_IMPORTS_INERT = ("sp_launch.py:sealed_tool.py",)
 #: Where the hashed modules live (tests point it at a copy to edit one).
 CODE_DIR = Path(__file__).resolve().parent
 #: Where the hashed scripts live (tests point it at a copy to edit one).
 SCRIPTS_DIR = CODE_DIR.parent / "scripts"
+#: The repository root the scanner's module is imported from (``scripts.scan_leaks``); fixed, unlike :data:`CODE_DIR`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: Client kwargs that change whether a call succeeds, never what it returns: left out of every identity.
 CLIENT_RELIABILITY_KEYS = ("default_request_timeout", "max_retries")
@@ -206,20 +227,44 @@ def code_identity() -> Dict[str, str]:
     return out
 
 
-def function_digest(path: Path, name: str) -> str:
-    """sha256 of ``ast.dump`` of the top-level or nested function ``name`` in ``path`` (docstrings stripped).
+def _find_definition(tree: ast.AST, qualname: str) -> Optional[ast.AST]:
+    """The ``def`` or ``class`` node ``qualname`` names in ``tree``: a dotted path from the module down through classes and functions.
 
-    For a function that lives in a module the scorer shares with the pipeline (``src.scoring_identity`` binds
-    ``generator._sections_related`` this way instead of hashing the whole generator into the scorer's identity).
+    ``"get_llm"`` is the top-level function, ``"SpendMeter._client"`` the method, ``"MeteredChatModel"`` the class. A bare name
+    that is not defined at the top level falls back to the first function of that name anywhere (the form r6 used).
+    """
+    def child(node: ast.AST, name: str) -> Optional[ast.AST]:
+        for item in getattr(node, "body", []):
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == name:
+                return item
+        return None
+
+    node: Optional[ast.AST] = tree
+    for part in qualname.split("."):
+        node = child(node, part) if node is not None else None
+    if node is None and "." not in qualname:
+        node = next(
+            (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == qualname), None,
+        )
+    return node
+
+
+def function_digest(path: Path, qualname: str) -> str:
+    """sha256 of ``ast.dump`` of the function, method or class ``qualname`` in ``path`` (docstrings stripped).
+
+    ``qualname`` is a dotted path (``"get_llm"``, ``"SpendMeter._client"``, ``"MeteredChatModel"``): a class is digested whole,
+    every method included. For code that lives in a module shared with something else (``src.scoring_identity`` binds
+    ``generator._sections_related`` this way instead of hashing the whole generator into the scorer's identity, and
+    ``src.judge`` binds ``generator.get_llm`` and the metering wrapper of ``spend`` into the judge's).
 
     Raises:
-        ValueError: ``path`` defines no such function.
+        ValueError: ``path`` defines no such function or class.
     """
     tree = ast.parse(Path(path).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return sha256_hex(ast.dump(_strip_docstrings(node)).encode("utf-8"))
-    raise ValueError(f"{Path(path).name} defines no function {name!r}")
+    node = _find_definition(tree, qualname)
+    if node is None:
+        raise ValueError(f"{Path(path).name} defines no function or class {qualname!r}")
+    return sha256_hex(ast.dump(_strip_docstrings(node)).encode("utf-8"))
 
 
 def _imports_of(tree: ast.AST) -> List[Tuple[str, str]]:
@@ -252,6 +297,27 @@ def _imports_of(tree: ast.AST) -> List[Tuple[str, str]]:
     return found
 
 
+def _script_imports_of(tree: ast.AST) -> List[str]:
+    """The stem of every ``scripts`` module ``tree`` imports, statically or by a literal dynamic import, nested imports included.
+
+    ``from scripts.scan_leaks import x``, ``from scripts import scan_leaks``, ``import scripts.scan_leaks`` and a string
+    constant ``"scripts.scan_leaks"`` (``importlib.import_module("scripts.scan_leaks")``) all give ``"scan_leaks"``.
+    """
+    found: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and not node.level:
+            module = node.module or ""
+            if module == "scripts":
+                found.extend(alias.name for alias in node.names)
+            elif module.startswith("scripts."):
+                found.append(module.split(".")[1])
+        elif isinstance(node, ast.Import):
+            found.extend(alias.name.split(".")[1] for alias in node.names if alias.name.startswith("scripts."))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and re.fullmatch(r"scripts\.[A-Za-z0-9_]+", node.value):
+            found.append(node.value.split(".")[1])
+    return found
+
+
 def excluded_import_violations() -> List[str]:
     """What the hashed code takes from an excluded module beyond :data:`CODE_EXCLUDED_IMPORTS`: ``"<hashed file> -> <excluded file>:<name>"``.
 
@@ -259,9 +325,16 @@ def excluded_import_violations() -> List[str]:
     excluded module, a name of it that is not registered, the whole module, or names it in a string (a dynamic import),
     depends on code the identity does not cover: the exclusion's justification ("it cannot reach a client, a row set, a rank,
     a score, a judgement, an exclusion or an analysis unit") is then not what the hash assumes. Empty = the exclusions hold.
+
+    r7: it also reports ``"<hashed file> -> scripts/<file>"`` for any ``scripts`` module a hashed module imports (statically
+    or by a literal dynamic import) that is not in :data:`HASHED_SCRIPTS`: a script that ``sealed_run`` loads decides what the
+    gate accepts or what the scan excludes, so it is hashed too, or it is not imported. The one exception is the registered
+    :data:`HASHED_SCRIPT_IMPORTS_INERT`.
     """
     stems = {name[:-3]: name for name in CODE_EXCLUDED}
     allowed = set(CODE_EXCLUDED_IMPORTS)
+    scripts = {name[:-3] for name in HASHED_SCRIPTS}
+    inert_scripts = set(HASHED_SCRIPT_IMPORTS_INERT)
     sources = [(name, CODE_DIR / name) for name in code_modules()]
     sources += [(key, SCRIPTS_DIR / key.split("/", 1)[1]) for key in hashed_scripts()]
     violations: List[str] = []
@@ -270,6 +343,10 @@ def excluded_import_violations() -> List[str]:
         for stem, name in _imports_of(tree):
             if stem in stems and f"{stems[stem]}:{name}" not in allowed:
                 violations.append(f"{label} -> {stems[stem]}:{name}")
+        importer = label.split("/", 1)[1] if label.startswith("scripts/") else None  # a hashed script, by file name
+        for stem in _script_imports_of(tree):
+            if stem not in scripts and not (importer is not None and f"{importer}:{stem}.py" in inert_scripts):
+                violations.append(f"{label} -> scripts/{stem}.py")
     return sorted(set(violations))
 
 
@@ -296,6 +373,47 @@ def runtime_identity() -> Dict[str, Any]:
         if name and version:
             found.add(f"{normalise_distribution_name(name)}=={version}")
     return {"python": f"{sys.version_info.major}.{sys.version_info.minor}", "packages": sorted(found)}
+
+
+def distribution_closure(roots: Sequence[str]) -> List[str]:
+    """``name==version`` of ``roots`` and every distribution they require, transitively, as a sorted list (r7).
+
+    Walks ``importlib.metadata.requires`` from each root, normalising names (PEP 503) and following a requirement only when it
+    applies here: a requirement whose marker is false on this interpreter is ignored, and so is one that belongs to an extra
+    nobody asked for (``name[extra]`` in a requirement asks for that extra of ``name``; an extra requested by nothing on the path
+    adds nothing). The closure is what is imported on the call path, not what could be installed. A required distribution that
+    is not installed is recorded as ``name==missing`` (a broken environment must not look like a smaller one), never skipped
+    silently. Unlike :func:`runtime_identity`, which lists everything installed, this is the set one call path depends on, so
+    an unrelated package's version does not move an identity built from it.
+
+    Raises:
+        packaging.requirements.InvalidRequirement: a requirement string that cannot be parsed (fail closed).
+    """
+    from packaging.requirements import Requirement
+
+    found: Dict[str, str] = {}
+    asked: Dict[str, set] = {}  # the extras requested of each distribution so far
+    pending: List[Tuple[str, frozenset]] = [(normalise_distribution_name(root), frozenset()) for root in roots]
+    while pending:
+        name, extras = pending.pop()
+        have = asked.setdefault(name, set())
+        if name in found and extras <= have:
+            continue  # visited, and nothing new is asked of it
+        have |= extras
+        if name not in found:
+            try:
+                found[name] = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                found[name] = "missing"
+        if found[name] == "missing":
+            continue
+        environments = [{"extra": ""}, *({"extra": extra} for extra in sorted(have))]
+        for text in importlib.metadata.requires(name) or []:
+            requirement = Requirement(text)
+            if requirement.marker is not None and not any(requirement.marker.evaluate(env) for env in environments):
+                continue  # not for this interpreter, or for an extra nobody asked for: not on the call path
+            pending.append((normalise_distribution_name(requirement.name), frozenset(requirement.extras)))
+    return sorted(f"{name}=={version}" for name, version in found.items())
 
 
 def endpoint_identity() -> Dict[str, str]:
@@ -427,6 +545,60 @@ def scoring_inputs_component() -> Dict[str, Optional[str]]:
     return scoring_identity.scoring_inputs()
 
 
+@functools.lru_cache(maxsize=64)
+def _file_digest(path: str, mtime_ns: int, size: int) -> str:
+    return sha256_hex(Path(path).read_bytes())
+
+
+def _digest_or_none(path: Any) -> Optional[str]:
+    """sha256 of a file's bytes, or ``None`` when ``path`` is not a file (cached by path, mtime and size)."""
+    target = Path(path)
+    if not target.is_file():
+        return None
+    stat = target.stat()
+    return _file_digest(str(target), stat.st_mtime_ns, stat.st_size)
+
+
+def scan_inputs(
+    *, handbook_dump: Any, sets_index: Any, legacy_list: Any, public_sets: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """``{label: sha256 or None}`` for the data the pre-publication scan reads (see the module docstring, ``scan_inputs``).
+
+    The four arguments are paths (tests give temporary ones): the handbook dump, the file that lists the public sets (the
+    result's ``public_registry``), the legacy public list, and ``public_sets``, a mapping from a public set's name to its
+    file. A path that is not a file is ``None``. Nothing outside the arguments is read.
+    """
+    return {
+        "handbook_dump": _digest_or_none(handbook_dump),
+        "public_registry": _digest_or_none(sets_index),
+        "legacy_public": _digest_or_none(legacy_list),
+        "public_sets": {name: _digest_or_none(public_sets[name]) for name in sorted(public_sets)},
+    }
+
+
+def scan_inputs_component() -> Dict[str, Any]:
+    """:func:`scan_inputs` over the scanner's own path constants (``scripts.scan_leaks`` and ``src.eval_sets``).
+
+    The handbook dump is ``scan_leaks.HANDBOOK_DUMP`` under the scanner's repo base, the registry and the legacy list are
+    ``eval_sets.REGISTRY_PATH`` and ``eval_sets.LEGACY_PUBLIC_PATH`` and the public sets are the registry's public entries, so
+    this follows the scanner instead of copying its paths. The suite replaces this function (``tests/conftest.py``) so that
+    no test reads a real corpus-derived file through it; the paths themselves are tested with temporary files.
+    """
+    import importlib
+
+    from src import eval_sets
+
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    scan_leaks = importlib.import_module("scripts.scan_leaks")
+    return scan_inputs(
+        handbook_dump=scan_leaks._repo_base() / scan_leaks.HANDBOOK_DUMP,
+        sets_index=eval_sets.REGISTRY_PATH,
+        legacy_list=eval_sets.LEGACY_PUBLIC_PATH,
+        public_sets={entry.name: entry.resolved() for entry in eval_sets.public_entries()},
+    )
+
+
 # ---------------------------------------------------------------------------
 # the configuration and its hash
 # ---------------------------------------------------------------------------
@@ -446,6 +618,7 @@ def pipeline_config(persist_directory: str, *, top_k: int) -> Dict[str, Any]:
         "rewrite": rewrite_component(),
         "generation": generation_identity(),
         "scoring_inputs": scoring_inputs_component(),
+        "scan_inputs": scan_inputs_component(),
     }
 
 

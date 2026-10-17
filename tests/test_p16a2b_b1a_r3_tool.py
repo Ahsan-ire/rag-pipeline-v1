@@ -209,7 +209,7 @@ def test_the_control_flip_counts_a_flip_in_raw_hybrid_or_in_the_production_confi
 
 def test_the_two_identities_and_the_draw_attribution_are_registered():
     """F9 / F10 wording: a candidate entry has a pipeline config hash AND a rewrite identity; draws name the incumbent config."""
-    assert st.REGISTERED["adoption.confirmatory_batch.candidate_identity"].startswith("config_hash_is_pipeline_config_v3")  # r4 A; r5: v2; r6: v3
+    assert st.REGISTERED["adoption.confirmatory_batch.candidate_identity"].startswith("config_hash_is_pipeline_config_v4")  # r4 A; r5: v2; r6: v3; r7: v4
     assert "rewrite_model_prompt_caps" in st.REGISTERED["adoption.confirmatory_batch.rewrite_identity"]
     assert st.REGISTERED["adoption.development_evidence.incumbent_draws"] == (
         "first_5_recorded_development_draws_under_the_incumbent_config_hash")

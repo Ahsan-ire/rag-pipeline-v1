@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src import eval_privacy as _privacy
 from src import eval_sets as _eval_sets
+from src import scoring_glue as _scoring_glue
 from src import sealed_run as _sealed_run
 from src.bm25_index import load_bm25_index
 from src.eval_cohort import (
@@ -94,6 +95,11 @@ from src.retriever import (
     load_retrieval_context,
     retrieve,
 )
+from src.sealed_ledger import SealedLedgerError
+
+# the scoring-facing glue lives in a module the scorer's identity covers (16A-2b b1a r7, T3); the names stay importable here
+from src.scoring_glue import ABSORBED_MAP_PATH, HIT_KS  # noqa: F401
+from src.scoring_glue import load_absorbed_map as _load_absorbed_map
 # split_sentences moved to src.text_utils (16A-1 item 3); re-exported here so
 # ``from src.evaluator import split_sentences`` keeps working.
 from src.text_utils import split_sentences  # noqa: F401
@@ -156,12 +162,9 @@ REALISTIC_LABEL_TOKEN = "realistic"
 # and the canonical check can never disagree on the valid eval-mode set.
 EVAL_MODES = (*RETRIEVAL_MODES, REWRITE_MODE)
 
-# The retrieval cut-offs reported by ``evaluate_retrieval``: hit@1, hit@3, hit@6.
-# Only the ks with ``k <= top_k`` are actually reported (a hit@6 cell is
-# meaningless when only 3 chunks were retrieved), so the effective ks are
-# derived per run — see ``evaluate_retrieval``. The headline metric is strict
-# hit@6 on the held-out set (D38).
-HIT_KS = (1, 3, 6)
+# The retrieval cut-offs (``HIT_KS``: hit@1, hit@3, hit@6) are defined in ``src.scoring_glue`` and imported above; only the
+# ks with ``k <= top_k`` are actually reported (a hit@6 cell is meaningless when only 3 chunks were retrieved), so the
+# effective ks are derived per run — see ``evaluate_retrieval``. The headline metric is strict hit@6 on the held-out set (D38).
 
 # Short, fixed definition of the two retrieval-matching modes, surfaced both in
 # the provenance block and (spelled out) in the retrieval report header so a
@@ -1875,8 +1878,13 @@ def run_eval_matrix(
             index identity: refused before any call otherwise. After the expansion artifact and the rows sidecar are
             written, and BEFORE the report is written or anything is printed, the run calls
             ``record_draw(run_id=, artifact_path=, artifact_sha256=, sidecar_path=, sidecar_sha256=, sidecar=)``; whatever it
-            raises ends the run with nothing printed. A private v6 run without a recorder, over a frozen tuning or
-            realistic version, appends a ``dev_run_unrecorded`` ledger record at the same point.
+            raises ends the run with nothing printed. A recorder that returns is not believed: the run then checks that the
+            ledger holds a ``dev_draw`` whose execution receipt is this run's id and whose artifact and sidecar digests are
+            these (``draw_ledger`` otherwise, nothing printed or written). A run that fails or is refused at or after the
+            sidecar write without a recorded draw appends a ``dev_run_unrecorded`` record (reason ``record_failed``), except
+            a voided draw (``draw_void``: ``dev_draw_void`` is its record). A private v6 run without a recorder, over a frozen
+            tuning or realistic version, appends a ``dev_run_unrecorded`` ledger record at the same point.
+            Outside the test suite only a ``sealed_run.DrawRecorder`` is honoured.
 
     Every run also writes ``<report>.rows.json`` (``src.eval_cohort``): the
     cohort blocks and per-row ranks that machine comparisons read.
@@ -1885,7 +1893,20 @@ def run_eval_matrix(
         A dict with ``sets`` (per-set results), ``modes``, ``top_k``,
         ``provenance``, ``results_path``, ``is_canonical``, the run knobs,
         ``generation_ran``, and ``include_types``.
+
+    Raises:
+        GateRefused: ``seam`` for an injected ``retrieve_fn_factory``, ``generate_fn``, ``judge_fn``, ``provenance_fn`` or
+            ``record_draw`` when the test suite is not running (``src.seams``; r7). A ``record_draw`` that is a
+            ``sealed_run.DrawRecorder`` is the CLI's own and needs no seam. Refused before any work.
     """
+    for seam, injected in (
+        ("retrieve_fn_factory", retrieve_fn_factory), ("generate_fn", generate_fn), ("judge_fn", judge_fn),
+        ("provenance_fn", provenance_fn),
+    ):
+        if injected is not None:
+            _sealed_run.require_seam(seam)
+    if record_draw is not None and not isinstance(record_draw, _sealed_run.DrawRecorder):
+        _sealed_run.require_seam("record_draw")
     if not set_specs:
         raise ValueError("run_eval_matrix requires at least one (label, path) set")
     modes = list(modes)
@@ -2801,18 +2822,7 @@ def _artifact_keys(path: str, slot_token: Any = None) -> List[Tuple[str, str]]:
     return [(e["question"], f"{prefix}/{public_v1_id(e['question'])}") for e in load_golden_set(path)]
 
 
-ABSORBED_MAP_PATH = os.path.join("eval", "absorbed_sections.json")
-
-
-def _load_absorbed_map() -> Tuple[Optional[Dict[str, List[str]]], Optional[str]]:
-    """The committed absorbed-section map (item 7) and its sha256, if present."""
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(repo, ABSORBED_MAP_PATH)
-    if not os.path.isfile(path):
-        return None, None
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
-    return dict(doc.get("map") or {}), _sha256_file(path)
+# (``ABSORBED_MAP_PATH`` and ``_load_absorbed_map`` moved to ``src.scoring_glue``, imported at the top, in r7.)
 
 
 def _v6_set_head(token: Any, path: str, schema: int, privacy: str) -> Tuple[bool, List[Dict[str, Any]], str, Any]:
@@ -2864,8 +2874,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     top_k = kw["top_k"]
     privacy = kw["privacy"]
     private = kw["private"]
-    ks = [k for k in HIT_KS if k <= top_k]
-    k = max(ks) if ks else top_k
+    ks, k = _scoring_glue.hit_cutoffs(top_k)
     absorbed, absorbed_sha = _load_absorbed_map()
     if kw.get("preflight_only"):
         # Everything below that could refuse without a call, and nothing that calls: each set's rows,
@@ -2895,12 +2904,7 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
             retrieval[mode] = eval_v6.score_retrieval_v6(
                 rows, kw["retrieve_fn_factory"](mode), top_k=top_k, ks=ks, absorbed=absorbed
             )
-            for rid, sc in retrieval[mode].items():
-                sidecar_rows.append({
-                    "set_sha256": sha, "id": rid, "mode": mode,
-                    "strict_rank": sc["strict_rank"], "related_rank": sc["related_rank"],
-                    "completion_rank": sc["strict_rank"],
-                })
+            sidecar_rows.extend(_scoring_glue.sidecar_rows(sha, mode, retrieval[mode]))
         answers_by_id = None
         judge_summary_block = None
         judge_by_id: Dict[str, Dict[str, Any]] = {}
@@ -2921,14 +2925,12 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
                     records_out=judge_records,
                 )
         fams = {r["family_id"] for r in rows}
-        # Same predicate as eval_v6.family_rates: a family is retrieval-eligible
-        # iff none of its rows is refuse (the schema enforces one scope per family).
-        refuse_fams = {r["family_id"] for r in rows if r["scope"] == "refuse"}
-        fam_eligible = {r["family_id"] for r in rows} - refuse_fams
         sets.append({
             "label": label, "path": path, "sha256": sha, "schema": schema, "cohort": cohort,
             "rows": rows, "ids": {r["question"]: r["id"] for r in rows},
-            "counts": {"rows": len(rows), "families": len(fams), "retrieval_families": len(fam_eligible)},
+            "counts": {
+                "rows": len(rows), "families": len(fams), "retrieval_families": _scoring_glue.retrieval_family_count(rows),
+            },
             "retrieval": retrieval, "answers": answers_by_id,
             "confusion": None if answers_by_id is None else eval_v6.scope_confusion(rows, answers_by_id),
             "family_rates": eval_v6.family_rates(rows, retrieval, answers_by_id, k=k),
@@ -2991,6 +2993,12 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
         expansion=expansion_id, absorbed_map_sha256=absorbed_sha,
         pipeline_config_hash=_pipeline_config_hash(kw["persist_directory"], top_k),
         run_id=kw["run_id"] if private else None,
+        # r7: the run's rewrite accounting rides in the sidecar, so a recorded draw can be refused (voided) when any rewrite
+        # fell back to the raw query (a timeout, a degenerate expansion): validate_draw_sidecar reads it
+        rewrite_accounting={
+            "attempts": rewrite_attempts, "fallbacks": rewrite_fallbacks, "live": len(cache_exp) - replayed,
+            "replayed": replayed,
+        },
     )
     if private:
         from pathlib import Path
@@ -2999,12 +3007,18 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
             kw["run_dir_path"], _run_inputs(sets, kw["replay_artifact"], result.get("expansion_artifact"))
         )
         # The rows sidecar (and the expansion artifact, written above) come first: a development draw is recorded from
-        # them, before the report is written or anything is printed (r6).
-        sidecar_file = _write_sidecar(resolved_path, sidecar, private=True)
-        # The judge dump (claim text) stays inside the run directory.
-        if kw["judge"] and judge_records:
-            write_private(Path(kw["run_dir_path"]) / "judge_review.jsonl", _dump_lines(judge_records))
-        _note_development_run(kw, result, sets, sidecar, sidecar_file)
+        # them, before the report is written or anything is printed (r6). A recorded draw that fails, or is refused, from
+        # here to the verified record leaves a dev_run_unrecorded record behind (r7): it cannot vanish without a trace.
+        outcome: List[str] = []
+        try:
+            sidecar_file = _write_sidecar(resolved_path, sidecar, private=True)
+            # The judge dump (claim text) stays inside the run directory.
+            if kw["judge"] and judge_records:
+                write_private(Path(kw["run_dir_path"]) / "judge_review.jsonl", _dump_lines(judge_records))
+            _note_development_run(kw, result, sets, sidecar, sidecar_file, outcome)
+        finally:
+            if kw.get("record_draw") is not None and not outcome:
+                _log_unrecorded_draw(sidecar, kw["run_id"])
         write_private(Path(resolved_path), report)
         print(f"[eval] private v6 run {kw['run_id']}: report under eval/private/runs/{kw['run_id']}/ "
               f"({len(sets)} set(s); not canonical)")
@@ -3018,9 +3032,46 @@ def _run_matrix_v6(**kw: Any) -> Dict[str, Any]:
     return result
 
 
+def _log_unrecorded_draw(sidecar: Mapping[str, Any], run_id: str) -> None:
+    """Best effort: a ``--record-draw`` run that ended without a recorded draw leaves ``dev_run_unrecorded`` (``record_failed``).
+
+    Called from a ``finally`` while an exception is already on its way out, so it never raises what the ledger raises: the
+    original failure is the one the caller sees. A ledger that does not exist (or cannot be written) leaves nothing.
+    """
+    try:
+        ledger = _sealed_run.default_ledger()
+        if ledger.exists():
+            ledger.record_dev_run_unrecorded(sidecar.get("pipeline_config_hash"), run_id, "record_failed")
+    except (Exception, SealedLedgerError):  # noqa: BLE001 - best effort, inside a finally
+        pass
+
+
+def _verify_draw_recorded(sidecar: Mapping[str, Any], run_id: str, artifact_sha256: str, sidecar_sha256: str) -> None:
+    """The ledger really holds this run's ``dev_draw`` (r7): the recorder's word is not taken.
+
+    A recorder that returned is believed only if the epoch's ledger holds a ``dev_draw`` under the sidecar's pipeline hash whose
+    execution receipt is this run's id and whose artifact and rows-sidecar digests are these; a callback that does nothing
+    would otherwise let the run print and write a result that no record accounts for.
+
+    Raises:
+        GateRefused: ``draw_ledger`` when there is no such record.
+    """
+    ledger = _sealed_run.default_ledger()
+    try:
+        found = ledger.exists() and any(
+            r.get("execution_receipt") == run_id and r["artifact_sha256"] == artifact_sha256
+            and r["rows_sidecar_sha256"] == sidecar_sha256
+            for r in ledger.dev_draws(sidecar.get("pipeline_config_hash"))
+        )
+    except (ValueError, TypeError):  # a sidecar with no usable pipeline hash cannot have been recorded
+        found = False
+    if not found:
+        raise _sealed_run.GateRefused("draw_ledger")
+
+
 def _note_development_run(
     kw: Mapping[str, Any], result: Mapping[str, Any], sets: Sequence[Mapping[str, Any]], sidecar: Mapping[str, Any],
-    sidecar_file: str,
+    sidecar_file: str, outcome: Optional[List[str]] = None,
 ) -> None:
     """A private v6 run's development-run record, made before the run writes its report or prints anything (r6).
 
@@ -3031,6 +3082,10 @@ def _note_development_run(
     (only recorded draws do) and is made visible with a ``dev_run_unrecorded`` record (configuration hash and run id). A sealed
     slot run has its own ledger records and is not logged here; a run before the epoch's ledger exists, or over any other set,
     touches no ledger.
+
+    r7: a recorder that returns is verified against the ledger (:func:`_verify_draw_recorded`: ``draw_ledger`` when the record
+    is not there), and ``outcome`` gains ``recorded`` once it is, or ``voided`` when the draw was voided (``draw_void``, whose
+    record is the ``dev_draw_void`` the recorder appended): the caller logs ``dev_run_unrecorded`` for any other ending.
     """
     if kw["slot_token"] is not None or kw["preflight_only"]:
         return
@@ -3041,10 +3096,19 @@ def _note_development_run(
         artifact_path, artifact_sha = (
             (str(replayed.path), replayed.digest) if replayed is not None else (built["path"], built["sha256"])
         )
-        recorder(
-            run_id=kw["run_id"], artifact_path=artifact_path, artifact_sha256=artifact_sha,
-            sidecar_path=sidecar_file, sidecar_sha256=_sha256_file(sidecar_file), sidecar=sidecar,
-        )
+        sidecar_sha = _sha256_file(sidecar_file)
+        try:
+            recorder(
+                run_id=kw["run_id"], artifact_path=artifact_path, artifact_sha256=artifact_sha,
+                sidecar_path=sidecar_file, sidecar_sha256=sidecar_sha, sidecar=sidecar,
+            )
+        except _sealed_run.GateRefused as exc:
+            if exc.gate == "draw_void" and outcome is not None:
+                outcome.append("voided")
+            raise
+        _verify_draw_recorded(sidecar, kw["run_id"], artifact_sha, sidecar_sha)
+        if outcome is not None:
+            outcome.append("recorded")
         return
     ledger = _sealed_run.default_ledger()
     if not ledger.exists():
@@ -3084,12 +3148,8 @@ def _judge_v6(
     # 16A-2b b1a r6): the eligibility rule, the status normalisation, the refusal test and the judge's own context formatter
     items = judge_prep.assemble_judge_items(rows, cache)
     judged = judge_answers(items, llm_fn=judge_fn, sample_n=judge_sample)
-    by_question = {row["question"]: row["id"] for row in rows}
-    by_id: Dict[str, Dict[str, Any]] = {}
-    for record in judged.get("per_item", []):
-        rid = by_question[record["question"]]
-        by_id[rid] = record
-        records_out.append({"set": label, "id": rid, **{k: v for k, v in record.items() if k != "question"}})
+    by_id, dump = judge_prep.judgments_by_row(rows, judged.get("per_item", []), label)
+    records_out.extend(dump)
     from src import eval_v6
 
     return eval_v6.judge_summary(list(by_id.values())), by_id

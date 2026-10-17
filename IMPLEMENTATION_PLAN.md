@@ -1890,6 +1890,31 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       - **Operator residual.** Someone with the code can always run the pipeline outside these entry points (e.g. a
         hand-written script). Such runs are not recorded, never count, and are a process violation that only an
         audit of the operator's activity can find.
+    - **Closure r7 (17 Oct; on 52b74fd: Codex REVISE 1 BLOCKER / 3 MAJOR / 1 RESIDUAL; plan-auditor FAIL 0 BLOCKER /
+      3 MAJOR / 6 MINOR / 3 RESIDUAL; owner-chosen targeted round; dispositioned in D74's r7 addendum).**
+      - **Seams are test-only.** Every injection hook on the slot and eval entry points (scanner, renderer, judge,
+        retrieval/generation adapters, draw recorder other than `sealed_run.DrawRecorder`, the meter's inner factory)
+        is refused (`seam`) unless `src.seams.TEST_SEAMS` is True, which only the test suite sets (an AST test pins
+        that no `src/` or `scripts/` module sets it).
+      - **Judge stack.** The judge identity also covers `generator.get_llm`, the metering wrapper and `judge_runtime`
+        (the installed distributions on the judge call path, by dependency closure).
+      - **Scorer glue.** The absorbed-map loader, hit cut-offs and the sidecar rank projection moved into the hashed
+        `scoring_glue.py`, inside the scorer identity. Counted draws carry their scorer identity; `declare-batch`
+        refuses a candidate whose counted draws' scorer identity differs from the incumbent's.
+      - **Recording verified.** After the recorder returns, the evaluator checks the ledger holds this run's
+        `dev_draw` before releasing anything (`draw_ledger`); a `--record-draw` run that fails after its sidecar is
+        written logs `dev_run_unrecorded` (`record_failed`); the pipeline hash is re-taken right before a draw is
+        recorded and before any slot stores (`incumbent_changed_during_run`).
+      - **Modes bound.** `dev_draw` records keep mode, `replay_of`, rewrite and scorer identities; a `replay` entry
+        needs replay draws with `replay_of == index`; a `candidate` entry needs build draws whose rewrite identity is
+        new and equals its declared one. A draw with any rewrite fallback is voided (`dev_draw_void`, logged, not
+        counted).
+      - **Minors.** Exposure/twin exclusions are refused once slot 0 or 0b is stored (`exclusion_late`; scan-driven
+        `s_hit` stays); the scanner's data inputs are digested into `scan_inputs`; `pipeline eval --sealed-slot 0
+        --preflight-only` runs every slot gate without claiming (controls/incumbent reported `pending`), to be run
+        before b7's first recorded draw; hashed modules may import only hashed scripts (`sp_launch.py` added).
+        `pipeline_config_v4`. New pinned dependency `packaging==26.2` (already installed transitively; now imported
+        directly by the judge-runtime closure).
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
@@ -1939,12 +1964,12 @@ b6. **Freeze, clearance, audits [SP; C].** `freeze --split heldout-v2`, then tun
     versions slot 0 uses serve every slot of the epoch; a later correction makes a new development version (set-version
     hook, its own artifact and draws, its own clearance pass, whose twins give a4 group exclusions) and never mutates
     slot-0 inputs. `audit` runs at release, at each freeze, before slot 0 and at the phase gate; counts go into D75.
-b7. **Development baseline, controls, cost probe (D76) [C].** On the frozen development sets: offline v6 (zero calls)
+b7. **Development baseline, controls, cost probe (D76) [C].** First `pipeline eval --sealed-slot 0 --preflight-only` (b1a r7; every gate but controls/incumbent must pass, else fix before any draw). On the frozen development sets: offline v6 (zero calls)
     over tuning-v2, realistic-v2 and heldout-v1; R = 5 retrieval-only live draws (`build:`, each with its own
     `--approved-eur`): per-family flip frequency and the rate range. **Each draw over the frozen development sets is
     recorded in the ledger as it completes (a `dev_draw` record: index, config hash, artifact and rows-sidecar
-    sha256s; code lands
-    here, before the first draw); only the first 5 recorded count** for the controls and the development evidence
+    sha256s, mode, scorer identity; recorded in-run by `pipeline eval --record-draw`, b1a r6–r7); only the first 5
+    recorded count** for the controls and the development evidence
     (b1a). Draw 1 is the **development artifact** (development files are frozen once, so it is never voided; a pipeline change is a new incumbent, i.e. a new epoch, b1a r5). The control list (b1's rule) is computed once from those draws on the frozen
     development versions and committed as the ledger's `controls` record (digest in the mirror) before the batch
     declaration and before slot 0 (the gate refuses slot 0 without it); it is never recomputed. **Cost probe** (cost confirmed first, 16A.8):
@@ -2029,8 +2054,13 @@ hit in pushed history; the owner's `harness-init --refresh`. **Gates:** prereg p
   error means not shown), control flips in raw hybrid or hybrid+rewrite, the sealed guard's two checks, Holm with
   K = 4.
 - Order: the embargo lift and the identity check land in one reviewed change BEFORE any candidate draw is recorded,
-  because `sealed_run.py` and `sealed_ledger.py` are hashed and a later change would make recorded candidates
-  unreproducible (they would have to be declared `abandoned`).
+  because `sealed_run.py` and `sealed_ledger.py` are hashed and a later change makes a recorded candidate
+  unreproducible. With fewer than 5 draws it can then only be declared `{"config_hash": …, "expansion": "abandoned"}`;
+  with 5 or more it can be declared but its slot will refuse `identity`. Either way it spends one of K = 4. Recording
+  a candidate draw before that change is not refused by code; it is a planning error the order prevents.
+- 16B must not edit any module in the scorer identity (`scoring_identity.SCORING_CODE_MODULES`) or the judge identity
+  (`judge.JUDGE_CODE_MODULES`, `generator.get_llm`, the metering wrapper) or a judge-path package: each makes every
+  comparison with slot 0 refuse.
 - Comparisons need an equal judge hash AND an equal `scorer_identity` between the candidate's slot and slot 0.
 - b7's flip-frequency report and worst-case pricing tool live in `scripts/` (unhashed tools), never in `src/`, so
   building them after the draws does not change the incumbent; they must not edit `eval_stats.py`/`eval_v6.py`

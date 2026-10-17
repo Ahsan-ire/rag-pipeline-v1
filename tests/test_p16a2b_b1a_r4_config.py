@@ -54,9 +54,9 @@ def test_the_config_has_exactly_the_registered_components_and_the_hash_is_a_dete
     config = pc.pipeline_config("unused", top_k=6)
     assert tuple(config) == pc.PIPELINE_CONFIG_KEYS == (
         "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
-        "scoring_inputs")
-    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 3  # r5: whole-src code, every distribution, the endpoint; r6: v3
-    assert set(config["code"]) == {*pc.code_modules(), "scripts/scan_leaks.py"}  # r6: scan_leaks is hashed with the modules
+        "scoring_inputs", "scan_inputs")  # r7: + the scan's data inputs
+    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 4  # r5: whole-src code, every distribution, the endpoint; r6: v3; r7: v4
+    assert set(config["code"]) == {*pc.code_modules(), *pc.hashed_scripts()}  # r6: scan_leaks is hashed with the modules; r7: + sp_launch
     value = h()
     assert value == h() == pc.pipeline_config_hash("elsewhere", top_k=6)  # the directory is read, never hashed
     assert len(value) == 64 and set(value) <= set("0123456789abcdef")

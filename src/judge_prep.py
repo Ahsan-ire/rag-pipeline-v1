@@ -11,7 +11,9 @@ without the judge's registered hash moving. It owns:
 * :func:`is_judgeable`: whether one row's answer is judged (a complete, non-refused answer of a retrieval-eligible row);
 * :func:`format_judge_context`: the context text the judge reads, a verbatim copy of ``retriever.format_context`` that
   the judge keeps for itself (a test holds the two equal today);
-* :func:`assemble_judge_items`: the rows the judge is handed, from the evaluator's answer cache.
+* :func:`assemble_judge_items`: the rows the judge is handed, from the evaluator's answer cache;
+* :func:`judgments_by_row`: the judge's per-answer records attached to the rows they judged, and the lines of the judge dump
+  (r7: this mapping was evaluator code outside the judge's identity).
 
 The status words are literals here, not imports from ``src.grounding``: the judge's hash must bind the definition it
 uses, and a candidate that renames a generation status then judges nothing (the sealed protocol's ``judge_clean`` guard
@@ -227,3 +229,24 @@ def assemble_judge_items(
         )
         items.append({"question": row["question"], "answer": result["answer"], "context": context})
     return items
+
+
+def judgments_by_row(
+    rows: Sequence[Mapping[str, Any]], per_item: Sequence[Mapping[str, Any]], label: str,
+) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    """Attach the judge's per-answer records to the rows they judged (r7: it was evaluator code the judge's identity did not cover).
+
+    ``per_item`` is ``judge_answers(...)["per_item"]``: one record per judged item, carrying the item's ``question``. Returns
+    ``({row id: record}, dump records)``: the first is what ``eval_v6.judge_summary`` aggregates and the report's per-row
+    judgments, the second the lines of the judge dump (``{"set": label, "id": row id, ...}`` plus the record without its
+    question text: claim text is the point of the dump and lives only in the run directory or the gitignored review file).
+    """
+    by_question = {row["question"]: row["id"] for row in rows}
+    by_id: Dict[str, Dict[str, Any]] = {}
+    dump: List[Dict[str, Any]] = []
+    for record in per_item:
+        rid = by_question[record["question"]]
+        by_id[rid] = record  # (the same object the judge returned: the summary and the dump read it)
+        dump.append({"set": label, "id": rid, **{k: v for k, v in record.items() if k != "question"}})
+    return by_id, dump
+

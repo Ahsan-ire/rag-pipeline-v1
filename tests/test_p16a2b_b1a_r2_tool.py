@@ -83,7 +83,7 @@ def test_a_pushed_replacement_prereg_is_refused_at_declare_batch(world, monkeypa
     assert code == st.EXIT_REFUSED and "reason=prereg_amended" in err and out == ""
     assert world.ledger().batch_declaration() is None
     restore_prereg(world)
-    record_draws(world.ledger(), "1" * 64)  # r5: the candidate's draws are recorded
+    record_draws(world.ledger(), "1" * 64, mode="replay")  # r5: the candidate's draws are recorded (r7: replay draws, as its entry says)
     code, out, err = world.run("declare-batch", "--candidate", f"{'1' * 64}:replay")
     assert code == 0, err
 

@@ -18,6 +18,7 @@ import pytest
 from scripts import sealed_tool as st
 from src import pipeline_config, sealed_ledger
 from src.sealed_ledger import DrawCoverageRefused, LedgerCorrupt, ProtocolError, SealedLedger
+from tests.p16_draws import draw_ids, record_draws as record_draws_in
 from tests.p16w_sealed_world import repos, world  # noqa: F401  (fixtures)
 from tests.test_p16a2b_b1a_r3_tool import put
 from tests.test_p16a2b_b1a_tool import file_sha, record_controls, record_draws, sealed_frozen
@@ -44,7 +45,9 @@ def with_controls(tmp_path: Path, incumbent: str = CONFIGS[0]) -> SealedLedger:
 
 
 def draw(led: SealedLedger, config: str, n: int) -> int:
-    return led.record_dev_draw(config, sha(f"artifact {config} {n}"), sha(f"sidecar {config} {n}"), f"run-{config[:4]}-{n}")
+    return led.record_dev_draw(
+        config, sha(f"artifact {config} {n}"), sha(f"sidecar {config} {n}"), f"run-{config[:4]}-{n}", **draw_ids(),
+    )
 
 
 # --- the ledger record ---------------------------------------------------------------------------------------------------------
@@ -84,7 +87,7 @@ def test_the_three_fields_must_be_lowercase_sha256_digests(tmp_path, bad):
         args = [CONFIGS[0], D, D, "run-x"]
         args[position] = bad
         with pytest.raises(ValueError):
-            led.record_dev_draw(*args)
+            led.record_dev_draw(*args, **draw_ids())
     assert led.records("dev_draw") == []
 
 
@@ -113,12 +116,12 @@ def test_before_the_controls_exist_only_one_configuration_may_be_recorded(tmp_pa
 
 def test_a_rows_sidecar_cannot_be_recorded_twice(tmp_path):
     led = with_controls(tmp_path)
-    led.record_dev_draw(CONFIGS[0], sha("a1"), sha("s1"), "run-a")
+    led.record_dev_draw(CONFIGS[0], sha("a1"), sha("s1"), "run-a", **draw_ids())
     for n, config in enumerate((CONFIGS[0], CONFIGS[1])):
         with pytest.raises(ProtocolError, match="already recorded"):
-            led.record_dev_draw(config, sha("a2"), sha("s1"), f"run-b{n}")  # a copy is not another draw
+            led.record_dev_draw(config, sha("a2"), sha("s1"), f"run-b{n}", **draw_ids())  # a copy is not another draw
     assert len(led.dev_draws(CONFIGS[0])) == 1 and led.dev_draws(CONFIGS[1]) == []
-    led.record_dev_draw(CONFIGS[0], sha("a1"), sha("s2"), "run-c")  # the same artifact digest is not a copy of the draw
+    led.record_dev_draw(CONFIGS[0], sha("a1"), sha("s2"), "run-c", **draw_ids())  # the same artifact digest is not a copy of the draw
     assert len(led.dev_draws(CONFIGS[0])) == 2
 
 
@@ -155,25 +158,22 @@ def entries(*configs: str):
 
 def test_every_batch_candidate_needs_draws_r_recorded_draws(tmp_path):
     led = with_controls(tmp_path)
-    for n in range(5):
-        draw(led, CONFIGS[1], n)
-    for n in range(4):  # one short
-        draw(led, CONFIGS[2], n)
+    record_draws_in(led, CONFIGS[1], n=5, mode="replay")  # (r7: replay entries need replay draws of the incumbent's draws)
+    record_draws_in(led, CONFIGS[2], n=4, mode="replay")  # one short
     with pytest.raises(DrawCoverageRefused, match="fewer recorded"):
         led.record_batch_declaration(entries(CONFIGS[1], CONFIGS[2]), draws_required=5)
     with pytest.raises(DrawCoverageRefused, match="fewer recorded"):  # a candidate with none
         led.record_batch_declaration(entries(CONFIGS[1], CONFIGS[3]), draws_required=5)
     assert led.batch_declaration() is None
-    draw(led, CONFIGS[2], 4)
+    record_draws_in(led, CONFIGS[2], n=1, mode="replay")
     led.record_batch_declaration(entries(CONFIGS[1], CONFIGS[2]), draws_required=5)
     assert [c["config_hash"] for c in led.batch_declaration()["candidates"]] == [CONFIGS[1], CONFIGS[2]]
 
 
 def test_every_recorded_candidate_must_be_in_the_batch_but_the_incumbent_need_not_be(tmp_path):
     led = with_controls(tmp_path)  # the incumbent is CONFIGS[0]
-    for config in (CONFIGS[0], CONFIGS[1], CONFIGS[2]):
-        for n in range(5):
-            draw(led, config, n)
+    record_draws_in(led, CONFIGS[0])
+    record_draws_in(led, CONFIGS[1], CONFIGS[2], mode="replay")
     with pytest.raises(DrawCoverageRefused, match="not in the batch"):  # CONFIGS[2] was tried and recorded, then left out
         led.record_batch_declaration(entries(CONFIGS[1]), draws_required=5)
     assert led.batch_declaration() is None
@@ -204,11 +204,11 @@ def test_declare_batch_needs_each_candidate_to_have_its_draws_recorded_and_every
     a, b = "1" * 64, "2" * 64
     code, out, err = world.run("declare-batch", "--candidate", f"{a}:replay")
     assert code == st.EXIT_REFUSED and "reason=draws_uncovered" in err and out == ""  # no draws recorded for it
-    record_draws(world.ledger(), a, n=4)
+    record_draws(world.ledger(), a, n=4, mode="replay")
     code, out, err = world.run("declare-batch", "--candidate", f"{a}:replay")
     assert code == st.EXIT_REFUSED and "reason=draws_uncovered" in err  # four of the prereg's five
-    record_draws(world.ledger(), a, n=1, start=4)
-    record_draws(world.ledger(), b)  # a second candidate is tried and recorded ...
+    record_draws(world.ledger(), a, n=1, start=4, mode="replay")
+    record_draws(world.ledger(), b, mode="replay")  # a second candidate is tried and recorded ...
     code, out, err = world.run("declare-batch", "--candidate", f"{a}:replay")
     assert code == st.EXIT_REFUSED and "reason=draws_uncovered" in err  # ... and left out of the batch
     assert world.ledger().batch_declaration() is None

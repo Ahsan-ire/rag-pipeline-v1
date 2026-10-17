@@ -108,7 +108,7 @@ the confirmatory batch, the development evidence, unsupported claims and control
 ``slot0_canonical`` or a rewrite-changing candidate, is its batch entry's), ``drafting_rule`` (refusal share 0.275
 over the whole pool, at most 3 round-1 attempts and 3 round-2 attempts, the lay share of the new lay or terse drafts,
 and attempt 1's draft count: ``max(families_approx, (sealed + tuning_min + realistic quota) - migrated) + draft_margin``),
-``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v3``, its components and the registered
+``incumbent`` (the pipeline identity slots 0 and 0b must run under: ``pipeline_config_v4``, its components and the registered
 list of ``src`` modules left out of the code hash) and
 ``judge`` (the registered judge every sealed slot runs). **One prereg per epoch:** the first ledger record that carries a ``prereg_sha256`` (a ``data`` dispatch, usually: the
 launcher records the prereg it ran under) registers it; every dispatch, ``split``, ``freeze``, ``calibrate``,
@@ -159,6 +159,7 @@ from src import sealed_inputs  # noqa: E402
 from src.eval_sealed_read import NotSealedInput, load_sealed  # noqa: E402  (the only sealed reader)
 from src.eval_split import SplitInfeasible, SplitInputError, families_digest, split_families  # noqa: E402
 from src.sealed_ledger import (  # noqa: E402
+    DrawBindingRefused,
     DrawCoverageRefused,
     EpochStop,
     LedgerCorrupt,
@@ -197,6 +198,9 @@ KINDS = ("sealed", "development")
 MODELS = ("independent", "correlated")
 TARGET_CLASSES = ("transcript", "memory", "log", "research", "work", "run", "dispatch", "staging", "tree", "history")
 EXCLUSION_REASONS = ("s_hit", "exposure", "twin_dev_version")
+#: The reasons ``exclude`` refuses once slot 0 (or 0b) is stored (``exclusion_late``); ``s_hit`` stays allowed: it is driven by
+#: the pre-publication scan of a slot's own report, not by the owner's choice.
+LATE_EXCLUSION_REASONS = ("exposure", "twin_dev_version")
 FROZEN_FILES = {"sealed": ("sealed", "heldout-v2.jsonl"), "tuning": ("dev", "tuning-v2.jsonl"), "realistic": ("dev", "realistic-v2.jsonl")}
 BAND_MIN_NUM, BAND_MIN_DEN = 1, 4  # 25 %
 BAND_MAX_NUM, BAND_MAX_DEN = 3, 10  # 30 %
@@ -230,6 +234,7 @@ REASONS = (
     "path_outside", "locked", "freeze_recovery_failed", "dump_missing", "staging_live",
     "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
     "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable", "draws_uncovered",
+    "draws_mismatch", "exclusion_late",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -1064,9 +1069,11 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.confirmatory_batch.rewrite_changing_candidate.against", "incumbent_replay"),
     ("adoption.confirmatory_batch.holm_k", 4),
     ("adoption.confirmatory_batch.spent_slot_counts", True),
-    ("adoption.confirmatory_batch.modes", ["replay", "candidate"]),
+    ("adoption.confirmatory_batch.modes", ["replay", "candidate", "abandoned"]),
+    ("adoption.confirmatory_batch.mode_binding",
+     "replay_entries_need_replay_draws_candidate_entries_need_build_draws_and_a_new_rewrite_identity"),
     ("adoption.confirmatory_batch.mode_declared_by", "batch_declaration"),
-    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim"),
+    ("adoption.confirmatory_batch.candidate_identity", "config_hash_is_pipeline_config_v4_checked_by_16b_gate_before_claim"),
     ("adoption.confirmatory_batch.rewrite_identity", "candidate_entry_rewrite_config_hash_is_rewrite_model_prompt_caps_checked_at_gate_before_claim"),
     ("adoption.confirmatory_batch.embargo_lifted_by", "16b_reviewed_code_change_with_identity_check"),
     ("adoption.confirmatory_batch.requires", ["controls_record", "judge_on", "registered_judge"]),
@@ -1085,17 +1092,20 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("adoption.development_evidence.draws_recorded_by", "pipeline_eval_record_draw_in_run"),
     ("adoption.development_evidence.unrecorded_runs", "never_count_and_are_logged_per_config"),
     ("adoption.development_evidence.abandoned", "counts_toward_k"),
+    ("adoption.development_evidence.fallback_draws", "void_logged_not_counted"),
     ("adoption.development_evidence.all_recorded_candidates_declared", True),
     ("adoption.scoring.identity", "scorer_identity_v1"),
-    ("adoption.scoring.compare", "candidate_and_slot0_equal"),
+    ("adoption.scoring.compare", "candidate_and_slot0_equal_and_counted_draws_equal_incumbent_draws"),
     ("adoption.scoring.covers", [
         "eval_cohort.py", "eval_schema.py", "eval_scoring.py", "eval_sealed_read.py", "eval_stats.py", "eval_v6.py",
-        "judge_prep.py", "sealed_groups.py", "sealed_results.py", "text_utils.py",
+        "judge_prep.py", "sealed_groups.py", "sealed_results.py", "scoring_glue.py", "text_utils.py",
         "generator.py:_sections_related",
         "generator.CAVEAT_PREFIX", "grounding.CITATIONS_UNVERIFIED", "grounding.CITATIONS_VERIFIED",
         "grounding.PARTIALLY_VERIFIED", "grounding.STATUS_COMPLETE", "grounding.TERMINAL_OUTCOMES",
         "eval/absorbed_sections.json", "eval/section_inventory.json",
     ]),
+    ("adoption.exclusions",
+     "confirmatory_comparison_uses_exclusions_recorded_before_slot0_store_plus_each_confirmatory_slots_own_s_hit_exclusions_applied_to_both_arms"),
     ("adoption.unsupported_claims.unit", "claim"),
     ("adoption.unsupported_claims.where", "candidate_sealed_slot"),
     ("adoption.unsupported_claims.against", "incumbent"),
@@ -1187,10 +1197,10 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("drafting_rule.paraphrase.migrated_top_up_to", 2),
     ("drafting_rule.paraphrase.t1_t7_cap", 3),
     ("drafting_rule.infeasible_after_round_2", "d64_owner_stop"),
-    ("incumbent.config_fn", "pipeline_config_v3"),
+    ("incumbent.config_fn", "pipeline_config_v4"),
     ("incumbent.components", [
         "version", "code", "runtime", "endpoint", "embedding", "index", "bm25", "fusion", "rewrite", "generation",
-        "scoring_inputs",
+        "scoring_inputs", "scan_inputs",
     ]),
     ("incumbent.code", "all_src_modules_except_code_excluded_and_hashed_scripts"),
     ("incumbent.code_excluded", [
@@ -1205,12 +1215,13 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
         "tracing_guard.py:TracingRefused", "tracing_guard.py:assert_tracing_off", "tracing_guard.py:scrub_tracing_env",
         "tracing_guard.py:tracing_problems",
     ]),
-    ("incumbent.code_scripts", ["scan_leaks.py"]),
+    ("incumbent.code_scripts", ["scan_leaks.py", "sp_launch.py"]),
+    ("incumbent.code_scripts_inert_imports", ["sp_launch.py:sealed_tool.py"]),
     ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"]),
     ("incumbent.fixed_by", "controls_record_incumbent_config_hash"),
     ("incumbent.draws", "each_counted_draw_sidecar_carries_the_incumbent_config_hash"),
     ("incumbent.slots", ["0", "0b"]),
-    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate"),
+    ("incumbent.candidates", "batch_entry_config_hash_is_pipeline_config_v4_of_the_candidate"),
     ("judge.required_on", ["0", "0b", "1", "2", "3", "4"]),
     ("judge.model", "claude-sonnet-5"),
     ("judge.prompt_version", "faithfulness-judge-v1"),
@@ -1220,7 +1231,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity"),
     ("judge.covers", [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction",
+        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime",
     ]),
     ("judge.errors", "any_sealed_judge_error_means_not_shown"),
 )
@@ -1299,7 +1310,8 @@ def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
     """``(path, "mismatch")`` for each value the code computes that the prereg does not carry (``prereg-check``'s recompute step).
 
     ``incumbent.components`` must be the code's ``PIPELINE_CONFIG_KEYS``, ``incumbent.code_excluded`` its ``CODE_EXCLUDED``,
-    ``incumbent.code_excluded_imports`` its ``CODE_EXCLUDED_IMPORTS`` and ``incumbent.code_scripts`` its ``HASHED_SCRIPTS``;
+    ``incumbent.code_excluded_imports`` its ``CODE_EXCLUDED_IMPORTS``, ``incumbent.code_scripts`` its ``HASHED_SCRIPTS`` and
+    ``incumbent.code_scripts_inert_imports`` its ``HASHED_SCRIPT_IMPORTS_INERT``;
     ``adoption.scoring.covers`` must be ``scoring_identity.covered()`` and ``judge.covers`` the judge's ``JUDGE_COVERS``;
     ``judge.model`` and ``judge.prompt_version``
     must be the judge's own and ``judge.config_hash`` must be ``judge_identity()["config_hash"]`` (the imports are lazy:
@@ -1313,6 +1325,7 @@ def computed_errors(doc: Mapping[str, Any]) -> List[Tuple[str, str]]:
         ("incumbent.code_excluded", list(pipeline_config.CODE_EXCLUDED)),
         ("incumbent.code_excluded_imports", list(pipeline_config.CODE_EXCLUDED_IMPORTS)),
         ("incumbent.code_scripts", list(pipeline_config.HASHED_SCRIPTS)),
+        ("incumbent.code_scripts_inert_imports", list(pipeline_config.HASHED_SCRIPT_IMPORTS_INERT)),
         ("adoption.scoring.covers", scoring_identity.covered()),
         ("judge.covers", list(judge.JUDGE_COVERS)),
     ):
@@ -2864,12 +2877,19 @@ def cmd_exclude(ctx: Ctx, families: Optional[Sequence[str]], group: Optional[str
 
     ``--family`` may repeat (an S-hit can name several sealed families: ``audit`` prints one line each); every
     family is resolved to its group BEFORE anything is written, so one unknown family changes nothing. Families of
-    one group give one exclusion. Each exclusion names its member families.
+    one group give one exclusion. Each exclusion names its member families and records which slots were stored when it was made.
+    Once slot 0 (or 0b) is stored a ``--reason exposure`` or ``twin_dev_version`` exclusion is refused (``exclusion_late``): the
+    confirmatory comparison uses the exclusions recorded before slot 0 was stored plus each confirmatory slot's own ``s_hit``
+    ones (``s_hit`` stays allowed: the scan of a slot's report drives it).
     """
     if reason not in EXCLUSION_REASONS or (not families) == (group is None):
         raise Stop(EXIT_USAGE, "usage")
     recover_state(ctx)
     ledger = ctx.ledger()
+    if reason in LATE_EXCLUSION_REASONS and any(slot in ("0", "0b") for slot in ledger.stored_slots()):
+        # the confirmatory comparison uses the exclusions recorded before slot 0 was stored (prereg ``adoption.exclusions``):
+        # an exposure or a twin of a development version found after that point is a different kind of fact, not a new exclusion
+        raise Stop(EXIT_REFUSED, "exclusion_late")
     groups = sealed_group_index(ledger, current_sealed_side(ctx, ledger))
     wanted: List[str] = []
     if families:
@@ -3557,7 +3577,11 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
     match ``eval/controls_v1.json`` (``controls_missing``). It also needs the recorded development draws to cover the
     batch (``draws_uncovered``): every ``replay`` or ``candidate`` entry's ``config hash`` has at least the prereg's
     ``draws_r`` draws recorded (``pipeline eval --record-draw``), every ``abandoned`` entry's has at least one and fewer, and
-    every recorded configuration other than the incumbent's is in the batch (all of them count toward Holm's K).
+    every recorded configuration other than the incumbent's is in the batch (all of them count toward Holm's K). Last, the
+    entries must be bound to their draws (``draws_mismatch``, r7): the counted draws of every runnable entry were scored by
+    the scorer identity the incumbent's counted draws carry; a ``replay`` entry's counted draws are replay draws of the
+    incumbent's same-index draws; a ``candidate`` entry's are build draws under its own rewrite identity, which is not the
+    incumbent's.
     """
     from src import sealed_ledger
 
@@ -3594,6 +3618,8 @@ def cmd_declare_batch(ctx: Ctx, candidates: Sequence[str]) -> int:
         raise Stop(EXIT_REFUSED, "batch_invalid") from None
     except DrawCoverageRefused:
         raise Stop(EXIT_REFUSED, "draws_uncovered") from None
+    except DrawBindingRefused:
+        raise Stop(EXIT_REFUSED, "draws_mismatch") from None
     except ProtocolError:
         raise Stop(EXIT_REFUSED, "batch_declared") from None
     ctx.printer.emit("batch_declared", candidates=len(entries), sha256=digest)

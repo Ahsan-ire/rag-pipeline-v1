@@ -15,6 +15,7 @@ from src import pipeline_config
 from src.eval_cohort import SCORER_VERSION, build_sidecar, cohort_block
 from src.eval_schema import load_inventory
 from src.eval_sets import sha256_file
+from tests.p16_draws import draw_ids
 
 CANARY = "P16-CANARY"
 SHA = "a" * 64
@@ -287,7 +288,7 @@ def _record_draws(draws):
         if sha256_file(path) in {r["rows_sidecar_sha256"] for r in ledger.dev_draws(config)}:
             continue
         try:
-            ledger.record_dev_draw(config, "b" * 64, sha256_file(path), f"run-{sha256_file(path)[:16]}")
+            ledger.record_dev_draw(config, "b" * 64, sha256_file(path), f"run-{sha256_file(path)[:16]}", **draw_ids())
         except ProtocolError:
             pass
 
@@ -666,7 +667,7 @@ def test_the_first_run_needs_its_draws_recorded_in_the_ledger(tmp_path, capsys):
     assert "draws not recorded" in capsys.readouterr().err
     assert not out.exists() and _ledger().controls_record() is None
     # recorded under another configuration than the draws carry: still none under the incumbent
-    _ledger().record_dev_draw("6" * 64, "b" * 64, sha256_file(draws[0]), "run-other-config")
+    _ledger().record_dev_draw("6" * 64, "b" * 64, sha256_file(draws[0]), "run-other-config", **draw_ids())
     assert controls.main(_argv("c1", draws, dev, out, record=False)) == controls.EXIT_UNUSABLE
     assert "draws not recorded" in capsys.readouterr().err and not out.exists()
 

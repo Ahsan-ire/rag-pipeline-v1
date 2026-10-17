@@ -65,9 +65,9 @@ def test_declare_batch_takes_an_abandoned_entry_for_a_partly_drawn_configuration
     sealed_frozen(world)
     record_controls(world)
     a, b, c = "1" * 64, "2" * 64, "3" * 64
-    record_draws(world.ledger(), a, n=5)
+    record_draws(world.ledger(), a, n=5, mode="replay")  # r7: a replay entry's draws are replay draws of the incumbent's
     record_draws(world.ledger(), b, n=2)
-    record_draws(world.ledger(), c, n=5)
+    record_draws(world.ledger(), c, n=5, mode="replay")
     code, out, err = world.run("declare-batch", "--candidate", f"{a}:replay", "--candidate", f"{c}:replay")
     assert code == st.EXIT_REFUSED and "reason=draws_uncovered" in err  # b was tried and recorded and is left out
     code, out, err = world.run("declare-batch", "--candidate", f"{a}:replay", "--candidate", f"{b}:replay", "--candidate", f"{c}:replay")
@@ -90,11 +90,11 @@ NEW = {
     "adoption.development_evidence.abandoned": "counts_toward_k",
     "adoption.control_flip.candidate_draws": "any_of_its_first_5_recorded_paired_by_draw_index",
     "adoption.scoring.identity": "scorer_identity_v1",
-    "adoption.scoring.compare": "candidate_and_slot0_equal",
-    "incumbent.config_fn": "pipeline_config_v3",
+    "adoption.scoring.compare": "candidate_and_slot0_equal_and_counted_draws_equal_incumbent_draws",
+    "incumbent.config_fn": "pipeline_config_v4",
     "incumbent.code": "all_src_modules_except_code_excluded_and_hashed_scripts",
-    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v3_of_the_candidate",
-    "adoption.confirmatory_batch.candidate_identity": "config_hash_is_pipeline_config_v3_checked_by_16b_gate_before_claim",
+    "incumbent.candidates": "batch_entry_config_hash_is_pipeline_config_v4_of_the_candidate",
+    "adoption.confirmatory_batch.candidate_identity": "config_hash_is_pipeline_config_v4_checked_by_16b_gate_before_claim",
     "judge.compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity",
 }
 
@@ -111,7 +111,7 @@ def test_the_recomputed_values_are_the_codes_and_a_mismatch_is_refused_by_prereg
     doc = real_prereg()
     assert st.computed_errors(doc) == []
     assert doc["adoption"]["scoring"]["covers"] == scoring_identity.covered()
-    assert doc["judge"]["covers"] == list(judge.JUDGE_COVERS) and doc["incumbent"]["components"][-1] == "scoring_inputs"
+    assert doc["judge"]["covers"] == list(judge.JUDGE_COVERS) and doc["incumbent"]["components"][-2:] == ["scoring_inputs", "scan_inputs"]
     for path, other in (
         ("adoption.scoring.covers", scoring_identity.covered()[:-1]), ("adoption.scoring.covers", list(reversed(scoring_identity.covered()))),
         ("judge.covers", list(judge.JUDGE_COVERS)[:-1]), ("incumbent.code_excluded_imports", list(pipeline_config.CODE_EXCLUDED_IMPORTS)[:-1]),

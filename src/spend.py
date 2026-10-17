@@ -165,6 +165,8 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from src import seams
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -234,6 +236,10 @@ class LedgerCorrupt(SpendMeterError):
 
 class UnpricedModel(SpendMeterError):
     """A model has no entry in the price file; the meter refuses to build."""
+
+
+class SeamRefused(SpendMeterError):
+    """A test-only injection (``inner_factory``) was given outside the test suite (16A-2b b1a r7; ``src.seams``)."""
 
 
 # ---------------------------------------------------------------------------
@@ -968,7 +974,9 @@ class SpendMeter:
         models: declared model per kind (default: the production constants);
             every one must be priced or ``UnpricedModel`` is raised here.
         inner_factory: ``kind -> chat model``; default builds ChatAnthropic
-            via ``default_inner_factory``. Tests inject fakes.
+            via ``default_inner_factory``. Tests inject fakes: a test seam, refused with ``SeamRefused`` outside
+            the test suite (``src.seams``; a meter whose clients are not the production ones would run a sealed
+            slot's judge, rewrite and generation through something no identity hash covers).
         sleep, rand, clock: injectable for tests.
         max_attempts: attempts per logical call (4).
     """
@@ -990,6 +998,8 @@ class SpendMeter:
         clock: Callable[[], datetime] = _utcnow,
         max_attempts: int = MAX_ATTEMPTS,
     ) -> None:
+        if inner_factory is not None and not seams.TEST_SEAMS:  # before anything is read or checked
+            raise SeamRefused("inner_factory")
         self.prices = prices
         self.ledger = check_ledger_path(ledger)
         if run_limit_eur is not None:

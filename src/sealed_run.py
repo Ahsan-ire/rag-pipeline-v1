@@ -58,6 +58,16 @@ re-check, before any call) recomputes ``pipeline_config_hash`` for slots 0 and 0
 mismatch, and :func:`run_slot` refuses to store a slot-0/0b results document whose ``pipeline_config_hash`` is not the
 ledger's incumbent (``incumbent``; the slot stays claimed, so it is spent, and nothing is stored).
 
+16A-2b b1a r7 adds: ``seam`` (every injection parameter of the slot entry points, ``run_slot``'s and ``recover_slot``'s ``scan``,
+``finish_slot``'s ``scan`` and ``render``, ``matrix_kwargs`` and the matrix runner's adapters and recorder, is honoured only
+while ``src.seams.TEST_SEAMS`` is true, which only ``tests/conftest.py`` sets: :func:`require_seam` refuses before any claim or
+call); ``incumbent_changed_during_run`` (the pipeline hash is taken again right before the results are stored, or before a
+development draw is recorded, and must be the one the run started with); and the pre-freeze smoke
+(``pipeline eval --sealed-slot N --preflight-only``: :func:`acquire_slot_token` with ``defer_controls`` and
+:func:`smoke_slot` run every gate and the preflight without claiming, reporting the gates that need the ``controls`` record
+``pending`` while it does not exist; the token it mints can never be claimed or run). :class:`DrawRecorder` is the recorder
+``pipeline eval --record-draw`` hands the matrix runner; a draw whose rewrite fell back is voided (``draw_void``).
+
 Where each input comes from (one source of truth each; ``scripts/sealed_tool.py`` writes them)
 ----------------------------------------------------------------------------------------------
 **Prereg** (``--prereg``, the same ``eval/prereg_16a2.json`` that ``sealed_tool`` checks; this
@@ -168,6 +178,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from src import eval_privacy as _privacy
+from src import seams as _seams
 from src.eval_privacy import PRIVATE, REPO_ROOT, new_run_id, sealed_run_dir, write_private
 from src.eval_schema import InventoryError, SchemaError, row_hash
 from src.eval_sealed_read import NotSealedInput, load_sealed
@@ -224,9 +235,12 @@ GATES = (
     "exclusion_list", "approvals", "groups", "floor", "baseline", "claim", "set_binding", "stored_results",
     "retrieval_backend", "prereg_binding", "batch", "embargo", "judge", "controls", "dev_binding", "identity",
     "incumbent",
-    # ``pipeline eval --record-draw`` (r6), all before any call
+    # ``pipeline eval --record-draw`` (r6), all before any call; ``draw_void`` (r7): the draw had a rewrite fallback
     "draw_inputs", "draw_expansion", "draw_replay", "draw_modes", "draw_retrieval_only", "draw_index", "draw_ledger",
-    "draw_sidecar",
+    "draw_sidecar", "draw_void",
+    # r7: an injected test seam outside the test suite (``src.seams``); the pipeline hash changed between the start of a
+    # run and its record or its storage
+    "seam", "incumbent_changed_during_run",
 )
 
 
@@ -259,6 +273,21 @@ class PublicationBlocked(BaseException):
 def backend_refused(exc: BaseException) -> GateRefused:
     """The ``retrieval_backend`` refusal for a preflight that could not load the index (detail: the class name only)."""
     return GateRefused("retrieval_backend", type(exc).__name__)
+
+
+def require_seam(name: str) -> None:
+    """Refuse an injected test seam when the suite is not running (16A-2b b1a r7, T1; ``src.seams``).
+
+    Every injection parameter of the slot and matrix-runner entry points (a scanner, a renderer, the retrieval, generation,
+    judge and provenance adapters, a recorder) can change what a run returns while every identity hash stays the same, so
+    each is honoured only while :data:`src.seams.TEST_SEAMS` is true (``tests/conftest.py`` sets it; nothing shipped may).
+    Called at the top of each entry point, before any claim, ledger write or call.
+
+    Raises:
+        GateRefused: ``seam`` (detail: the seam's name, a fixed token).
+    """
+    if not _seams.TEST_SEAMS:
+        raise GateRefused("seam", name)
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +573,7 @@ class PreflightReceipt:
     run_id: str
     args_digest: str
     mint: object = field(repr=False, compare=False, default=None)
+    config_hash: Optional[str] = field(repr=False, compare=False, default=None)  # the pipeline hash at the preflight (r7)
 
     def __post_init__(self) -> None:
         if self.mint is not _PREFLIGHT:
@@ -590,6 +620,7 @@ class SlotToken:
     candidate_rewrite_config_hash: Optional[str] = field(repr=False, default=None)  # a candidate entry's rewrite identity
     judge_config_hash: Optional[str] = field(repr=False, default=None)  # the prereg's registered judge identity
     claimed_args: List[Optional[str]] = field(repr=False, compare=False, default_factory=lambda: [None])  # digest claimed under
+    pending: Tuple[str, ...] = field(repr=False, default=())  # gates a pre-freeze smoke run (r7) could not decide yet; never claimable
 
     def __post_init__(self) -> None:
         if self.mint is not _MINT:
@@ -609,6 +640,8 @@ class SlotToken:
         """
         if not isinstance(receipt, PreflightReceipt) or receipt.run_id != self.run_id:
             raise GateRefused("claim", "preflight")
+        if self.pending:  # a smoke token (--preflight-only) skipped the gates that need the controls record
+            raise GateRefused("claim", "pending")
         if self.claimed[0]:
             return
         try:
@@ -627,7 +660,7 @@ class SlotToken:
             GateRefused: ``claim`` (``unclaimed``) when the slot was never claimed, (``token_used``) when
                 the matrix already started under this token.
         """
-        if not self.claimed[0]:
+        if not self.claimed[0] or self.pending:
             raise GateRefused("claim", "unclaimed")
         if self.used[0]:
             raise GateRefused("claim", "token_used")
@@ -763,7 +796,7 @@ def check_candidate_identity(
     """A confirmatory slot's candidate must be the one it was declared to be (the 16B check; a stub until then).
 
     The batch entry's ``config_hash`` is the sha256 of the candidate's canonical PIPELINE configuration
-    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v3``, of the candidate). The check 16B adds compares it with
+    (``src.pipeline_config.pipeline_config_hash``, registered as ``pipeline_config_v4``, of the candidate). The check 16B adds compares it with
     ``running_config_hash``, the same hash computed for the pipeline that is about to run: :func:`preflight_slot`
     passes it (the gate, which does not know the index, calls this with ``None`` as an early refusal). The rewrite
     identity is checked by :func:`_check_expansion`. Until 16B's reviewed code change lands this refuses always, so
@@ -806,6 +839,18 @@ def check_controls_bound(ledger: SealedLedger) -> None:
     record = ledger.controls_record()
     if record is None or _file_sha(controls_path()) != record["controls_sha256"]:
         raise GateRefused("controls")
+
+
+def _controls_gate(ledger: SealedLedger, defer: bool, pending: List[str]) -> None:
+    """:func:`check_controls_bound`, or (``defer``, the pre-freeze smoke) a ``pending`` note while no controls record exists.
+
+    A controls record that exists is always checked in full: only its absence can be deferred, and a deferral makes the
+    token unclaimable (``SlotToken.pending``), so it cannot start a run.
+    """
+    if defer and ledger.controls_record() is None:
+        pending.extend(name for name in ("controls", "incumbent") if name not in pending)
+        return
+    check_controls_bound(ledger)
 
 
 def dev_sets_of(ledger: SealedLedger, shas: Iterable[str]) -> Dict[str, str]:
@@ -917,6 +962,7 @@ def acquire_slot_token(
     baseline_run: Optional[str] = None,
     claim: bool = False,
     top_k: Optional[int] = None,
+    defer_controls: bool = False,
 ) -> SlotToken:
     """Run every gate for ``slot`` and, if all pass, mint the (unclaimed) token.
 
@@ -929,6 +975,11 @@ def acquire_slot_token(
 
     ``top_k`` is the cut-off the caller will run at. When given it is checked against the prereg's
     hit cut-off right away (``cutoff``); :func:`preflight_slot` checks it in any case.
+
+    ``defer_controls`` (``pipeline eval --sealed-slot N --preflight-only``, the pre-freeze smoke, r7): while the ledger has no
+    ``controls`` record the gates that need it, ``controls`` here and ``incumbent`` in the preflight, are reported as
+    ``pending`` on the token (``SlotToken.pending``) instead of refusing, and the token can never be claimed or run. A
+    controls record that exists is still checked in full (a changed list is a ``controls`` refusal, not pending).
 
     Raises:
         GateRefused: a gate refused (its name is on the exception).
@@ -948,8 +999,9 @@ def acquire_slot_token(
         raise GateRefused("prereg")  # a confirmatory slot is declared by its batch entry; slot 0 / 0b are not
     if top_k is not None:
         check_cutoff(prereg["cutoff"], top_k)
+    pending: List[str] = []
     if confirmatory:
-        check_controls_bound(ledger)
+        _controls_gate(ledger, defer_controls, pending)
     mode, artifact_sha, artifact_path, candidate_hash, candidate_expansion, candidate_rewrite = _check_expansion(
         decl, expansion, rewrite_candidate, ledger, sid,
     )
@@ -971,7 +1023,7 @@ def acquire_slot_token(
     if prereg_sha256 != freeze.get("prereg_sha256") or prereg_sha256 != ledger.epoch_prereg_sha256():
         raise GateRefused("prereg_binding")  # the epoch has one registered prereg, the one the freeze was made under
     if not confirmatory:  # slots 0 and 0b: the controls are recorded (and unchanged) before the first sealed result exists
-        check_controls_bound(ledger)
+        _controls_gate(ledger, defer_controls, pending)
     approvals_path = Path(records_dir) / "approvals.json"
     if _file_sha(set_path) != freeze["set_sha256"]:
         raise GateRefused("set_file")
@@ -1021,7 +1073,7 @@ def acquire_slot_token(
             sid, freeze, set_path, rows, groups, excluded, mode, approved_paths, artifact_sha, floor,
             prereg["cutoff"], ledger, approvals_path, approvals_sha, baseline, lock,
             prereg_sha256, prereg_commit, candidate_hash, candidate_expansion, candidate_rewrite,
-            prereg["judge_config_hash"],
+            prereg["judge_config_hash"], tuple(pending),
         )
         try:
             ledger.check_claimable(sid)
@@ -1057,6 +1109,7 @@ def _mint_token(
     candidate_expansion: Optional[str] = None,
     candidate_rewrite: Optional[str] = None,
     judge_config_hash: Optional[str] = None,
+    pending: Tuple[str, ...] = (),
 ) -> SlotToken:
     """Build the (unclaimed) token: the gate's last step."""
     return SlotToken(
@@ -1086,6 +1139,7 @@ def _mint_token(
         candidate_expansion=candidate_expansion,
         candidate_rewrite_config_hash=candidate_rewrite,
         judge_config_hash=judge_config_hash,
+        pending=pending,
     )
 
 
@@ -1124,8 +1178,8 @@ def check_token_for_run(
         from src import pipeline_config
 
         running = pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k)
-        if running is None or running != slot_token.ledger.incumbent_config_hash():
-            raise GateRefused("incumbent")
+        if running is None or ("incumbent" not in slot_token.pending and running != slot_token.ledger.incumbent_config_hash()):
+            raise GateRefused("incumbent")  # (a smoke token has no controls record to compare with: reported pending)
     owned = [p for p in set_paths if slot_token.approves(p)]
     if len(owned) != 1:
         raise GateRefused("set_binding")
@@ -1289,8 +1343,14 @@ def validate_draw_sidecar(
     is the artifact's sha256 (which is the incumbent draw's artifact, checked at the gate). The artifact must load and
     be the file whose digest is being recorded.
 
+    It must also carry the draw's ``scorer_identity``, its expansion ``config_hash`` (the rewrite identity) and the run's
+    ``rewrite_accounting`` (``attempts``, ``fallbacks``, ``live``, ``replayed``), which the ledger record stores or checks. A draw
+    in which any rewrite fell back to the raw query (``fallbacks > 0``: a timeout, a degenerate expansion) is not a draw of the
+    configuration: it raises ``GateRefused("draw_void")`` after every other check has passed, and :class:`DrawRecorder` logs a
+    ``dev_draw_void`` record instead of a ``dev_draw``.
+
     Raises:
-        GateRefused: ``draw_sidecar``.
+        GateRefused: ``draw_sidecar``; ``draw_void`` (detail ``rewrite_fallback``) for a structurally valid draw with a fallback.
     """
     from src.expansion_artifact import ExpansionArtifactError, load_artifact
 
@@ -1298,6 +1358,14 @@ def validate_draw_sidecar(
         return GateRefused("draw_sidecar")
 
     if sidecar.get("pipeline_config_hash") != plan.config_hash or sidecar.get("run_id") != run_id:
+        raise bad()
+    accounting = sidecar.get("rewrite_accounting")
+    if not (isinstance(accounting, dict) and all(
+        isinstance(accounting.get(key), int) and not isinstance(accounting.get(key), bool) and accounting[key] >= 0
+        for key in ("attempts", "fallbacks", "live", "replayed")
+    )):
+        raise bad()
+    if not _is_hex(sidecar.get("scorer_identity")) or not _is_hex((sidecar.get("expansion") or {}).get("config_hash")):
         raise bad()
     cohorts = sidecar.get("cohorts")
     if not isinstance(cohorts, list) or sorted(c.get("sha256") for c in cohorts) != sorted(plan.dev_sets.values()):
@@ -1327,6 +1395,67 @@ def validate_draw_sidecar(
             raise bad()
     elif expansion.get("kind") != "replay" or expansion.get("digest") != artifact_sha256:
         raise bad()
+    if accounting["fallbacks"] > 0:
+        raise GateRefused("draw_void", "rewrite_fallback")
+
+
+class DrawRecorder:
+    """The recorder of ``pipeline eval --record-draw``: validates the finished draw and appends its ledger record (r7).
+
+    The matrix runner calls it after the expansion artifact and the rows sidecar are written and before it writes the report
+    or prints anything (``evaluator.run_eval_matrix(record_draw=...)``), and honours a ``record_draw`` of this type outside
+    the test suite (a callable of the caller's is a test seam, :func:`require_seam`). It owns the logic the CLI used to hold
+    in a closure, so the object the evaluator is handed cannot be a function that does nothing:
+
+    1. :func:`validate_draw_sidecar` (``draw_sidecar``); a draw with a rewrite fallback is voided instead: a ``dev_draw_void``
+       record is appended (no index consumed) and ``draw_void`` is raised, so nothing is released;
+    2. the pipeline hash is computed again, immediately before the record, and must be the plan's (the hash the gate took
+       before any call): a source edit made while the run was going is ``incumbent_changed_during_run``;
+    3. the ``dev_draw`` record (the run id is its execution receipt, the sidecar's scorer identity and the expansion's rewrite
+       identity ride along); a ledger refusal is ``draw_ledger``.
+
+    The evaluator then checks that the ledger really holds that record before it releases anything.
+    """
+
+    def __init__(
+        self, *, ledger: SealedLedger, plan: DrawPlan, persist_directory: str, top_k: int,
+        out: Callable[[str], None] = print,
+    ) -> None:
+        self.ledger = ledger
+        self.plan = plan
+        self.persist_directory = persist_directory
+        self.top_k = top_k
+        self.out = out
+
+    def __call__(
+        self, *, run_id: str, artifact_path: str, artifact_sha256: str, sidecar_path: str, sidecar_sha256: str,
+        sidecar: Mapping[str, Any],
+    ) -> None:
+        from src import pipeline_config
+
+        plan = self.plan
+        try:
+            validate_draw_sidecar(
+                sidecar, plan=plan, artifact_path=artifact_path, artifact_sha256=artifact_sha256, run_id=run_id,
+            )
+        except GateRefused as exc:
+            if exc.gate == "draw_void":
+                try:
+                    self.ledger.record_dev_draw_void(plan.config_hash, run_id, "rewrite_fallback")
+                except ProtocolError:
+                    raise GateRefused("draw_ledger") from None
+            raise
+        if pipeline_config.pipeline_config_hash(self.persist_directory, top_k=self.top_k) != plan.config_hash:
+            raise GateRefused("incumbent_changed_during_run")
+        try:
+            index = self.ledger.record_dev_draw(
+                plan.config_hash, artifact_sha256, sidecar_sha256, run_id, replay_of=plan.replay_of,
+                scorer_identity=sidecar["scorer_identity"], rewrite_config_hash=sidecar["expansion"]["config_hash"],
+            )
+        except ProtocolError:
+            raise GateRefused("draw_ledger") from None
+        self.out(f"[eval] draw recorded: config={plan.config_hash} index={index} "
+                 f"draws={len(self.ledger.dev_draws(plan.config_hash))} receipt={run_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -1402,6 +1531,21 @@ def _load_scanner() -> Any:
     return importlib.import_module("scripts.scan_leaks")
 
 
+class _DefaultScan:
+    """The scanner :func:`default_scanner` builds: ``scripts/scan_leaks.py``'s needle index and its ``scan_text``.
+
+    A distinct type so that :func:`render_and_publish` can tell the module's own scanner (hashed, with the scripts it
+    imports) from a caller-supplied callable, which is a test seam (:func:`require_seam`).
+    """
+
+    def __init__(self, scan_leaks: Any, index: Any) -> None:
+        self._scan_leaks = scan_leaks
+        self._index = index
+
+    def __call__(self, text: str) -> List[Optional[str]]:
+        return [hit.family for hit in self._scan_leaks.scan_text(text, "report", self._index)]
+
+
 def default_scanner(run_id: str, notes: Optional[List[str]] = None) -> Callable[[str], List[Optional[str]]]:
     """A ``scan(text) -> [family id or None, ...]`` over the run's needles, built once.
 
@@ -1417,11 +1561,7 @@ def default_scanner(run_id: str, notes: Optional[List[str]] = None) -> Callable[
         index = scan_leaks.build_needles(scan_leaks.collect_sources(run_id=run_id), notes=notes)
     except scan_leaks.ScanRefusal:
         raise PublicationBlocked("scan_refused") from None
-
-    def scan(text: str) -> List[Optional[str]]:
-        return [hit.family for hit in scan_leaks.scan_text(text, "report", index)]
-
-    return scan
+    return _DefaultScan(scan_leaks, index)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -1490,6 +1630,10 @@ def render_and_publish(
         EpochEnded: an exclusion left fewer families than the floor.
         PublicationBlocked: a hit no group explains, or one that persists.
     """
+    if render is not None:
+        require_seam("render")
+    if not isinstance(scan, _DefaultScan):  # a scanner this module did not build decides which groups are excluded
+        require_seam("scan")
     excluded = frozenset(excluded)
     newly = 0
     while True:
@@ -1565,10 +1709,17 @@ def finish_slot(
     run directory (never published, never committed, no intent) and summarised on ``out`` as
     numbers only (the primary sign-flip line and the labelled sensitivities).
 
+    ``scan`` and ``render`` are test seams (:func:`require_seam`): a scanner or renderer of the caller's would decide which
+    groups the pre-publication scan excludes, or what is published, while every hash stays the same.
+
     Raises:
-        GateRefused: ``stored_results`` when the slot has nothing to finish, or
-            the run directory no longer digests to the recorded value.
+        GateRefused: ``seam`` for an injected ``scan`` or ``render`` outside the test suite; ``stored_results`` when the
+            slot has nothing to finish, or the run directory no longer digests to the recorded value.
     """
+    if scan is not None:
+        require_seam("scan")
+    if render is not None:
+        require_seam("render")
     sid = normalise_slot(slot)
     rec = ledger.recover(sid)
     if rec.action not in (RecoveryAction.RENDER_FROM_STORAGE, RecoveryAction.REPUBLISH):
@@ -1692,6 +1843,9 @@ def preflight_slot(
     map, the per-set cohort and duplicate-id checks, and, when a default retrieval or generation path
     is in play, the embedding model, Chroma index and BM25 sidecar it would load. Makes no call.
 
+    ``matrix_kwargs`` are test seams (:func:`require_seam`); a token with ``pending`` gates (the pre-freeze smoke) has no
+    incumbent to compare with, so the ``incumbent`` check compares nothing (the hash must still exist).
+
     Returns:
         The :class:`PreflightReceipt` for exactly these arguments: the only thing :meth:`SlotToken.claim` accepts.
 
@@ -1700,6 +1854,8 @@ def preflight_slot(
     """
     from src import evaluator, pipeline_config
 
+    if matrix_kwargs:
+        require_seam("matrix_kwargs")
     if top_k < 1:  # the evaluator's own numeric checks, first as they always were: a usage error, not a gate
         raise ValueError(f"top_k must be >= 1, got {top_k}")
     if judge_sample is not None and judge_sample < 0:
@@ -1712,7 +1868,9 @@ def preflight_slot(
             slot_token.slot, slot_token.ledger, slot_token.candidate_config_hash, slot_token.candidate_expansion,
             slot_token.candidate_rewrite_config_hash, running_config_hash=config_hash,
         )
-    elif config_hash is None or config_hash != slot_token.ledger.incumbent_config_hash():
+    elif config_hash is None or (
+        "incumbent" not in slot_token.pending and config_hash != slot_token.ledger.incumbent_config_hash()
+    ):
         raise GateRefused("incumbent")
     evaluator.run_eval_matrix(
         list(set_specs), modes=list(modes), top_k=top_k, skip_refusals=skip_refusals,
@@ -1725,7 +1883,29 @@ def preflight_slot(
         skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
         persist_directory=persist_directory, expansion=expansion, matrix_kwargs=matrix_kwargs, config_hash=config_hash,
     )
-    return PreflightReceipt(run_id=slot_token.run_id, args_digest=digest, mint=_PREFLIGHT)
+    return PreflightReceipt(run_id=slot_token.run_id, args_digest=digest, mint=_PREFLIGHT, config_hash=config_hash)
+
+
+def smoke_slot(slot_token: SlotToken, **run_args: Any) -> Tuple[str, ...]:
+    """The pre-freeze smoke (``pipeline eval --sealed-slot N --preflight-only``, 16A-2b b1a r7): every gate and the preflight, no claim.
+
+    ``slot_token`` was minted with ``defer_controls=True`` (:func:`acquire_slot_token`). The preflight (:func:`preflight_slot`,
+    same arguments as :func:`run_slot`) runs everything a real run could still refuse, including the embedding model, index
+    and BM25 sidecar a default path loads, and makes no model call. Nothing is claimed and the slot's execution lock is
+    released whatever happens.
+
+    Returns:
+        The gates the smoke could not decide because the ``controls`` record does not exist yet (``()`` when it does): they
+        are reported ``pending`` rather than refused, and are re-checked for real by the run itself.
+
+    Raises:
+        Whatever the preflight refuses with.
+    """
+    try:
+        preflight_slot(slot_token, **run_args)
+    finally:
+        slot_token.release()
+    return slot_token.pending
 
 
 def run_slot(
@@ -1748,7 +1928,9 @@ def run_slot(
 ) -> SlotOutcome:
     """Steps 2-6 for a slot (step 1, the claim, happens here, after the preflight).
 
-    ``matrix_kwargs`` passes the evaluator's injection seams (fakes) through.
+    ``matrix_kwargs`` passes the evaluator's injection seams (fakes) through, and ``scan`` replaces the pre-publication
+    scanner: both are test seams, refused with ``GateRefused("seam")`` before any claim or call outside the suite
+    (:func:`require_seam`), as is a smoke token (``pending``: it can never be claimed).
     The token is ALWAYS preflighted first (:func:`preflight_slot`: every refusal the run could still make, ending in
     a :class:`PreflightReceipt`). An unclaimed token is claimed with that receipt only when nothing is left to
     refuse, right before the first model call; a token that was claimed earlier (by a caller that preflighted it)
@@ -1758,10 +1940,19 @@ def run_slot(
     stored results, which a4 treats as spent. The token's execution lock is held
     for the whole run and released when it ends or dies (``finally``), so a live
     run is never mistaken for a spent slot.
+
+    The pipeline hash is taken again right before the results are stored (``incumbent_changed_during_run`` when it is not the
+    one the preflight took): a source edit made while the run was going cannot be stored under the pre-run identity.
     """
-    from src import evaluator
+    from src import evaluator, pipeline_config
 
     try:
+        if matrix_kwargs:
+            require_seam("matrix_kwargs")
+        if scan is not None:
+            require_seam("scan")
+        if slot_token.pending:
+            raise GateRefused("claim", "pending")
         receipt = preflight_slot(
             slot_token, set_specs=set_specs, modes=modes, top_k=top_k, skip_refusals=skip_refusals,
             skip_completeness=skip_completeness, judge=judge, judge_sample=judge_sample,
@@ -1779,6 +1970,8 @@ def run_slot(
         )
         run_dir = sealed_run_dir(slot_token.run_id, create=False)
         check_stored_incumbent(slot_token.slot, ledger, run_dir)  # slots 0 and 0b: the incumbent produced these results
+        if pipeline_config.pipeline_config_hash(persist_directory, top_k=top_k) != receipt.config_hash:  # r7: both ends
+            raise GateRefused("incumbent_changed_during_run")
         ledger.store_results(slot_token.slot, run_dir)  # step 3
         return finish_slot(slot_token.slot, ledger=ledger, scan=scan, out=out)
     finally:
@@ -1798,8 +1991,11 @@ def recover_slot(
     fresh). A spent or consumed slot is a ``claim`` refusal (never re-run);
     stored results are finished from storage. The slot's execution lock is held
     meanwhile: a slot that another process is running or recovering is a
-    ``claim`` refusal (``busy``), never a spent slot or a second finish.
+    ``claim`` refusal (``busy``), never a spent slot or a second finish. ``scan`` is a test seam (:func:`require_seam`),
+    refused before the lock is taken.
     """
+    if scan is not None:
+        require_seam("scan")
     sid = normalise_slot(slot)
     try:
         lock = ledger.lock_slot(sid)

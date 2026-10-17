@@ -1,16 +1,18 @@
 """The identity of the scorer, computed from the code and data that score (16A-2b b1a r6, D74).
 
-Two results are comparable (a candidate's sealed slot against slot 0's canonical run; a candidate's development draws
-against the incumbent's) only if the same scorer produced them. ``src.eval_cohort.SCORER_VERSION`` was a string someone had
-to remember to bump; this module computes the identity instead: :func:`scorer_identity` is the sha256 of the canonical
-JSON of
+Two results are comparable (a candidate's sealed slot against slot 0's canonical run; a candidate's counted development
+draws against the incumbent's counted draws) only if the same scorer produced them. ``src.eval_cohort.SCORER_VERSION`` was a
+string someone had to remember to bump; this module computes the identity instead: :func:`scorer_identity` is the sha256 of
+the canonical JSON of
 
 * ``code``: the ``ast.dump`` digest (docstrings stripped, as in ``src.pipeline_config``) of each module in
   :data:`SCORING_CODE_MODULES`, the modules that turn rows and ranked results into hits, ranks, rates, analysis units and
   the stored results document: the row loaders and the schema that fixes a row's evidence groups and scope, the evidence
   scoring, the observed-scope and partial-correctness scoring, the family collapse, the interval and the tests, the cohort
   roster, the metric computations over the stored document, the analysis units and the exclusion aggregation, the refusal
-  test and status normalisation, the sentence splitter and gap-statement test;
+  test and status normalisation, the sentence splitter and gap-statement test, and (r7) ``scoring_glue``: the evaluator's
+  scoring-facing glue (the hit cut-offs, the loader of the absorbed-section map, the projection of ranks into the rows
+  sidecar, the retrieval-eligible family count), which used to sit in ``src.evaluator`` outside any identity;
 * ``functions``: the digest of each function in :data:`SCORING_FUNCTIONS`, scoring code that lives in a module shared with
   the pipeline (``generator._sections_related`` decides related matches; hashing all of ``generator.py`` here would make
   every generation change a scorer change);
@@ -20,8 +22,11 @@ JSON of
   file): the absorbed-section map (its aliases count as hits at their chunk's rank) and the section inventory.
 
 ``SCORER_VERSION`` stays as the human label every sidecar and results document carries; it is no longer the comparison key.
-The prereg registers the comparison (``adoption.scoring``: the identity name, ``candidate_and_slot0_equal`` and
-:func:`covered`) and ``judge.compare`` (equal judge hash AND equal ``scorer_identity``).
+The prereg registers the comparison: ``adoption.scoring`` (the identity name, :func:`covered` and ``compare`` =
+``candidate_and_slot0_equal_and_counted_draws_equal_incumbent_draws``: the candidate's sealed slot and slot 0 carry the same
+``scorer_identity``, and every counted development draw of a candidate carries the identity the incumbent's counted draws
+carry, which ``sealed_tool declare-batch`` enforces from the ``dev_draw`` records) and ``judge.compare`` (equal judge hash AND
+equal ``scorer_identity``). A sidecar and a ``dev_draw`` record carry the identity of the run that made them.
 
 Rendering is not in the list: ``src.sealed_report`` holds the text of a report, and the metric computations it used to hold
 live in ``src.sealed_results``. Presentation arithmetic left there (a rate printed as ``hits/n``) derives from values the
@@ -42,7 +47,7 @@ SCORER_IDENTITY_NAME = "scorer_identity_v1"
 #: The ``src`` modules whose code is part of the scorer's identity (see the module docstring for what each is for).
 SCORING_CODE_MODULES = (
     "eval_cohort.py", "eval_schema.py", "eval_scoring.py", "eval_sealed_read.py", "eval_stats.py", "eval_v6.py",
-    "judge_prep.py", "sealed_groups.py", "sealed_results.py", "text_utils.py",
+    "judge_prep.py", "sealed_groups.py", "sealed_results.py", "scoring_glue.py", "text_utils.py",
 )
 
 #: Scoring functions that live in a shared module, as ``(file, function)``.
@@ -56,7 +61,7 @@ SCORING_VALUES = (
 )
 
 #: The committed data files the scoring path reads, relative to :data:`DATA_ROOT`: ``eval/absorbed_sections.json``
-#: (``evaluator._load_absorbed_map``: aliases that count as hits at their chunk's rank, so strict ranks depend on it) and
+#: (``scoring_glue.load_absorbed_map``: aliases that count as hits at their chunk's rank, so strict ranks depend on it) and
 #: ``eval/section_inventory.json`` (``eval_schema.load_inventory``: the section labels an evidence group may name).
 SCORING_DATA_FILES = ("eval/absorbed_sections.json", "eval/section_inventory.json")
 

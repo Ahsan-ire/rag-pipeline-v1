@@ -81,7 +81,7 @@ def test_the_exclusion_list_is_the_inert_modules_and_everything_that_reaches_a_c
     for name in ("spend.py", "sealed_run.py", "sealed_ledger.py", "eval_privacy.py", "eval_sets.py", "eval_sealed_read.py",
                  "llm_clients.py", "judge_prep.py", "scoring_identity.py"):
         assert name in pc.code_modules(), name  # r5 excluded some of these; r6 hashes them
-    assert pc.PIPELINE_CONFIG_VERSION == 3 and pc.HASHED_SCRIPTS == ("scan_leaks.py",)
+    assert pc.PIPELINE_CONFIG_VERSION == 4 and pc.HASHED_SCRIPTS == ("scan_leaks.py", "sp_launch.py")  # r7: v4, + sp_launch
 
 
 def test_nothing_hashed_imports_an_excluded_module_except_the_registered_inert_names():
@@ -141,7 +141,7 @@ def test_editing_a_module_the_exclusion_list_used_to_hold_changes_the_hash(with_
 # --- C1: scan_leaks is hashed ---------------------------------------------------------------------------------------------------------
 def test_scan_leaks_is_part_of_the_code_component_keyed_by_its_script_path(with_index, scripts_copy):
     config = pc.pipeline_config("unused", top_k=6)
-    assert "scripts/scan_leaks.py" in config["code"] and set(config["code"]) == {*pc.code_modules(), "scripts/scan_leaks.py"}
+    assert "scripts/scan_leaks.py" in config["code"] and set(config["code"]) == {*pc.code_modules(), *pc.hashed_scripts()}  # r7: + sp_launch
     assert config["code"]["scripts/scan_leaks.py"] == pc.code_digest(scripts_copy / "scan_leaks.py")
     before = h()
     path = scripts_copy / "scan_leaks.py"
@@ -161,10 +161,10 @@ def test_a_hashed_script_that_imports_an_excluded_module_is_reported(scripts_cop
     assert pc.excluded_import_violations() == ["scripts/scan_leaks.py -> eval_roster.py:ROSTER"]
 
 
-def test_the_recipe_is_version_three_and_has_the_scoring_inputs_component(with_index):
+def test_the_recipe_is_version_four_and_has_the_scoring_inputs_and_scan_inputs_components(with_index):
     config = pc.pipeline_config("unused", top_k=6)
-    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 3 and tuple(config) == pc.PIPELINE_CONFIG_KEYS
-    assert pc.PIPELINE_CONFIG_KEYS[-1] == "scoring_inputs" and config["scoring_inputs"] == si.scoring_inputs()
+    assert config["version"] == pc.PIPELINE_CONFIG_VERSION == 4 and tuple(config) == pc.PIPELINE_CONFIG_KEYS  # r6: v3; r7: v4
+    assert pc.PIPELINE_CONFIG_KEYS[-2:] == ("scoring_inputs", "scan_inputs") and config["scoring_inputs"] == si.scoring_inputs()
 
 
 # --- C2: client construction ---------------------------------------------------------------------------------------------------------
@@ -233,7 +233,11 @@ def test_editing_any_scoring_module_changes_the_scorer_identity_and_the_pipeline
 
 def test_the_scorer_identity_ignores_the_rendering_and_generation_code_it_does_not_score_with(with_index, code_copy):
     before = si.scorer_identity()
-    for name in ("sealed_report.py", "render.py", "retriever.py", "evaluator.py", "spend.py"):
+    # r7: evaluator.py is no longer in this list. It stayed here in r6 on the claim that the evaluator is not a scoring module,
+    # but the scoring-facing glue it held (the hit cut-offs, the absorbed-map loader, the rank projection into the sidecar, the
+    # eligible-family count) decided what the scorer is handed; it moved into scoring_glue.py, which is covered, and
+    # tests/test_p16a2b_b1a_r7_config.py holds that the evaluator defines none of it any more.
+    for name in ("sealed_report.py", "render.py", "retriever.py", "spend.py"):
         append(code_copy, name, "_R6_MARK = 1")
     assert si.scorer_identity() == before
 
@@ -306,7 +310,7 @@ def test_the_judge_identity_covers_the_preparation_path_and_the_client_construct
     assert judge.JUDGE_CODE_MODULES == ("judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py")
     assert list(judge.JUDGE_COVERS) == prereg["judge"]["covers"] == [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction"]
+        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"]  # r7: + the execution stack
     assert all((pc.CODE_DIR / name).is_file() and name in pc.code_modules() for name in judge.JUDGE_CODE_MODULES)
     # eval_v6 and eval_stats stay because they compute the unsupported rate (judge_summary) and its Wilson interval
     from src import eval_v6
@@ -524,6 +528,7 @@ def test_the_prereg_no_longer_lists_the_judge_among_the_excluded_things():
     assert prereg["incumbent"]["code_excluded"] == list(pc.CODE_EXCLUDED)
     assert prereg["incumbent"]["code_excluded_imports"] == list(pc.CODE_EXCLUDED_IMPORTS)
     assert prereg["incumbent"]["code_scripts"] == list(pc.HASHED_SCRIPTS)
-    assert prereg["incumbent"]["config_fn"] == "pipeline_config_v3"
+    assert prereg["incumbent"]["config_fn"] == "pipeline_config_v4"  # r7: v4
     assert prereg["adoption"]["scoring"] == {
-        "identity": "scorer_identity_v1", "compare": "candidate_and_slot0_equal", "covers": si.covered()}
+        "identity": "scorer_identity_v1", "compare": "candidate_and_slot0_equal_and_counted_draws_equal_incumbent_draws",
+        "covers": si.covered()}  # r7: the comparison also covers the counted development draws

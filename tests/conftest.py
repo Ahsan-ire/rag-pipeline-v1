@@ -3,6 +3,13 @@
 import pytest
 from langchain_core.documents import Document
 
+from src import seams
+
+# 16A-2b b1a r7 (T1): the injection seams of the slot, matrix-runner and meter entry points (fake scanners, adapters, judges,
+# recorders, model factories) are honoured ONLY while this suite runs. Nothing under src/ or scripts/ may assign the flag
+# (tests/test_p16a2b_b1a_r7_seams.py holds that); a test of the refusal sets it False with monkeypatch for its own duration.
+seams.TEST_SEAMS = True
+
 
 @pytest.fixture(autouse=True)
 def _no_live_api_key(monkeypatch):
@@ -71,6 +78,21 @@ def _no_real_index_identity(monkeypatch):
     ``tests/test_p16a2b_b1a_r4_config.py`` tests the real function against a temporary store.
     """
     monkeypatch.setattr("src.pipeline_config.index_identity", lambda persist_directory: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_scan_inputs(monkeypatch):
+    """No test reads the pre-publication scan's real data files through ``pipeline_config`` (16A-2b b1a r7).
+
+    ``pipeline_config.scan_inputs_component`` digests the handbook dump (``data/research/handbook_sections.jsonl``, corpus
+    text), the public-set registry and legacy list and every registered public set, found through the scanner's own path
+    constants, and ``pipeline_config()`` calls it for every identity. The suite replaces it with "nothing there"; the digest
+    function ``pipeline_config.scan_inputs`` is tested on temporary files and the wiring of the paths with temporary ones.
+    """
+    monkeypatch.setattr(
+        "src.pipeline_config.scan_inputs_component",
+        lambda: {"handbook_dump": None, "public_registry": None, "legacy_public": None, "public_sets": {}},
+    )
 
 
 @pytest.fixture

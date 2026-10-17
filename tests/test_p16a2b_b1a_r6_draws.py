@@ -23,6 +23,7 @@ import src.pipeline
 from src import eval_privacy, pipeline_config, sealed_ledger, sealed_run
 from src.sealed_ledger import DrawCoverageRefused, ProtocolError, SealedLedger
 from tests.p16_capture import PROVENANCE
+from tests.p16_draws import draw_ids, record_draws
 from tests.p16_slot import (  # noqa: F401 - the fixtures are used by name
     BOUND_PREREG_SHA,
     WORLD_INDEX,
@@ -179,9 +180,14 @@ def test_a_crash_before_the_record_leaves_no_countable_draw_and_no_result(drawab
         cli(monkeypatch, capsys, argv_for(drawable, name="crashed"))
     out = capsys.readouterr().out
     assert "private v6 run" not in out and "draw recorded" not in out
-    assert draw_records(drawable) == [] and "dev_run_unrecorded" not in kinds(drawable)
+    # r7 (T4): a run that fails at or after the sidecar write without a recorded draw leaves a dev_run_unrecorded record
+    # (reason record_failed) behind: it cannot vanish without a trace. (r6 asserted that nothing at all was logged.)
+    assert draw_records(drawable) == []
+    [logged] = drawable.ledger().records("dev_run_unrecorded")
+    assert (logged["config_hash"], logged["reason"]) == (drawable.config_hash(), "record_failed")
     runs = list((drawable.private / "runs").iterdir())
     assert len(runs) == 1 and not (runs[0] / "report.md").exists()  # the sidecar may exist; the report and the record do not
+    assert logged["run_id"] == runs[0].name
 
 
 def test_a_sidecar_that_is_not_the_planned_draw_is_not_recorded_and_nothing_is_reported(drawable, fakes, monkeypatch, capsys):
@@ -349,7 +355,7 @@ def test_tracing_must_be_off_and_a_build_needs_a_meter(drawable, fakes, monkeypa
 
 def test_the_ledgers_cap_and_the_controls_rule_are_checked_before_the_run(drawable, fakes, monkeypatch, capsys):
     ledger = drawable.ledger()
-    ledger.record_dev_draw(CONFIGS[0], sha("a"), sha("s"), "run-first")  # some other configuration is the first recorded
+    ledger.record_dev_draw(CONFIGS[0], sha("a"), sha("s"), "run-first", **draw_ids())  # some other configuration is the first recorded
     refused(monkeypatch, capsys, drawable, fakes, argv_for(drawable), "gate=draw_ledger")  # a second one before the controls
 
 
@@ -430,7 +436,9 @@ def with_controls(tmp_path, incumbent=CONFIGS[0]) -> SealedLedger:
 
 
 def draw(led, config, n, receipt=None):
-    return led.record_dev_draw(config, sha(f"artifact {config} {n}"), sha(f"sidecar {config} {n}"), receipt or f"run-{config[:4]}-{n}")
+    return led.record_dev_draw(
+        config, sha(f"artifact {config} {n}"), sha(f"sidecar {config} {n}"), receipt or f"run-{config[:4]}-{n}", **draw_ids(),
+    )
 
 
 def test_the_execution_receipt_is_required_distinct_and_an_id(tmp_path):
@@ -439,12 +447,12 @@ def test_the_execution_receipt_is_required_distinct_and_an_id(tmp_path):
         led.record_dev_draw(CONFIGS[0], D, D)  # no receipt: not a draw
     draw(led, CONFIGS[0], 0, "run-one")
     with pytest.raises(ProtocolError, match="receipt"):
-        led.record_dev_draw(CONFIGS[0], sha("x"), sha("y"), "run-one")  # one run is one draw
+        led.record_dev_draw(CONFIGS[0], sha("x"), sha("y"), "run-one", **draw_ids())  # one run is one draw
     with pytest.raises(ProtocolError, match="sidecar"):
-        led.record_dev_draw(CONFIGS[0], sha("x"), sha("sidecar " + CONFIGS[0] + " 0"), "run-two")  # a copy of a sidecar
+        led.record_dev_draw(CONFIGS[0], sha("x"), sha("sidecar " + CONFIGS[0] + " 0"), "run-two", **draw_ids())  # a copy of a sidecar
     for bad in ("", "ab", "has space", "x" * 65, None, 5, "slash/id"):
         with pytest.raises(ValueError):
-            led.record_dev_draw(CONFIGS[0], sha("p"), sha("q"), bad)
+            led.record_dev_draw(CONFIGS[0], sha("p"), sha("q"), bad, **draw_ids())
     assert len(led.dev_draws(CONFIGS[0])) == 1 and led.dev_draws(CONFIGS[0])[0]["execution_receipt"] == "run-one"
 
 
@@ -472,22 +480,24 @@ def test_replay_of_is_checked_in_the_ledger_transaction(tmp_path):
     art = lambda n: sha(f"artifact {CONFIGS[0]} {n}")  # noqa: E731
     cand = CONFIGS[1]
     with pytest.raises(ProtocolError, match="not the incumbent draw's artifact"):
-        led.record_dev_draw(cand, art(1), sha("c0"), "run-c0", replay_of=1)  # draw 1 is index 0's artifact
+        led.record_dev_draw(cand, art(1), sha("c0"), "run-c0", replay_of=1, **draw_ids())  # draw 1 is index 0's artifact
     with pytest.raises(ProtocolError, match="no such draw"):
-        led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=4)
+        led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=4, **draw_ids())
     with pytest.raises(ProtocolError, match="index"):
-        led.record_dev_draw(cand, art(1), sha("c0"), "run-c0", replay_of=2)  # its first draw can only replay draw 1
+        led.record_dev_draw(cand, art(1), sha("c0"), "run-c0", replay_of=2, **draw_ids())  # its first draw can only replay draw 1
     for bad in (0, -1, True, "1", 1.0):
         with pytest.raises(ValueError):
-            led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=bad)
-    assert led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=1) == 1
-    assert led.record_dev_draw(cand, art(1), sha("c1"), "run-c1", replay_of=2) == 2
+            led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=bad, **draw_ids())
+    assert led.record_dev_draw(cand, art(0), sha("c0"), "run-c0", replay_of=1, **draw_ids()) == 1
+    assert led.record_dev_draw(cand, art(1), sha("c1"), "run-c1", replay_of=2, **draw_ids()) == 2
     assert [r["replay_of"] for r in led.dev_draws(cand)] == [1, 2]
-    assert all("replay_of" not in r for r in led.dev_draws(CONFIGS[0]))
+    # r7: the record always carries replay_of and the mode (r6 stored replay_of only on a replay draw: its absence was the assertion)
+    assert all(r["replay_of"] is None and r["mode"] == "build" for r in led.dev_draws(CONFIGS[0]))
+    assert all(r["mode"] == "replay" for r in led.dev_draws(cand))
     (tmp_path / "x").mkdir()
     no_controls = SealedLedger(tmp_path / "x" / "copy", mirror=tmp_path / "x" / "mirror.jsonl", ledger=tmp_path / "x" / "ledger.jsonl")
     with pytest.raises(ProtocolError, match="controls"):
-        no_controls.record_dev_draw(cand, D, D, "run-z", replay_of=1)
+        no_controls.record_dev_draw(cand, D, D, "run-z", replay_of=1, **draw_ids())
 
 
 def test_unrecorded_runs_are_logged_counted_per_configuration_and_mirrored_as_a_digest_only(tmp_path):
@@ -595,9 +605,7 @@ def test_draws_required_is_a_required_argument_and_the_coverage_rules_always_app
 
 def test_an_omitted_recorded_candidate_is_refused_whatever_the_caller_passes(tmp_path):
     led = with_controls(tmp_path)
-    for config in (CONFIGS[1], CONFIGS[2]):
-        for n in range(5):
-            draw(led, config, n)
+    record_draws(led, CONFIGS[1], CONFIGS[2], mode="replay")  # r7: a replay entry's draws are replay draws of the incumbent's
     with pytest.raises(DrawCoverageRefused, match="not in the batch"):
         led.record_batch_declaration(entries(CONFIGS[1]), draws_required=5)
     led.record_batch_declaration(entries(CONFIGS[1], CONFIGS[2]), draws_required=5)
@@ -605,12 +613,8 @@ def test_an_omitted_recorded_candidate_is_refused_whatever_the_caller_passes(tmp
 
 def test_an_abandoned_entry_needs_some_but_fewer_than_the_required_draws_and_counts_toward_k(tmp_path):
     led = with_controls(tmp_path)
-    for n in range(5):
-        draw(led, CONFIGS[1], n)
-    for n in range(2):
-        draw(led, CONFIGS[2], n)
-    for n in range(5):
-        draw(led, CONFIGS[3], n)
+    record_draws(led, CONFIGS[1], CONFIGS[3], mode="replay")  # r7: replay entries' draws are replay draws of the incumbent's
+    record_draws(led, CONFIGS[2], n=2)  # (the abandoned one is not run, so its mode is not bound)
     full = {"config_hash": CONFIGS[1], "expansion": "abandoned"}  # all its draws are there: it is not abandoned
     with pytest.raises(DrawCoverageRefused, match="abandoned"):
         led.record_batch_declaration([full, {"config_hash": CONFIGS[2], "expansion": "abandoned"}, *entries(CONFIGS[3])], draws_required=5)
