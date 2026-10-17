@@ -1944,12 +1944,12 @@ b2. **Migration and quotas [C].** First `sealed_tool epoch`: it must print `prer
     refusal intervals; round 2 reuses round 1's quotas. Realistic 52 is minimal by owner choice: every open realistic
     slot is a refusal, so a rejected one is replaced in round 2.
     **Migration (`scripts/migrate_dev_v2.py`).** Writes `eval/private/dev/tuning_migrated.jsonl` and
-    `realistic_migrated.jsonl` with minted private family ids (idempotent via `eval/private/inputs/migration_map.json`).
+    `realistic_migrated.jsonl` with minted private family ids (idempotent via `eval/private/work/b2/migration_map.json`).
     T1/T7: 24 exercise families plus the 2 document-specific refusal variants (T07-Ca-RV, T07-Cc-RV) as their own
     tutorial refusal families (26). Phrasings: the first up-to-3 in file order that share the family's label (owner
-    rule; per-family selections in `eval/private/inputs/t1t7_labels.json`). Of the 10 PARTIAL exercises, 5 carry gaps
+    rule; per-family selections in `eval/private/work/b2/t1t7_labels.json`). Of the 10 PARTIAL exercises, 5 carry gaps
     drafted by an Opus pass from the candidates' check notes (rank tables removed; annotation record
-    `eval/private/inputs/t1t7_gap_annotations.md`; synthetic matcher check), and 5 were relabelled `answer` by the owner
+    `eval/private/work/b2/t1t7_gap_annotations.md`; synthetic matcher check), and 5 were relabelled `answer` by the owner
     (T01-A, also a twin candidate of a golden row for b4; T07-Ba; T07-Ca; T07-Cc; T07-D). Every T1/T7 row and every
     legacy refusal row is `owner_status: draft`.
 b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and the tutorial folder (the 15 unseen

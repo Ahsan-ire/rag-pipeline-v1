@@ -2741,4 +2741,5 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
   - `realistic_migrated.jsonl` `fa5d67cf…a877`: 49 families, 102 rows, 10 refusals, 5 partial.
   - `migration_map.json` `298e9c19…609b`.
   - Labels file `67d96445…5a94`.
+- **Where the files live.** The b2 working files are not `.jsonl`: the map, gaps, labels, annotations and sanitised extract. They live in `eval/private/work/b2/`, because the leak scanner's pre-check refuses any non-needle-source file elsewhere under `eval/private/` (exit 7). The question-bearing `.jsonl` files stay in scanned locations: the dev outputs and `inputs/t1t7_count_v1.jsonl`.
 - **`count-migrated` after the amendment:** realistic 52, tuning 68 (floor 60), both bands ok, refusal supply 45–51 against a target of 50.

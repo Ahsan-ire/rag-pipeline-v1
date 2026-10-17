@@ -40,6 +40,7 @@ class Rig:
         self.private = tmp_path / "eval" / "private"
         self.dev = self.private / "dev"
         self.inputs = self.private / "inputs"
+        self.work = self.private / "work" / "b2"
         self.inventory = tmp_path / "_registry" / "section_inventory.json"
         self.inventory.parent.mkdir()
         self.inventory.write_text(json.dumps(INVENTORY), encoding="utf-8")
@@ -80,16 +81,16 @@ class Rig:
         return path
 
     def gaps(self, gaps: Dict[str, Any], unresolved: Optional[Dict[str, str]] = None, **extra: Any) -> Path:
-        self.inputs.mkdir(parents=True, exist_ok=True)
-        path = self.inputs / "t1t7_gaps.json"
+        self.work.mkdir(parents=True, exist_ok=True)
+        path = self.work / "t1t7_gaps.json"
         path.write_text(json.dumps({"version": 1, "gaps": gaps, "unresolved": unresolved or {}, **extra}), encoding="utf-8")
         return path
 
     def labels(self, *, scope: Optional[Dict[str, str]] = None, phrasings: Optional[Dict[str, List[int]]] = None,
                flags: Optional[Dict[str, str]] = None, **extra: Any) -> Path:
         """The owner's labels file at its default path (nothing labelled by default)."""
-        self.inputs.mkdir(parents=True, exist_ok=True)
-        path = self.inputs / "t1t7_labels.json"
+        self.work.mkdir(parents=True, exist_ok=True)
+        path = self.work / "t1t7_labels.json"
         doc = {"version": 1, "provenance": f"{CANARY} synthetic", "scope": scope or {}, "phrasings": phrasings or {}, "flags": flags or {}, **extra}
         path.write_text(json.dumps(doc), encoding="utf-8")
         return path
@@ -276,7 +277,7 @@ def test_hold_unresolved_writes_the_family_outside_dev_and_still_counts_it(rig):
     assert (held_line["families"], held_line["rows"], held_line["partials"]) == ("1", "3", "1") and re.fullmatch(r"[0-9a-f]{64}", held_line["sha256"])
     check = rig.fields(out, "migrated_check")  # the held family is realistic's: the counts are count-migrated's, held or not
     assert (check["realistic_families"], check["realistic_refuse"]) == ("10", "3")
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))
     assert mapping["candidates"]["T01-A"]["held"] is True and mapping["candidates"]["T07-Bb"]["held"] is False
     # resolving it later (no flag) moves the same family into dev/ under the same id, and the held file goes away
     held_fid = held[0]["family_id"]
@@ -296,9 +297,9 @@ def test_gaps_file_problems_are_invalid_input(rig):
         rig.gaps(bad.pop("gaps"), bad.pop("unresolved", None), **bad)
         code, out, err = rig.run()
         assert code == st.EXIT_USAGE and "reason=input_invalid" in err, bad
-    (rig.inputs / "t1t7_gaps.json").write_text("[1]", encoding="utf-8")
+    (rig.work / "t1t7_gaps.json").write_text("[1]", encoding="utf-8")
     assert rig.run()[0] == st.EXIT_USAGE
-    (rig.inputs / "t1t7_gaps.json").unlink()  # PARTIAL candidates but no gaps file
+    (rig.work / "t1t7_gaps.json").unlink()  # PARTIAL candidates but no gaps file
     code, out, err = rig.run()
     assert code == st.EXIT_USAGE and "reason=input_missing" in err
     assert not (rig.dev / "tuning_migrated.jsonl").exists()
@@ -316,7 +317,7 @@ def test_a_gap_that_is_not_a_schema_gap_is_a_validation_failure(rig):
 def test_a_rerun_reuses_the_ids_and_writes_byte_identical_files(rig):
     migrate(rig)
     first = rig.files()
-    assert {"dev/tuning_migrated.jsonl", "dev/realistic_migrated.jsonl", "inputs/migration_map.json"} <= set(first)
+    assert {"dev/tuning_migrated.jsonl", "dev/realistic_migrated.jsonl", "work/b2/migration_map.json"} <= set(first)
     code, out, err = rig.run()
     assert code == 0, err
     second = rig.files()
@@ -328,9 +329,9 @@ def test_a_rerun_reuses_the_ids_and_writes_byte_identical_files(rig):
 
 def test_the_map_names_every_v1_id_and_candidate_with_its_family_and_row_ids(rig):
     tuning, realistic, out = migrate(rig)
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))
     assert mapping["version"] == 1 and len(mapping["v1"]) == 5 + 4 and len(mapping["candidates"]) == 6  # golden + realistic ids; 6 candidates
-    assert mapping["labels_sha256"] == sha(rig.inputs / "t1t7_labels.json") and set(mapping) == {"version", "labels_sha256", "v1", "candidates"}
+    assert mapping["labels_sha256"] == sha(rig.work / "t1t7_labels.json") and set(mapping) == {"version", "labels_sha256", "v1", "candidates"}
     g3 = family_of(tuning, GOLDEN[3][0])[0]
     assert mapping["v1"][rig.pid(GOLDEN[3][0])] == {"family_id": g3["family_id"], "row_id": g3["id"], "split": "tuning"}
     pair = family_of(realistic, REALISTIC[1][0])
@@ -343,7 +344,7 @@ def test_the_map_names_every_v1_id_and_candidate_with_its_family_and_row_ids(rig
     assert mapping["candidates"]["T07-Bb-RV"]["row_ids"] == [family_of(realistic, Q("rv"))[0]["id"]]
     ids = {e["family_id"] for e in [*mapping["v1"].values(), *mapping["candidates"].values()]}
     assert len(ids) == 3 + 10  # a pair's two v1 ids share one family
-    assert rig.fields(out, "migration_map")["sha256"] == sha(rig.inputs / mig.MAP_NAME)
+    assert rig.fields(out, "migration_map")["sha256"] == sha(rig.work / mig.MAP_NAME)
 
 
 def test_minted_ids_avoid_known_and_issued_ids_and_are_recorded_as_issued(rig, monkeypatch):
@@ -377,7 +378,7 @@ def test_minted_ids_avoid_known_and_issued_ids_and_are_recorded_as_issued(rig, m
 
 def test_a_reused_id_that_another_file_already_holds_is_refused(rig):
     migrate(rig)
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))
     taken = mapping["candidates"]["T01-B"]["family_id"]
     (rig.dev / "tuning_other.jsonl").write_text(json.dumps({"family_id": taken}) + "\n", encoding="utf-8")
     before = rig.files()
@@ -388,7 +389,7 @@ def test_a_reused_id_that_another_file_already_holds_is_refused(rig):
 
 def test_a_map_that_does_not_fit_the_inputs_is_refused(rig):
     migrate(rig)
-    path = rig.inputs / mig.MAP_NAME
+    path = rig.work / mig.MAP_NAME
     good = json.loads(path.read_text(encoding="utf-8"))
 
     def broken(edit) -> Tuple[int, str]:
@@ -497,7 +498,7 @@ def test_a_disagreement_with_count_migrated_is_a_count_mismatch(rig, monkeypatch
     monkeypatch.setattr(st, "migrated_counts", off_by_one)
     code, out, err = rig.run()
     assert code == st.EXIT_FAIL and "reason=count_mismatch" in err
-    assert not list(rig.dev.iterdir()) and not (rig.inputs / mig.MAP_NAME).exists()  # the check comes before the first write
+    assert not list(rig.dev.iterdir()) and not (rig.work / mig.MAP_NAME).exists()  # the check comes before the first write
 
 
 # --- the candidate files ----------------------------------------------------------------------------------------------------------------------
@@ -569,8 +570,8 @@ def test_it_prints_counts_and_digests_only_and_the_files_are_private_and_valid(r
 def test_the_three_outputs_are_the_only_things_written(rig):
     migrate(rig)
     assert sorted(rig.files()) == [
-        "dev/realistic_migrated.jsonl", "dev/tuning_migrated.jsonl", "inputs/migration_map.json", "inputs/t1t7_gaps.json",
-        "inputs/t1t7_labels.json", "sealed/work/issued_ids.txt",  # the gaps and labels files were there before
+        "dev/realistic_migrated.jsonl", "dev/tuning_migrated.jsonl", "sealed/work/issued_ids.txt", "work/b2/migration_map.json",
+        "work/b2/t1t7_gaps.json", "work/b2/t1t7_labels.json",  # the gaps and labels files were there before
     ]
 
 
@@ -587,7 +588,7 @@ def test_the_default_inputs_are_the_repos(rig, tmp_path):
     for name in ("golden_set.jsonl", "realistic_set.jsonl"):
         rig.registry.add(tmp_path / "eval" / name, privacy="public", name=f"default-{name}")
     out, err = io.StringIO(), io.StringIO()
-    code = mig.main(["--repo", str(tmp_path), "--inventory", str(rig.inventory)], out=out, err=err)  # gaps default: private/inputs/t1t7_gaps.json
+    code = mig.main(["--repo", str(tmp_path), "--inventory", str(rig.inventory)], out=out, err=err)  # gaps default: private/work/b2/t1t7_gaps.json
     assert code == 0, err.getvalue()
     assert rig.fields(out.getvalue(), "migrated_check")["realistic_families"] == "10"
 
@@ -613,7 +614,7 @@ def test_an_empty_split_leaves_no_file_and_removes_its_own_stale_one(rig):
     only_paired = [(GOLDEN[1][0], "direct", ["1.1", "1.2"]), (GOLDEN[2][0], "direct", ["2.1"])]
     rig.configure(rig.v1("golden5.jsonl", only_paired), rig.v1("realistic.jsonl", REALISTIC), rig.pairing(PAIRS),
                   [rig.tmp / "tutorials" / "tutorial01_candidates.md", rig.tmp / "tutorials" / "tutorial07_candidates.md"])
-    path = rig.inputs / mig.MAP_NAME
+    path = rig.work / mig.MAP_NAME
     mapping = json.loads(path.read_text(encoding="utf-8"))
     for q in (GOLDEN[0][0], GOLDEN[3][0], GOLDEN[4][0]):  # the golden-only families are gone from the inputs: their map entries too
         mapping["v1"].pop(rig.pid(q))
@@ -660,7 +661,7 @@ def test_an_id_overridden_away_from_partial_needs_no_gaps_and_is_no_longer_unres
     assert {r["scope"] for r in family_of(realistic, Q("a0"))} == {"answer"}
     assert not (rig.inputs / "held_unresolved.jsonl").exists() and rig.fields(out, "held")["families"] == "0"
     assert CANARY not in out
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))
     assert mapping["candidates"]["T01-A"]["held"] is False
 
 
@@ -699,7 +700,7 @@ def test_the_phrasings_are_the_listed_embedded_rows_in_the_listed_order_and_row_
     assert [r["question"] for r in y] == [Q("y0"), Q("y1"), Q("y2")] and [r["register"] for r in y] == ["modelled", "lay", "lay"]
     assert [(r["register"], r["scope"]) for r in family_of(realistic, Q("rv"))] == [("modelled", "refuse")]
     assert all(Q("a1") != r["question"] and Q("a3") != r["question"] for r in realistic)  # unlisted embedded rows are not migrated
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"]
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"]
     assert [mapping[c]["phrasings"] for c in ("T01-A", "T01-B", "T07-Aa", "T01-C", "T07-Bb-RV")] == [[2, 0], [1], [1, 0], [0, 1, 2], [0]]
     assert mapping["T01-A"]["row_ids"] == [r["id"] for r in a]
     assert rig.fields(out, "labels")["phrasing_entries"] == "4"
@@ -741,13 +742,13 @@ def test_a_labels_file_of_the_wrong_shape_is_invalid_input(rig, edit):
     version = kwargs.pop("version", 1)
     provenance = kwargs.pop("provenance", "synthetic")
     doc = {"version": version, "provenance": provenance, "scope": {}, "phrasings": {}, "flags": {}, **kwargs}
-    (rig.inputs / "t1t7_labels.json").write_text(json.dumps(doc), encoding="utf-8")
+    (rig.work / "t1t7_labels.json").write_text(json.dumps(doc), encoding="utf-8")
     code, out, err = rig.run()
     assert code == st.EXIT_USAGE and "reason=input_invalid" in err and not (rig.dev.exists() and list(rig.dev.iterdir()))
 
 
 def test_the_labels_file_is_required_and_must_be_json(rig):
-    path = rig.inputs / "t1t7_labels.json"
+    path = rig.work / "t1t7_labels.json"
     for text in ("[]", "not json", '{"scope": {}}', '{"version": 1}'):
         path.write_text(text, encoding="utf-8")
         code, out, err = rig.run()
@@ -764,7 +765,7 @@ def test_the_labels_file_is_required_and_must_be_json(rig):
 
 
 def test_a_labels_file_with_only_the_required_keys_labels_nothing(rig):
-    (rig.inputs / "t1t7_labels.json").write_text(json.dumps({"version": 1, "provenance": "p"}), encoding="utf-8")
+    (rig.work / "t1t7_labels.json").write_text(json.dumps({"version": 1, "provenance": "p"}), encoding="utf-8")
     _, realistic, out = migrate(rig)
     assert [r["register"] for r in family_of(realistic, Q("a0"))] == ["modelled", "lay", "lay"]
     assert rig.fields(out, "labels")["scope_overrides"] == "0"
@@ -774,7 +775,7 @@ def test_flags_are_recorded_in_the_map_per_family_and_never_in_a_row_or_the_summ
     note = f"{CANARY} twin_candidate_of_golden_for_b4"
     rig.labels(flags={"T01-B": note, "T07-Aa": "second_note"})
     tuning, realistic, out = migrate(rig)
-    mapping = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"]
+    mapping = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"]
     assert mapping["T01-B"]["flags"] == note and mapping["T07-Aa"]["flags"] == "second_note"
     assert all("flags" not in e for c, e in mapping.items() if c not in ("T01-B", "T07-Aa"))
     assert all("flags" not in r and note not in json.dumps(r) for r in [*tuning, *realistic])
@@ -787,13 +788,13 @@ def test_the_labels_digest_is_in_the_map_and_the_summary(rig):
     _, _, out = migrate(rig)
     digest = sha(labels)
     assert rig.fields(out, "labels")["sha256"] == digest
-    assert json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))["labels_sha256"] == digest
+    assert json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))["labels_sha256"] == digest
     assert_allowlisted(out)
     # a changed labels file changes the digest in the map, and the ids stay
-    ids = {c: e["family_id"] for c, e in json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"].items()}
+    ids = {c: e["family_id"] for c, e in json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))["candidates"].items()}
     labels = rig.labels(scope={"T01-A": "answer"}, phrasings={"T01-B": [2, 1]})
     _, _, out2 = migrate(rig)
-    again = json.loads((rig.inputs / mig.MAP_NAME).read_text(encoding="utf-8"))
+    again = json.loads((rig.work / mig.MAP_NAME).read_text(encoding="utf-8"))
     assert again["labels_sha256"] == sha(labels) != digest and {c: e["family_id"] for c, e in again["candidates"].items()} == ids
     assert rig.fields(out2, "migration_map")["ids_minted"] == "0"
 

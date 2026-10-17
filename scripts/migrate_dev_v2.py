@@ -9,9 +9,9 @@ Inputs (all injectable; defaults are repo-relative, the gaps file is private)::
                                                          embedded ``{"question", ..., "candidate_id"}`` JSON lines; the
                                                          scope is the ``- **scope:** IN|PARTIAL|OUT`` line of the
                                                          ``### <candidate id>`` block (a ``*-RV`` refusal variant has no block)
-    eval/private/inputs/t1t7_gaps.json                   ``{"version": 1, "gaps": {candidate id: [{"id", "keywords"}, ...]},
+    eval/private/work/b2/t1t7_gaps.json                   ``{"version": 1, "gaps": {candidate id: [{"id", "keywords"}, ...]},
                                                          "unresolved": {candidate id: reason}}``: the gaps of the PARTIAL families
-    eval/private/inputs/t1t7_labels.json                 REQUIRED. ``{"version": 1, "provenance": str, "scope": {candidate id:
+    eval/private/work/b2/t1t7_labels.json                 REQUIRED. ``{"version": 1, "provenance": str, "scope": {candidate id:
                                                          answer|partial|refuse}, "phrasings": {candidate id: [index, ...]},
                                                          "flags": {candidate id: str}}``: the owner's labels (below)
 
@@ -21,7 +21,7 @@ Outputs (private)::
     eval/private/dev/realistic_migrated.jsonl            unpaired realistic families (one lay legacy row), paired families
                                                          (row 0 = the realistic row, lay; row 1 = the golden row, modelled)
                                                          and the T1/T7 tutorial families (see the labels, below)
-    eval/private/inputs/migration_map.json               v1 id / candidate id -> family id and row ids (a candidate also: the
+    eval/private/work/b2/migration_map.json               v1 id / candidate id -> family id and row ids (a candidate also: the
                                                          embedded rows its rows came from, its label flag, and the labels digest)
     eval/private/inputs/held_unresolved.jsonl            only with ``--hold-unresolved``: the PARTIAL families whose gaps are
                                                          unresolved (not valid v2 rows: they have no gaps), outside ``dev/``
@@ -212,7 +212,7 @@ def parse_candidates(paths: Sequence[Path]) -> List[Candidate]:
 
 @dataclass(frozen=True)
 class Labels:
-    """The owner's labels for the tutorial families (``eval/private/inputs/t1t7_labels.json``), checked for shape only.
+    """The owner's labels for the tutorial families (``eval/private/work/b2/t1t7_labels.json``), checked for shape only.
 
     ``scope`` overrides a heading's scope, ``phrasings`` lists the embedded rows (0 = the first embedded row of the
     candidate) that become the family's rows, in that order, ``flags`` are notes that go to the map and never into a row.
@@ -594,8 +594,8 @@ def migrate(ctx: st.Ctx, inputs: Inputs, hold_unresolved: bool) -> int:
         raise st.Stop(st.EXIT_REFUSED, "unresolved_partial", families=len(unresolved))
     specs = build_specs(golden, realistic, pairs, candidates, gaps, unresolved, hold_unresolved)
 
-    inputs_dir = ctx.private / "inputs"
-    map_path, held_path = inputs_dir / MAP_NAME, inputs_dir / HELD_NAME
+    inputs_dir, work_dir = ctx.private / "inputs", ctx.private / "work" / "b2"
+    map_path, held_path = work_dir / MAP_NAME, inputs_dir / HELD_NAME
     out_paths = {split: ctx.dev_dir / name for split, name in OUT_NAMES.items()}
     old, _existed = read_map(map_path)
     issued_path = ctx.sealed_work / "issued_ids.txt"
@@ -676,8 +676,8 @@ def resolve_inputs(ctx: st.Ctx, a: argparse.Namespace) -> Inputs:
         realistic=Path(a.realistic) if a.realistic else ctx.repo / "eval" / "realistic_set.jsonl",
         pairing=Path(a.pairing) if a.pairing else ctx.repo / "eval" / "v2_pairing.json",
         tutorials=[Path(p) for p in a.tutorials] if a.tutorials else [ctx.repo / "data" / "tutorials" / n for n in TUTORIAL_FILES],
-        gaps=Path(a.gaps) if a.gaps else ctx.private / "inputs" / GAPS_NAME,
-        labels=Path(a.labels) if a.labels else ctx.private / "inputs" / LABELS_NAME,
+        gaps=Path(a.gaps) if a.gaps else ctx.private / "work" / "b2" / GAPS_NAME,
+        labels=Path(a.labels) if a.labels else ctx.private / "work" / "b2" / LABELS_NAME,
     )
 
 
