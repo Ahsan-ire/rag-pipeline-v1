@@ -115,10 +115,12 @@ JUDGE_CODE_MODULES = ("judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py
 #: calls ``generator.get_llm`` to build the judge's client (the nominal kwargs are hashed too, but ``get_llm`` could override
 #: any of them after the fact, ``max_tokens`` say). ``metering_wrapper``: ``SpendMeter.judge_llm`` returns a
 #: ``MeteredChatModel`` and every judge call is ``MeteredChatModel.invoke``: its retry loop, its callback and the
-#: handler it threads through the inner call.
+#: handler it threads through the inner call; the inner client itself comes from ``spend.default_inner_factory``, chosen by
+#: ``SpendMeter.__init__`` (r8: a different default factory, or a different choice of it, is a different measuring instrument).
 JUDGE_EXECUTION_STACK = {
     "client_builder": (("generator.py", "get_llm"),),
     "metering_wrapper": (
+        ("spend.py", "default_inner_factory"), ("spend.py", "SpendMeter.__init__"),
         ("spend.py", "MeteredChatModel"), ("spend.py", "_MeterCallback"), ("spend.py", "_with_handler"),
         ("spend.py", "retry_decision"), ("spend.py", "SpendMeter._client"), ("spend.py", "SpendMeter.judge_llm"),
     ),
@@ -126,13 +128,19 @@ JUDGE_EXECUTION_STACK = {
 
 #: The distributions whose code a judge call runs through: the Anthropic SDK, its LangChain client and LangChain's core (the
 #: runnable, prompt and parser the chain is made of). Their transitive requirements are followed
-#: (``pipeline_config.distribution_closure``) and their versions are part of the judge's identity (``judge_runtime``).
+#: (``pipeline_config.distribution_closure``). Their versions are the judge's ``judge_runtime``: recorded per slot
+#: (``judge_runtime_sha256``) and compared between a candidate and slot 0, but NOT part of the registered ``config_hash``
+#: (r8: the registered value must be one a later install does not move; the pipeline hash's ``runtime`` already covers every
+#: installed distribution).
 JUDGE_RUNTIME_ROOTS = ("anthropic", "langchain-anthropic", "langchain-core")
+
+#: How the prereg's ``judge.runtime`` says the judge-path package versions are handled.
+JUDGE_RUNTIME_RULE = "recorded_per_slot_compared_candidate_vs_slot0"
 
 #: What a sealed results document says the judge covers (the prereg's ``judge.covers``).
 JUDGE_COVERS = (
     "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-    "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime",
+    "preparation", "client_construction", "client_builder", "metering_wrapper",
 )
 
 
@@ -141,15 +149,15 @@ def llm_fn_over(client: Any) -> Callable[[Dict[str, str]], str]:
     return (JUDGE_PROMPT | client | StrOutputParser()).invoke
 
 
-def judge_identity() -> Dict[str, str]:
+def judge_identity() -> Dict[str, Any]:
     """The identity of the judging step, as the pre-registration and a sealed run's results record it (16A-2b).
 
-    Returns ``{"model", "prompt_sha256", "config_hash"}``:
+    Returns ``{"model", "prompt_sha256", "config_hash", "judge_runtime", "judge_runtime_sha256"}``:
 
     * ``model``: :data:`JUDGE_MODEL`.
     * ``prompt_sha256``: sha256 of the canonical JSON of ``[[role, template], ...]`` for ``JUDGE_PROMPT``.
     * ``config_hash``: sha256 of the canonical JSON of ``{"model", "client", "endpoint", "refusal_phrase", "prompt_sha256",
-      "prompt_version", "verdicts", "sample", "seed", "code", "client_builder", "metering_wrapper", "judge_runtime"}``, where
+      "prompt_version", "verdicts", "sample", "seed", "code", "client_builder", "metering_wrapper"}``, where
       ``client`` is ``generation_llm_kwargs()`` (the
       client the judge calls through) without ``default_request_timeout`` and ``max_retries`` (they change whether a
       call succeeds, not what it returns), ``endpoint`` is the effective Anthropic base URL
@@ -160,10 +168,16 @@ def judge_identity() -> Dict[str, str]:
       preparation (the eligibility rule, the refusal test, the status normalisation, the judge's own context
       formatter, the assembly of the judged items), the client construction and the rate that scores the judgements.
       r7 adds the judge's execution stack: ``client_builder`` and ``metering_wrapper`` are the function-level digests of
-      :data:`JUDGE_EXECUTION_STACK` (``generator.get_llm`` and the metered wrapper every judge call passes through) and
-      ``judge_runtime`` is the sorted ``name==version`` list of :data:`JUDGE_RUNTIME_ROOTS` and their transitive
-      requirements, so a change to the code that builds or wraps the client, or to the SDK that sends the request, moves the
-      hash (:data:`JUDGE_COVERS` names what is covered). No call is made.
+      :data:`JUDGE_EXECUTION_STACK` (``generator.get_llm`` and the metered wrapper every judge call passes through; r8: with
+      the default client factory and the ``SpendMeter`` constructor that selects it), so a change to the code that
+      builds or wraps the client moves the hash (:data:`JUDGE_COVERS` names what is covered).
+    * ``judge_runtime``: the sorted ``name==version`` list of :data:`JUDGE_RUNTIME_ROOTS` and their transitive requirements
+      (the SDK that sends the request), and ``judge_runtime_sha256`` its sha256. r8: these are NOT inputs of ``config_hash``
+      (the prereg registers ``config_hash``, and an install must not move a registered value). Every slot's results document
+      and sidecar records ``judge_runtime_sha256`` and a candidate is compared with slot 0 on it
+      (:data:`JUDGE_RUNTIME_RULE`); the pipeline hash covers the same versions through its ``runtime`` component.
+
+    No call is made.
     """
     from src import pipeline_config
     from src.generator import REFUSAL_PHRASE, generation_llm_kwargs
@@ -188,9 +202,12 @@ def judge_identity() -> Dict[str, str]:
             }
             for part, members in JUDGE_EXECUTION_STACK.items()
         },
-        "judge_runtime": pipeline_config.distribution_closure(JUDGE_RUNTIME_ROOTS),
     }
-    return {"model": JUDGE_MODEL, "prompt_sha256": prompt_sha, "config_hash": sha256_hex(canonical_json(config))}
+    runtime = pipeline_config.distribution_closure(JUDGE_RUNTIME_ROOTS)
+    return {
+        "model": JUDGE_MODEL, "prompt_sha256": prompt_sha, "config_hash": sha256_hex(canonical_json(config)),
+        "judge_runtime": runtime, "judge_runtime_sha256": sha256_hex(canonical_json(runtime)),
+    }
 
 
 def _default_llm_fn(prompt_vars: Dict[str, str]) -> str:

@@ -52,14 +52,18 @@ pipeline retrieves, generates, judges and scores.
     {name: sha256 or None}}`` for the data the pre-publication scan (``scripts/scan_leaks.py``) reads that no freeze record
     binds: the handbook dump whose text exempts sealed windows, the public-set registry and legacy list, and each registered
     public set's current file (a drifted one exempts nothing). They decide which families an S-hit excludes, so they are part
-    of the identity as well as the scanner's code. ``None`` for a file that is absent.
+    of the identity as well as the scanner's code. ``None`` for a file that is absent. Its coverage is the registry, the legacy
+    list, the public sets and the handbook dump, and no more: the contents of the private and sealed eval sets are not
+    hashed here (their freeze records bind them by sha256).
 
 **Excluded on purpose** (they change whether a call succeeds, or are about the run rather than the pipeline):
 timeouts and retries (their literals live in ``src.llm_transport``, itself in :data:`CODE_EXCLUDED`, and the client
 kwargs drop them), the git sha, paths (the persist directory is only read, never hashed), the API key, the modules in
-:data:`CODE_EXCLUDED`, the eval sets and any corpus text. The judge has its own identity
+:data:`CODE_EXCLUDED`, the contents of the eval sets (the private and sealed ones are bound by their freeze records; the public
+registry, legacy list and public sets the scan reads are in ``scan_inputs``) and any corpus text. The judge has its own identity
 (``src.judge.judge_identity``) but its code is part of ``code`` here too, and so is all scoring code (the scorer has its
-own, ``src.scoring_identity.scorer_identity``). Chunk ids are
+own, ``src.scoring_identity.scorer_identity``); the judge's package versions are part of ``runtime`` (the judge also records
+them as ``judge_runtime_sha256``, outside its registered hash). Chunk ids are
 content hashes, so the index component moves when the indexed text does; chunk *metadata* (page and section numbers)
 is not read, because a hash must never need documents.
 

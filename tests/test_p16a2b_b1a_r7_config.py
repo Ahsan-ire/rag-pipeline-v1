@@ -19,6 +19,8 @@ from src import evaluator, generator, judge, judge_prep, pipeline_config as pc, 
 from tests.test_p16a2b_b1a_r4_config import (  # noqa: F401  (fixtures and helpers)
     REAL_INDEX_IDENTITY,
     ROOT,
+    _dist,
+    _real_versions,
     code_copy,
     h,
     with_index,
@@ -69,21 +71,26 @@ def test_function_digest_ignores_docstrings_and_comments_but_not_code(code_copy)
     assert pc.function_digest(path, "get_llm") != before
 
 
-def test_the_judge_identity_has_the_execution_stack_and_the_runtime_in_its_hash():
+def test_the_judge_identity_has_the_execution_stack_in_its_hash_and_the_runtime_beside_it():
     assert judge.JUDGE_RUNTIME_ROOTS == ("anthropic", "langchain-anthropic", "langchain-core")
     assert judge.JUDGE_EXECUTION_STACK["client_builder"] == (("generator.py", "get_llm"),)
     assert ("spend.py", "MeteredChatModel") in judge.JUDGE_EXECUTION_STACK["metering_wrapper"]
+    # r8 (Codex M3): the default client factory and the constructor that selects it are on the stack too
+    assert {("spend.py", "default_inner_factory"), ("spend.py", "SpendMeter.__init__")} <= set(judge.JUDGE_EXECUTION_STACK["metering_wrapper"])
     for members in judge.JUDGE_EXECUTION_STACK.values():  # every member exists (a typo would be a refusal, never a silent gap)
         for file, qualname in members:
             assert pc.function_digest(pc.CODE_DIR / file, qualname)
-    assert {"client_builder", "metering_wrapper", "judge_runtime"} <= set(judge.JUDGE_COVERS)
+    assert {"client_builder", "metering_wrapper"} <= set(judge.JUDGE_COVERS)
+    assert "judge_runtime" not in judge.JUDGE_COVERS  # r8 (auditor M1): the runtime is recorded per slot, not registered in the hash
     prereg = json.loads((ROOT / "eval" / "prereg_16a2.json").read_text(encoding="utf-8"))
     assert prereg["judge"]["covers"] == list(judge.JUDGE_COVERS)
+    assert prereg["judge"]["runtime"] == judge.JUDGE_RUNTIME_RULE == "recorded_per_slot_compared_candidate_vs_slot0"
     assert prereg["judge"]["config_hash"] == judge.judge_identity()["config_hash"]  # recomputed, not typed
 
 
 @pytest.mark.parametrize("file,qualname", [
     ("generator.py", "get_llm"),
+    ("spend.py", "default_inner_factory"), ("spend.py", "SpendMeter.__init__"),  # r8 (Codex M3)
     ("spend.py", "MeteredChatModel"), ("spend.py", "MeteredChatModel.invoke"), ("spend.py", "_MeterCallback"),
     ("spend.py", "_MeterCallback.on_chat_model_start"), ("spend.py", "_with_handler"), ("spend.py", "retry_decision"),
     ("spend.py", "SpendMeter._client"), ("spend.py", "SpendMeter.judge_llm"),
@@ -143,18 +150,47 @@ def test_the_judge_runtime_is_the_closure_of_the_three_packages_and_their_requir
         assert importlib.metadata.version(name) == version
 
 
+def installed_as(monkeypatch, overrides):
+    """``importlib.metadata`` as installed, except that ``overrides`` ({normalised name: version}) are installed at those versions.
+
+    Both readers are changed: ``version`` (the judge's closure) and ``distributions`` (the pipeline hash's runtime).
+    """
+    versions(monkeypatch, overrides)
+    monkeypatch.setattr(pc.importlib.metadata, "distributions", lambda: [
+        _dist(n, overrides.get(pc.normalise_distribution_name(n), v)) for n, v in _real_versions()])
+
+
 @pytest.mark.parametrize("name", ["anthropic", "langchain-anthropic", "langchain-core", "httpx", "pydantic", "packaging"])
-def test_a_changed_version_of_a_judge_path_distribution_moves_the_judge_identity(monkeypatch, name):
-    before = judge.judge_identity()["config_hash"]
-    versions(monkeypatch, {name: "999.0.0"})
-    assert judge.judge_identity()["config_hash"] != before
+def test_a_changed_version_of_a_judge_path_distribution_moves_the_runtime_and_the_pipeline_hash_not_the_registered_judge_hash(
+        with_index, monkeypatch, name):
+    """r8 (auditor M1): the registered ``judge.config_hash`` survives an install; the per-slot ``judge_runtime_sha256`` and the
+    pipeline hash (its ``runtime`` component) still see it, so a candidate with another SDK cannot be compared with slot 0 unseen."""
+    before, before_pipeline = judge.judge_identity(), h()
+    installed_as(monkeypatch, {name: "999.0.0"})
+    after = judge.judge_identity()
+    assert after["config_hash"] == before["config_hash"]
+    assert after["judge_runtime_sha256"] != before["judge_runtime_sha256"] and after["judge_runtime"] != before["judge_runtime"]
+    assert f"{name}==999.0.0" in after["judge_runtime"]
+    assert h() != before_pipeline
 
 
 @pytest.mark.parametrize("name", ["pytest", "chromadb", "rank-bm25", "sentence-transformers"])
 def test_a_changed_version_of_an_unrelated_distribution_does_not_move_the_judge_identity(monkeypatch, name):
-    before = judge.judge_identity()["config_hash"]
+    before = judge.judge_identity()
     versions(monkeypatch, {name: "999.0.0"})
-    assert judge.judge_identity()["config_hash"] == before
+    assert judge.judge_identity() == before  # the hash, the runtime list and its digest alike
+
+
+def test_the_judge_runtime_is_reported_beside_the_hash_and_is_not_an_input_of_it(monkeypatch):
+    identity = judge.judge_identity()
+    assert set(identity) == {"model", "prompt_sha256", "config_hash", "judge_runtime", "judge_runtime_sha256"}
+    assert identity["judge_runtime"] == pc.distribution_closure(judge.JUDGE_RUNTIME_ROOTS)  # the sorted name==version list
+    assert identity["judge_runtime_sha256"] == pc.sha256_hex(pc.canonical_json(identity["judge_runtime"]))
+    monkeypatch.setattr(pc, "distribution_closure", lambda roots: ["anthropic==0.0.1", "langchain-core==0.0.2"])
+    other = judge.judge_identity()
+    assert other["judge_runtime"] == ["anthropic==0.0.1", "langchain-core==0.0.2"]
+    assert other["judge_runtime_sha256"] != identity["judge_runtime_sha256"]
+    assert other["config_hash"] == identity["config_hash"]  # whatever the runtime is, the registered value is the same
 
 
 def test_the_closure_follows_applicable_requirements_and_ignores_extras_and_false_markers(monkeypatch):

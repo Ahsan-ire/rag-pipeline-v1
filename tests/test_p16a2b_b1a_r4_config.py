@@ -290,7 +290,8 @@ def test_build_sidecar_carries_the_pipeline_config_hash_and_none_without_an_inde
 # --- the judge identity ------------------------------------------------------------------------------------------------------------
 def test_the_judge_identity_is_deterministic_and_moves_with_model_prompt_version_client_and_verdicts(monkeypatch):
     base = judge.judge_identity()
-    assert base == judge.judge_identity() and set(base) == {"model", "prompt_sha256", "config_hash"}
+    assert base == judge.judge_identity() and set(base) == {
+        "model", "prompt_sha256", "config_hash", "judge_runtime", "judge_runtime_sha256"}  # r8: the runtime is reported beside the hash
     assert base["model"] == judge.JUDGE_MODEL and len(base["config_hash"]) == 64
     for owner, name, value in (
         (judge, "JUDGE_MODEL", "another-model"), (judge, "JUDGE_PROMPT_VERSION", "faithfulness-judge-v2"),

@@ -249,4 +249,3 @@ def judgments_by_row(
         by_id[rid] = record  # (the same object the judge returned: the summary and the dump read it)
         dump.append({"set": label, "id": rid, **{k: v for k, v in record.items() if k != "question"}})
     return by_id, dump
-

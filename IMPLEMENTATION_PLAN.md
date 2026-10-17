@@ -1915,6 +1915,13 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
         before b7's first recorded draw; hashed modules may import only hashed scripts (`sp_launch.py` added).
         `pipeline_config_v4`. New pinned dependency `packaging==26.2` (already installed transitively; now imported
         directly by the judge-runtime closure).
+    - **Closed by owner waiver (17 Oct, after r8; D74 waiver addendum).** Pre-waiver fixes: `judge_runtime` is recorded
+      per slot instead of inside the registered judge hash (W1); every manual `exclude` is refused once slot 0 or 0b is
+      stored, and scanner `s_hit` exclusions carry `scan_slot` (W2); the judge stack adds `spend.default_inner_factory`
+      and `SpendMeter.__init__` (W3); whitespace (W4); `incumbent.excluded` wording vs `scan_inputs` (W5). Deferred:
+      the exclusion rule and record-time identity checks to 16B (outline), voided-draw costing and a dry draw to b7.
+      Editing the set registry, the legacy list or a registered public set (including test fixtures) between b7's first
+      recorded draw and 0b refuses slots 0 and 0b (`scan_inputs`).
     - **Cosmetic (Au15, Au16, A10, A11, A17).**
       - The owner-hours forecast is recomputed at b5.
       - The tie key is dropped.
@@ -1964,7 +1971,7 @@ b6. **Freeze, clearance, audits [SP; C].** `freeze --split heldout-v2`, then tun
     versions slot 0 uses serve every slot of the epoch; a later correction makes a new development version (set-version
     hook, its own artifact and draws, its own clearance pass, whose twins give a4 group exclusions) and never mutates
     slot-0 inputs. `audit` runs at release, at each freeze, before slot 0 and at the phase gate; counts go into D75.
-b7. **Development baseline, controls, cost probe (D76) [C].** First `pipeline eval --sealed-slot 0 --preflight-only` (b1a r7; every gate but controls/incumbent must pass, else fix before any draw). On the frozen development sets: offline v6 (zero calls)
+b7. **Development baseline, controls, cost probe (D76) [C].** First `pipeline eval --sealed-slot 0 --preflight-only` (b1a r7; every gate but controls/incumbent must pass, else fix before any draw). Then one uncounted dry draw (`pipeline eval --record-draw` is NOT used for it; a plain private run, logged `dev_run_unrecorded`) to find questions whose rewrite fails deterministically, which would void every counted draw, and to exercise the in-process re-hash against the real Chroma store (b1a waiver deferral). The cost forecast prices voided re-draws: R = 5 counted draws plus the expected voids at the dry run's fallback rate. On the frozen development sets: offline v6 (zero calls)
     over tuning-v2, realistic-v2 and heldout-v1; R = 5 retrieval-only live draws (`build:`, each with its own
     `--approved-eur`): per-family flip frequency and the rate range. **Each draw over the frozen development sets is
     recorded in the ledger as it completes (a `dev_draw` record: index, config hash, artifact and rows-sidecar
@@ -2065,6 +2072,16 @@ hit in pushed history; the owner's `harness-init --refresh`. **Gates:** prereg p
 - b7's flip-frequency report and worst-case pricing tool live in `scripts/` (unhashed tools), never in `src/`, so
   building them after the draws does not change the incumbent; they must not edit `eval_stats.py`/`eval_v6.py`
   (judge-bound, registered in the prereg).
+- **Exclusion rule (waiver deferral; Codex r8 M2, auditor r8 m6).** The comparison code applies the registered
+  `adoption.exclusions` rule itself: exclusions recorded before slot 0's store, plus slot 0's own scan-generated
+  `s_hit` exclusions (scan_slot = 0/0b, counted as pre-comparison), plus that confirmatory slot's own scan-generated
+  `s_hit` exclusions (scan_slot = its id), applied to both arms. It does not use the gate's union of all exclusions.
+  Manual exclusions are refused once slot 0 is stored (b1a waiver W2).
+- **Record-time identity checks (waiver deferral; auditor r8 m5).** Before recording any non-incumbent draw, 16B adds
+  record-time refusals for a `build` draw whose rewrite identity equals the incumbent's and for a scorer identity that
+  differs from the incumbent's, so no recorded config can make `declare-batch` impossible.
+- **Judge runtime (waiver W1).** A candidate's slot is compared with slot 0 only if their recorded
+  `judge_runtime_sha256` are equal (the registered judge hash no longer covers package versions).
 - Whether to separate the judge from the generation model (today `JUDGE_MODEL = GENERATION_MODEL`, so a candidate that changes the generation model or
   client kwargs is refused `judge:identity`; a generation-prompt change is not, because the judge has its own prompt) is an owner question for 16B.
 

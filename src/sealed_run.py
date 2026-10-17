@@ -1626,6 +1626,9 @@ def render_and_publish(
     Returns:
         ``(text, groups excluded by the scan)``.
 
+    Each exclusion is recorded as an ``s_hit`` with ``scan_slot`` = the slot of ``doc`` (r8: the slot whose report was
+    scanned). This is the only writer of an exclusion once slot 0 is stored: ``sealed_tool exclude`` refuses every reason then.
+
     Raises:
         EpochEnded: an exclusion left fewer families than the floor.
         PublicationBlocked: a hit no group explains, or one that persists.
@@ -1650,7 +1653,10 @@ def render_and_publish(
         if not fresh:
             raise PublicationBlocked("persistent_hit")
         for group in fresh:
-            ledger.exclude(group, "s_hit", members=sorted(f for f, g in doc["groups"].items() if g == group))
+            ledger.exclude(
+                group, "s_hit", members=sorted(f for f, g in doc["groups"].items() if g == group),
+                scan_slot=str(doc["slot"]),  # r8: the slot whose report was scanned
+            )
         excluded = excluded | frozenset(fresh)
         newly += len(fresh)
     if publish_to is not None:

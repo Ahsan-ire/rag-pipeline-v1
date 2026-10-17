@@ -91,4 +91,3 @@ def excluded_member_families(exclusion_records: Iterable[Mapping[str, Any]]) -> 
             raise ValueError(f"record {rec['seq']}: bad exclusion members")
         out.update(members)
     return frozenset(out)
-

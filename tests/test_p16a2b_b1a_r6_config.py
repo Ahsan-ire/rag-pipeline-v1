@@ -310,7 +310,7 @@ def test_the_judge_identity_covers_the_preparation_path_and_the_client_construct
     assert judge.JUDGE_CODE_MODULES == ("judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py")
     assert list(judge.JUDGE_COVERS) == prereg["judge"]["covers"] == [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"]  # r7: + the execution stack
+        "preparation", "client_construction", "client_builder", "metering_wrapper"]  # r7: + the execution stack; r8: judge_runtime leaves the hash
     assert all((pc.CODE_DIR / name).is_file() and name in pc.code_modules() for name in judge.JUDGE_CODE_MODULES)
     # eval_v6 and eval_stats stay because they compute the unsupported rate (judge_summary) and its Wilson interval
     from src import eval_v6

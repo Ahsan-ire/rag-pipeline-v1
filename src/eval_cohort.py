@@ -4,7 +4,7 @@ Every 16A-1 eval run writes ``<report>.rows.json`` next to its report
 (gitignored via ``*.rows.json``, so ``collect_provenance``'s ``git status``
 never sees it). Machines read the sidecar, not the Markdown:
 
-``{"version": 1, "scorer_version", "scorer_identity", "absorbed_map_sha256", "pipeline_config_hash", ["run_id",] ["rewrite_accounting",] "expansion",
+``{"version": 1, "scorer_version", "scorer_identity", "absorbed_map_sha256", "pipeline_config_hash", ["run_id",] ["rewrite_accounting",] ["judge_runtime_sha256",] "expansion",
 "privacy", "cohorts": [cohort block, ...], "inputs": [{"path", "sha256",
 "kind": "questions"}, ...], "rows": [{"set_sha256", "id", "mode",
 "strict_rank", "related_rank", "completion_rank"}, ...]}``
@@ -189,6 +189,7 @@ def build_sidecar(
     scorer_identity: Optional[str] = None,
     run_id: Optional[str] = None,
     rewrite_accounting: Optional[Mapping[str, int]] = None,
+    judge_runtime_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the sidecar document (deterministic key order on dump).
 
@@ -198,7 +199,9 @@ def build_sidecar(
     run distinct, even when two independent draws return identical expansions and ranks: it is the execution receipt that
     ``pipeline eval --record-draw`` records and checks. ``rewrite_accounting`` (r7; ``{"attempts", "fallbacks", "live",
     "replayed"}``, a development run's expansion counters) is stored under that key when given: a draw whose rewrite fell
-    back for any question is voided, not recorded.
+    back for any question is voided, not recorded. ``judge_runtime_sha256`` (r8; ``src.judge.judge_identity``) is the versions of
+    the packages a judge call runs through; stored under that key when given (a sealed slot's sidecar carries it, beside its
+    results document).
     """
     if scorer_identity is None:
         from src.scoring_identity import scorer_identity as _scorer_identity
@@ -220,6 +223,8 @@ def build_sidecar(
         doc["run_id"] = run_id
     if rewrite_accounting is not None:
         doc["rewrite_accounting"] = dict(rewrite_accounting)
+    if judge_runtime_sha256 is not None:
+        doc["judge_runtime_sha256"] = judge_runtime_sha256
     return doc
 
 

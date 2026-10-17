@@ -560,7 +560,7 @@
       "timeouts_retries",
       "git_sha",
       "paths",
-      "eval_sets",
+      "eval_set_contents_bound_by_freeze_records",
       "corpus_text"
     ],
     "fixed_by": "controls_record_incumbent_config_hash",
@@ -582,7 +582,7 @@
     ],
     "model": "claude-sonnet-5",
     "prompt_version": "faithfulness-judge-v1",
-    "config_hash": "35fe6f283272b3bb17d33a966facb8cdcf650c7918d339bdaa26af238ee7d10a",
+    "config_hash": "6423f59a132496c5d27383e6bd94c3ca8781e5e43eeb2f99f287206d33e9d343",
     "sample": "all_eligible",
     "eligible": "retrieval_eligible_rows_with_complete_non_refusal_answer",
     "rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
@@ -600,9 +600,9 @@
       "preparation",
       "client_construction",
       "client_builder",
-      "metering_wrapper",
-      "judge_runtime"
+      "metering_wrapper"
     ],
+    "runtime": "recorded_per_slot_compared_candidate_vs_slot0",
     "errors": "any_sealed_judge_error_means_not_shown"
   }
 }

@@ -36,17 +36,19 @@ def store_slot(world, slot="0"):
 
 
 # =================================================================================================================================
-# T6 m1: exclusions carry the slot state they were made in, and the owner's late ones are refused
+# T6 m1: exclusions carry the slot state they were made in, and the owner's late ones are refused (r8: every reason is refused)
 # =================================================================================================================================
 def test_an_exclusion_records_which_slots_were_stored_when_it_was_made(world):
     std = standard_released(world)
     code, out, err = world.run("exclude", "--family", std.sealed_singletons[0], "--reason", "exposure")
     assert code == 0, err
     store_slot(world)
-    code, out, err = world.run("exclude", "--family", std.sealed_singletons[1], "--reason", "s_hit")
-    assert code == 0, err
+    # r8: the owner's command writes nothing once slot 0 is stored, so the later exclusion is the scanner's (the ledger API
+    # ``render_and_publish`` calls), which also names the slot whose report it scanned
+    world.ledger().exclude(std.sealed_singletons[1], "s_hit", scan_slot="0")
     records = world.ledger().records("exclusion")
     assert [r["slots_stored"] for r in records] == [[], ["0"]]
+    assert [r.get("scan_slot") for r in records] == [None, "0"]
     assert world.ledger().stored_slots() == ["0"]
 
 
@@ -67,8 +69,8 @@ def test_stored_slots_lists_only_slots_with_stored_results_in_slot_order(tmp_pat
     assert [r["slots_stored"] for r in led.records("exclusion")] == [[], ["0"]]
 
 
-@pytest.mark.parametrize("reason", ["exposure", "twin_dev_version"])
-def test_the_owners_exposure_and_twin_exclusions_are_refused_once_slot_0_is_stored(world, reason):
+@pytest.mark.parametrize("reason", ["s_hit", "exposure", "twin_dev_version"])
+def test_every_manual_exclusion_reason_is_refused_once_slot_0_is_stored(world, reason):  # r8: s_hit too (Codex B1)
     std = standard_released(world)
     code, out, err = world.run("exclude", "--family", std.sealed_singletons[0], "--reason", reason)
     assert code == 0, err  # before slot 0 is stored they are allowed
@@ -81,12 +83,17 @@ def test_the_owners_exposure_and_twin_exclusions_are_refused_once_slot_0_is_stor
     assert world.ledger().records() == before  # nothing was recorded
 
 
-def test_an_s_hit_exclusion_stays_allowed_after_slot_0_is_stored_because_the_scan_drives_it(world):
+def test_a_hand_made_s_hit_exclusion_is_refused_once_slot_0_is_stored_because_no_scan_receipt_stands_behind_it(world):
+    """r8 (Codex B1): the installed command used to accept ``--reason s_hit`` after slot 0 with no scanner behind it, changing the
+    population the later slots are compared on. The scanner's own ``s_hit`` exclusions (``scan_slot``) are the only late ones."""
     std = standard_released(world)
     store_slot(world)
-    code, out, err = world.run("exclude", "--family", std.sealed_singletons[0], "--reason", "s_hit")
-    assert code == 0, err
-    assert [r["slots_stored"] for r in world.ledger().records("exclusion")] == [["0"]]
+    before = world.ledger().records()
+    for args in (("--family", std.sealed_singletons[0]), ("--group", std.sealed_singletons[0])):
+        code, out, err = world.run("exclude", *args, "--reason", "s_hit")
+        assert code == st.EXIT_REFUSED and "reason=exclusion_late" in err and out == ""
+        assert_allowlisted(err)
+    assert world.ledger().records() == before and world.ledger().records("exclusion") == []
 
 
 def test_slot_0b_stored_counts_as_late_too(world):
@@ -95,15 +102,15 @@ def test_slot_0b_stored_counts_as_late_too(world):
     ledger.claim("0")  # slot 0 spent (claimed, nothing stored): 0b becomes available
     store_slot(world, "0b")
     assert ledger.stored_slots() == ["0b"]
-    code, out, err = world.run("exclude", "--family", std.sealed_singletons[0], "--reason", "exposure")
-    assert code == st.EXIT_REFUSED and "reason=exclusion_late" in err
+    for reason in st.EXCLUSION_REASONS:
+        code, out, err = world.run("exclude", "--family", std.sealed_singletons[0], "--reason", reason)
+        assert code == st.EXIT_REFUSED and "reason=exclusion_late" in err, reason
 
 
 def test_the_new_reasons_are_printable_enum_words():
     for word in ("exclusion_late", "draws_mismatch"):
         assert word in st.REASONS and word in st.ENUM_WORDS
-    assert st.LATE_EXCLUSION_REASONS == ("exposure", "twin_dev_version") and set(st.LATE_EXCLUSION_REASONS) <= set(st.EXCLUSION_REASONS)
-    assert "s_hit" not in st.LATE_EXCLUSION_REASONS
+    assert st.LATE_EXCLUSION_REASONS == st.EXCLUSION_REASONS == ("s_hit", "exposure", "twin_dev_version")  # r8: every reason
 
 
 # =================================================================================================================================
@@ -195,7 +202,7 @@ def test_the_r7_registered_values_are_in_the_table_and_the_real_prereg_and_each_
 def test_the_computed_values_of_the_round_are_the_codes_and_a_mismatch_is_refused_by_prereg_check(monkeypatch):
     doc = real_prereg()
     assert st.computed_errors(doc) == [] and st.validate_prereg(doc) == [] and st.pinned_errors(doc) == []
-    assert doc["judge"]["covers"][-3:] == ["client_builder", "metering_wrapper", "judge_runtime"]
+    assert doc["judge"]["covers"][-2:] == ["client_builder", "metering_wrapper"] and "judge_runtime" not in doc["judge"]["covers"]  # r8
     assert doc["judge"]["config_hash"] == judge.judge_identity()["config_hash"]
     assert doc["adoption"]["scoring"]["covers"] == scoring_identity.covered() and "scoring_glue.py" in doc["adoption"]["scoring"]["covers"]
     assert doc["incumbent"]["components"] == list(pipeline_config.PIPELINE_CONFIG_KEYS)

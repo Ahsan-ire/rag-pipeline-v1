@@ -155,7 +155,8 @@ groups at run time instead of trusting the recorded name.
 the sealed freeze binds, so the slot gate re-checks it from the ledger itself
 (no separate exclusion file). Since r7 an exclusion also records ``slots_stored``, the slots whose results were stored when it
 was made, so the confirmatory comparison can use the exclusions recorded before slot 0 was stored plus each confirmatory
-slot's own ``s_hit`` ones (prereg ``adoption.exclusions``).
+slot's own ``s_hit`` ones (prereg ``adoption.exclusions``). Since r8 an ``s_hit`` that the publication scanner wrote also
+records ``scan_slot``, the slot whose report was scanned (``sealed_tool exclude`` writes none after slot 0 is stored).
 
 Errors are ``BaseException`` subclasses, like D70's, so no broad
 ``except Exception`` can turn a refusal into a fall-through.
@@ -1609,7 +1610,9 @@ class SealedLedger:
 
     # -- exclusions -------------------------------------------------------------
 
-    def exclude(self, group_id: str, reason: str, members: Optional[Sequence[str]] = None) -> None:
+    def exclude(
+        self, group_id: str, reason: str, members: Optional[Sequence[str]] = None, *, scan_slot: Optional[str] = None,
+    ) -> None:
         """Append an exclusion against a whole group (``reason`` is an enum token, e.g. ``s_hit``).
 
         ``members`` are the group's families at the time (family ids, never text);
@@ -1620,8 +1623,21 @@ class SealedLedger:
         The record also stores ``slots_stored`` (r7): the slots whose results were stored when the exclusion was made. The
         confirmatory comparison uses the exclusions recorded before slot 0 was stored, plus each confirmatory slot's own
         ``s_hit`` exclusions applied to both arms (prereg ``adoption.exclusions``), and this field is what tells them apart.
+
+        ``scan_slot`` (r8) is the slot whose report the publication scanner scanned when it found the hit
+        (``src.sealed_run.render_and_publish`` passes it; the owner's command never does). It is recorded as ``scan_slot``
+        and must be a slot id whose results are stored (the scan runs on a stored document) and the reason must be
+        ``s_hit``: an exclusion that names a scanned slot is a scan's, nothing else is.
+
+        Raises:
+            ValueError: ``scan_slot`` is not a slot id, or is given with a reason other than ``s_hit``.
+            ProtocolError: ``scan_slot`` names a slot whose results are not stored.
         """
         fields: Dict[str, Any] = {"group_id": _token(group_id, "group_id", _ID), "reason": _token(reason, "reason")}
+        if scan_slot is not None:
+            fields["scan_slot"] = _token(scan_slot, "scan_slot", _SLOT)
+            if fields["reason"] != "s_hit":
+                raise ValueError("only an s_hit exclusion names the slot whose report was scanned")
         if members is None:
             members = [fields["group_id"]]
         elif isinstance(members, (str, bytes)):
@@ -1632,6 +1648,8 @@ class SealedLedger:
         fields["members"] = names
         with self._txn() as txn:
             fields["slots_stored"] = sorted(sid for sid, state in txn.slots.items() if state.stored is not None)
+            if scan_slot is not None and scan_slot not in fields["slots_stored"]:
+                raise ProtocolError("the scanned slot's results are not stored")
             txn.append("exclusion", **fields)
 
     def stored_slots(self) -> List[str]:

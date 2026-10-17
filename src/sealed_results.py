@@ -357,7 +357,9 @@ def build_results_doc(
     Ids, enums, numbers and hashes only: no question, rewrite, answer, claim,
     gap or evidence text. ``result`` is the evaluator's v6 working result. It records the running pipeline's
     ``pipeline_config_hash``, the judge's ``config_hash`` (the judge always runs on every eligible answer:
-    ``sample`` is ``null``), the ``scorer_version`` (the label every eval sidecar carries,
+    ``sample`` is ``null``) and, beside it, ``judge_runtime_sha256`` (r8: the versions of the packages a judge call runs
+    through; recorded per slot and compared candidate vs slot 0, not part of the registered ``config_hash``), the
+    ``scorer_version`` (the label every eval sidecar carries,
     ``src.eval_cohort.SCORER_VERSION``) and the ``scorer_identity`` (``src.scoring_identity.scorer_identity()``, computed
     from the scoring code and data: 16B compares a candidate with slot 0 only when the judge hash and the scorer
     identity are equal), a set's ``role`` is ``sealed``, ``development`` (a frozen private tuning or realistic
@@ -407,6 +409,7 @@ def build_results_doc(
         "scorer_version": SCORER_VERSION,
         "scorer_identity": result.get("scorer_identity"),
         "judge": {"config_hash": result.get("judge_config_hash"), "sample": None},
+        "judge_runtime_sha256": result.get("judge_runtime_sha256"),
         "prereg_sha256": slot_token.prereg_sha256, "prereg_commit": slot_token.prereg_commit,
         "candidate_config_hash": slot_token.candidate_config_hash,
         "candidate_expansion": slot_token.candidate_expansion,

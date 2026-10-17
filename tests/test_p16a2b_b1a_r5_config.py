@@ -317,7 +317,7 @@ def test_the_judge_identity_names_what_it_covers_and_the_prereg_registers_the_sa
     prereg = json.loads((ROOT / "eval" / "prereg_16a2.json").read_text(encoding="utf-8"))
     assert list(judge.JUDGE_COVERS) == prereg["judge"]["covers"] == [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"]  # r6: + the preparation path and the client construction; r7: + the execution stack
+        "preparation", "client_construction", "client_builder", "metering_wrapper"]  # r6: + the preparation path and the client construction; r7: + the execution stack; r8: judge_runtime leaves the hash
     assert set(judge.JUDGE_CODE_MODULES) == {"judge.py", "judge_prep.py", "llm_clients.py", "eval_v6.py", "eval_stats.py"}
     assert all((pc.CODE_DIR / name).is_file() and name in pc.code_modules() for name in judge.JUDGE_CODE_MODULES)
 

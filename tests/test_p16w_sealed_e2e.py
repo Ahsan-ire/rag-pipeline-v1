@@ -11,8 +11,9 @@ connection, and nothing read from the corpus, ``eval/private/`` or ``.env``. The
 4. ``sheet`` / ``apply``: the owner's approvals (``work/approvals.json``);
 5. ``freeze --split sealed`` in two calls around a ``recheck`` dispatch;
 6. ``pipeline eval --sealed-slot 0``: canonical v6, ``results_v6.md`` in the redirected eval directory;
-7. ``audit``: clean; then a sealed question planted in a fake transcript is one hit with a family id,
-   ``exclude`` records the whole group in the ledger, and a slot-1 gate sees that exclusion.
+7. ``audit``: clean; then a sealed question planted in a fake transcript is one hit with a family id;
+   with slot 0 stored the owner's ``exclude`` is refused (r8), the scanner's own ``s_hit`` exclusion (the ledger call
+   ``render_and_publish`` makes, with its ``scan_slot``) records the whole group, and a slot-1 gate sees that exclusion.
 
 Each tool reads what the one before wrote, with no file renamed or converted by the test in between except
 what the SP's contract says the SP writes. A canary is carried in the sealed families' free text (questions,
@@ -344,10 +345,14 @@ def test_the_whole_sealed_chain_runs_end_to_end_and_leaks_nothing(chain, env, re
     assert code == st.EXIT_HIT
     assert f"audit_hit target=transcript family={target_group[1]} count=1" in out
     assert w.last(out, "audit")["status"] == "hits" and w.last(out, "audit")["hits"] == "1"
+    # r8 (Codex B1): slot 0 is stored, so the owner's command refuses even an s_hit (it would change the population with no scan
+    # receipt behind it); the exclusion the later slots see is the one the publication scanner writes, with the slot it scanned
     code, out, err = w.run("exclude", "--family", target_group[1], "--reason", "s_hit")
-    assert code == 0, err
-    assert w.last(out, "exclude")["outcome"] == "ok" and w.last(out, "exclude")["members"] == "2"
+    assert code == st.EXIT_REFUSED and "reason=exclusion_late" in err and w.ledger().exclusions() == frozenset()
+    w.ledger().exclude(target_group[0], "s_hit", members=target_group, scan_slot="0")
     assert w.ledger().exclusions() == frozenset({target_group[0]})  # the whole group, named by its smallest family
+    (exclusion,) = w.ledger().records("exclusion")
+    assert exclusion["members"] == target_group and exclusion["scan_slot"] == "0" and exclusion["slots_stored"] == ["0"]
 
     # a slot-1 gate (a confirmatory slot, paired with slot 0's stored run) sees the exclusion
     cand = "7" * 64

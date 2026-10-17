@@ -37,7 +37,7 @@ INCUMBENT = {
     "incumbent.code_excluded_imports": list(pipeline_config.CODE_EXCLUDED_IMPORTS),
     "incumbent.code_scripts": list(pipeline_config.HASHED_SCRIPTS),
     "incumbent.code_scripts_inert_imports": list(pipeline_config.HASHED_SCRIPT_IMPORTS_INERT),
-    "incumbent.excluded": ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"],
+    "incumbent.excluded": ["timeouts_retries", "git_sha", "paths", "eval_set_contents_bound_by_freeze_records", "corpus_text"],  # r8: not "eval_sets" (the scan inputs and freeze records bind their data)
     "incumbent.fixed_by": "controls_record_incumbent_config_hash",
     "incumbent.draws": "each_counted_draw_sidecar_carries_the_incumbent_config_hash",
     "incumbent.slots": ["0", "0b"],
@@ -96,7 +96,8 @@ JUDGE = {
     "judge.rate": "sum_unsupported_over_sum_claims_of_ok_judged_sealed_rows",
     "judge.compare": "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity",
     "judge.covers": ["model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-                     "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime"],
+                     "preparation", "client_construction", "client_builder", "metering_wrapper"],  # r8: judge_runtime is recorded per slot, not registered in the hash
+    "judge.runtime": "recorded_per_slot_compared_candidate_vs_slot0",
     "judge.errors": "any_sealed_judge_error_means_not_shown",
 }
 

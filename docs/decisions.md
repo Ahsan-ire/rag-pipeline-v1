@@ -2643,3 +2643,57 @@ What is now registered:
 Earlier residuals stand. The two that matter most are r6's operator out-of-band runs and r3's batch declared after slot 0's aggregates.
 
 **Why:** r7 removed the last ways that installed entry points let a caller replace the measuring instruments (scanner, judge, recorder). It also closed the remaining gaps in the judge and scorer identities, and bound each candidate's declared mode to how its draws were made.
+
+## D74 addendum — prereg plan gate closed by owner waiver (17 Oct 2026)
+**Round 8 on 1d34b18:**
+- **Codex** (sol, xhigh, account 1): COMPLETE, outcome REVISE (1 BLOCKER, 2 MAJOR, 1 MINOR).
+- **plan-auditor** (fresh context): FAIL (0 BLOCKER, 2 MAJOR, 6 MINOR, 2 RESIDUAL-CLASS).
+
+The owner's end rule (r7 addendum) was not met, because r8 is not residual-only.
+
+**Gate legs:**
+- **Codex plan-gate leg.** Completion COMPLETE; outcome REVISE; **WAIVED by the owner (17 Oct 2026)**.
+- **plan-auditor leg.** FAIL; **WAIVED by the owner (17 Oct 2026)**.
+- A waived leg is not a PASS. The findings below stay open as written.
+
+**Reason (owner):**
+- The gate ran eight rounds, and none has found a blocker on the b2–b8 path since r4.
+- The open findings concern the confirmatory comparison (16B code) or library-level edges.
+- The protections that matter before slot 0 are in place:
+  - every input is bound by digest;
+  - the incumbent, judge and scorer identities exist;
+  - draws are recorded inside the run;
+  - test seams are test-only;
+  - the ledger is append-only and mirrored.
+- Further rounds were finding deeper layers, not path defects.
+
+**Fixed before the waiver (this commit):**
+
+| Item | Fix |
+|---|---|
+| W1 (auditor M1, r7 regression) | `judge_runtime` comes out of the registered `judge.config_hash`. That hash would otherwise depend on about 30 unpinned transitive package versions, which would fail CI and the b2–b8 path on any venv drift. Each slot records `judge_runtime_sha256`, and 16B compares it between the candidate's slot and slot 0. Package versions stay in the pipeline hash, so slot 0 stays bound to b7's runtime. D12, which pins direct dependencies only, is unchanged. |
+| W2 (Codex BLOCKER, auditor M2) | Every manual `sealed_tool exclude` is refused once slot 0 or 0b is stored. Only the in-process publication scanner adds `s_hit` exclusions after that, and each carries `scan_slot`. |
+| W3 (Codex M3) | The judge execution stack adds `spend.default_inner_factory` and `SpendMeter.__init__`. The judge hash is recomputed. |
+| W4 (Codex m4) | Whitespace. |
+| W5 (auditor m3) | `incumbent.excluded` no longer claims eval sets are excluded. `scan_inputs` coverage is documented. |
+
+**Deferred, with the rules written into the plan:**
+- **To 16B (outline):**
+  - the registered exclusion rule, applied by the comparison code and keyed on `scan_slot` (Codex M2, auditor m6);
+  - record-time identity checks for non-incumbent draws (auditor m5);
+  - the `judge_runtime_sha256` equality rule (W1).
+- **To b7:**
+  - voided re-draws are costed;
+  - one uncounted dry draw finds questions whose rewrite fails deterministically, and exercises the in-process re-hash against the real Chroma store (auditor m7, m8).
+
+**Residuals added:**
+- **Kill window.** The time between the sidecar write and the record is widened by the re-hash. A SIGINT or SIGKILL there is logged at best (auditor R9).
+- **Spoofed hooks.** A library caller can build `_DefaultScan` or subclass `DrawRecorder` (auditor R10).
+- **Planted scanner input.** A planted jsonl under `eval/private` can steer a scanner exclusion (auditor m4).
+- **Ledger-level exclusions.** A direct `SealedLedger.exclude()` call without `scan_slot` after slot 0 is still accepted. This is a raw primitive: the installed CLI refuses it (`exclusion_late`), and the scanner is the only `src` caller.
+
+Residuals from r3–r7 all stand. Chief among them:
+- the batch is declared after slot 0's aggregates (r3);
+- out-of-band operator runs (r6).
+
+**Next:** the owner gives a go to push the prereg, which fixes it for the epoch. Then b2 begins with `sealed_tool epoch`.

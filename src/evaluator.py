@@ -3198,7 +3198,9 @@ def _write_slot_run(
     from src.scoring_identity import scorer_identity
 
     run_config_hash = _pipeline_config_hash(kw["persist_directory"], kw["top_k"])
-    judge_config_hash = judge_identity()["config_hash"]
+    run_judge_identity = judge_identity()
+    judge_config_hash = run_judge_identity["config_hash"]
+    judge_runtime_sha256 = run_judge_identity["judge_runtime_sha256"]  # r8: recorded per slot, not part of the registered hash
     run_scorer_identity = scorer_identity()
     facts: Dict[str, Any] = {
         "slot": token.slot,
@@ -3234,7 +3236,7 @@ def _write_slot_run(
         "rewrite_live": len(cache_exp) - replayed, "rewrite_replayed": replayed,
         "run_cost": None if meter is None else {"run_eur": meter.run_total_eur, "week_eur": meter.week_total_eur},
         "pipeline_config_hash": run_config_hash, "judge_config_hash": judge_config_hash,
-        "scorer_identity": run_scorer_identity,
+        "judge_runtime_sha256": judge_runtime_sha256, "scorer_identity": run_scorer_identity,
     }
     doc = _sealed_run.build_results_doc(token, working, facts)
     run_dir = Path(_privacy.sealed_run_dir(token.run_id, create=True))
@@ -3253,7 +3255,7 @@ def _write_slot_run(
     sidecar = build_sidecar(
         privacy=_privacy.SEALED, cohorts=[s["cohort"] for s in sets], rows=sidecar_rows,
         expansion=expansion_id, absorbed_map_sha256=absorbed_sha, pipeline_config_hash=run_config_hash,
-        scorer_identity=run_scorer_identity,
+        scorer_identity=run_scorer_identity, judge_runtime_sha256=judge_runtime_sha256,
     )
     write_private(run_dir / "rows.json", dump_sidecar(sidecar))
     if kw["judge"] and judge_records:

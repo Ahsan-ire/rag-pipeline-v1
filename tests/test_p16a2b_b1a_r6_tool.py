@@ -130,7 +130,8 @@ def test_the_real_prereg_passes_every_check_and_names_no_judge_among_the_exclude
     doc = real_prereg()
     assert st.validate_prereg(doc) == [] and st.pinned_errors(doc) == []
     assert "judge" not in doc["incumbent"]["excluded"] and "judge.covers" in st.REGISTERED
-    assert st.REGISTERED["incumbent.excluded"] == ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"]
+    assert st.REGISTERED["incumbent.excluded"] == [
+        "timeouts_retries", "git_sha", "paths", "eval_set_contents_bound_by_freeze_records", "corpus_text"]  # r8: eval_sets is not excluded wholesale
     assert st.REGISTERED["incumbent.components"] == list(pipeline_config.PIPELINE_CONFIG_KEYS)
     assert st.REGISTERED["incumbent.code_excluded"] == list(pipeline_config.CODE_EXCLUDED)
     assert st.REGISTERED["incumbent.code_excluded_imports"] == list(pipeline_config.CODE_EXCLUDED_IMPORTS)

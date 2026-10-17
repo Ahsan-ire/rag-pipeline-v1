@@ -198,9 +198,10 @@ KINDS = ("sealed", "development")
 MODELS = ("independent", "correlated")
 TARGET_CLASSES = ("transcript", "memory", "log", "research", "work", "run", "dispatch", "staging", "tree", "history")
 EXCLUSION_REASONS = ("s_hit", "exposure", "twin_dev_version")
-#: The reasons ``exclude`` refuses once slot 0 (or 0b) is stored (``exclusion_late``); ``s_hit`` stays allowed: it is driven by
-#: the pre-publication scan of a slot's own report, not by the owner's choice.
-LATE_EXCLUSION_REASONS = ("exposure", "twin_dev_version")
+#: The reasons ``exclude`` refuses once slot 0 (or 0b) is stored (``exclusion_late``): every one (r8). Once a slot's results
+#: are stored the only exclusions are the in-process publication scanner's own ``s_hit`` ones (``src.sealed_run``), which
+#: record the slot whose report was scanned (``scan_slot``); the owner's command writes none of them.
+LATE_EXCLUSION_REASONS = EXCLUSION_REASONS
 FROZEN_FILES = {"sealed": ("sealed", "heldout-v2.jsonl"), "tuning": ("dev", "tuning-v2.jsonl"), "realistic": ("dev", "realistic-v2.jsonl")}
 BAND_MIN_NUM, BAND_MIN_DEN = 1, 4  # 25 %
 BAND_MAX_NUM, BAND_MAX_DEN = 3, 10  # 30 %
@@ -1217,7 +1218,7 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ]),
     ("incumbent.code_scripts", ["scan_leaks.py", "sp_launch.py"]),
     ("incumbent.code_scripts_inert_imports", ["sp_launch.py:sealed_tool.py"]),
-    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "eval_sets", "corpus_text"]),
+    ("incumbent.excluded", ["timeouts_retries", "git_sha", "paths", "eval_set_contents_bound_by_freeze_records", "corpus_text"]),
     ("incumbent.fixed_by", "controls_record_incumbent_config_hash"),
     ("incumbent.draws", "each_counted_draw_sidecar_carries_the_incumbent_config_hash"),
     ("incumbent.slots", ["0", "0b"]),
@@ -1231,8 +1232,9 @@ REGISTERED_VALUES: Tuple[Tuple[str, Any], ...] = (
     ("judge.compare", "candidate_and_slot0_canonical_results_carry_equal_judge_config_hash_and_scorer_identity"),
     ("judge.covers", [
         "model", "client", "prompt", "verdicts", "sample", "parsing", "eligibility", "scoring", "endpoint",
-        "preparation", "client_construction", "client_builder", "metering_wrapper", "judge_runtime",
+        "preparation", "client_construction", "client_builder", "metering_wrapper",
     ]),
+    ("judge.runtime", "recorded_per_slot_compared_candidate_vs_slot0"),
     ("judge.errors", "any_sealed_judge_error_means_not_shown"),
 )
 REGISTERED: Dict[str, Any] = dict(REGISTERED_VALUES)
@@ -2878,9 +2880,10 @@ def cmd_exclude(ctx: Ctx, families: Optional[Sequence[str]], group: Optional[str
     ``--family`` may repeat (an S-hit can name several sealed families: ``audit`` prints one line each); every
     family is resolved to its group BEFORE anything is written, so one unknown family changes nothing. Families of
     one group give one exclusion. Each exclusion names its member families and records which slots were stored when it was made.
-    Once slot 0 (or 0b) is stored a ``--reason exposure`` or ``twin_dev_version`` exclusion is refused (``exclusion_late``): the
-    confirmatory comparison uses the exclusions recorded before slot 0 was stored plus each confirmatory slot's own ``s_hit``
-    ones (``s_hit`` stays allowed: the scan of a slot's report drives it).
+    Once slot 0 (or 0b) is stored EVERY reason is refused (``exclusion_late``, r8): the confirmatory comparison uses the
+    exclusions recorded before slot 0 was stored plus each confirmatory slot's own ``s_hit`` ones, and those are written only
+    by the in-process publication scanner (``src.sealed_run.render_and_publish``, which records ``scan_slot``), never by this
+    command (a hand-made ``s_hit`` after slot 0 would change the population with no scan receipt behind it).
     """
     if reason not in EXCLUSION_REASONS or (not families) == (group is None):
         raise Stop(EXIT_USAGE, "usage")
@@ -2888,7 +2891,8 @@ def cmd_exclude(ctx: Ctx, families: Optional[Sequence[str]], group: Optional[str
     ledger = ctx.ledger()
     if reason in LATE_EXCLUSION_REASONS and any(slot in ("0", "0b") for slot in ledger.stored_slots()):
         # the confirmatory comparison uses the exclusions recorded before slot 0 was stored (prereg ``adoption.exclusions``):
-        # an exposure or a twin of a development version found after that point is a different kind of fact, not a new exclusion
+        # whatever is found after that point (an exposure, a twin of a development version, a hit) is not a new exclusion made
+        # by hand; a slot's own S-hits are written by the publication scanner, with the slot they came from
         raise Stop(EXIT_REFUSED, "exclusion_late")
     groups = sealed_group_index(ledger, current_sealed_side(ctx, ledger))
     wanted: List[str] = []
