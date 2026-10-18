@@ -6,7 +6,7 @@
 
 **Current phase: Phase 16A-2b (data + re-baseline, D74–D75) on `phase-16a2b-data` → `v2.5.0`; 16A-2a shipped as v2.4.0 (D72–D73); inputs per D71; 16A-1 shipped as v2.3.0 (D65–D70); harness Track B stage B2 (workers + escape probes) merged in the harness repo; run under the standing go (D64), see docs/designs/003-roadmap-and-next-actions.md.**
 
-**Next: D75** (D60 is reserved for the third-party lane / global harness decision; D61–D74 landed; D75 is allocated to 16A-2b's canonical run).  (Update this line in the same commit as each new entry.)
+**Next: D76** (D60 is reserved for the third-party lane / global harness decision; D61–D75 landed; D75 = 16A-2b data and validation, opened 18 Oct and appended through b5; D76 is allocated to 16A-2b's re-baseline and canonical run, per plan b9).  (Update this line in the same commit as each new entry.)
 
 ---
 
@@ -2743,3 +2743,34 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
   - Labels file `67d96445…5a94`.
 - **Where the files live.** The b2 working files are not `.jsonl`: the map, gaps, labels, annotations and sanitised extract. They live in `eval/private/work/b2/`, because the leak scanner's pre-check refuses any non-needle-source file elsewhere under `eval/private/` (exit 7). The question-bearing `.jsonl` files stay in scanned locations: the dev outputs and `inputs/t1t7_count_v1.jsonl`.
 - **`count-migrated` after the amendment:** realistic 52, tuning 68 (floor 60), both bands ok, refusal supply 45–51 against a target of 50.
+
+## D75 — 16A-2b data and validation (opened 18 Oct 2026; appended through b5)
+**b3 dispatch prep (18 Oct).**
+- **What:** attempt 1's `draft` dispatch inputs are built by `scripts/b3_prep.py`, not by hand.
+  - **Counts.** It takes `count` and `refusals` from `count-migrated` in-process: 105 families and 35 refusals, from 75 migrated families, a pool of 180 and a refusal target of 50, with the supply check ok.
+  - **ids.** It issues exactly `count` opaque family ids through `sealed_tool ids`, after every other check passes. It reuses an `ids.txt` only if every id in it is already recorded as issued.
+  - **Inputs.** It byte-copies the inputs into `eval/private/work/b3/draft1/`. The tutorial input is the PPC manual only, never the T1/T7 sheets.
+  - **Command.** It prints the launcher command, bound to the prereg's own branch and to the last commit that touched the prereg (`b097727`).
+- **Register policy:** `task.json` carries `lay_or_terse_max = ⌈2·count/3⌉ = 70` and `lay_min = ⌈0.5 × 70⌉ = 35`. The SP brief states both bounds.
+  - **Why:** the registered rule is that lay drafts make up at least half of the new lay-or-terse drafts, and the SP chooses the registers. With both bounds, `lay ≥ lay_min ≥ 0.5·max ≥ 0.5·(lay+terse)`, so the share holds for any mix that complies. A brute-force test confirms it.
+  - **Rejected:**
+    - `lay_min` alone (the b1a deferral's wording): the SP could draft more lay-or-terse families than planned and miss the share.
+    - `lay_min = ⌈count/2⌉ = 53` with no cap: it forces a majority of lay questions into an exam for a practitioner tool.
+- **Digests (sha256):**
+
+  | Input | Digest |
+  |---|---|
+  | `task.json` | `7dee698c…c5c1` |
+  | `ids.txt` (105 ids) | `26f13fc2…7f3b` |
+  | inventory | `8720a453…a810` |
+  | handbook dump | `f7b56bbc…edc2a6` |
+  | PPC manual | `8d3b79bc…bf26` |
+  | prereg | `9147bcde…8c1f` |
+- **Probe dispatch `9248abf0` (18 Oct)** ran on canary data through the launcher, under the owner's subscription login with no API key. The return validated:
+  - the canary token matched;
+  - a read of the repository's `CLAUDE.md` was denied;
+  - a write outside the staging directory was denied;
+  - no MCP tools were present.
+
+  A probe carries no prereg, so the epoch is still unregistered (`sealed_tool epoch`: none).
+- **Not yet done:** the first data dispatch. It registers the epoch prereg (`9147bcde…`) and needs the owner's explicit go.

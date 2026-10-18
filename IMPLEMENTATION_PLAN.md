@@ -1811,7 +1811,7 @@ b1a. **Prereg completeness and binding (13–14 Oct; prereg plan gate r1: Codex 
       - **Epoch check (F13).** `sealed_tool epoch` prints the registered epoch prereg (or none) and whether the
         working file matches; b2 runs it first.
       - **Deferred to b3/b4 (Au m2).** b3's dispatch writes `task.json:refusals` from `count-migrated`'s
-        `refusal_drafts` and `lay_min` = ceil(0.5 × the attempt's planned lay-or-terse drafts); b4's intake refuses a
+        `refusal_drafts` and the register bounds `lay_or_terse_max` (default ⌈2·count/3⌉) and `lay_min` = ⌈0.5 × lay_or_terse_max⌉ (b3 prep, 18 Oct; D75), which guarantee the registered lay share for any compliant mix; b4's intake refuses a
         pool whose refusal count differs from `task.json:refusals`.
       - **Deferred to 16B (Au M4).** Holm with K = 4 and the adoption inputs (development evidence, unsupported
         claims, control flips) are 16B's analysis code. It reads the epoch prereg, which nothing can amend
@@ -1957,7 +1957,7 @@ b3. **Blind pool [C dispatch; SP drafts].** Data dispatches from the b0 dump and
     sections), gaps, `ambiguous`; refusals by b1a's 0.275 rule; lay, modelled and terse registers; written only
     under `sealed/pool/`, every row marked. Attempt 1's family count is `count-migrated`'s `drafts` (b1a r3 F12 +
     r4 D1: max(100, sealed + tuning_min + realistic quota − migrated) + 5; ≈ 110 at 57 migrated), written into
-    `task.json:count` with `refusals` and `lay_min`: about half tutorial-sourced (about 3 per unseen tutorial, at most 1
+    `task.json:count` with `refusals`, `lay_min` and `lay_or_terse_max` (built by `scripts/b3_prep.py`, D75): about half tutorial-sourced (about 3 per unseen tutorial, at most 1
     per title-document set), the rest handbook-drafted. Families on a b0 conflict label are dev-only.
 b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin verdict; the orchestrator covers the
     development-only pairs (golden, realistic, T1/T7, heldout-v1) from the pairing map and its own reading. `split`
