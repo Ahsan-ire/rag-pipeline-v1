@@ -22,7 +22,8 @@ Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``,
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
 2 usage or invalid input (schema errors by line and field only); 5 ``audit`` found an S-hit;
-6 a split attempt was infeasible (**nothing released**; recorded); 7 ``audit`` could not run (the handbook
+6 a split attempt was infeasible (**nothing released**; recorded; ``split --diagnose`` exits 6 for every outcome but
+``feasible`` and records nothing); 7 ``audit`` could not run (the handbook
 dump is absent, so its exemption would silently shrink; or SP staging is live or its moves cannot be recovered);
 8 refused (prereg not pushed or round undeclared, wrong state, missing approval or recheck, changed
 assignment, another state-changing command holds ``sealed/work/.lock`` ...);
@@ -31,6 +32,7 @@ private ledgers; the D64 stop).
 
 Every state-changing command (:data:`STATE_COMMANDS`) holds one exclusive, non-blocking flock on
 ``sealed/work/.lock`` for its whole run, so two of them can never interleave; the second is refused (``locked``).
+``split --diagnose`` writes nothing, but it is a ``split`` and takes the same lock, so it never interleaves with one.
 
 Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``)
 ----------------------------------------------------------------------------------
@@ -80,6 +82,16 @@ families and refusal families (``min_feasible_quota``, ``quota.dev_quota_rule``)
 ``SplitInfeasible`` (or a tuning quota under tuning's own minimum feasible quota, ``tuning_floor``) records the attempt
 and releases nothing; the first feasible attempt stores ``assign_r<R>`` and the release record, then moves the files
 under the journal. Round 2 reuses round 1's released quotas and recomputes none.
+
+``split --round R --diagnose`` runs the same gates and the same attempt (one code path: :func:`plan_split`, then
+:func:`attempt_split`) but shows it instead of recording it: no ``split_attempt`` record, no payload, no release, no file moves,
+and the attempt cap is untouched, so it can be run as often as wanted between real attempts. It does not recover a crashed
+release first (that moves files): if a recovery is pending it is refused (``recovery_pending``). Output, counts and enum words
+only, through the same printer: ``diagnose round=R outcome=<feasible|infeasible|quota_short|register_short>``; a feasible one
+then prints ``diagnose_release`` (the per-split totals a real split would release); an infeasible one prints a
+``diagnose_constraint`` line for EVERY entry of ``SplitInfeasible.counts`` (violated or not, the entry's own integers under its
+own key names, ``violated=yes|no`` last); then always ``diagnose_pool``, ``diagnose_split`` (per split), ``diagnose_register``
+and ``diagnose_drafts`` (per draft class and scope).
 
 **freeze.** Without a verdict it writes the lexical-screen pairs and a content digest to ``W/screen_<split>.json``
 and stops (``recheck_missing``, with ``pairs_required``). With ``--recheck-verdict`` / ``--recheck-return`` (the
@@ -241,6 +253,8 @@ REASONS = (
     "split_infeasible", "splits_not_frozen", "calibration_drawn", "batch_declared", "batch_invalid", "freeze_missing",
     "prereg_amended", "frozen_file_changed", "embargoed", "controls_missing", "band_unreachable", "draws_uncovered",
     "draws_mismatch", "exclusion_late",
+    # split --diagnose (16A-2b)
+    "recovery_pending",
     # scripts/migrate_dev_v2.py (16A-2b b2)
     "unresolved_partial", "pair_scope_conflict", "map_invalid", "id_collision", "count_mismatch",
 )
@@ -257,6 +271,8 @@ ENUM_WORDS = frozenset(
         # prereg-check / inputs-check enums
         "missing", "wrong_type", "out_of_range", "unknown_key", "mismatch", "reused_id", "not_public_id",
         "uninventoried_label", "pairing", "conflicts",
+        # split --diagnose: draft classes, the min_share source class, a stratum chapter that is not a number, a label not on the list
+        "total", "sealed_eligible", "sealed_ineligible", "realistic_eligible", "dropped", "tutorial_or_colleague", "multi", "other",
     }
 )
 ID_FIELDS = frozenset({("audit_hit", "family")})  # the only places an opaque family id is printed
@@ -497,6 +513,7 @@ def default_ctx(printer: Printer, **overrides: Any) -> Ctx:
 LOCK_NAME = ".lock"
 #: Commands that write anything (ledger, rows, approvals, sheets, forms, pool, ids). The read-only ones
 #: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``draws``, ``return``, ``audit``) take no lock.
+#: ``split`` is listed whether or not it is ``--diagnose`` (which writes nothing): a diagnosis must never interleave with a split.
 STATE_COMMANDS = frozenset(
     {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
 )
@@ -2261,14 +2278,92 @@ def _violated(node: Any) -> bool:
     return False
 
 
-def cmd_split(ctx: Ctx, round_no: int) -> int:
-    """One split attempt: infeasible releases nothing (recorded); the first feasible attempt is released."""
+def recovery_pending(ctx: Ctx, ledger: SealedLedger) -> bool:
+    """Whether :func:`recover_state` would have something to finish (read-only: it changes nothing).
+
+    True for a move journal with an open transaction (or one that cannot be read), a recorded release whose
+    ``release_r<R>.done`` marker is missing, or a freeze journal. ``split --diagnose`` refuses in that case instead of
+    recovering: a diagnosis moves nothing, and a world in the middle of a transaction is not one to diagnose.
+    """
+    try:
+        if ctx.journal.exists() and sp.pending_moves(ctx.journal):
+            return True
+    except (sp.MoveError, OSError):
+        return True
+    if any(not (ctx.sealed_work / f"release_r{int(rec['round'])}.done").exists() for rec in ledger.records("release")):
+        return True
+    return any(freeze_journal_path(ctx, split).exists() for split in SPLITS)
+
+
+@dataclass
+class SplitPlan:
+    """What one split attempt is decided from: every gate passed, every number computed, nothing recorded or moved.
+
+    :func:`plan_split` builds it; the real attempt (:func:`conclude_split`) and ``--diagnose`` (:func:`report_diagnosis`) both
+    read it, so the two can never compute a different attempt.
+    """
+
+    round_no: int
+    prereg: Mapping[str, Any]
+    prereg_sha: str
+    ledger: SealedLedger
+    pool: Dict[str, Fam]
+    digest: str
+    pointer: Mapping[str, Any]
+    supply: Dict[str, Any]
+    quotas: Dict[str, int]
+    surplus: int  # round 2: drafts beyond the replacement slots, shelved rather than forced into a split
+    tuning_needed: int  # tuning's own minimum feasible quota (a lower tuning quota is ``quota_short``)
+    pinned_n: Dict[str, int]
+    pinned_refuse: Dict[str, int]
+    attempts: int  # recorded attempts of this round so far
+    cap: int  # the registered cap on this round's attempts
+    new_register: int  # new (not legacy) drafts that are lay or terse: what realistic can take
+    new_lay: int  # ... of which lay
+    lay_min: Any  # the registered minimum lay share of those (a Fraction)
+
+    def register_short(self) -> bool:
+        """Whether the new drafts hold too few lay ones (below the registered share): a short pool, like a short quota."""
+        from fractions import Fraction
+
+        return bool(self.new_register) and Fraction(self.new_lay, self.new_register) < self.lay_min
+
+    def lay_needed(self) -> int:
+        """The fewest lay drafts, among the new lay or terse ones, that reach the registered share."""
+        return math.ceil(self.lay_min * self.new_register)
+
+
+@dataclass
+class SplitAttempt:
+    """What one attempt came to: ``quota_short``, ``register_short``, ``infeasible`` (with ``counts``) or ``feasible``."""
+
+    outcome: str
+    counts: Optional[Mapping[str, Any]] = None  # SplitInfeasible.counts (infeasible only)
+    assignment: Optional[Dict[str, str]] = None  # the rest: feasible only
+    shelved: Optional[List[str]] = None
+    split_records: Optional[List[Mapping[str, Any]]] = None
+    split_twins: Optional[Mapping[str, Any]] = None
+    seed: int = 0
+    strata: Any = None
+    min_share: Any = None
+
+
+def plan_split(ctx: Ctx, round_no: int, *, diagnose: bool = False) -> SplitPlan:
+    """Every check and computation of a split attempt, up to (not including) the attempt itself.
+
+    Raises :class:`Stop` for the prereg gate, the epoch, a released, frozen or out-of-order round, the attempt cap, an empty
+    pool, a missing or stale ``twins`` record and every input problem. Unless ``diagnose``, it first finishes whatever a crash
+    left half done (:func:`recover_state`); a diagnosis moves nothing, so it refuses (``recovery_pending``) instead.
+    """
     if round_no not in (1, 2):
         raise Stop(EXIT_USAGE, "usage")
     prereg = load_prereg(ctx)
     gate_prereg(ctx, prereg, round_no)
-    recover_state(ctx)
+    if not diagnose:
+        recover_state(ctx)
     ledger = ctx.ledger()
+    if diagnose and recovery_pending(ctx, ledger):
+        raise Stop(EXIT_REFUSED, "recovery_pending")
     prereg_sha = sha_file(ctx.prereg_file)  # gate_prereg proved it committed, unmodified and pushed
     check_epoch_prereg(ledger, prereg_sha)  # before anything is recorded: the epoch has one registered prereg
     releases = {int(r["round"]): r for r in ledger.records("release")}
@@ -2283,8 +2378,8 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         if sum(1 for r in ledger.records("split_attempt") if r["round"] == 1) >= cap:
             raise Stop(EXIT_REFUSED, "split_infeasible")
     else:  # round 2 is capped too: past it the freeze is infeasible, a stop with nothing recorded
-        cap2 = int(prereg["drafting_rule"]["round_2"]["max_attempts"])
-        if sum(1 for r in ledger.records("split_attempt") if r["round"] == 2) >= cap2:
+        cap = int(prereg["drafting_rule"]["round_2"]["max_attempts"])
+        if sum(1 for r in ledger.records("split_attempt") if r["round"] == 2) >= cap:
             raise Stop(EXIT_FREEZE_INFEASIBLE, "split_infeasible")
     pool = load_pool(ctx)
     if not pool:
@@ -2323,59 +2418,220 @@ def cmd_split(ctx: Ctx, round_no: int) -> int:
         # round 1's released quotas are reused, never recomputed from the survivors: the minimum is the registered one
         tuning_needed = int(quota_doc["tuning_min"])
     attempts = sum(1 for r in ledger.records("split_attempt") if r["round"] == round_no)
-    if quotas["tuning"] < tuning_needed:
-        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="quota_short", prereg_sha256=prereg_sha)
-        ctx.printer.emit("split", round=round_no, outcome="quota_short", attempt=attempts + 1)
-        return EXIT_SPLIT_INFEASIBLE
     # the registered share of lay among the new drafts that are lay or terse (what realistic can take): a short pool
     # releases nothing and counts toward the cap, like a short quota
     from fractions import Fraction
 
     new_reg = [f.register for f in pool.values() if f.source != "legacy" and f.register in ("lay", "terse")]
     lay_min = Fraction(str(prereg["drafting_rule"]["attempt_1"]["realistic_lay_min_share"]))
-    if new_reg and Fraction(sum(1 for r in new_reg if r == "lay"), len(new_reg)) < lay_min:
-        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="register_short", prereg_sha256=prereg_sha)
-        ctx.printer.emit("split", round=round_no, outcome="register_short", attempt=attempts + 1)
-        return EXIT_SPLIT_INFEASIBLE
-    seed = int(prereg["seeds"][f"split_r{round_no}"])
+    return SplitPlan(
+        round_no=round_no, prereg=prereg, prereg_sha=prereg_sha, ledger=ledger, pool=pool, digest=digest, pointer=ptr,
+        supply=supply, quotas=quotas, surplus=surplus, tuning_needed=tuning_needed, pinned_n=pinned_n,
+        pinned_refuse=pinned_refuse, attempts=attempts, cap=cap, new_register=len(new_reg),
+        new_lay=sum(1 for r in new_reg if r == "lay"), lay_min=lay_min,
+    )
+
+
+def attempt_split(plan: SplitPlan) -> SplitAttempt:
+    """Decide the attempt: quota short, too few lay drafts, or ``assign_round``. Records nothing, moves nothing."""
+    if plan.quotas["tuning"] < plan.tuning_needed:
+        return SplitAttempt("quota_short")
+    if plan.register_short():
+        return SplitAttempt("register_short")
+    prereg, supply = plan.prereg, plan.supply
+    seed = int(prereg["seeds"][f"split_r{plan.round_no}"])
     strata, min_share = prereg.get("strata") or None, prereg.get("min_share") or None
     try:
         assignment, shelved, split_records, split_twins = assign_round(
-            records, twins, supply["preassigned"], quotas, seed, strata, min_share, surplus,
+            supply["records"], supply["twins"], supply["preassigned"], plan.quotas, seed, strata, min_share, plan.surplus,
         )
     except SplitInfeasible as exc:
-        ledger.record_split_attempt(round_no=round_no, pool_digest=digest, outcome="infeasible", prereg_sha256=prereg_sha)
-        ctx.printer.emit("split", round=round_no, outcome="infeasible", attempt=attempts + 1)
-        for name, node in sorted(exc.counts.items()):
+        return SplitAttempt("infeasible", counts=exc.counts)
+    except SplitInputError:
+        raise Stop(EXIT_USAGE, "split_input_invalid") from None
+    return SplitAttempt(
+        "feasible", assignment=assignment, shelved=shelved, split_records=split_records, split_twins=split_twins,
+        seed=seed, strata=strata, min_share=min_share,
+    )
+
+
+def release_totals(plan: SplitPlan, attempt: SplitAttempt) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """A feasible attempt's per-split family counts: ``(all, new)``, i.e. with and without the pinned ones (``new`` is what
+    the release moves out of the pool)."""
+    assignment = attempt.assignment or {}
+    totals = {s: sum(1 for v in assignment.values() if v == s) for s in SPLITS}
+    new_totals = {s: sum(1 for f, v in assignment.items() if v == s and f in plan.pool) for s in SPLITS}
+    return totals, new_totals
+
+
+def conclude_split(ctx: Ctx, plan: SplitPlan, attempt: SplitAttempt) -> int:
+    """Record the attempt; if it is feasible, store its payload, record and execute the release."""
+    ledger, round_no, supply = plan.ledger, plan.round_no, plan.supply
+    if attempt.outcome != "feasible":
+        ledger.record_split_attempt(round_no=round_no, pool_digest=plan.digest, outcome=attempt.outcome, prereg_sha256=plan.prereg_sha)
+        ctx.printer.emit("split", round=round_no, outcome=attempt.outcome, attempt=plan.attempts + 1)
+        for name, node in sorted((attempt.counts or {}).items()):
             if name in ENUM_WORDS and _violated(node):
                 ctx.printer.emit("split_constraint", constraint=name)
         return EXIT_SPLIT_INFEASIBLE
-    except SplitInputError:
-        raise Stop(EXIT_USAGE, "split_input_invalid") from None
+    assignment, shelved = attempt.assignment or {}, attempt.shelved or []
     payload = {
-        "version": 1, "round": round_no, "seed": seed, "quotas": quotas, "strata": strata, "min_share": min_share,
-        "pool_digest": digest, "families": split_records, "preassigned": supply["preassigned"],
-        "twins": split_twins, "assignment": assignment, "groups": supply["groups"], "ineligible": supply["ineligible"],
-        "dropped": supply["dropped"], "surplus": shelved, "twins_payload": ptr["payload"], "twins_sha256": ptr["sha256"],
+        "version": 1, "round": round_no, "seed": attempt.seed, "quotas": plan.quotas, "strata": attempt.strata,
+        "min_share": attempt.min_share, "pool_digest": plan.digest, "families": attempt.split_records,
+        "preassigned": supply["preassigned"], "twins": attempt.split_twins, "assignment": assignment,
+        "groups": supply["groups"], "ineligible": supply["ineligible"], "dropped": supply["dropped"], "surplus": shelved,
+        "twins_payload": plan.pointer["payload"], "twins_sha256": plan.pointer["sha256"],
     }
     sha = ledger.store_payload(assign_name(round_no), payload)
     ledger.record_split_attempt(
-        round_no=round_no, pool_digest=digest, outcome="feasible", payload_sha256=sha, prereg_sha256=prereg_sha,
+        round_no=round_no, pool_digest=plan.digest, outcome="feasible", payload_sha256=sha, prereg_sha256=plan.prereg_sha,
     )
-    totals = {s: sum(1 for v in assignment.values() if v == s) for s in SPLITS}
-    new_totals = {s: sum(1 for f, v in assignment.items() if v == s and f in pool) for s in SPLITS}
+    totals, new_totals = release_totals(plan, attempt)
     ledger.record_release(
         round_no=round_no, assignment_digest=sha_text(canon(assignment)),
-        totals={**new_totals, "families": total - len(shelved), "dropped": len(supply["dropped"]), "surplus": len(shelved)},
+        totals={**new_totals, "families": len(supply["records"]) - len(shelved), "dropped": len(supply["dropped"]), "surplus": len(shelved)},
         payload_sha256=sha,
     )
     execute_release(ctx, round_no, payload)
     ctx.printer.emit(
-        "split", round=round_no, outcome="released", attempt=attempts + 1, sealed=totals["sealed"], tuning=totals["tuning"],
+        "split", round=round_no, outcome="released", attempt=plan.attempts + 1, sealed=totals["sealed"], tuning=totals["tuning"],
         realistic=totals["realistic"], groups=len(supply["groups"]), dropped=len(supply["dropped"]), surplus=len(shelved),
         sha256=sha,
     )
     return EXIT_OK
+
+
+# -- split --diagnose: the same attempt, shown instead of recorded ----------------------------------------------------------
+def _word(value: Any) -> str:
+    """``value`` if it is an enum word the printer accepts, else ``other``: a diagnosis never prints a label it cannot vouch for."""
+    return value if isinstance(value, str) and value in ENUM_WORDS else "other"
+
+
+def _constraint_fields(path: Sequence[str], name: str) -> Dict[str, Any]:
+    """The identifying fields of one ``SplitInfeasible.counts`` record from the keys above it: the split, then a stratum
+    (``scope|chapter``, printed as a scope word and a chapter number or word), a source class, or ``total`` (``_total``)."""
+    fields: Dict[str, Any] = {}
+    for depth, key in enumerate(path):
+        if depth == 0:
+            fields["split"] = _word(key)
+        elif depth == 1 and key == "_total":
+            fields["total"] = "yes"
+        elif depth == 1 and name == "strata":
+            scope, _, chapter = key.partition("|")
+            fields["stratum_scope"] = _word(scope)
+            fields["stratum_chapter"] = int(chapter) if re.fullmatch(r"[0-9]{1,9}", chapter) else _word(chapter)
+        elif depth == 1:
+            fields["source"] = _word(key)
+        else:
+            fields[f"level_{depth + 1}"] = _word(key)
+    return fields
+
+
+def _flat_numbers(node: Mapping[str, Any], prefix: str = "") -> Iterator[Tuple[str, Any]]:
+    """The fields of one counts record, ``violated`` last: ints as they are, flags as yes / no, a list as its length, a nested
+    mapping flattened with ``_``. Anything else is passed on to the printer, which refuses what it does not know."""
+    for key, value in node.items():
+        if key == "violated" and not prefix:
+            continue
+        name = f"{prefix}{key}"
+        if isinstance(value, Mapping):
+            yield from _flat_numbers(value, f"{name}_")
+        elif isinstance(value, bool):
+            yield name, "yes" if value else "no"
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            yield name, len(value)
+        else:
+            yield name, value
+    if not prefix and "violated" in node:
+        yield "violated", "yes" if node["violated"] else "no"
+
+
+def _constraint_records(node: Mapping[str, Any], path: Tuple[str, ...] = ()) -> Iterator[Tuple[Tuple[str, ...], Mapping[str, Any]]]:
+    """The records of one counts entry: a mapping with a plain value in it is a record, a mapping of mappings is a level (split,
+    then stratum or source) whose keys label the records below it."""
+    if any(not isinstance(v, Mapping) for v in node.values()):
+        yield path, node
+        return
+    for key, sub in node.items():
+        if isinstance(sub, Mapping):
+            yield from _constraint_records(sub, (*path, str(key)))
+
+
+def emit_constraints(ctx: Ctx, counts: Mapping[str, Any]) -> None:
+    """One ``diagnose_constraint`` line per constraint record of ``SplitInfeasible.counts`` (violated or not), counts only."""
+    for name, node in counts.items():
+        if not isinstance(node, Mapping):
+            continue
+        records = list(_constraint_records(node))
+        if not records:  # a constraint with nothing registered under it (no strata, no min_share): say so
+            ctx.printer.emit("diagnose_constraint", constraint=_word(name), entries=0, violated="no")
+        for path, record in records:
+            ctx.printer.emit("diagnose_constraint", constraint=_word(name), **_constraint_fields(path, name), **dict(_flat_numbers(record)))
+
+
+def _scope_counts(scopes: Iterable[str]) -> Dict[str, int]:
+    counts = {scope: 0 for scope in SCOPES}
+    for scope in scopes:
+        counts[scope] += 1
+    return counts
+
+
+def emit_supply(ctx: Ctx, plan: SplitPlan) -> None:
+    """The round's supply, counts only: quotas and pins per split, the register share, the drafts by class and scope."""
+    pr, supply, pool = ctx.printer, plan.supply, plan.pool
+    records, dropped = supply["records"], set(supply["dropped"])
+    pr.emit(
+        "diagnose_pool", round=plan.round_no, records=len(records), pinned=len(supply["preassigned"]), groups=len(supply["groups"]),
+        surplus=plan.surplus, tuning_floor=plan.tuning_needed, attempts=plan.attempts, attempts_cap=plan.cap,
+    )
+    for split in SPLITS:
+        quota = plan.quotas[split]
+        pr.emit(
+            "diagnose_split", split=split, quota=max(quota, 0), **({"quota_negative": "yes"} if quota < 0 else {}),
+            pinned_families=plan.pinned_n[split], pinned_refusals=plan.pinned_refuse[split],
+        )
+    pr.emit(
+        "diagnose_register", lay_or_terse=plan.new_register, lay=plan.new_lay, lay_needed=plan.lay_needed(),
+        short="yes" if plan.register_short() else "no",
+    )
+    classes = {
+        "total": list(pool),
+        "sealed_eligible": [f for f in pool if f in records and "sealed" in records[f]["eligible"]],
+        "sealed_ineligible": [f for f in pool if f in records and "sealed" not in records[f]["eligible"]],
+        "dropped": [f for f in pool if f in dropped],
+        "realistic_eligible": [f for f in pool if f in records and "realistic" in records[f]["eligible"]],
+    }
+    for name, fids in classes.items():
+        pr.emit("diagnose_drafts", **{"class": name}, families=len(fids), **_scope_counts(pool[f].scope for f in fids))
+
+
+def report_diagnosis(ctx: Ctx, plan: SplitPlan, attempt: SplitAttempt) -> int:
+    """Show the attempt instead of recording it: outcome, what it would release or every constraint, then the supply."""
+    pr = ctx.printer
+    pr.emit("diagnose", round=plan.round_no, outcome=attempt.outcome)
+    if attempt.outcome == "feasible":
+        totals, new_totals = release_totals(plan, attempt)
+        pr.emit(
+            "diagnose_release", round=plan.round_no, sealed=totals["sealed"], tuning=totals["tuning"], realistic=totals["realistic"],
+            new_sealed=new_totals["sealed"], new_tuning=new_totals["tuning"], new_realistic=new_totals["realistic"],
+            groups=len(plan.supply["groups"]), dropped=len(plan.supply["dropped"]), surplus=len(attempt.shelved or []),
+        )
+    elif attempt.counts is not None:
+        emit_constraints(ctx, attempt.counts)
+    emit_supply(ctx, plan)
+    return EXIT_OK if attempt.outcome == "feasible" else EXIT_SPLIT_INFEASIBLE
+
+
+def cmd_split(ctx: Ctx, round_no: int, diagnose: bool = False) -> int:
+    """One split attempt: infeasible releases nothing (recorded); the first feasible attempt is released.
+
+    With ``diagnose`` the same gates and computations run, and the attempt is shown (:func:`report_diagnosis`) instead of
+    recorded or released: nothing is written, no payload is stored, no file moves, and the attempt cap is untouched. The
+    caller holds the state lock either way (``split`` is a state command), so a diagnosis never interleaves with a split.
+    """
+    plan = plan_split(ctx, round_no, diagnose=diagnose)
+    attempt = attempt_split(plan)
+    return report_diagnosis(ctx, plan, attempt) if diagnose else conclude_split(ctx, plan, attempt)
 
 
 # ---------------------------------------------------------------------------
@@ -3876,7 +4132,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("intake", ("--dispatch", {"required": True}))
     add("twins", ("--round", {"type": int, "required": True}), ("--verdict", {"required": True}), ("--dev-verdict", {"default": None}),
         ("--tutorials", {"default": None}))
-    add("split", ("--round", {"type": int, "required": True}))
+    add("split", ("--round", {"type": int, "required": True}), ("--diagnose", {"action": "store_true"}))
     add("sheet", ("--kind", {"choices": KINDS, "required": True}), ("--round", {"type": int, "default": None}), ("--name", {"default": None}),
         ("--all", {"action": "store_true"}))
     add("apply", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"default": None}), ("--confirm", {"default": None}))
@@ -3920,7 +4176,7 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
     if c == "twins":
         return cmd_twins(ctx, a.round, a.verdict, a.dev_verdict, a.tutorials)
     if c == "split":
-        return cmd_split(ctx, a.round)
+        return cmd_split(ctx, a.round, a.diagnose)
     if c == "sheet":
         return cmd_sheet(ctx, a.kind, a.round, a.name, a.all)
     if c == "apply":

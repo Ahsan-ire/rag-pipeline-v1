@@ -1,0 +1,3 @@
+{"digest":"ba5da9cf98338a885d3618e7263cb7cb8eca87e9fa9f6bb4b5b7ff568f264f90","digests":{"prereg_sha256":"9147bcde0d2d293712637c540eb9ac0117f23bf167898fcaf1c2795244b88c1f"},"kind":"dispatch","seq":0}
+{"digest":"3fbe6112fd876bca254de527a5bf5d005a3f1a4131a629e6d9114caab4627eb2","digests":{"prereg_sha256":"9147bcde0d2d293712637c540eb9ac0117f23bf167898fcaf1c2795244b88c1f"},"kind":"dispatch","seq":1}
+{"digest":"abafbd7937765ce7730f2ca2de09d9364e03082c38894e981ef1ef11ee912bc1","digests":{"pool_digest":"b796aedad0b341a000818508d8e9058cbe5649c4c1a2997ff31f740c15406ba5","prereg_sha256":"9147bcde0d2d293712637c540eb9ac0117f23bf167898fcaf1c2795244b88c1f"},"kind":"split_attempt","seq":2}
