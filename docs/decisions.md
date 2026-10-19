@@ -2801,3 +2801,19 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
 
   - Groups: 5. Dropped: 0. Surplus: 0.
 - **Next (b4 continued):** the SP paraphrase dispatch tops every family up to 2–3 phrasings (owner go first). Then b5 validation.
+
+**b4 paraphrase tooling (19 Oct, owner-approved).**
+- **What:**
+  - `out/dev.jsonl` joins the launcher's allowlist. It must hold v2 rows with private ids and no `sealed` key.
+  - `sealed_tool paraphrase-apply --dispatch <id>` adds the SP's phrasings to released families. It checks everything first, then rewrites the component files under a staged journal: decided first, journal written last, every file replaced only if it still holds the journalled old bytes. It records applied dispatches, so applying the same one twice is refused.
+  - The SP brief's `paraphrase` section names both outputs.
+- **Why:**
+  - The tools had no way to add phrasings to released families.
+  - The launcher released only marked rows, so development paraphrases would have come back sealed.
+- **Rejected:**
+  - `sp_launch.journaled_move`, which refuses an existing destination.
+  - New rows in new component files: the sealed loaders keep the last copy of a family and the development loaders the first, so rows would be dropped.
+  - Any change to freeze or replay, which read family membership only.
+- **Side effects:**
+  - New rows change freeze's content digest, so a recheck screen written before a paraphrase goes stale.
+  - New rows need owner approvals before freeze.

@@ -48,12 +48,17 @@ What a dispatch does, in order
    two logs are always moved to ``<work>/<dispatch id>.stdout.log`` / ``.stderr.log``
    (production ``work``: ``eval/private/sealed/work/``). A failed or invalid run
    releases nothing but its logs. Moves are crash-safe (:func:`journaled_move`).
-   ``out/`` is an allowlist: ``pool.jsonl``, ``twins.jsonl``, ``return.json`` and
+   ``out/`` is an allowlist: ``pool.jsonl``, ``dev.jsonl``, ``twins.jsonl``, ``return.json`` and
    ``tutorial_map.json``, regular files only. Any other entry makes the run ``invalid``;
    so does a ``pool.jsonl`` that :func:`src.eval_sealed_read.load_sealed` rejects (its rows
    must carry ``"sealed": true``, which is what makes a file outside the private root
-   count as sealed), a ``twins.jsonl`` that is not ``{"a", "b", "verdict": "twin"}`` lines,
-   or a ``tutorial_map.json`` that is not ``{family id: tag}``.
+   count as sealed), a ``dev.jsonl`` that is not valid schema-2 rows
+   (:func:`src.eval_schema.load_v2` with the inventory) over private ids ``f<8 hex>`` / ``f<8 hex>-<n>`` or any
+   of whose rows carries a ``sealed`` key (the development side is never marked), a ``twins.jsonl`` that is not
+   ``{"a", "b", "verdict": "twin"}`` lines, or a ``tutorial_map.json`` that is not ``{family id: tag}``.
+   ``dev.jsonl`` is what a ``paraphrase`` run writes for development families (the SP brief's ``paraphrase`` task:
+   new rows of sealed-side families go to ``pool.jsonl``, marked; new rows of development families go to ``dev.jsonl``,
+   unmarked); ``sealed_tool paraphrase-apply`` reads both from the released ``sp_out/<dispatch id>/``.
 8. The staging directory is deleted in a ``finally`` (kept only while a move is
    still pending, because deleting it then would lose the data; the next launch
    or ``--sweep`` replays the journal first and deletes afterwards).
@@ -103,6 +108,7 @@ if REPO not in sys.path:
 # Imported as a module (not ``from ... import private_root``) so a test that
 # monkeypatches ``src.eval_privacy.private_root`` is honoured at call time.
 import src.eval_privacy as eval_privacy  # noqa: E402
+from src import eval_schema  # noqa: E402  (``dev.jsonl`` is validated by ``load_v2``)
 from src.eval_sealed_read import load_sealed  # noqa: E402  (the only sealed reader)
 from src.sealed_ledger import ProtocolError, SealedLedger, SealedLedgerError  # noqa: E402
 
@@ -129,7 +135,7 @@ MAX_TIMEOUT = 7 * 24 * 60 * 60  # a sanity bound: a huge value overflows the OS 
 STATUS_TIMEOUT = -124  # dispatch-log exit_status of a timed-out SP: no signal has this number, so it is unambiguous
 
 # What ``out/`` may hold (D3). Everything else is ``invalid`` and nothing but the logs is released.
-OUT_ALLOWED = frozenset({"pool.jsonl", "twins.jsonl", RETURN_NAME, "tutorial_map.json"})
+OUT_ALLOWED = frozenset({"pool.jsonl", "dev.jsonl", "twins.jsonl", RETURN_NAME, "tutorial_map.json"})
 TWIN_ID_RE = re.compile(r"[A-Za-z0-9:_.-]{1,64}")  # a family id of any set in twins.jsonl (public ids are "q:<hex>")
 #: A tag in ``tutorial_map.json``: tutorials 2-17 without 7 (never T01 or T07), title-document sets 1-7.
 #: ``sealed_tool``'s ``intake`` applies the same rule.
@@ -352,6 +358,35 @@ def _valid_pool(path: Path) -> bool:
     return True
 
 
+def _valid_dev(path: Path) -> bool:
+    """``dev.jsonl``: schema-2 rows of the development side, which are never marked sealed.
+
+    Every line is a JSON object (no duplicate keys) with a private family id ``f<8 hex>`` and a row id ``<family id>-<n>``
+    and **no** ``sealed`` key at all (``"sealed": false`` included: a marker is not a flag, and a marked file is a sealed
+    one). Then the whole file passes :func:`src.eval_schema.load_v2` with the inventory (schema, evidence labels, one scope
+    per family, no repeated question). A file that does not is invalid; no text from it is kept.
+    """
+    text = _read_utf8(path)
+    if text is None:
+        return False
+    try:
+        for line in text.split("\n"):
+            if not line.strip():
+                continue
+            row = _loads_strict(line)
+            if not (
+                isinstance(row, dict) and "sealed" not in row
+                and isinstance(row.get("family_id"), str) and FAMILY_ID_RE.fullmatch(row["family_id"])
+                and isinstance(row.get("id"), str) and ROW_ID_RE.fullmatch(row["id"])
+                and row["id"].rsplit("-", 1)[0] == row["family_id"]
+            ):
+                return False
+        eval_schema.load_v2(path)  # SchemaError, InventoryError or SealedInputError all mean "invalid"
+    except Exception:  # no text from the file or an exception is kept
+        return False
+    return True
+
+
 def _valid_twins(path: Path) -> bool:
     """``twins.jsonl``: zero or more ``{"a": id, "b": id, "verdict": "twin"}`` lines (a != b), as ``sealed_tool`` reads it."""
     text = _read_utf8(path)
@@ -391,7 +426,8 @@ def _valid_tutorial_map(path: Path) -> bool:
 def validate_out(out_dir: os.PathLike | str) -> bool:
     """True iff ``out_dir`` holds only :data:`OUT_ALLOWED` regular files and each data file is well-formed.
 
-    ``pool.jsonl`` is validated by :func:`src.eval_sealed_read.load_sealed`, ``twins.jsonl`` and
+    ``pool.jsonl`` is validated by :func:`src.eval_sealed_read.load_sealed`, ``dev.jsonl`` by
+    :func:`src.eval_schema.load_v2` (:func:`_valid_dev`: private ids and no ``sealed`` key), ``twins.jsonl`` and
     ``tutorial_map.json`` by shape; ``return.json`` has its own check (:func:`load_return`). Any other
     entry (a stray file, a directory, a symlink) or any failure makes it ``False``; it never raises and
     never returns text from the files.
@@ -403,7 +439,10 @@ def validate_out(out_dir: os.PathLike | str) -> bool:
         names = sorted(os.listdir(out_dir))
         if any(name not in OUT_ALLOWED or not stat.S_ISREG(os.lstat(out_dir / name).st_mode) for name in names):
             return False
-        checks = {"pool.jsonl": _valid_pool, "twins.jsonl": _valid_twins, "tutorial_map.json": _valid_tutorial_map}
+        checks = {
+            "pool.jsonl": _valid_pool, "dev.jsonl": _valid_dev, "twins.jsonl": _valid_twins,
+            "tutorial_map.json": _valid_tutorial_map,
+        }
         return all(check(out_dir / name) for name, check in checks.items() if name in names)
     except Exception:
         return False

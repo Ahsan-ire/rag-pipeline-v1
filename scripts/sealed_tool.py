@@ -17,7 +17,7 @@ Usage (global options first; every path is injectable so tests use tmp dirs only
                    <command> ...
 
 Commands: ``ids``, ``digest``, ``count-migrated``, ``inputs-check``, ``intake``, ``twins``, ``split``,
-``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
+``paraphrase-apply``, ``sheet``, ``apply``, ``freeze``, ``escalate``, ``calibrate``, ``disagree``, ``exclude``,
 ``audit``, ``power``, ``prereg-check``, ``declare-batch``, ``draws``, ``epoch``, ``return``.
 
 Exit codes: 0 ok; 1 a checked record failed (``prereg-check``, ``return`` invalid, internal error);
@@ -36,9 +36,10 @@ Every state-changing command (:data:`STATE_COMMANDS`) holds one exclusive, non-b
 
 Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``)
 ----------------------------------------------------------------------------------
-- ``sealed/work/sp_out/<dispatch id>/``  where ``sp_launch`` releases an SP run's ``out/`` (``pool.jsonl``,
+- ``sealed/work/sp_out/<dispatch id>/``  where ``sp_launch`` releases an SP run's ``out/`` (``pool.jsonl``, ``dev.jsonl``,
   ``twins.jsonl``, ``tutorial_map.json``, ``return.json``); ``intake`` takes ``pool.jsonl`` and ``tutorial_map.json``
-  from here, ``twins`` and ``freeze`` read ``twins.jsonl`` and ``return.json`` in place.
+  from here, ``twins`` and ``freeze`` read ``twins.jsonl`` and ``return.json`` in place, and ``paraphrase-apply`` reads
+  ``pool.jsonl`` (marked rows) and ``dev.jsonl`` (unmarked rows) in place.
 - ``sealed/pool/**.jsonl``       the SP's drafts (marked rows), one ``<dispatch id>.jsonl`` per ``intake``. ``split`` consumes them.
 - ``sealed/sealed_r<R>.jsonl``   the sealed side of round R's release (marked).
 - ``dev/tuning_r<R>.jsonl``, ``dev/realistic_r<R>.jsonl``  the development side (**unmarked**).
@@ -58,6 +59,10 @@ Layout (all under the private root; ``W`` = ``sealed/work/``, ``DW`` = ``work/``
   naming) -- content-free (ids, hashes, counts, enums).
 - ``W/freeze_<split>.journal`` and ``W/freeze_<split>.data``: the whole freeze transaction, computed first and
   journalled before anything changes (see **freeze**).
+- ``W/paraphrase_applied.json``  ``{dispatch id: {"pool_sha256", "dev_sha256"}}`` (a sha256, or ``null`` for an input that
+  dispatch did not have): the paraphrase dispatches ``paraphrase-apply`` has applied.
+  ``W/paraphrase_<dispatch id>.journal`` and ``W/paraphrase_<dispatch id>.data/``: one ``paraphrase-apply`` transaction (see
+  **paraphrase-apply**).
 
 Protocols
 ---------
@@ -109,6 +114,34 @@ then prints ``diagnose_release`` (the per-split totals a real split would releas
 ``diagnose_constraint`` line for EVERY entry of ``SplitInfeasible.counts`` (violated or not, the entry's own integers under its
 own key names, ``violated=yes|no`` last); then always ``diagnose_pool``, ``diagnose_split`` (per split), ``diagnose_register``
 and ``diagnose_drafts`` (per draft class and scope).
+
+**paraphrase-apply.** ``paraphrase-apply --dispatch <id>`` adds the SP's new phrasings (the ``paraphrase`` task) to families
+that are already released. It reads ``sp_out/<id>/pool.jsonl`` (through the sealed loader) and ``sp_out/<id>/dev.jsonl`` (as
+schema-2 rows; the file lies in the sealed tree, so a byte copy under ``work/`` is what ``eval_schema.load_v2`` validates), at
+least one of which must exist. It is a state command: it takes the state lock and first finishes any crashed transaction
+(``recover_state``).
+Everything is checked before anything is written: a ``pool.jsonl`` row names a sealed-side family (a ``sealed_r*.jsonl``
+family that is not quarantined), a ``dev.jsonl`` row a development family (one that sits in exactly one development component
+file, not quarantined); a family of the other side is ``wrong_side``, an unknown one ``unknown_family``, one in a frozen split
+``frozen``. Per family the new rows' numbers are exactly the next ones after its highest row number (``row_index``); each new
+row has the scope, evidence, gaps, type and source of the family's row 0, a valid ``register`` and no review status
+(``row_mismatch``) and a question that, case-folded and with whitespace collapsed, equals no phrasing of the family, old or new
+(``question_repeat``). Afterwards every touched family holds at most ``drafting_rule.paraphrase.phrasings_max`` rows (a migrated
+tutorial-sourced one at most ``t1_t7_cap``: ``over_cap``) and at least ``phrasings_min`` (``under_min``). A dispatch is applied
+once (``paraphrase_applied.json``: ``already_applied``). Each affected file is then rewritten with its old rows plus the new
+ones (sealed files marked, development files unmarked), as one transaction decided first and journalled
+(``W/paraphrase_<id>.journal``, the new bytes in ``W/paraphrase_<id>.data/``): the files are replaced one by one by atomic writes
+(each only if it still holds the journalled old bytes or already the new ones), then the dispatch is recorded and the
+journal removed. A crash anywhere is finished from the journal by the next command (``paraphrase-apply`` itself, which then
+prints the same counts, or any state-changing one), never by recomputing; a file that holds neither the old nor the new bytes
+is ``paraphrase_recovery_failed`` (a D64 stop). It prints counts only: per side the families touched and the rows added, the
+phrasing-count histogram of the side after applying (families with 1, 2, 3 and more than 3 rows) and the two input sha256s.
+Adding rows to a family changes nothing the release or the freeze depend on: the stored payload (``assign_r<R>``) holds family
+records (row 0's scope, chapter, source and register), ids, edges and the pool digest of the rows that *left* ``pool/``, and
+``freeze``'s replay, its "files still hold the assignment" check and the group computations read family membership only. The
+new rows do change what ``freeze`` hashes at its recheck screen (``content_digest``), by design: the SP's ``recheck`` must run
+on the final content, paraphrases included, and a screen written before is stale (``recheck_stale``). They need approvals like
+any other row (``sheet`` lists them, ``freeze`` stops at ``approval_missing`` until they are approved).
 
 **freeze.** Without a verdict it writes the lexical-screen pairs and a content digest to ``W/screen_<split>.json``
 and stops (``recheck_missing``, with ``pairs_required``). With ``--recheck-verdict`` / ``--recheck-return`` (the
@@ -274,6 +307,9 @@ REASONS = (
     "recovery_pending",
     # scripts/migrate_dev_v2.py (16A-2b b2)
     "unresolved_partial", "pair_scope_conflict", "map_invalid", "id_collision", "count_mismatch",
+    # paraphrase-apply (16A-2b b4)
+    "wrong_side", "row_index", "row_mismatch", "question_repeat", "over_cap", "under_min", "already_applied",
+    "paraphrase_recovery_failed",
 )
 #: Closed set of words the printer accepts as enum values.
 ENUM_WORDS = frozenset(
@@ -532,7 +568,10 @@ LOCK_NAME = ".lock"
 #: (``digest``, ``count-migrated``, ``inputs-check``, ``power``, ``prereg-check``, ``epoch``, ``draws``, ``return``, ``audit``) take no lock.
 #: ``split`` is listed whether or not it is ``--diagnose`` (which writes nothing): a diagnosis must never interleave with a split.
 STATE_COMMANDS = frozenset(
-    {"ids", "intake", "twins", "split", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree", "exclude", "declare-batch"}
+    {
+        "ids", "intake", "twins", "split", "paraphrase-apply", "sheet", "apply", "freeze", "escalate", "calibrate", "disagree",
+        "exclude", "declare-batch",
+    }
 )
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -2210,7 +2249,8 @@ def remove_atomic_leftovers(ctx: Ctx) -> int:
 
 
 def recover_state(ctx: Ctx) -> None:
-    """Finish a crashed move journal, every recorded release that was not completed and every journalled freeze.
+    """Finish a crashed move journal, every recorded release that was not completed, every journalled freeze and every
+    journalled ``paraphrase-apply``.
 
     It first removes the temp files a crashed :func:`write_atomic` left under ``sealed/`` and ``dev/``.
     """
@@ -2224,6 +2264,7 @@ def recover_state(ctx: Ctx) -> None:
         for split in SPLITS:
             if freeze_journal_path(ctx, split).exists():
                 finish_freeze(ctx, split)
+        finish_paraphrases(ctx)
     except (sp.MoveError, OSError):
         raise Stop(EXIT_LEDGER_STOP, "move_recovery_failed") from None
 
@@ -2317,7 +2358,7 @@ def recovery_pending(ctx: Ctx, ledger: SealedLedger) -> bool:
     """Whether :func:`recover_state` would have something to finish (read-only: it changes nothing).
 
     True for a move journal with an open transaction (or one that cannot be read), a recorded release whose
-    ``release_r<R>.done`` marker is missing, or a freeze journal. ``split --diagnose`` refuses in that case instead of
+    ``release_r<R>.done`` marker is missing, a freeze journal or a ``paraphrase-apply`` journal. ``split --diagnose`` refuses in that case instead of
     recovering: a diagnosis moves nothing, and a world in the middle of a transaction is not one to diagnose.
     """
     try:
@@ -2327,7 +2368,7 @@ def recovery_pending(ctx: Ctx, ledger: SealedLedger) -> bool:
         return True
     if any(not (ctx.sealed_work / f"release_r{int(rec['round'])}.done").exists() for rec in ledger.records("release")):
         return True
-    return any(freeze_journal_path(ctx, split).exists() for split in SPLITS)
+    return any(freeze_journal_path(ctx, split).exists() for split in SPLITS) or bool(paraphrase_journals(ctx))
 
 
 @dataclass
@@ -2667,6 +2708,360 @@ def cmd_split(ctx: Ctx, round_no: int, diagnose: bool = False) -> int:
     plan = plan_split(ctx, round_no, diagnose=diagnose)
     attempt = attempt_split(plan)
     return report_diagnosis(ctx, plan, attempt) if diagnose else conclude_split(ctx, plan, attempt)
+
+
+# ---------------------------------------------------------------------------
+# paraphrase-apply: the SP's new phrasings for released families (16A-2b b4)
+# ---------------------------------------------------------------------------
+PARAPHRASE_STATUS_KEYS = ("owner_status", "second_status")
+#: The fields a new phrasing shares with its family's row 0 (what makes it the same scenario, scored the same way).
+PARAPHRASE_SAME_AS_ROW_0 = ("scope", "evidence", "gaps", "type", "source")
+#: Order in which the checks that run on every touched family report their refusal (the first one that fails).
+PARAPHRASE_ROW_CHECKS = ("row_index", "row_mismatch", "question_repeat", "over_cap", "under_min")
+
+
+def _paraphrase_crash(name: str) -> None:
+    """No-op seam between a ``paraphrase-apply`` transaction's steps (``after_journal``, ``after_file``, ``after_record``);
+    tests replace it with a function that raises, to inject a crash there."""
+
+
+def sha_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def paraphrase_applied_path(ctx: Ctx) -> Path:
+    return ctx.sealed_work / "paraphrase_applied.json"
+
+
+def paraphrase_journal_path(ctx: Ctx, dispatch: str) -> Path:
+    return ctx.sealed_work / f"paraphrase_{dispatch}.journal"
+
+
+def paraphrase_data_dir(ctx: Ctx, dispatch: str) -> Path:
+    return ctx.sealed_work / f"paraphrase_{dispatch}.data"
+
+
+def paraphrase_journals(ctx: Ctx) -> List[Path]:
+    """The journals of ``paraphrase-apply`` transactions not yet finished (read-only)."""
+    if not ctx.sealed_work.is_dir():
+        return []
+    return sorted(p for p in ctx.sealed_work.glob("paraphrase_*.journal") if p.is_file() or p.is_symlink())
+
+
+def load_paraphrase_applied(ctx: Ctx) -> Dict[str, Dict[str, Optional[str]]]:
+    """``{dispatch id: {"pool_sha256", "dev_sha256"}}`` (a sha256 or ``None`` each), ``{}`` if nothing was applied yet."""
+    path = paraphrase_applied_path(ctx)
+    if not path.is_file():
+        return {}
+    doc = read_json(path)
+    ok = isinstance(doc, dict) and all(
+        isinstance(key, str) and bool(sp.ID_RE.fullmatch(key)) and isinstance(rec, dict)
+        and set(rec) == {"pool_sha256", "dev_sha256"}
+        and all(v is None or (isinstance(v, str) and bool(_SHA256.fullmatch(v))) for v in rec.values())
+        for key, rec in doc.items()
+    )
+    if not ok:
+        raise Stop(EXIT_USAGE, "input_invalid")
+    return doc
+
+
+def _paraphrase_tx(ctx: Ctx, path: Path) -> Dict[str, Any]:
+    """The journalled transaction at ``path``, its shape checked (``paraphrase_recovery_failed`` otherwise: a D64 stop).
+
+    Shape: ``dispatch`` (the journal's own id), ``pool_sha256`` / ``dev_sha256`` (a sha256 or null), ``files`` (``path`` relative
+    to the private root and under ``sealed/`` or ``dev/``, ``kind``, ``old_sha256``, ``new_sha256``) and ``report`` (per side
+    the families and rows added and the four histogram buckets: integers only).
+    """
+    fail = Stop(EXIT_LEDGER_STOP, "paraphrase_recovery_failed")
+
+    def sha_or_none(value: Any) -> bool:
+        return value is None or (isinstance(value, str) and bool(_SHA256.fullmatch(value)))
+
+    try:
+        tx = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, ValueError, RecursionError):
+        raise fail from None
+    match = re.fullmatch(r"paraphrase_([0-9a-f]{8})\.journal", path.name)
+    ok = (
+        isinstance(tx, dict) and tx.get("version") == 1 and match is not None and tx.get("dispatch") == match.group(1)
+        and sha_or_none(tx.get("pool_sha256")) and sha_or_none(tx.get("dev_sha256"))
+        and isinstance(tx.get("files"), list) and bool(tx["files"]) and isinstance(tx.get("report"), dict)
+        and set(tx["report"]) == set(KINDS)
+    )
+    if ok:
+        for item in tx["files"]:
+            parts = Path(str(item.get("path", ""))).parts if isinstance(item, dict) else ()
+            ok = ok and (
+                isinstance(item, dict) and set(item) == {"path", "kind", "old_sha256", "new_sha256"}
+                and isinstance(item["path"], str) and len(parts) >= 2 and ".." not in parts and not item["path"].startswith("/")
+                and parts[0] == ("sealed" if item["kind"] == "sealed" else "dev") and item["kind"] in KINDS
+                and isinstance(item["old_sha256"], str) and bool(_SHA256.fullmatch(item["old_sha256"]))
+                and isinstance(item["new_sha256"], str) and bool(_SHA256.fullmatch(item["new_sha256"]))
+            )
+        for side in KINDS:
+            rep = tx["report"][side]
+            ok = ok and isinstance(rep, dict) and set(rep) == {"families", "rows", "phrasings"} and _is_int(rep["families"]) \
+                and _is_int(rep["rows"]) and isinstance(rep["phrasings"], list) and len(rep["phrasings"]) == 4 \
+                and all(_is_int(n) for n in rep["phrasings"])
+    if not ok:
+        raise fail
+    return tx
+
+
+def finish_paraphrase(ctx: Ctx, journal: Path) -> Dict[str, Any]:
+    """Run (or resume) the journalled ``paraphrase-apply`` transaction at ``journal``; returns it. Every step is idempotent.
+
+    Order: each affected file in turn (replaced by an atomic write of the staged bytes only if it still holds the journalled
+    old bytes; a file that already holds the new ones is left alone, and one that holds neither is a stop), then the dispatch
+    in ``paraphrase_applied.json``, then the journal and the staged bytes are removed. Nothing is recomputed: a half-done
+    transaction is finished, never re-derived from the half-changed world.
+    """
+    tx = _paraphrase_tx(ctx, journal)
+    dispatch = tx["dispatch"]
+    data_dir = paraphrase_data_dir(ctx, dispatch)
+    for index, item in enumerate(tx["files"]):
+        target = ctx.private / item["path"]
+        try:
+            data = (data_dir / f"{index}.stage").read_bytes()
+        except OSError:
+            raise Stop(EXIT_LEDGER_STOP, "paraphrase_recovery_failed") from None
+        if sha_bytes(data) != item["new_sha256"]:
+            raise Stop(EXIT_LEDGER_STOP, "paraphrase_recovery_failed")
+        current = sha_file(target) if target.is_file() and not target.is_symlink() else None
+        if current == item["old_sha256"]:
+            write_atomic(target, data)
+        elif current != item["new_sha256"]:
+            raise Stop(EXIT_LEDGER_STOP, "paraphrase_recovery_failed")
+        _paraphrase_crash("after_file")
+    record = {"pool_sha256": tx["pool_sha256"], "dev_sha256": tx["dev_sha256"]}
+    applied = load_paraphrase_applied(ctx)
+    if applied.get(dispatch, record) != record:
+        raise Stop(EXIT_LEDGER_STOP, "paraphrase_recovery_failed")
+    applied[dispatch] = record
+    write_json(paraphrase_applied_path(ctx), applied)
+    _paraphrase_crash("after_record")
+    journal.unlink(missing_ok=True)
+    _fsync_dir(ctx.sealed_work)
+    shutil.rmtree(data_dir, ignore_errors=True)
+    return tx
+
+
+def finish_paraphrases(ctx: Ctx) -> None:
+    """Finish every journalled ``paraphrase-apply`` transaction, then drop staged bytes that no journal owns (a crash between
+    the journal's removal and the staged bytes')."""
+    for journal in paraphrase_journals(ctx):
+        finish_paraphrase(ctx, journal)
+    if ctx.sealed_work.is_dir():
+        for data_dir in ctx.sealed_work.glob("paraphrase_*.data"):
+            if data_dir.is_dir() and not data_dir.is_symlink() and not paraphrase_journal_path(ctx, data_dir.name[len("paraphrase_"):-len(".data")]).exists():
+                shutil.rmtree(data_dir, ignore_errors=True)
+
+
+def emit_paraphrase(ctx: Ctx, tx: Mapping[str, Any]) -> None:
+    """The counts of an applied dispatch: per side the families touched and rows added, then the side's phrasing-count histogram
+    (families with 1, 2, 3 and more than 3 rows after applying), then the two input digests (``none`` for an absent input)."""
+    for side in KINDS:
+        rep = tx["report"][side]
+        ctx.printer.emit("paraphrase_apply", side=side, families=rep["families"], rows=rep["rows"])
+        one, two, three, over = rep["phrasings"]
+        ctx.printer.emit("paraphrase_phrasings", side=side, families_1=one, families_2=two, families_3=three, families_over_3=over)
+    ctx.printer.emit("paraphrase_inputs", pool_sha256=tx["pool_sha256"] or "none", dev_sha256=tx["dev_sha256"] or "none")
+
+
+@dataclass
+class ParaphraseSide:
+    """One side's world as ``paraphrase-apply`` sees it: its live families, every component file's rows and the new rows."""
+
+    kind: str  # "sealed" | "development"
+    fams: Dict[str, Fam]
+    files: Dict[Path, List[Dict[str, Any]]]
+    new: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)  # new rows by family id
+
+
+def load_paraphrase_side(ctx: Ctx, kind: str) -> ParaphraseSide:
+    """The live families of a side, each in exactly one component file (a family spread over two files is ``input_invalid``:
+    which rows would a rewrite keep?). Families in quarantine are not live; their rows stay in whatever file holds them."""
+    gone = quarantined_ids(ctx, kind)
+    loader = load_sealed_rows if kind == "sealed" else load_dev_rows
+    fams: Dict[str, Fam] = {}
+    files: Dict[Path, List[Dict[str, Any]]] = {}
+    for path in kind_components(ctx, kind):
+        rows = loader(ctx, path)
+        files[path] = rows
+        for fid, fam in group_families(rows, path, split_of_file(kind, path)).items():
+            if fid in gone:
+                continue
+            if fid in fams:
+                raise Stop(EXIT_USAGE, "input_invalid")
+            fams[fid] = fam
+    return ParaphraseSide(kind, fams, files)
+
+
+def load_sp_dev_rows(ctx: Ctx, path: Path) -> List[Dict[str, Any]]:
+    """The SP's ``dev.jsonl`` as development rows.
+
+    The file lies under ``sealed/work/sp_out/``, which ``classify`` calls sealed by location, so ``eval_schema.load_v2`` would
+    refuse it. A byte copy under ``work/`` (private, not sealed) is validated instead, by the loader every development file
+    goes through. A copy that still classifies sealed holds a ``sealed`` marker: development rows are never marked
+    (``wrong_side``). The copy is always removed.
+    """
+    tmp = ctx.dev_work / f".sp_dev.{secrets.token_hex(_ATOMIC_TMP_BYTES)}.tmp"
+    tmp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp.write_bytes(path.read_bytes())
+    try:
+        return load_dev_rows(ctx, tmp)
+    except eval_privacy.SealedInputError:
+        raise Stop(EXIT_REFUSED, "wrong_side") from None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def normalised_question(text: Any) -> str:
+    """A question as the duplicate check compares it: case-folded, every run of whitespace one space, ends trimmed."""
+    return " ".join(str(text).casefold().split())
+
+
+def migrated_dev_file(ctx: Ctx, path: Optional[Path]) -> bool:
+    """Whether a development component file holds pinned (migrated) families: it is not a round's release output."""
+    released = {release_paths(ctx, r)[split].name for r in (1, 2) for split in DEV_SPLITS}
+    return path is not None and path.name not in released
+
+
+def check_new_rows(ctx: Ctx, side: ParaphraseSide, lo: int, hi: int, tutorial_cap: int) -> Dict[str, int]:
+    """Per refusal reason of :data:`PARAPHRASE_ROW_CHECKS`, how many of the side's touched families fail it (counts only).
+
+    A new row must be the family's next row number (the numbers after its highest, in order, none missing); equal row 0 in
+    :data:`PARAPHRASE_SAME_AS_ROW_0`, hold a valid register and no review status; and its question differs (normalised) from every
+    other phrasing of the family. After applying, the family holds at most ``hi`` rows (``tutorial_cap`` for a migrated
+    tutorial-sourced one) and at least ``lo``.
+    """
+    failed: Dict[str, Set[str]] = {name: set() for name in PARAPHRASE_ROW_CHECKS}
+    for fid, new in side.new.items():
+        fam = side.fams[fid]
+        top = max(row_no(r) for r in fam.rows)
+        if sorted(row_no(r) for r in new) != list(range(top + 1, top + 1 + len(new))):
+            failed["row_index"].add(fid)
+        ref = fam.rows[0]
+        for row in new:
+            if (
+                any(row[key] != ref[key] for key in PARAPHRASE_SAME_AS_ROW_0)
+                or row.get("register") not in REGISTERS
+                or any(row.get(key) is not None for key in PARAPHRASE_STATUS_KEYS)
+            ):
+                failed["row_mismatch"].add(fid)
+        seen = {normalised_question(r["question"]) for r in fam.rows}
+        for row in new:
+            text = normalised_question(row["question"])
+            if text in seen:
+                failed["question_repeat"].add(fid)
+            seen.add(text)
+        limit = min(hi, tutorial_cap) if side.kind == "development" and fam.source == "tutorial" and migrated_dev_file(ctx, fam.path) else hi
+        total = len(fam.rows) + len(new)
+        if total > limit:
+            failed["over_cap"].add(fid)
+        if total < lo:
+            failed["under_min"].add(fid)
+    return {name: len(fids) for name, fids in failed.items()}
+
+
+def cmd_paraphrase_apply(ctx: Ctx, dispatch: str) -> int:
+    """Add the SP's new phrasings from one released ``paraphrase`` dispatch to the released families (see the module docstring).
+
+    Validates everything before writing anything (the schema, the family's side, frozen splits, row numbers, row content, the
+    question, the phrasing counts); refuses a dispatch already applied; then writes every affected file under one journalled
+    transaction and records the dispatch. Prints counts and digests only.
+    """
+    if not sp.ID_RE.fullmatch(dispatch):
+        raise Stop(EXIT_USAGE, "usage")
+    journal = paraphrase_journal_path(ctx, dispatch)
+    if journal.exists() or journal.is_symlink():  # a crash left this dispatch half applied: finish it, nothing more
+        tx = _paraphrase_tx(ctx, journal)
+        recover_state(ctx)  # finishes this journal and every other pending transaction
+        emit_paraphrase(ctx, tx)
+        return EXIT_OK
+    recover_state(ctx)
+    prereg = load_prereg(ctx)
+    ledger = ctx.ledger()
+    check_epoch_prereg(ledger, sha_file(ctx.prereg_file))  # the phrasing bounds are the epoch's registered ones
+    rule = prereg["drafting_rule"]["paraphrase"]
+    lo, hi, tutorial_cap = int(rule["phrasings_min"]), int(rule["phrasings_max"]), int(rule["t1_t7_cap"])
+    if dispatch in load_paraphrase_applied(ctx):
+        raise Stop(EXIT_REFUSED, "already_applied")
+
+    src_dir = ctx.sp_out / dispatch
+    pool_src, dev_src = src_dir / "pool.jsonl", src_dir / "dev.jsonl"
+    present = [p for p in (pool_src, dev_src) if p.exists() or p.is_symlink()]
+    if not present:
+        raise Stop(EXIT_USAGE, "input_missing")
+    if any(p.is_symlink() or not p.is_file() for p in present):
+        raise Stop(EXIT_USAGE, "input_invalid")
+    pool_rows = load_sealed_rows(ctx, pool_src) if pool_src.is_file() else []
+    dev_rows = load_sp_dev_rows(ctx, dev_src) if dev_src.is_file() else []
+    pool_sha = sha_file(pool_src) if pool_src.is_file() else None
+    dev_sha = sha_file(dev_src) if dev_src.is_file() else None
+
+    sides = {"sealed": load_paraphrase_side(ctx, "sealed"), "development": load_paraphrase_side(ctx, "development")}
+    if set(sides["sealed"].fams) & set(sides["development"].fams):
+        raise Stop(EXIT_USAGE, "input_invalid")
+    wrong: Set[str] = set()
+    unknown: Set[str] = set()
+    for kind, rows in (("sealed", pool_rows), ("development", dev_rows)):
+        side, other = sides[kind], sides["development" if kind == "sealed" else "sealed"]
+        for row in rows:
+            fid = str(row["family_id"])
+            if fid in side.fams:
+                side.new.setdefault(fid, []).append(row)
+            elif fid in other.fams:
+                wrong.add(fid)
+            else:
+                unknown.add(fid)
+    if wrong:
+        raise Stop(EXIT_REFUSED, "wrong_side", families=len(wrong))
+    if unknown:
+        raise Stop(EXIT_REFUSED, "unknown_family", families=len(unknown))
+    for kind, side in sides.items():
+        if frozen_files(ledger, kind, {side.fams[fid].path for fid in side.new if side.fams[fid].path is not None}):
+            raise Stop(EXIT_REFUSED, "frozen")
+    failures = [check_new_rows(ctx, side, lo, hi, tutorial_cap) for side in sides.values()]
+    for name in PARAPHRASE_ROW_CHECKS:
+        count = sum(f[name] for f in failures)
+        if count:
+            raise Stop(EXIT_REFUSED, name, families=count)
+
+    changed: Dict[str, Dict[Path, List[Dict[str, Any]]]] = {kind: {} for kind in KINDS}
+    for kind, side in sides.items():
+        for fid in sorted(side.new):
+            path = side.fams[fid].path
+            if path is None:
+                raise Stop(EXIT_USAGE, "input_invalid")
+            rows = changed[kind].setdefault(path, [dict(r) for r in side.files[path]])
+            rows.extend(dict(r) for r in side.new[fid])
+        _validated_files(ctx, kind, changed[kind])  # schema, inventory, one scope per family, no repeated question
+    files: List[Dict[str, Any]] = []
+    staged: List[bytes] = []
+    for kind in KINDS:
+        for path in sorted(changed[kind]):
+            blob = dump_rows(changed[kind][path], mark=kind == "sealed")
+            files.append({"path": path.relative_to(ctx.private).as_posix(), "kind": kind, "old_sha256": sha_file(path), "new_sha256": sha_bytes(blob)})
+            staged.append(blob)
+    report: Dict[str, Any] = {}
+    for kind, side in sides.items():
+        totals = [len(fam.rows) + len(side.new.get(fid, [])) for fid, fam in side.fams.items()]
+        report[kind] = {
+            "families": len(side.new), "rows": sum(len(v) for v in side.new.values()),
+            "phrasings": [sum(1 for n in totals if n == 1), sum(1 for n in totals if n == 2), sum(1 for n in totals if n == 3), sum(1 for n in totals if n > 3)],
+        }
+    tx = {"version": 1, "dispatch": dispatch, "pool_sha256": pool_sha, "dev_sha256": dev_sha, "files": files, "report": report}
+
+    # commit: the whole transaction is decided HERE and journalled (the new bytes first, the journal last); finish_paraphrase runs it
+    data_dir = paraphrase_data_dir(ctx, dispatch)
+    shutil.rmtree(data_dir, ignore_errors=True)
+    for index, blob in enumerate(staged):
+        write_atomic(data_dir / f"{index}.stage", blob)
+    write_json(journal, tx)
+    _paraphrase_crash("after_journal")
+    emit_paraphrase(ctx, finish_paraphrase(ctx, journal))
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -4168,6 +4563,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("twins", ("--round", {"type": int, "required": True}), ("--verdict", {"required": True}), ("--dev-verdict", {"default": None}),
         ("--tutorials", {"default": None}), ("--extra-verdict", {"action": "append", "default": [], "dest": "extra_verdicts"}))
     add("split", ("--round", {"type": int, "required": True}), ("--diagnose", {"action": "store_true"}))
+    add("paraphrase-apply", ("--dispatch", {"required": True}))
     add("sheet", ("--kind", {"choices": KINDS, "required": True}), ("--round", {"type": int, "default": None}), ("--name", {"default": None}),
         ("--all", {"action": "store_true"}))
     add("apply", ("--kind", {"choices": KINDS, "required": True}), ("--sheet", {"default": None}), ("--confirm", {"default": None}))
@@ -4212,6 +4608,8 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
         return cmd_twins(ctx, a.round, a.verdict, a.dev_verdict, a.tutorials, a.extra_verdicts)
     if c == "split":
         return cmd_split(ctx, a.round, a.diagnose)
+    if c == "paraphrase-apply":
+        return cmd_paraphrase_apply(ctx, a.dispatch)
     if c == "sheet":
         return cmd_sheet(ctx, a.kind, a.round, a.name, a.all)
     if c == "apply":

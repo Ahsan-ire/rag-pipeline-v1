@@ -31,7 +31,8 @@ inputs that task needs, from this list:
   handbook.
 - `tutorials/`: copies of the tutorial pages assigned to this task.
 - `pool/*.jsonl`, `dev/*.jsonl`, `public/*.jsonl`, `regression/*.jsonl`: existing rows
-  to compare against, for the `twins` and `recheck` tasks.
+  to compare against, for the `twins` and `recheck` tasks. For the `paraphrase` task they
+  are the families to extend: `pool/` holds sealed-side families, `dev/` development ones.
 
 ## Row format (schema 2)
 One JSON object per line:
@@ -109,16 +110,28 @@ and fold the other's phrasing into it as an extra row if it adds a distinct word
 `{"status": "ok", "kind": "twins", "pairs_checked": n, "twin_pairs": n, "pool_families": n, "sha256": "..."}`
 
 ### `paraphrase`
-For every family in `pool/` (or the families listed in `task.json:families`), add
-phrasings until it has exactly 2. Each new phrasing:
-- has the same scope, evidence, gaps and type;
-- has a different wording;
-- keeps the register the task asks for.
+Add phrasings to families that already exist, for every family in `pool/` and `dev/` that
+has fewer than 2 phrasings (or only the families listed in `task.json:families`, each of which
+is in `pool/` or in `dev/`), until each has 2. A family that already has 2 or 3 phrasings
+needs none; never take a family past 3. Each new phrasing:
+- has the same scope, evidence, gaps, type and source as the family's row `…-0`;
+- has a different wording from every phrasing the family already has (the same words
+  re-cased or re-spaced do not count);
+- has a `register` (the one the task asks for, if it names one) and no `owner_status` or
+  `second_status`;
+- has the id `<family id>-<n>`, where `n` is one more than the highest row number the family
+  already has (and one more again for a further new phrasing): no gaps, no repeats.
 
-Write the result to `out/pool.jsonl`.
+Write **only the new rows**; never copy an existing row into `out/`.
+- A new row of a family in `pool/` goes to `out/pool.jsonl` and is marked `"sealed": true`.
+- A new row of a family in `dev/` goes to `out/dev.jsonl` and carries **no** `sealed` key,
+  not even `"sealed": false`.
+- Never put a family's rows in the other file. Write only the file or files that have rows
+  in them; an empty file is invalid.
 
 `return.json`:
-`{"status": "ok", "kind": "paraphrase", "families": n, "rows": n, "sha256": "..."}`
+`{"status": "ok", "kind": "paraphrase", "families": n, "rows": n, "sha256": "<of out/pool.jsonl, or of out/dev.jsonl if you wrote no pool.jsonl>"}`
+where `families` and `rows` count the families you extended and the new rows over both files.
 
 ### `recheck`
 Same as `twins`, but on the final content: the sealed rows, after corrections, against

@@ -1964,6 +1964,14 @@ b4. **Clearance, split, paraphrase [SP; C].** The SP gives the all-pairs twin ve
     makes up to 3 attempts per round (b1a) and releases the first feasible one. The SP then paraphrases every family to 2–3 phrasings (migrated ones
     keep theirs and are topped up to 2); the orchestrator receives only the development side. **Fixed order (R3):**
     round-1 split → b5 validation → SP `recheck` on final content → round 2 → freeze (b6).
+    **Paraphrase tooling (19 Oct, owner-approved; D75).** One SP `paraphrase` dispatch over the released families
+    tops every family with fewer than 2 phrasings up to exactly 2 (T1/T7 cap 3; families already at 2–3 untouched). New
+    rows of sealed families come back in `out/pool.jsonl` (marked); new rows of development families in `out/dev.jsonl`
+    (unmarked, validated as v2 rows of private ids by the launcher). `sealed_tool paraphrase-apply --dispatch <id>`
+    checks every new row before writing (right side, next row index, scope/evidence/gaps/type/source equal to row 0,
+    a question that differs from every phrasing, 2–3 phrasings after applying, not frozen, the epoch prereg) and rewrites
+    the affected component files under its own journal; the release payload and freeze replay read family membership
+    only, so they are unaffected. New rows need approvals before freeze, like any row.
 b5. **Validation, escalation, calibration (D75) [owner; SP applies sealed sheets, orchestrator development ones].** (b2: the owner validates all 10 originally-PARTIAL T1/T7 families, i.e. the 5 drafted gap sets against the question and the corpus (evidence, missing concepts, keyword alternatives) and the 5 relabelled `answer`, plus the phrasing selections.) The
     owner validates every sealed family, every refusal or ambiguous label anywhere, every new development label (fast
     review), every SP paraphrase of a migrated family, and the flagged items: T01-Bb; realistic-v1's planning-extension
