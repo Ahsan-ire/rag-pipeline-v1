@@ -2817,3 +2817,21 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
 - **Side effects:**
   - New rows change freeze's content digest, so a recheck screen written before a paraphrase goes stale.
   - New rows need owner approvals before freeze.
+
+**b4 paraphrase (19 Oct; counts only).**
+- **Dispatch `e55915f8`** returned 164 families and 164 new rows.
+- **`paraphrase-apply`:**
+  - **Sealed:** 60 families, +60 rows. All 60 now have 2 phrasings.
+  - **Development:** 104 families, +104 rows. All 136 development families now have 2–3 phrasings: 115 have 2 and 21 have 3.
+  - **Input digests:** `f6663ba0…aec3` (pool), `c3cb3574…ea88` (dev).
+- **Files after applying** (sha256 prefix, rows/families):
+
+  | File | sha256 | Rows / families |
+  |---|---|---|
+  | `sealed_r1` | `99c359b589ea` | 120 / 60 |
+  | `tuning_r1` | `119fa6726ee3` | 116 / 58 |
+  | `realistic_r1` | `c38c1073757b` | 6 / 3 |
+  | `tuning_migrated` | `73dfaae6c1d5` | 52 / 26 |
+  | `realistic_migrated` | `c72d4b7830f7` | 119 / 49 |
+- The byte copy of the sealed file staged for the dispatch was deleted afterwards.
+- **Next: b5.** The owner validates through `sealed_tool sheet`/`apply`, then the SP `recheck` on final content, then round 2, then the freeze (b6).
