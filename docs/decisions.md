@@ -2774,3 +2774,30 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
 
   A probe carries no prereg, so the epoch is still unregistered (`sealed_tool epoch`: none).
 - **Not yet done:** the first data dispatch. It registers the epoch prereg (`9147bcde…`) and needs the owner's explicit go.
+
+**b4 round 1 (19 Oct; counts only).**
+- **Intake.** Draft dispatch `19ea3105`: 105 families, 51 tutorial tags.
+- **SP twin check.** Twins dispatch `4c72bb9d`: 22,365 pairs checked, 34 cross pairs, 0 in-pool.
+  - **Task precisions.** The task told the SP to list only pool-vs-other pairs, to merge nothing, and to count any in-pool twins instead. No `sealed_tool` command applies an SP rewrite of the pool, so an in-pool twin would have been a stop.
+  - **Public ids.** Public and regression rows were given to the SP with their public ids precomputed (`q:` + 12 hex).
+- **Development-side twins.** An Opus pass found 4 development-only pairs, including T01-A and T01-Cc with golden rows, and 0 against heldout-v1.
+- **Split attempt 1: infeasible on the sealed band.**
+  - `sealed_tool twins` left 40 drafts sealed-ineligible: 34 answer, 2 partial, 4 refuse.
+  - That left 34 sealed-eligible non-refusals against the 42 the 60-family sealed set needs.
+  - **New tool.** A non-recording `split --diagnose` (commit 61041d9) was added to measure this.
+- **Attempt-2 drafts (owner-approved).** Dispatch `990902aa`.
+  - **Size.** 16 handbook-only drafts: 12 answer and 4 refusals. The 4 come from the registered 0.275 rule, which puts the pool at 196 with a refusal target of 54.
+  - **Steering.** The SP was steered away from the 54 primary sections used by development families, from the pool's own primary sections, and from twins. All 16 drafts came out eligible.
+- **Second twin check, and the union rule.** Twins dispatch `db3b4868` over the whole 121-family pool: 26,741 pairs checked, 27 cross pairs, 0 in-pool.
+  - The SP's verdicts vary between runs, so the owner chose the conservative rule: a pair flagged by any run counts.
+  - **Tooling.** `twins --extra-verdict` (commit 31959e7) records the union of both runs plus the development pairs: 40 pairs, 40 ineligible.
+- **Split attempt 2: released** (2 of 3 attempts used). Payload `0fdfd542…`.
+
+  | Released | Families | Scope | Refusal share | Register | Source |
+  |---|---|---|---|---|---|
+  | Sealed (`sealed_r1`) | 60 | 38 answer / 4 partial / 18 refuse | 30 % | lay 27 / modelled 19 / terse 14 | handbook 51 / tutorial 9 |
+  | Tuning (`tuning_r1`, new) | 58 | 38 answer / 2 partial / 18 refuse | split total 23/84, band 21–25 | | |
+  | Realistic (`realistic_r1`, new) | 3 tutorial refusals | | split total 13/52 | | |
+
+  - Groups: 5. Dropped: 0. Surplus: 0.
+- **Next (b4 continued):** the SP paraphrase dispatch tops every family up to 2–3 phrasings (owner go first). Then b5 validation.
