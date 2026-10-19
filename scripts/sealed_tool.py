@@ -75,6 +75,23 @@ that are *in the sealed set*, each named by its smallest member. The frozen seal
 ``exclude <group>`` and ``pipeline eval --sealed-slot`` can never name a group differently. Before the freeze the
 sealed set is the surviving ``sealed_r*.jsonl`` families, so a pre-freeze exclusion is provisional.
 
+**twins.** ``twins --round R --verdict A [--extra-verdict B ...] [--dev-verdict D] [--tutorials T]`` records the SP's
+all-pairs verdict. The SP's verdict varies from run to run, so ``--extra-verdict`` (repeatable) adds further SP runs and a
+pair flagged by ANY of them counts: the pairs used are the union of ``--verdict``, every extra and ``--dev-verdict``
+(unordered pairs, de-duplicated, sorted). Every SP file (main and extras) goes through the same strict ``parse_verdict``
+(``verdict_invalid`` / ``input_missing``), and ``twin_in_pool`` is judged over the union of the SP files (not ``--dev-verdict``).
+An id named by a pair that is in no set (not in the pool, development, public or regression) is treated alike in every file:
+it ties a pool draft it is paired with to a public family (sealed-ineligible) and otherwise has no effect. The record keeps
+``verdict_sha256`` as the main file's sha256 and, only when extras were given, adds ``extra_verdict_sha256s`` (the extras'
+file sha256s, sorted); the printed ``twins`` line gains ``extra_verdicts=<n>`` likewise. ``split`` and ``freeze`` read
+``twin_pairs`` / ``families_digest`` / ``edges`` / ``dropped`` only, so they are unaffected. A payload is immutable. Without
+extras the record is stored under ``twins_r<R>_<pool digest[:16]>`` (unchanged); with extras under
+``twins_r<R>_<pool digest[:16]>_u<first 16 hex of the sha256 of the canonical JSON of the sorted union of the SP pairs
+(main + extras, not ``--dev-verdict``)>``, so a union record can follow a no-extras record for the same pool, and a different
+union gets a different name. Either way ``twins_current_r<R>.json`` is moved to the record just stored, which is what ``split``
+and ``split --diagnose`` read. An identical rerun is idempotent; the same name with different content (the same union reached
+through other files, or another ``--dev-verdict``) is refused (``ledger_protocol``) and nothing moves.
+
 **split.** Needs the pushed prereg (a7's ancestry rule) declaring the round, a current ``twins`` record for the
 pool, and passes the exact final quotas (``compute_quotas``) to ``split_families`` with the pinned families
 preassigned. Round 1's realistic quota is the smallest that can still end inside the refusal band over its pinned
@@ -2050,8 +2067,17 @@ def build_supply(ctx: Ctx, round_no: int, pool: Mapping[str, Fam], tags: Mapping
     }
 
 
-def cmd_twins(ctx: Ctx, round_no: int, verdict: str, dev_verdict: Optional[str], tutorials: Optional[str]) -> int:
-    """Record the SP's all-pairs verdict as 16A-1's ``twins`` record under the Unit rule."""
+def cmd_twins(
+    ctx: Ctx, round_no: int, verdict: str, dev_verdict: Optional[str], tutorials: Optional[str],
+    extra_verdicts: Sequence[str] = (),
+) -> int:
+    """Record the SP's all-pairs verdict as 16A-1's ``twins`` record under the Unit rule.
+
+    The SP's verdict can differ from one run to the next, so the owner may pass further SP runs as ``extra_verdicts``
+    (``--extra-verdict``, repeatable): a pair flagged by ANY of them counts. The pairs used are the union of the main
+    ``verdict``, every extra and ``dev_verdict`` (unordered pairs, de-duplicated, sorted). Every SP file (main and extras) is
+    read by the same strict :func:`parse_verdict`, and the in-pool refusal applies to the union of those SP files.
+    """
     if round_no not in (1, 2):
         raise Stop(EXIT_USAGE, "usage")
     recover_state(ctx)
@@ -2060,24 +2086,33 @@ def cmd_twins(ctx: Ctx, round_no: int, verdict: str, dev_verdict: Optional[str],
     if not pool:
         raise Stop(EXIT_REFUSED, "pool_empty")
     sp_pairs = parse_verdict(Path(verdict))
-    inside = [p for p in sp_pairs if p[0] in pool and p[1] in pool]
+    extra_pairs = [parse_verdict(Path(extra)) for extra in extra_verdicts]  # a malformed one is verdict_invalid, as for the main file
+    sp_union = sorted({*sp_pairs, *(pair for pairs in extra_pairs for pair in pairs)})
+    inside = [p for p in sp_union if p[0] in pool and p[1] in pool]
     if inside:
         raise Stop(EXIT_REFUSED, "twin_in_pool", pairs=len(inside))
-    all_pairs = sorted({*sp_pairs, *(parse_verdict(Path(dev_verdict)) if dev_verdict else [])})
+    all_pairs = sorted({*sp_union, *(parse_verdict(Path(dev_verdict)) if dev_verdict else [])})
     tags = load_tutorial_map(ctx, Path(tutorials) if tutorials else None)
     supply = build_supply(ctx, round_no, pool, tags, all_pairs)
     digest = pool_digest(pool)
     record = {
         "version": 1, "round": round_no, "pool_digest": digest, "verdict_sha256": sha_file(Path(verdict)),
+        # present only when extras were given, so a record without extras is byte-identical to one written before they existed
+        **({"extra_verdict_sha256s": sorted(sha_file(Path(extra)) for extra in extra_verdicts)} if extra_verdicts else {}),
         "twin_pairs": [list(p) for p in all_pairs], **supply["twins"],
         "ineligible": supply["ineligible"], "dropped": supply["dropped"], "groups": supply["groups"],
     }
     name = f"twins_r{round_no}_{digest[:16]}"
+    if extra_verdicts:
+        # A payload is immutable, so a union record cannot reuse the name of the no-extras record already stored for this
+        # pool: it is named by its SP union (main + extras, not the dev verdict) as well. Without extras the name is unchanged.
+        name += "_u" + sha_text(canon([list(p) for p in sp_union]))[:16]
     sha = ledger.store_payload(name, record)
     write_json(ctx.sealed_work / f"twins_current_r{round_no}.json", {"payload": name, "sha256": sha, "pool_digest": digest})
     ctx.printer.emit(
         "twins", round=round_no, pool_families=len(pool), twin_pairs=len(all_pairs), groups=len(supply["groups"]),
         ineligible=len(supply["ineligible"]), dropped=len(supply["dropped"]), edges=len(supply["twins"]["edges"]), sha256=sha,
+        **({"extra_verdicts": len(extra_verdicts)} if extra_verdicts else {}),
     )
     return EXIT_OK
 
@@ -4131,7 +4166,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("--realistic-ids", {"default": None}))
     add("intake", ("--dispatch", {"required": True}))
     add("twins", ("--round", {"type": int, "required": True}), ("--verdict", {"required": True}), ("--dev-verdict", {"default": None}),
-        ("--tutorials", {"default": None}))
+        ("--tutorials", {"default": None}), ("--extra-verdict", {"action": "append", "default": [], "dest": "extra_verdicts"}))
     add("split", ("--round", {"type": int, "required": True}), ("--diagnose", {"action": "store_true"}))
     add("sheet", ("--kind", {"choices": KINDS, "required": True}), ("--round", {"type": int, "default": None}), ("--name", {"default": None}),
         ("--all", {"action": "store_true"}))
@@ -4174,7 +4209,7 @@ def _run_command(ctx: Ctx, a: argparse.Namespace) -> int:
     if c == "intake":
         return cmd_intake(ctx, a.dispatch)
     if c == "twins":
-        return cmd_twins(ctx, a.round, a.verdict, a.dev_verdict, a.tutorials)
+        return cmd_twins(ctx, a.round, a.verdict, a.dev_verdict, a.tutorials, a.extra_verdicts)
     if c == "split":
         return cmd_split(ctx, a.round, a.diagnose)
     if c == "sheet":
