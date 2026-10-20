@@ -2835,3 +2835,14 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
   | `realistic_migrated` | `c72d4b7830f7` | 119 / 49 |
 - The byte copy of the sealed file staged for the dispatch was deleted afterwards.
 - **Next: b5.** The owner validates through `sealed_tool sheet`/`apply`, then the SP `recheck` on final content, then round 2, then the freeze (b6).
+
+**Merge-gate leak hits after the paraphrase (20 Oct; owner-approved fix).**
+- **What the scan found.** `scan_leaks --merge-gate` blocked the push with four hits. All four were in `eval/w_sweep_expansions_20260717.json`, a public file of query rewrites of public questions, committed on main in July. Three SP development paraphrases shared wording with it:
+  - one shared an 8-token window (Land Registry / Registry of Deeds);
+  - one shared a terse keyword run (Family Home Protection Act 1976);
+  - one was a terse phrase wholly contained in a public rewrite (requisition 27.5).
+- **Direction.** The text flowed from public to private: the paraphrases reuse common phrasing. Every affected family is in development, so the exam is not affected.
+- **Fix.** The owner reworded the three development rows (`fa0699cd3-1`, `f3b70a075-1`, `f5b0e3c15-1`). Scope, evidence, type and source are unchanged, and each row is marked `owner_status: draft`. They are validated again in b5.
+- **The SP's original output.** The released `dev.jsonl` of paraphrase dispatch `e55915f8` (sha256 `c3cb3574…`, as recorded in `paraphrase_applied.json`) had been released under `sealed/work/sp_out/`, so the scanner treated it as sealed by location. It still held the original wording. It is now archived, byte-identical, as `eval/private/work/b4/applied_e55915f8_dev.jsonl.gz`. A gzip file is not a needle source.
+- **Follow-up for the tool.** `paraphrase-apply` should move an applied `dev.jsonl` out of the sealed area itself.
+- **Re-scan:** clean.
