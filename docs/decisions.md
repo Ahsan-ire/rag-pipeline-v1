@@ -2846,3 +2846,14 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
 - **The SP's original output.** The released `dev.jsonl` of paraphrase dispatch `e55915f8` (sha256 `c3cb3574…`, as recorded in `paraphrase_applied.json`) had been released under `sealed/work/sp_out/`, so the scanner treated it as sealed by location. It still held the original wording. It is now archived, byte-identical, as `eval/private/work/b4/applied_e55915f8_dev.jsonl.gz`. A gzip file is not a needle source.
 - **Follow-up for the tool.** `paraphrase-apply` should move an applied `dev.jsonl` out of the sealed area itself.
 - **Re-scan:** clean.
+
+**b5 owner decisions (2 Nov 2026; owner).**
+- **Who applies sealed sheets.** The orchestrator runs `sealed_tool apply --kind sealed` (and `sheet`, `escalate`, `disagree` for sealed), as it already ran `sheet` on 20 Oct. The tool prints only counts, sha256s and enums; the orchestrator never opens a sealed sheet or form. This amends plan b5's "SP applies sealed sheets".
+  - **Why:** `sealed_tool` is the trusted processor (D72) and exposes nothing more when the orchestrator runs it; an SP dispatch per batch adds launcher runs and owner wait for no gain in containment.
+  - **Rejected:** an SP dispatch per sealed batch, as the plan text had it.
+- **Staging.** Sealed sheet first (the critical path), then development. Batches are allowed: after each `apply`, `sheet` makes a fresh sheet of the rows still open and the owner continues on it (an applied correction or rejection makes the old sheet stale).
+- **Colleague.** Available for escalations and for the optional calibration (15 families, after the freeze).
+- **Development pre-check.** An Opus subagent checks the development sheet against the handbook dump (scope, evidence groups, gaps, phrasing drift, the plan's flagged items). Its report is the gitignored `eval/private/work/sheets/precheck_development.md`. The owner still marks every row.
+- **Owner guide.** `docs/b5-owner-guide.md`: fill rules, the `corrections` JSON, the escalation steps.
+- **Tool fix.** `read_sheet` drops a leading UTF-8 byte-order mark (Excel's "CSV UTF-8" export writes one, which made the header check fail). The approval's sheet sha256 is still taken over the raw bytes.
+- **Open gap (not built).** No tool path sets `second_status: missing` when a colleague misses the 10-day deadline; build it only if an escalation actually times out.

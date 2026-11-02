@@ -93,6 +93,17 @@ def test_apply_binds_each_approved_row_to_its_hash_and_the_sheet_sha256(world):
     assert world.last(out, "sheet")["rows"] == "0"  # nothing left to review
 
 
+def test_apply_accepts_a_sheet_saved_by_excel_with_a_bom_and_crlf(world):
+    std = standard_released(world)
+    world.run("sheet", "--kind", "sealed", "--name", "s1")
+    path = Path(world.mark_sheet(world.sheet_path("sealed", "s1"), {}, default="A"))
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    code, out, err = world.run("apply", "--kind", "sealed", "--sheet", path)
+    assert code == 0, err
+    line = world.last(out, "apply")
+    assert (line["approved"], line["pending"], line["sha256"]) == ("24", "0", sha(path))  # bound to the bytes as saved
+
+
 def test_apply_refuses_a_stale_sheet_and_a_double_mark_and_writes_nothing(world):
     std = standard_released(world)
     world.run("sheet", "--kind", "sealed", "--name", "s1")

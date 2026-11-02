@@ -3167,10 +3167,14 @@ def csv_bytes(columns: Sequence[str], records: Iterable[Mapping[str, Any]]) -> b
 
 
 def read_sheet(path: Path, columns: Sequence[str]) -> Tuple[List[Dict[str, str]], str]:
-    """The sheet's lines and its sha256; the header must be exactly ``columns``."""
+    """The sheet's lines and its sha256 (of the raw bytes); the header must be exactly ``columns``.
+
+    A leading UTF-8 byte-order mark is dropped: Excel's "CSV UTF-8" export writes one, and it would
+    otherwise glue itself to the first column name.
+    """
     try:
         raw = path.read_bytes()
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")
     except (OSError, UnicodeDecodeError):
         raise Stop(EXIT_USAGE, "input_missing") from None
     reader = csv.DictReader(io.StringIO(text, newline=""))
