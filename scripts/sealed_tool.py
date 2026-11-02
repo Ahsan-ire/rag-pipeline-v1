@@ -279,6 +279,7 @@ SHEET_COLUMNS = (
 )
 CONFIRM_COLUMNS = ("row_id", "family_id", "row_hash", "phrasing", "scope", "evidence", "gaps", "ambiguous", "OK")
 CORRECTABLE = ("question", "scope", "evidence", "gaps", "ambiguous", "register")
+FAMILY_FIELDS = ("scope", "evidence", "gaps")  # correctable keys every phrasing of a family shares (b5, 2 Nov)
 RETURN_ENUMS = (
     "status", "ok", "blocked", "kind", "draft", "twins", "paraphrase", "recheck", "probe", "families", "rows",
     "by_scope", "by_register", "by_source", "sha256", "pairs_checked", "twin_pairs", "pool_families", "reason",
@@ -3305,9 +3306,11 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
     lines, sha = read_sheet(Path(sheet), SHEET_COLUMNS)  # type: ignore[arg-type]
     approved: Dict[str, str] = {}
     changed: Dict[str, Dict[str, Any]] = {}
+    family_patches: Dict[str, Dict[str, Any]] = {}
     rejected: Set[str] = set()
     escalated: Set[str] = set()
-    pending = stale = conflict = bad = 0
+    unmarked: Set[str] = set()
+    stale = conflict = bad = 0
     for line in lines:
         rid = line["row_id"]
         refuse_frozen(rid)
@@ -3322,7 +3325,7 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
         if len(marks) > 1:
             conflict += 1
         elif not marks:
-            pending += 1
+            unmarked.add(rid)
         elif marks[0] == "A":
             approved[rid] = eval_schema.row_hash(row)
         elif marks[0] == "R":
@@ -3339,10 +3342,32 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
                 bad += 1
                 continue
             changed[rid] = dict(row, **patch)
+            family_patch = {k: v for k, v in patch.items() if k in FAMILY_FIELDS}
+            fid = str(row["family_id"])
+            if family_patch and family_patches.setdefault(fid, family_patch) != family_patch:
+                conflict += 1  # two phrasings of one family corrected to different scope/evidence/gaps
     if stale:
         raise Stop(EXIT_REFUSED, "sheet_stale", lines=stale)
     if conflict or bad:
         raise Stop(EXIT_REFUSED, "sheet_conflict", lines=conflict + bad)
+    # Scope, evidence and gaps belong to the family: a correction on one phrasing reaches every live row of it,
+    # including rows the sheet does not list (a plain legacy first phrasing), so the family stays consistent.
+    # A propagated change overrides an A on that row (the row goes to the confirm sheet); a rejection drops them.
+    propagated = 0
+    for rid, (_, row) in rows_by_id.items():
+        fid = str(row["family_id"])
+        if fid in rejected:
+            changed.pop(rid, None)
+        elif fid in family_patches:
+            new = dict(changed.get(rid, row), **family_patches[fid])
+            if rid not in changed and eval_schema.row_hash(new) != eval_schema.row_hash(row):
+                refuse_frozen(rid)
+                propagated += 1
+                changed[rid] = new
+                approved.pop(rid, None)
+            elif rid in changed:
+                changed[rid] = new
+    changed = {rid: _type_for_scope(row) for rid, row in changed.items()}
     new_files = {p: [dict(r) for r in rows] for p, rows in files.items()}
     quarantined: Dict[str, List[Dict[str, Any]]] = {}
     for path, rows in new_files.items():
@@ -3352,8 +3377,8 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
                 row["owner_status"] = "approved"
             elif rid in changed:
                 rows[i] = dict(changed[rid], owner_status="changed")
-            elif fid in escalated:
-                row["second_status"] = "pending"
+            if fid in escalated and rid not in approved:
+                rows[i]["second_status"] = "pending"
         for row in [r for r in rows if str(r["family_id"]) in rejected]:
             quarantined.setdefault(str(row["family_id"]), []).append(row)
         rows[:] = [r for r in rows if str(r["family_id"]) not in rejected]
@@ -3389,10 +3414,23 @@ def cmd_apply(ctx: Ctx, kind: str, sheet: Optional[str], confirm: Optional[str])
             )
         write_atomic(sheet_dest(ctx, kind, f"{Path(str(sheet)).stem}.confirm.csv"), csv_bytes(CONFIRM_COLUMNS, recs))
     ctx.printer.emit(
-        "apply", kind=kind, approved=len(approved), changed=len(changed), rejected_families=len(rejected),
-        escalated_families=len(escalated), pending=pending, sha256=sha,
+        "apply", kind=kind, approved=len(approved), changed=len(changed), propagated=propagated,
+        rejected_families=len(rejected), escalated_families=len(escalated), pending=len(unmarked - set(changed)), sha256=sha,
     )
     return EXIT_OK
+
+
+def _type_for_scope(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A row whose v1 ``type`` disagrees with its (corrected) scope gets ``refusal`` for refuse, else ``direct``.
+
+    The owner's corrections cannot name ``type``, and the validator refuses a type that disagrees with the scope,
+    so without this a scope flip to or from ``refuse`` would make the whole sheet unappliable. A type that already
+    agrees (``exact_token`` on an answer row, say) is kept; an unknown type is left for the validator to report.
+    """
+    rtype = row.get("type")
+    if rtype not in eval_schema.TYPE_SCOPES or row.get("scope") in eval_schema.TYPE_SCOPES[rtype]:
+        return row
+    return dict(row, type="refusal" if row.get("scope") == "refuse" else "direct")
 
 
 # ---------------------------------------------------------------------------

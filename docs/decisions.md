@@ -2857,3 +2857,19 @@ It stopped with `band_unreachable`, a registered b2 owner stop. The cause was th
 - **Owner guide.** `docs/b5-owner-guide.md`: fill rules, the `corrections` JSON, the escalation steps.
 - **Tool fix.** `read_sheet` drops a leading UTF-8 byte-order mark (Excel's "CSV UTF-8" export writes one, which made the header check fail). The approval's sheet sha256 is still taken over the raw bytes.
 - **Open gap (not built).** No tool path sets `second_status: missing` when a colleague misses the 10-day deadline; build it only if an escalation actually times out.
+
+**b5 apply fixes (2 Nov 2026; owner go "fix both now").** The development pre-check showed two ways the owner's corrections could not be applied.
+- **Scope flip vs `type`.** Every development row carries the v1 `type` (the sealed rows come from the same SP drafting), which the validator requires to agree with `scope`, and `corrections` cannot name it. A flip to or from `refuse` therefore made `apply` refuse the whole sheet (`schema_invalid`). Now `apply` resets a disagreeing type: `refusal` for refuse, otherwise `direct`. A type that still agrees, such as `exact_token` on a partial row, is kept.
+- **Family-wide corrections.** `scope`, `evidence` and `gaps` (`FAMILY_FIELDS`) now apply to every live row of the family, including rows the sheet does not list. Those are the 38 development families whose plain legacy first phrasing is exempt from review: a scope correction there failed the one-scope-per-family check, and an evidence correction left the family inconsistent, as three families already are (`f50cf161f`, `fc1aa0539`, `fe5e51596`).
+  - Each row changed this way goes to `pending_confirm` and the confirm sheet, even if it was marked `A`.
+  - Different family-level corrections within one family are a `sheet_conflict`.
+  - `apply` prints a `propagated` count.
+- **Edge fixes.**
+  - A rejection now drops its family's corrections. Before, C and R in one family would have crashed on the confirm-sheet step (a `KeyError` on the quarantined row).
+  - Every non-approved row of an escalated family is marked `second_status: pending`, including changed rows.
+- **Why:** b5 needs the owner to be able to correct scope and evidence. Doing it in the tool keeps the owner's JSON short and the family consistent.
+- **Rejected:**
+  - Adding `type` to `CORRECTABLE`: it is more owner JSON for a field derived from scope.
+  - Listing exempt rows on the sheet: it adds review lines and still allows inconsistent families.
+- **Tests:** `test_p16w_sealed_tool_review.py`. The three new tests fail on the previous code.
+- **Owner guide** updated (§6–8).

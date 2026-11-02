@@ -78,8 +78,8 @@ File: `eval/private/sealed/work/sheets/sheet_sealed_all.csv`
 | `R` reject | The family is unusable: unfixable, or a near-duplicate of another question | — |
 | `E` escalate | You're unsure and want your colleague's independent view | `doubt`: one line on what you're unsure about. Never write your own answer there; the colleague sees the doubt |
 
-- One `R` rejects the **whole family**. One `E` escalates the whole family. Mark every phrasing of the family the same
-  way, for clarity.
+- One `R` rejects the **whole family**, and any corrections in it are dropped. One `E` escalates the whole family. For
+  `R` and `E`, mark every phrasing of the family the same way, for clarity.
 - A line with no mark stays pending and comes back on the next sheet. A line with two marks makes the tool refuse the
   sheet.
 
@@ -100,8 +100,14 @@ Write a JSON object with only the keys you are changing. The allowed keys are `q
 
 - **Evidence format.** Each inner `[...]` is one needed group. The labels inside a group are the alternatives. Write
   labels as strings (`"4.5.1"`), and use only labels that exist in the Handbook, or the tool refuses the sheet.
-- **Family-wide fields.** `scope`, `evidence` and `gaps` are the same on every phrasing of a family. Put the **same**
-  correction on **every** line of that family. A `question` or `register` correction applies to its own line only.
+- **Family-wide fields.** `scope`, `evidence` and `gaps` are shared by every phrasing of a family. Write the correction
+  **once**, on any one phrasing, and the tool applies it to every phrasing of the family. That includes a phrasing the
+  sheet doesn't list (on the development sheet, an original legacy wording). You may mark the other phrasings `A`. Each
+  phrasing the correction changes comes back on your confirm sheet.
+  - If you do write the correction on several phrasings, it must be identical on each, or the tool refuses the sheet.
+  - A `question`, `register` or `ambiguous` correction applies to its own line only.
+- **No need to touch `type`.** Rows also carry an older `type` field. When you change the scope, the tool updates it to
+  match.
 - **Confirm step.** A corrected row doesn't count straight away. It comes back on a short confirm sheet showing the new
   values, and you tick `OK` once it looks right.
 
@@ -110,8 +116,9 @@ Write a JSON object with only the keys you are changing. The allowed keys are `q
 1. Claude runs `sealed_tool apply --kind sealed --sheet <file>` and reports counts only: approved, changed, rejected,
    escalated and pending.
 2. If the tool refuses the sheet, nothing is written. The reasons are:
-   - `sheet_conflict lines=N`: N lines have two marks, or `C` with invalid JSON. Claude can't see which lines on a
-     sealed sheet, so check your marks and quotes.
+   - `sheet_conflict lines=N`: N lines have two marks, or `C` with invalid JSON, or two phrasings of one family carry
+     different scope, evidence or gaps corrections. Claude can't see which lines on a sealed sheet, so check your marks
+     and quotes.
    - `schema_invalid`: a correction made a row invalid, for example an unknown paragraph label, a `refuse` that still
      has evidence, or phrasings of one family with different scopes. The tool names the field (such as `evidence`) but
      not the row.

@@ -193,6 +193,89 @@ def test_an_invalid_correction_is_rejected_by_the_one_validator_and_nothing_is_w
         assert code == st.EXIT_REFUSED and "reason=sheet_conflict" in err
 
 
+def set_type(path: Path, types: dict) -> None:
+    """Give rows a v1 ``type`` (family id -> type), as the real SP drafts and migrated rows carry one."""
+    rows = read_rows(path)
+    for row in rows:
+        if row["family_id"] in types:
+            row["type"] = types[row["family_id"]]
+    write_rows(path, rows)
+
+
+def test_a_scope_flip_resets_the_v1_type_and_reaches_the_whole_family(world):
+    std = standard_released(world)
+    refuse, answer, token = std.sealed_refuse[0], std.sealed_singletons[0], std.sealed_singletons[1]
+    target = world.sealed / "sealed_r1.jsonl"
+    set_type(target, {refuse: "refusal", answer: "direct", token: "exact_token"})
+    world.run("sheet", "--kind", "sealed", "--name", "s1")
+    to_answer = json.dumps({"scope": "answer", "evidence": [["1.1"]]})
+    gap = [{"id": "g1", "keywords": ["gk"]}]
+    extra = {
+        f"{refuse}-0": {"corrections": to_answer}, f"{refuse}-1": {"corrections": to_answer},
+        f"{answer}-0": {"corrections": json.dumps({"scope": "refuse", "evidence": []})},  # one phrasing only
+        f"{token}-0": {"corrections": json.dumps({"scope": "partial", "gaps": gap})},
+        f"{token}-1": {"corrections": json.dumps({"scope": "partial", "gaps": gap})},
+    }
+    path = world.mark_sheet(world.sheet_path("sealed", "s1"), {refuse: "C", f"{answer}-0": "C", token: "C"}, default="A", extra=extra)
+    code, out, err = world.run("apply", "--kind", "sealed", "--sheet", path)
+    assert code == 0, err
+    line = world.last(out, "apply")
+    assert (line["changed"], line["propagated"], line["pending"]) == ("6", "1", "0")
+    rows = {r["id"]: r for r in read_rows(target)}
+    for n in (0, 1):
+        assert (rows[f"{refuse}-{n}"]["scope"], rows[f"{refuse}-{n}"]["type"]) == ("answer", "direct")
+        assert (rows[f"{answer}-{n}"]["scope"], rows[f"{answer}-{n}"]["type"], rows[f"{answer}-{n}"]["evidence"]) == ("refuse", "refusal", [])
+        assert (rows[f"{token}-{n}"]["scope"], rows[f"{token}-{n}"]["type"]) == ("partial", "exact_token")  # still agrees: kept
+    doc = approvals(world)
+    assert f"{answer}-1" not in doc["approved"] and f"{answer}-1" in doc["pending_confirm"]  # its A gave way to the change
+    from src.eval_sealed_read import load_sealed
+    loaded = {r["id"]: r for r in load_sealed(target, inventory=eval_schema.load_inventory())}
+    assert doc["pending_confirm"][f"{answer}-1"]["row_hash"] == eval_schema.row_hash(loaded[f"{answer}-1"])  # the FINAL hash
+
+
+def test_a_family_correction_reaches_a_row_the_sheet_does_not_list(world):
+    std = standard_released(world)
+    fam = std.pinned_tuning[0]  # legacy: its plain first phrasing is exempt from the sheet
+    target = world.dev / "tuning_pinned.jsonl"
+    world.run("sheet", "--kind", "development", "--name", "d1")
+    _, lines = read_csv(world.sheet_path("development", "d1"))
+    assert f"{fam}-0" not in {r["row_id"] for r in lines} and f"{fam}-1" in {r["row_id"] for r in lines}
+    path = world.mark_sheet(world.sheet_path("development", "d1"), {fam: "C"}, default="A",
+                            extra={fam: {"corrections": json.dumps({"evidence": [["2.9"]]})}})
+    code, out, err = world.run("apply", "--kind", "development", "--sheet", path)
+    assert code == 0, err
+    line = world.last(out, "apply")
+    assert (line["changed"], line["propagated"]) == ("2", "1")
+    rows = {r["id"]: r for r in read_rows(target)}
+    assert [rows[f"{fam}-{n}"]["evidence"] for n in (0, 1)] == [[["2.9"]], [["2.9"]]]
+    assert {rows[f"{fam}-{n}"]["owner_status"] for n in (0, 1)} == {"changed"}
+    assert {f"{fam}-0", f"{fam}-1"} <= set(approvals(world, "development")["pending_confirm"])
+    _, confirm = read_csv(world.root / "work" / "sheets" / "d1.confirm.csv")
+    assert {f"{fam}-0", f"{fam}-1"} <= {r["row_id"] for r in confirm}  # the unlisted row comes back for the owner's tick
+
+
+def test_different_family_corrections_in_one_family_are_a_conflict_and_a_rejection_drops_corrections(world):
+    std = standard_released(world)
+    fam, other = std.sealed_singletons[0], std.sealed_singletons[1]
+    target = world.sealed / "sealed_r1.jsonl"
+    before = target.read_bytes()
+    world.run("sheet", "--kind", "sealed", "--name", "s1")
+    extra = {f"{fam}-0": {"corrections": json.dumps({"evidence": [["2.9"]]})}, f"{fam}-1": {"corrections": json.dumps({"evidence": [["2.1"]]})}}
+    path = world.mark_sheet(world.sheet_path("sealed", "s1"), {fam: "C"}, default="A", extra=extra)
+    code, out, err = world.run("apply", "--kind", "sealed", "--sheet", path)
+    assert code == st.EXIT_REFUSED and "reason=sheet_conflict lines=1" in err
+    assert target.read_bytes() == before and approvals(world) is None
+    world.run("sheet", "--kind", "sealed", "--name", "s2")
+    path = world.mark_sheet(world.sheet_path("sealed", "s2"), {f"{other}-0": "C", f"{other}-1": "R"}, default="A",
+                            extra={f"{other}-0": {"corrections": json.dumps({"evidence": [["2.9"]]})}})
+    code, out, err = world.run("apply", "--kind", "sealed", "--sheet", path)
+    assert code == 0, err
+    line = world.last(out, "apply")
+    assert (line["changed"], line["propagated"], line["rejected_families"]) == ("0", "0", "1")
+    assert other in {r["family_id"] for r in read_rows(world.sealed / "quarantine.jsonl")}
+    assert not any(rid.startswith(other) for rid in approvals(world)["pending_confirm"])
+
+
 def test_reject_quarantines_the_family_and_escalate_marks_it_pending(world):
     std = standard_released(world)
     reject, escalate = std.sealed_singletons[0], std.sealed_singletons[1]
