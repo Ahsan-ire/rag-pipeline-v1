@@ -59,15 +59,73 @@ File: `eval/private/sealed/work/sheets/sheet_sealed_all.csv`
 | `gaps` | Partial only: the parts the Handbook does **not** cover, as `id: keyword, keyword` |
 | `ambiguous` | `yes` if two reasonable readings lead to different answers |
 
-## 5. What to check in each family (about 7 min)
+## 5. How to review one family, step by step (about 7 min)
 
-1. **Phrasings.** Do they all ask the same thing? Would a real conveyancer, client or trainee ask it this way? Does a
-   phrasing give the answer away?
-2. **Scope.** Is answer, partial or refuse right against the Handbook? A wrong `refuse` is the most costly error, so
-   look for a paragraph that does answer it.
-3. **Evidence.** Are these the right paragraphs? Is one missing? Are the groups right (needed vs any-one-will-do)?
-4. **Gaps** (partial only). Is the gap really missing from the Handbook? Are the keywords ones an answer would use?
-5. **Ambiguous** and **register**. Are they right?
+### Before you start
+
+1. **Open the Handbook PDF** (`data/Conveyancing_Handbook.pdf`) next to the sheet.
+   - The page numbers in the sheet are the Handbook's printed page numbers.
+   - In the PDF, the matching page is the **printed page + 44**. For example, `[p62]` is PDF page 106.
+   - Or search (Cmd+F) for the paragraph number.
+2. **The rows are sorted by family**, so the phrasings of a family sit together. Review a whole family at a time.
+3. **The labels were drafted by a model.** Treat them as a suggestion to check, not as an answer to confirm.
+
+### For each family
+
+1. **Read the phrasings first, and cover the labels.** Work out what is asked:
+   - the facts given;
+   - the legal question;
+   - how many distinct parts ("limbs") it has.
+
+   Then form your own view of where the Handbook deals with it. Looking at the labels second stops you anchoring on
+   them.
+2. **Check the phrasings.**
+   - Each phrasing asks the same question, with the same facts and the same limbs. Look for a phrasing that adds or
+     drops a condition, a fact or a limb.
+   - Each one reads naturally for its register:
+     - `lay`: how a client or another non-lawyer would ask;
+     - `modelled`: how a practitioner or trainee would write it;
+     - `terse`: search-box keywords.
+   - No phrasing gives the answer away.
+   - A phrasing that drifts gets `C` with `{"question": "..."}` on that line. If the whole family is muddled, `R`.
+3. **Read the cited paragraphs** in the Handbook. Do they answer the question as asked? Then search the Handbook
+   (Cmd+F on the key terms, and the chapter contents) for any other place that answers it.
+4. **Decide the scope.** Judge by **what this Handbook says**, not by current law or your own knowledge. Handbook mode
+   (D61) answers from the Handbook alone, and these labels measure that mode. Ask:
+
+   | Can you write a complete, correct answer citing only Handbook paragraphs? | Scope |
+   |---|---|
+   | Yes, every part of the question | `answer` |
+   | Only part of it, and you can name the missing part | `partial` (the missing part becomes a gap) |
+   | No: the Handbook doesn't deal with it, or answering needs something it doesn't give (a specific figure or fee, a judgment on the client's particular facts, another area of law) | `refuse` |
+
+   - A wrong `refuse` is the costliest error, so search properly before you accept one.
+   - A question that touches the Handbook's topic only in passing is still `refuse` if the Handbook gives nothing a
+     good answer could rely on.
+5. **Check the evidence.** It lists the paragraphs a good answer must rely on.
+   - **Be specific.** Cite the paragraph that actually states the answer, not the chapter or section introduction.
+   - **Alternatives (`|`).** Add one only where another paragraph states the same answer, for example an appendix
+     that quotes the provision.
+   - **Separate groups (`&`).** Use one only when the question has two limbs answered in different places, a good
+     answer needs both, and **every** phrasing asks both.
+   - **Don't pad.** A paragraph that only mentions the topic doesn't belong.
+   - **Why it matters.** The system counts as "found" only when it retrieves at least one paragraph from every group.
+     A missing alternative penalises a right answer, and a padded group lets a weak one through.
+6. **Check the gaps** (partial only).
+   - Search the Handbook to confirm the gap really isn't covered.
+   - Check the keywords. The scorer looks for any one of them, as a whole word in any case, in the sentence where the
+     answer says what the Handbook doesn't cover.
+   - Good keywords are words such a sentence would naturally use: a few variants and synonyms (`qualify`,
+     `qualifies`, `eligible`). Avoid very general words (`why`, `better`) and long exact phrases nobody would write
+     word for word.
+7. **Check ambiguous and register.**
+   - **Ambiguous:** could two reasonable readers take the question differently and reach different answers? The flag
+     doesn't change how the row is scored, so an ambiguous question is still marked against your one answer. Prefer
+     to reword it (`C`), or reject it (`R`).
+   - **Register:** fix it only if it is clearly wrong.
+8. **Mark the family** (§6): `A`, `C` with JSON, `R`, or `E` with a doubt.
+   - If a family is taking more than about 15 minutes, `E` it.
+   - If it's broken beyond a quick fix, `R` it. Rejected families are replaced in round 2.
 
 ## 6. Your decision: exactly one `x` per line
 
